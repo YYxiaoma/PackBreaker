@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>自动拆包辅种系统 · 需求基线 v0.2</title>
+<style>
+  :root{
+    --text:#1A1B1C; --text2:#6B7280; --bg:#F4F3EE; --card:#FFFFFF;
+    --border:#E4E3DD; --accent:#94D4D0; --accent-deep:#3E8E86;
+    --green:#52C41A; --amber:#FAAD14; --red:#EA6668;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Roboto','PingFang SC','Segoe UI','Microsoft YaHei',Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.7;font-size:15px;}
+  .wrap{max-width:920px;margin:0 auto;padding:32px 20px 64px;}
+  .cover{background:linear-gradient(135deg,#e8f6f5,#d6eef2);border:1px solid var(--border);border-radius:16px;padding:32px 28px;margin-bottom:28px;}
+  .cover .tag{display:inline-block;background:var(--accent-deep);color:#fff;font-size:12px;padding:2px 12px;border-radius:20px;margin-bottom:12px;}
+  .cover .tag.gray{background:#6B7280;margin-left:8px;}
+  .cover h1{font-size:26px;font-weight:700;letter-spacing:1px;}
+  .cover .sub{color:var(--text2);font-size:14px;margin-top:10px;max-width:760px;}
+  h2{font-size:19px;font-weight:600;margin:36px 0 14px;padding-left:12px;border-left:4px solid var(--accent-deep);}
+  h3{font-size:15.5px;font-weight:600;margin:18px 0 8px;}
+  p{margin:6px 0;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:12px 0;}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px;background:var(--card);border-radius:8px;overflow:hidden;}
+  th{background:#eef3f2;color:var(--text);font-weight:600;text-align:left;}
+  th,td{border:1px solid var(--border);padding:8px 10px;vertical-align:top;}
+  .ok{color:#389e0d;font-weight:600;} .warn{color:#d48806;font-weight:600;} .bad{color:#cf1322;font-weight:600;}
+  .chip{display:inline-block;font-size:12px;padding:1px 10px;border-radius:12px;margin:2px 4px 2px 0;background:#eef3f2;border:1px solid var(--border);}
+  .chip.conf{background:#f0f9e8;border-color:#bfe8a0;color:#389e0d;}
+  ul,ol{margin:6px 0 6px 22px;}
+  li{margin:3px 0;}
+  .step{display:flex;gap:12px;margin:8px 0;}
+  .step .num{flex:0 0 28px;height:28px;border-radius:50%;background:var(--accent-deep);color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;}
+  .step .body{flex:1;}
+  .step .t{font-weight:600;font-size:14px;}
+  .step .d{font-size:13px;color:var(--text2);}
+  .note{background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;padding:10px 14px;font-size:13px;color:#7a6a1f;margin:10px 0;}
+  .note.green{background:#f6ffed;border-color:#b7eb8f;color:#389e0d;}
+  .footer{margin-top:48px;font-size:12px;color:var(--text2);text-align:center;border-top:1px solid var(--border);padding-top:16px;}
+  .q{font-size:13.5px;}
+  code{background:#eef3f2;border-radius:4px;padding:1px 6px;font-size:12.5px;}
+  .confirm{border-left:4px solid #b7eb8f;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="cover">
+    <span class="tag">项目需求基线 v0.2</span><span class="tag gray">已确认版</span>
+    <h1>自动拆包辅种系统</h1>
+    <div class="sub">以「大包」下载任务为输入，自动拆解为单影片/单集单元，跨 PT 站搜索匹配同名资源，通过硬链接复用已有数据完成多站辅种；附带失败修复、历史影片重新做种、剧集拆包能力。独立部署平台，支持 qBittorrent / Transmission 与多 PT 站。</div>
+  </div>
+
+  <h2>〇、需求确认记录（2026-09-05 · 10 项全部确认）</h2>
+  <table>
+    <tr><th style="width:36px;">#</th><th style="width:210px;">决策项</th><th>已确认结论 → 对设计的影响</th></tr>
+    <tr><td>1</td><td>MoviePilot 插件</td><td><b>非必需，后续再对接。</b>本期做独立平台；技术栈锁定 Python 以保留未来做 MP 插件的平滑路径，预留「下载完成事件」对外接口（webhook/API），本期不实现插件本体。</td></tr>
+    <tr><td>2</td><td>部署环境</td><td><b>优先 linux/amd64，arm 后续迭代。</b>Dockerfile 采用 buildx 多阶段、平台参数化，v1.0 只出 amd64，预留 arm64 构建位（研发阶段本地即可出 arm 镜像验证）。</td></tr>
+    <tr><td>3</td><td>样例数据</td><td><b>研发启动后提供。</b>M0 阶段依赖用户提供蜂巢 3.3T 大包目录树/种子元数据 + 7 个失败样例归因；开发期先用合成语料占位，正式匹配算法验收以真实语料为准（文档标注「待提供」）。</td></tr>
+    <tr><td>4</td><td>99% 修复深度</td><td><b>提供三种模式由用户选择（可配置）。</b>①自动补 piece（同 piece 对齐时从大包补齐+重校验）②仅文件级修复（缺图/nfo/整文件补齐）③人工引导（生成修复清单+一键指令）。修复策略为全局+任务级可覆盖配置。</td></tr>
+    <tr><td>5</td><td>PT 站范围</td><td><b>期望覆盖所有 PT 站，迭代补全；首批 HDTime、M-Team、HHClub。</b>按「统一 SiteAdapter 接口 + 引擎适配器」分层设计。已核实：M-Team 提供官方开放 API（api.m-team.cc / api.m-team.io，x-api-key 鉴权，/api/torrent/search 等）；HDTime 属 NexusPHP 系（passkey + torrents.php 网页搜索）；HHClub 引擎待研发阶段确认（大概率 NexusPHP 系）。</td></tr>
+    <tr><td>6</td><td>硬链接目录布局</td><td><b>澄清：硬链接是「同名影片但命名/目录不同导致无法辅种」的修复手段。</b>目标目录结构 = 候选种子自身的文件结构（目录+文件名与种子内路径一致），基础根目录可配置；不做按站点/年份的媒体库式整理。</td></tr>
+    <tr><td>7</td><td>通知渠道</td><td><b>优先 Server酱 + Telegram，后续迭代。</b>抽象 NotificationProvider 接口，本期实现两个渠道，预留飞书/企业微信/钉钉扩展。</td></tr>
+    <tr><td>8</td><td>历史辅种扫描</td><td><b>用户配置扫描根路径 + 文件类型，配置完成后触发扫描。</b>文件类型过滤（如 .mkv/.mp4/.iso 等可配），识别影片后复用搜索匹配链路。</td></tr>
+    <tr><td>9</td><td>使用规模</td><td><b>单机自用。</b>架构简化：SQLite(WAL)、单进程部署、不做多用户与租户权限；界面仅需内网访问口令。</td></tr>
+    <tr><td>10</td><td>界面化升级</td><td><b>需要。</b>内置升级中心：检查版本 → 界面点击 → 经可选挂载的 docker.sock 拉新镜像重建容器 → 健康检查通过后完成、失败回滚；docker.sock 需用户知情授权（部署时说明）。</td></tr>
+  </table>
+  <div class="note green">以上 10 项构成 v0.2 基线。后续新增/变更需求需重新评估影响并升级版本号。</div>
+
+  <h2>一、需求归纳（8 项 → 6 大模块）</h2>
+  <table>
+    <tr><th style="width:120px;">模块</th><th style="width:90px;">对应原需求</th><th>功能要点</th></tr>
+    <tr><td><b>1. 下载器管理</b></td><td>需求 4、5</td><td>qBittorrent + Transmission 接入；多下载器实例；按「分类/标签含『大包』」监控任务完成事件；支持 qb 跳过校验等下载器特性</td></tr>
+    <tr><td><b>2. PT 站接入</b></td><td>需求 2</td><td>站点管理（必须配置密钥才启用）；按任务名/文件名搜索；超时+重试+搜索间隔可配置；多结果全方位比较；无结果时兜底分段搜索</td></tr>
+    <tr><td><b>3. 拆包辅种引擎</b></td><td>需求 1、2、3</td><td>大包解析 → 单元识别 → 搜索匹配 → 硬链接准备 → 添加辅种 → 状态确认；硬链接目录自动创建与文件名归一</td></tr>
+    <tr><td><b>4. 修复模块</b></td><td>需求 6</td><td>99% 卡死种子修复（三种模式可选）；缺图片/nfo 致辅种失败修复；失败任务重试与人工介入</td></tr>
+    <tr><td><b>5. 扩展辅种</b></td><td>需求 7、8</td><td>历史影片重新做种（用户配置扫描目录+文件类型）；电视剧剧集拆包重新做种（按季/集）</td></tr>
+    <tr><td><b>6. 系统能力</b></td><td>框架 1-6</td><td>任务中心、配置中心、调度、通知（Server酱/Telegram）、完整日志、界面化升级、数据兼容迁移</td></tr>
+  </table>
+
+  <h2>二、核心工作流（拆包辅种主链路）</h2>
+  <div class="card">
+    <div class="step"><div class="num">1</div><div class="body"><div class="t">监控触发</div><div class="d">轮询 qB/TR，命中 分类/标签含「大包」且任务完成 → 生成拆包任务（可手动触发/接口触发）</div></div></div>
+    <div class="step"><div class="num">2</div><div class="body"><div class="t">大包解析</div><div class="d">读取种子文件列表，按命名规则识别影片单元（片名/年份/分辨率/季集编号），单元化拆分</div></div></div>
+    <div class="step"><div class="num">3</div><div class="body"><div class="t">站点搜索</div><div class="d">对每个单元用完整名称搜索已选站点；无结果 → 兜底分段搜索；有结果 → 多维匹配</div></div></div>
+    <div class="step"><div class="num">4</div><div class="body"><div class="t">多维匹配</div><div class="d">大小 / 文件列表 / 命名 token / Info-hash（拉种后）/ IMDb 等多维评分；唯一命中 → 继续；多候选难判 → 人工确认队列；未命中 → 记录跳过</div></div></div>
+    <div class="step"><div class="num">5</div><div class="body"><div class="t">硬链接准备</div><div class="d">按候选种子文件结构自动建目录，从大包硬链接；文件名/路径不一致时重命名归一（硬链接改名不影响原种做种）；跨文件系统自动检测拦截</div></div></div>
+    <div class="step"><div class="num">6</div><div class="body"><div class="t">添加辅种</div><div class="d">qB：添加种子 + 跳过校验；TR：定位本地数据后校验（无跳过校验特性）</div></div></div>
+    <div class="step"><div class="num">7</div><div class="body"><div class="t">状态确认与修复</div><div class="d">100% 做种 → 完成 + 通知；卡 99% → 按用户选择模式修复（补 piece/仅文件级/人工引导）；缺图/nfo → 补齐或占位</div></div></div>
+  </div>
+
+  <h2>三、站点接入规划（新增 · 已核实）</h2>
+  <div class="card">
+    <p><b>分层架构：</b>拆包辅种引擎只依赖统一接口 <code>SiteAdapter</code>（<code>search(keywords)</code>、<code>fetch_torrent(id)</code>、鉴权封装），具体站点差异收敛到「引擎适配器」，新增站点 = 新增配置项或适配器，不动核心引擎。</p>
+    <table>
+      <tr><th>站点</th><th>接入方式</th><th>鉴权</th><th>状态</th></tr>
+      <tr><td>M-Team（馒头）</td><td>官方开放 API：api.m-team.cc / api.m-team.io，<code>/api/torrent/search</code>、genDlToken 等</td><td>API Key（x-api-key，控制台「实验室」生成）</td><td class="ok">首批 · 已核实</td></tr>
+      <tr><td>HDTime</td><td>NexusPHP 网页接口：torrents.php?search= + download.php</td><td>passkey（+可选 cookie）</td><td class="ok">首批 · 已核实</td></tr>
+      <tr><td>HHClub</td><td>疑似 NexusPHP 系，研发阶段确认后按实际引擎实现</td><td>待确认</td><td class="warn">首批 · 待确认</td></tr>
+      <tr><td>其他站点</td><td>Gazelle / UNIT3D / 官方 API / 其他 NexusPHP 变体</td><td>按引擎</td><td>后续迭代补全</td></tr>
+    </table>
+    <div class="note">每站点独立配置：超时、重试次数、搜索间隔（站点风控差异大）；所有自动化操作遵守各站规则，提供「允许自动化」站点级开关，默认保守。</div>
+  </div>
+
+  <h2>四、匹配算法维度（补全）</h2>
+  <div class="card">
+    <ol>
+      <li><b>Info-hash 精确比对</b>：下载候选 .torrent 后比对，同种即确定命中（最高权重）</li>
+      <li><b>总大小比对</b>：±1%~5% 容差可配置</li>
+      <li><b>文件列表比对</b>：文件数 + 文件名相似度（编辑距离/Jaccard）</li>
+      <li><b>命名解析 token</b>：片名、年份、分辨率(1080p/4K)、片源(BluRay/WEB-DL/REMUX)、编码(H.264/HEVC/x265)、音轨(Atmos/DTS-HD)、制作组、季/集编号</li>
+      <li><b>IMDb/豆瓣 ID</b>：详情页可取时比对</li>
+      <li><b>样本文件比对</b>（可选）：sample 时长/内容一致性</li>
+      <li><b>综合评分</b>：加权得分高于阈值自动命中；低于阈值进人工确认队列</li>
+    </ol>
+    <div class="note">兜底搜索：去除年份/分辨率/版本等关键词后按 token 组合重新搜索，必须设严格阈值防止误配。</div>
+  </div>
+
+  <h2>五、技术选型（已确认）</h2>
+  <table>
+    <tr><th>维度</th><th>Python 3.11 + FastAPI（已选）</th><th>Go（备选）</th><th>Java + Spring Boot（不推荐）</th></tr>
+    <tr><td>PT 生态贴合</td><td class="ok">★★★★★ qb/tr 官方 API 客户端成熟，IYUU/MoviePilot 均为 Python 系可参考</td><td>★★★ 需自写适配层</td><td>★★ 生态少</td></tr>
+    <tr><td>开发迭代速度</td><td class="ok">★★★★★</td><td>★★★★</td><td>★★</td></tr>
+    <tr><td>部署体积/内存</td><td>★★★☆ 镜像约 200-400MB</td><td class="ok">★★★★★ 单二进制</td><td>★★ JVM 重</td></tr>
+    <tr><td>NAS 社区接受度</td><td class="ok">★★★★★</td><td>★★★★</td><td>★</td></tr>
+    <tr><td>未来做 MoviePilot 插件</td><td class="ok">★★★★★ 平滑支持</td><td>★ 需独立进程</td><td class="bad">不支持</td></tr>
+  </table>
+  <div class="card">
+    <p><b>最终组合：</b>后端 Python 3.11 + FastAPI + SQLAlchemy(Alembic) + SQLite(WAL) + APScheduler；前端 Vue3 + Vite + Element Plus + Pinia + Axios + ECharts；单镜像（FastAPI 托管前端 dist）。</p>
+    <p><b>任务执行：</b>进程内 asyncio 任务队列 + 数据库持久化任务状态机（PENDING→SEARCHING→MATCHING→LINKING→ADDING→VERIFYING→SEEDING→DONE/FAILED/RETRY/PAUSED），重启可恢复。</p>
+    <p><b>单机部署：</b>不引入多用户/租户体系；界面仅内网访问口令保护。</p>
+  </div>
+
+  <h2>六、Docker 部署与升级兼容</h2>
+  <div class="card">
+    <ul>
+      <li><b>平台</b>：v1.0 出 linux/amd64；buildx 多阶段、平台参数化，arm64/armv7 预留后续构建</li>
+      <li><b>数据卷分离</b>：<code>/config</code>（配置+SQLite+日志）、<code>/data</code>（硬链接/媒体目录映射，需与下载器同一底层文件系统）</li>
+      <li><b>数据兼容</b>：schema 版本号与镜像版本绑定，启动前置迁移脚本（Alembic）；升级前自动备份 DB</li>
+      <li><b>界面一键升级（已确认需要）</b>：升级中心 → 检查新版本（GitHub Releases/镜像 tag）→ 界面点击 → 经可选挂载的 <code>docker.sock</code> 拉新镜像重建容器 → 健康检查通过后完成，失败自动回滚旧 tag</li>
+      <li><b>安全提示</b>：docker.sock 挂载为可选项，部署向导中明示风险并由用户确认</li>
+    </ul>
+  </div>
+
+  <h2>七、插件 vs 独立平台（已确认：独立平台为主）</h2>
+  <div class="card">
+    <ul>
+      <li>本期<b>不做</b> MoviePilot 插件；独立平台完整承载任务队列/调度/修复/通知/UI</li>
+      <li>预留集成位：下载器完成事件对外 webhook + 轻量 API，后续做 MP 插件时直接复用（Python 栈已保证可行性）</li>
+    </ul>
+  </div>
+
+  <h2>八、日志与界面设计</h2>
+  <div class="card">
+    <p><b>日志体系：</b>分级 DEBUG/INFO/WARN/ERROR；滚动轮转（按大小+时间）；每任务 trace_id 贯穿搜索/匹配/硬链接/添加全链路；界面日志查看器（级别/关键字/时间过滤、按任务关联）；支持导出。</p>
+    <p><b>界面页面清单：</b>①仪表盘（站点健康/下载器状态/今日任务/成功率/做种统计）②任务中心（列表+详情时间线+重试/取消/人工确认）③站点管理 ④下载器管理 ⑤规则配置（匹配阈值/硬链接策略/修复策略三选一/兜底策略）⑥历史辅种（扫描路径+文件类型配置）⑦系统设置（通知渠道 Server酱/Telegram、调度、升级中心）⑧日志页。中文本地化、响应式（NAS 手机端可用）、深色/浅色主题。</p>
+  </div>
+
+  <h2>九、数据模型要点</h2>
+  <table>
+    <tr><th>实体</th><th>关键字段</th></tr>
+    <tr><td>site 站点</td><td>名称、引擎类型(MTeamAPI/NexusPHP/Gazelle/UNIT3D)、base_url、密钥、搜索方式、超时、重试次数、搜索间隔、启用开关、允许自动化开关</td></tr>
+    <tr><td>downloader 下载器</td><td>类型(qb/tr)、地址、凭证、监控分类/标签、硬链接根目录、路径映射、跳过校验开关</td></tr>
+    <tr><td>unpack_task 拆包任务</td><td>源种子 hash、标题、单元列表、状态机、命中站点/种子、错误信息、trace_id</td></tr>
+    <tr><td>match_candidate</td><td>站点、种子 id、名称、大小、文件列表、各维度得分、证据明细</td></tr>
+    <tr><td>repair_job / history_job</td><td>修复（含策略模式）与历史辅种任务记录；history_job 含扫描根路径、文件类型过滤</td></tr>
+    <tr><td>setting</td><td>通知渠道配置（server酱/telegram）、调度、升级、访问口令</td></tr>
+  </table>
+
+  <h2>十、遗留事项（进入研发阶段处理）</h2>
+  <ol class="q">
+    <li>研发启动后提供：蜂巢 3.3T 大包样例（目录树/种子元数据/日志）、7 个失败样例归因分类</li>
+    <li>HHClub 引擎类型确认（大概率 NexusPHP 系）</li>
+    <li>99% 修复三种模式的具体判定边界（piece 对齐检测规则）在 M2/M4 细化</li>
+    <li>通知渠道扩展（飞书/企业微信/钉钉）列入后续迭代</li>
+    <li>arm64 镜像列入后续迭代</li>
+  </ol>
+
+  <h2>十一、建议里程碑（按确认基线调整）</h2>
+  <table>
+    <tr><th>阶段</th><th>内容</th><th>验收</th></tr>
+    <tr><td>M0 需求冻结+语料</td><td>基线 v0.2 冻结；用户提供样例语料；HHClub 引擎确认</td><td>测试语料就绪</td></tr>
+    <tr><td>M1 骨架</td><td>Docker(amd64) + FastAPI + Vue3 + SQLite + 下载器接入(qb/tr) + 基础日志</td><td>可连接下载器、可浏览任务</td></tr>
+    <tr><td>M2 主链路</td><td>监控 → 解析 → 搜索 → 匹配 → 硬链接 → 辅种（qb 优先）+ M-Team/HDTime 适配器</td><td>合成语料 + 真实语料端到端跑通</td></tr>
+    <tr><td>M3 增强</td><td>HHClub 适配、重试/节流、兜底搜索、TR 支持完善、人工确认队列、Server酱/Telegram 通知</td><td>7 个失败样例覆盖 3 类以上</td></tr>
+    <tr><td>M4 修复</td><td>99% 修复三种模式、缺图/nfo 修复、失败重试</td><td>失败样例回归通过</td></tr>
+    <tr><td>M5 扩展</td><td>历史影片重新做种（扫描配置）、剧集拆包</td><td>扫描+辅种闭环</td></tr>
+    <tr><td>M6 完善</td><td>UI 打磨、界面化升级中心、文档、发布 v1.0</td><td>可发布 v1.0（amd64）</td></tr>
+  </table>
+
+  <div class="footer">自动拆包辅种系统 · 需求基线 v0.2（已确认）· 2026-09-05 · 后续变更需评估影响并升版</div>
+</div>
+</body>
+</html>
