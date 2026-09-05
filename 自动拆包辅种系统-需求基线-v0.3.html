@@ -160,7 +160,7 @@
 
   <h2>七、任务状态、幂等与恢复</h2>
   <div class="card">
-    <p><b>主状态：</b><code>PENDING → ANALYZING → SEARCHING → MATCHING → PREFLIGHT → VERIFYING → LINKING → ADDING → CLIENT_VERIFYING → SEEDING → DONE</code>。</p>
+    <p><b>主状态：</b><code>PENDING → ANALYZING → SEARCHING → MATCHING → VERIFYING → PREFLIGHT → LINKING → ADDING → CLIENT_VERIFYING → SEEDING → DONE</code>。</p>
     <p><b>分支状态：</b><code>AWAITING_CONFIRMATION</code>、<code>PAUSED</code>、<code>RETRY</code>、<code>FAILED</code>、<code>CANCELLING</code>、<code>ROLLING_BACK</code>、<code>CANCELLED</code>。</p>
     <ul>
       <li>任务级幂等键覆盖源下载器、源 hash、处理单元和任务类型；候选执行级幂等键额外包含站点、候选种子 ID 和目标下载器。</li>

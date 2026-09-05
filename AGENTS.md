@@ -15,8 +15,10 @@ PackBreaker 是面向 PT 场景的自动拆包辅种系统。系统从 qBittorre
 当前处于需求确认与研发准备阶段。需求优先级如下：
 
 1. `自动拆包辅种系统-需求基线-v0.3.html` 是当前需求真源。
-2. `README.md` 提供项目概览，不替代需求基线。
-3. `自动拆包辅种系统-需求基线-v0.2.html` 仅供历史追溯。
+2. `docs/` 中的研发文档定义架构、接口、数据、安全与测试设计。
+3. 本文件定义代码、测试、凭证和交付规范。
+4. `README.md` 提供项目概览，不替代需求与研发设计。
+5. `自动拆包辅种系统-需求基线-v0.2.html` 仅供历史追溯。
 
 行为或范围发生变化时，先评估是否需要升级需求基线版本，再同步相关设计、测试和 README。
 
@@ -24,6 +26,7 @@ PackBreaker 是面向 PT 场景的自动拆包辅种系统。系统从 qBittorre
 
 - 后端：Python 3.11、FastAPI、SQLAlchemy、Alembic、SQLite WAL、APScheduler、asyncio 任务队列。
 - 前端：Vue 3、Vite、Element Plus、Pinia、Axios、ECharts。
+- 开发工具：uv、Ruff、mypy、pytest；Node.js 22、pnpm 10、TypeScript strict、Vitest、Playwright。
 - 部署：前后端单镜像，FastAPI 托管前端产物；v1.0 面向 `linux/amd64`。
 - 运行数据位于挂载目录，源码、运行数据、凭证和媒体文件必须分离。
 

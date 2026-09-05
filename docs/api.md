@@ -1,0 +1,210 @@
+# API 设计
+
+## 1. 基本约定
+
+- API 前缀：`/api/v1`。
+- 请求与响应：UTF-8 JSON；文件下载端点除外。
+- 标识符：UUID 字符串。
+- 时间：RFC 3339 UTC，例如 `2026-09-05T08:30:00Z`。
+- 枚举：使用领域文档中定义的大写稳定值。
+- 字段命名：JSON 使用 `snake_case`，TypeScript 客户端由 OpenAPI 生成或统一映射。
+- OpenAPI：`/api/openapi.json`；开发环境开放交互文档，生产环境仅管理员可访问。
+- 版本只在出现不兼容变更时升级；新增可选字段和端点保持 v1 兼容。
+
+成功响应直接返回资源或列表结构，不套无意义的 `data` 包装。列表统一返回：
+
+```json
+{
+  "items": [],
+  "next_cursor": null
+}
+```
+
+## 2. 错误格式
+
+错误使用 `application/problem+json`，结构遵循 RFC 9457 并扩展稳定错误码：
+
+```json
+{
+  "type": "https://packbreaker.dev/problems/path-mapping-invalid",
+  "title": "路径映射无效",
+  "status": 422,
+  "detail": "下载器路径无法映射到容器内允许目录",
+  "code": "PATH_MAPPING_INVALID",
+  "trace_id": "7aa9d6f7-61f3-4a75-a1ec-6210291163e1",
+  "errors": [
+    {"field": "path_mappings.0.container_path", "reason": "not_accessible"}
+  ]
+}
+```
+
+API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。错误详情经过脱敏，不返回堆栈、绝对源路径或第三方原始响应正文。
+
+## 3. 认证与会话
+
+### 3.1 管理界面
+
+- 首次启动且不存在管理员时，`POST /auth/setup` 设置单管理员口令；完成后该端点永久返回 409。
+- `POST /auth/login` 成功后设置 `HttpOnly`、`Secure`、`SameSite=Strict` 会话 Cookie。
+- 非 GET/HEAD 请求同时校验 CSRF Cookie 与 `X-CSRF-Token` 请求头。
+- `POST /auth/logout` 撤销当前会话；`GET /auth/me` 返回会话状态和权限，不返回口令信息。
+- 登录失败按来源和账号双维度限速，日志只记录脱敏来源与结果。
+
+### 3.2 自动化 API
+
+- 管理员可生成具备范围和过期时间的 API Token；创建响应只显示一次明文，数据库保存哈希。
+- 使用 `Authorization: Bearer <token>`；范围首版包含 `tasks:read`、`tasks:write`、`config:read`、`config:write`。
+- Webhook 不使用管理会话或 API Token，按第 8 节独立验签。
+
+## 4. 幂等、并发与分页
+
+- 创建任务、执行任务动作、创建历史扫描等副作用请求必须带 `Idempotency-Key`。
+- 服务端保存 key、调用方身份、请求摘要和响应结果；同 key 同请求返回原结果，同 key 不同请求返回 `409 IDEMPOTENCY_CONFLICT`。
+- 站点、下载器、规则等可编辑资源包含整数 `version`；更新和删除使用 `If-Match: "<version>"`，版本不一致返回 412。
+- 列表使用不透明 cursor，默认 50 条、最大 200 条；排序字段和 cursor 绑定，禁止混用。
+- 所有响应返回 `X-Trace-Id`；调用方可传 `X-Trace-Id`，格式非法时由服务端重新生成。
+
+## 5. 资源端点
+
+### 5.1 系统与认证
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/health/live` | 进程存活，不检查外部依赖 |
+| GET | `/health/ready` | 数据库、迁移和 worker 就绪状态 |
+| GET | `/system/status` | 版本、任务统计和脱敏依赖状态 |
+| POST | `/auth/setup` | 首次设置管理员口令 |
+| POST | `/auth/login` | 创建管理会话 |
+| POST | `/auth/logout` | 注销当前会话 |
+| GET | `/auth/me` | 当前会话信息 |
+| GET/POST/DELETE | `/api-tokens` | 管理自动化 Token；列表不返回明文 |
+
+### 5.2 站点
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/POST | `/sites` | 列表、创建站点 |
+| GET/PATCH/DELETE | `/sites/{site_id}` | 详情、局部更新、删除未被任务引用的站点 |
+| POST | `/sites/{site_id}/test` | 测试鉴权、搜索和取种能力，不持久化原始响应 |
+| GET | `/sites/{site_id}/health` | 最近状态、熔断和限流信息 |
+| POST | `/sites/{site_id}/actions` | `enable`、`disable`、`reset_circuit` |
+
+凭证字段为只写对象。读取时只返回 `credential_configured` 和 `credential_updated_at`；传 `null` 表示保持不变，显式 `clear_credential` 才能删除。
+
+### 5.3 下载器
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/POST | `/downloaders` | 列表、创建下载器 |
+| GET/PATCH/DELETE | `/downloaders/{downloader_id}` | 详情、更新、删除未被任务引用的下载器 |
+| POST | `/downloaders/{downloader_id}/test` | 测试版本、认证和能力 |
+| POST | `/downloaders/{downloader_id}/path-diagnostics` | 验证下载器路径到容器路径映射 |
+| GET | `/downloaders/{downloader_id}/tasks` | 只读查询下载器任务摘要 |
+| POST | `/downloaders/{downloader_id}/actions` | `enable`、`disable`、`refresh_capabilities` |
+
+路径诊断响应包含规则命中、容器可见性、设备 ID、文件类型、读写权限和硬链接可行性，不回显凭证。
+
+### 5.4 拆包任务
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/POST | `/tasks` | 筛选任务；手动创建任务 |
+| GET | `/tasks/{task_id}` | 任务摘要、当前状态、进度和错误 |
+| GET | `/tasks/{task_id}/timeline` | 状态事件和脱敏操作摘要 |
+| GET | `/tasks/{task_id}/units` | 处理单元与当前决策 |
+| GET | `/tasks/{task_id}/candidates` | 候选、评分、硬约束和验证状态 |
+| GET | `/tasks/{task_id}/preflight` | 最近一次不可变预演快照 |
+| POST | `/tasks/{task_id}/actions` | `pause`、`resume`、`retry`、`cancel`、`reconcile` |
+| POST | `/task-units/{unit_id}/decision` | 批准/拒绝候选或提交人工文件映射 |
+
+任务动作是异步的，成功接收返回 202 和 action ID。取消已进入下载器的任务时，请求必须带 `remove_downloader_task` 与 `rollback_created_resources` 明确选择；服务端在风险变化时返回 409 并要求刷新预演。
+
+### 5.5 历史扫描与修复
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/POST | `/history-jobs` | 列表、创建历史扫描 |
+| GET | `/history-jobs/{job_id}` | 游标、统计和错误 |
+| POST | `/history-jobs/{job_id}/actions` | `pause`、`resume`、`cancel`、`retry_failed` |
+| GET/POST | `/repair-jobs` | 列表、根据任务创建修复作业 |
+| GET | `/repair-jobs/{job_id}` | 受影响文件/piece、隔离计划和结果 |
+| POST | `/repair-jobs/{job_id}/actions` | `approve`、`cancel`、`retry` |
+
+### 5.6 设置、通知、日志与升级
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/PATCH | `/settings/{namespace}` | 匹配、调度、安全和保留策略 |
+| GET/POST | `/notification-channels` | 通知渠道列表与创建 |
+| POST | `/notification-channels/{id}/test` | 发送脱敏测试消息 |
+| GET | `/logs` | 按级别、时间、任务、trace_id 查询结构化日志 |
+| POST | `/diagnostics/export` | 生成有有效期的脱敏诊断包 |
+| GET | `/events/stream` | 管理界面使用的 SSE 状态流 |
+| GET | `/updates/check` | 查询可用版本及兼容信息 |
+| POST | `/updates/apply` | 显式确认后启动升级 |
+| GET | `/updates/{update_id}` | 升级、健康检查和回滚进度 |
+
+## 6. 核心资源形状
+
+### 6.1 任务摘要
+
+```json
+{
+  "id": "UUID",
+  "type": "PACKAGE_UNPACK",
+  "status": "PREFLIGHT",
+  "source": {
+    "downloader_id": "UUID",
+    "torrent_hash": "redacted-fingerprint",
+    "display_name": "Synthetic.Collection.2026"
+  },
+  "progress": {"completed_units": 2, "total_units": 10},
+  "requires_attention": true,
+  "trace_id": "UUID",
+  "version": 7,
+  "created_at": "2026-09-05T08:30:00Z",
+  "updated_at": "2026-09-05T08:35:00Z"
+}
+```
+
+### 6.2 预演快照
+
+预演必须包含：候选身份、评分证据、硬约束、验证等级、逐文件映射、目标路径、计划动作、预计下载字节、空间要求、冲突、风险和快照版本。批准请求必须引用预演 ID；源状态或候选元数据变化后旧预演失效。
+
+## 7. HTTP 状态语义
+
+- 200：同步读取或幂等重放已有结果。
+- 201：资源已创建。
+- 202：异步动作已接受。
+- 204：成功且无响应体。
+- 400：请求语法或不支持的组合。
+- 401/403：未认证/无范围权限。
+- 404：资源不存在或调用者不可见。
+- 409：状态、幂等或资源冲突。
+- 412：`If-Match` 版本不一致。
+- 422：字段有效但不满足领域约束。
+- 429：调用方或外部适配器限流。
+- 503：系统未就绪或关键依赖暂不可用，并返回 `Retry-After`。
+
+## 8. 下载完成 Webhook
+
+端点：`POST /api/v1/integrations/download-completed`。
+
+请求头：
+
+- `X-PackBreaker-Key-Id`：定位验签密钥，不是秘密。
+- `X-PackBreaker-Timestamp`：Unix 秒，默认允许前后 300 秒。
+- `X-PackBreaker-Nonce`：一次性随机值。
+- `Idempotency-Key`：调用事件唯一键。
+- `X-PackBreaker-Signature`：`sha256=<hex(HMAC(secret, canonical_request))>`。
+
+canonical request 固定为：方法、路径、时间戳、nonce、幂等键和原始 body SHA-256，以换行连接。服务端先限制 body 大小，再以常量时间比较签名，最后落库 nonce 与幂等记录。
+
+请求体只接收下载器 ID、torrent hash、事件时间和可选分类/标签提示；服务端必须回查下载器真实任务状态，不信任调用方提供的路径、完成率和文件列表。
+
+## 9. API 兼容与测试
+
+- OpenAPI 文件纳入版本控制；后端 CI 检测未声明的不兼容变化。
+- 前端类型从当前 OpenAPI 生成，禁止手写重复且可能漂移的资源类型。
+- 每个写端点覆盖认证、CSRF/Token 范围、幂等重放、并发冲突、无效状态和脱敏错误测试。
+- 适配器原始错误必须转换为稳定领域错误码，不能直接成为公共 API 契约。
