@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>自动拆包辅种系统 · 需求基线 v0.3</title>
+<style>
+  :root{
+    --text:#1A1B1C; --text2:#6B7280; --bg:#F4F3EE; --card:#FFFFFF;
+    --border:#E4E3DD; --accent:#94D4D0; --accent-deep:#3E8E86;
+    --green:#52C41A; --amber:#FAAD14; --red:#EA6668;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Roboto','PingFang SC','Segoe UI','Microsoft YaHei',Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.7;font-size:15px;}
+  .wrap{max-width:920px;margin:0 auto;padding:32px 20px 64px;}
+  .cover{background:linear-gradient(135deg,#e8f6f5,#d6eef2);border:1px solid var(--border);border-radius:16px;padding:32px 28px;margin-bottom:28px;}
+  .cover .tag{display:inline-block;background:var(--accent-deep);color:#fff;font-size:12px;padding:2px 12px;border-radius:20px;margin-bottom:12px;}
+  .cover .tag.gray{background:#6B7280;margin-left:8px;}
+  .cover h1{font-size:26px;font-weight:700;letter-spacing:1px;}
+  .cover .sub{color:var(--text2);font-size:14px;margin-top:10px;max-width:780px;}
+  h2{font-size:19px;font-weight:600;margin:36px 0 14px;padding-left:12px;border-left:4px solid var(--accent-deep);}
+  h3{font-size:15.5px;font-weight:600;margin:18px 0 8px;}
+  p{margin:6px 0;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:12px 0;}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px;background:var(--card);border-radius:8px;overflow:hidden;}
+  th{background:#eef3f2;color:var(--text);font-weight:600;text-align:left;}
+  th,td{border:1px solid var(--border);padding:8px 10px;vertical-align:top;}
+  .ok{color:#389e0d;font-weight:600;} .warn{color:#d48806;font-weight:600;} .bad{color:#cf1322;font-weight:600;}
+  ul,ol{margin:6px 0 6px 22px;}
+  li{margin:3px 0;}
+  .step{display:flex;gap:12px;margin:8px 0;}
+  .step .num{flex:0 0 28px;height:28px;border-radius:50%;background:var(--accent-deep);color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;}
+  .step .body{flex:1;}
+  .step .t{font-weight:600;font-size:14px;}
+  .step .d{font-size:13px;color:var(--text2);}
+  .note{background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;padding:10px 14px;font-size:13px;color:#7a6a1f;margin:10px 0;}
+  .note.green{background:#f6ffed;border-color:#b7eb8f;color:#389e0d;}
+  .note.red{background:#fff2f0;border-color:#ffccc7;color:#a8071a;}
+  .footer{margin-top:48px;font-size:12px;color:var(--text2);text-align:center;border-top:1px solid var(--border);padding-top:16px;}
+  .q{font-size:13.5px;}
+  code{background:#eef3f2;border-radius:4px;padding:1px 6px;font-size:12.5px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="cover">
+    <span class="tag">项目需求基线 v0.3</span><span class="tag gray">安全增强版</span>
+    <h1>自动拆包辅种系统</h1>
+    <div class="sub">以“大包”下载任务为输入，自动识别单影片/单集单元，跨 PT 站搜索候选，在内容完整性验证通过后，通过硬链接安全复用已有数据完成多站辅种；覆盖预演、人工确认、失败恢复、历史辅种和剧集拆包。</div>
+  </div>
+
+  <h2>〇、v0.3 变更摘要（2026-09-05）</h2>
+  <table>
+    <tr><th style="width:130px;">变更项</th><th>相对 v0.2 的调整</th></tr>
+    <tr><td><b>辅种安全门</b></td><td>新增内容完整性验证等级；只有本地完整 piece 校验通过的任务才允许 qBittorrent 跳过校验。</td></tr>
+    <tr><td><b>源数据保护</b></td><td>源数据默认只读；硬链接目标需要修复写入时，必须先复制为独立 inode，禁止通过硬链接修改原始大包。</td></tr>
+    <tr><td><b>缺失文件处理</b></td><td>取消图片/NFO“占位”方案；只能复用字节完全一致的本地文件，或由下载器补齐对应 piece。</td></tr>
+    <tr><td><b>执行预演</b></td><td>在创建链接或添加下载器任务前生成执行计划，展示文件映射、验证等级、风险和预计下载量。</td></tr>
+    <tr><td><b>可靠性闭环</b></td><td>补充任务幂等、操作日志、失败回滚、取消语义、启动对账和应用创建资源的安全清理。</td></tr>
+    <tr><td><b>接入安全</b></td><td>补充凭证加密与脱敏、Webhook 签名防重放、站点限流/熔断/缓存及路径穿越防护。</td></tr>
+    <tr><td><b>协议兼容</b></td><td>明确 BitTorrent v1、v2、hybrid、padding 文件、零长度文件及跨文件边界 piece 的处理要求。</td></tr>
+  </table>
+  <div class="note green">v0.3 继承 v0.2 已确认范围，并将“零误辅种、源数据不可损坏、任务可恢复”提升为 v1.0 的强制验收目标。</div>
+
+  <h2>一、范围与产品原则</h2>
+  <div class="card">
+    <ul>
+      <li><b>形态</b>：本期为独立平台，不开发 MoviePilot 插件；预留下载完成事件 Webhook/API。</li>
+      <li><b>环境</b>：v1.0 面向 linux/amd64 单机自用场景；arm64、armv7 后续迭代。</li>
+      <li><b>下载器</b>：支持多个 qBittorrent / Transmission 实例，以分类或标签命中“大包”作为自动触发条件。</li>
+      <li><b>站点</b>：首批 M-Team、HDTime、HHClub；通过统一适配器逐步扩展其他站点。</li>
+      <li><b>安全默认值</b>：自动化、跳过校验、写入修复和 docker.sock 均采用显式启用；不满足安全门时自动阻断。</li>
+      <li><b>数据原则</b>：源任务数据只读；系统不得因匹配、硬链接、校验、修复或清理改变源文件内容。</li>
+    </ul>
+  </div>
+
+  <h2>二、功能模块</h2>
+  <table>
+    <tr><th style="width:145px;">模块</th><th>功能要点</th></tr>
+    <tr><td><b>1. 下载器管理</b></td><td>多实例接入、连接测试、路径映射诊断、完成任务监控、标签/分类规则、稳定期检测、下载器能力差异。</td></tr>
+    <tr><td><b>2. PT 站接入</b></td><td>统一 SiteAdapter、凭证管理、搜索与取种、超时重试、速率限制、缓存、熔断、健康状态和自动化开关。</td></tr>
+    <tr><td><b>3. 解析与匹配</b></td><td>大包单元识别、候选检索、文件映射、命名/媒体信息评分、torrent 元数据解析、内容完整性验证。</td></tr>
+    <tr><td><b>4. 安全执行</b></td><td>预演计划、人工确认、安全路径、硬链接创建、源数据写保护、添加下载器、安全门和结果确认。</td></tr>
+    <tr><td><b>5. 修复与恢复</b></td><td>99% 修复三种模式、缺失文件补齐、失败重试、幂等去重、取消回滚、启动对账和孤立资源清理。</td></tr>
+    <tr><td><b>6. 扩展辅种</b></td><td>历史目录扫描、文件类型与排除规则、增量/断点扫描、影片重新做种、电视剧按季/集拆包。</td></tr>
+    <tr><td><b>7. 系统能力</b></td><td>任务中心、配置中心、通知、审计日志、备份恢复、健康检查、界面升级和对外集成接口。</td></tr>
+  </table>
+
+  <h2>三、核心工作流</h2>
+  <div class="card">
+    <div class="step"><div class="num">1</div><div class="body"><div class="t">触发与去重</div><div class="d">轮询、手动或 Webhook 触发；按源下载器、源 hash 和处理类型生成幂等键，已有活跃/成功任务时不重复创建。</div></div></div>
+    <div class="step"><div class="num">2</div><div class="body"><div class="t">源任务就绪检查</div><div class="d">确认下载完成、非移动状态、文件大小与路径在稳定期内不再变化，并验证容器与下载器路径映射。</div></div></div>
+    <div class="step"><div class="num">3</div><div class="body"><div class="t">大包解析</div><div class="d">读取 torrent 文件列表与本地目录，识别片名、年份、版本、季集和媒体文件，将大包拆分为可独立匹配的单元。</div></div></div>
+    <div class="step"><div class="num">4</div><div class="body"><div class="t">站点搜索</div><div class="d">对每个单元搜索启用站点；无结果时按保守的 token 组合兜底搜索，使用站点级限流、缓存、重试和熔断。</div></div></div>
+    <div class="step"><div class="num">5</div><div class="body"><div class="t">候选匹配</div><div class="d">先用名称、ID、大小、版本和文件结构排序，再下载候选 torrent，建立本地源文件到候选路径的逐文件映射。</div></div></div>
+    <div class="step"><div class="num">6</div><div class="body"><div class="t">完整性验证</div><div class="d">按候选 torrent 的 piece 规则读取映射数据并校验；无法证明完整一致时标记为需要下载器完整校验或阻断。</div></div></div>
+    <div class="step"><div class="num">7</div><div class="body"><div class="t">预演与确认</div><div class="d">展示匹配证据、目标结构、冲突、验证等级、硬链接/复制动作、预计补齐量与风险；按规则自动批准或进入人工确认。</div></div></div>
+    <div class="step"><div class="num">8</div><div class="body"><div class="t">安全准备数据</div><div class="d">校验目标路径、挂载点、权限和可用空间，按候选结构创建目录和硬链接，并为每个资源登记所有权。</div></div></div>
+    <div class="step"><div class="num">9</div><div class="body"><div class="t">添加与校验</div><div class="d">qB 仅对 FULL_VERIFIED 任务允许跳过校验；其他任务以暂停状态添加后完整校验。TR 始终执行客户端校验。</div></div></div>
+    <div class="step"><div class="num">10</div><div class="body"><div class="t">确认、修复与收尾</div><div class="d">100% 做种后完成并通知；不完整时进入安全修复；失败或取消时根据操作日志回滚系统创建的资源，并保留诊断证据。</div></div></div>
+  </div>
+
+  <h2>四、内容验证与匹配规则</h2>
+  <div class="card">
+    <h3>4.1 两阶段匹配</h3>
+    <ol>
+      <li><b>候选排序</b>：片名、年份、IMDb/豆瓣 ID、季集、分辨率、片源、编码、音轨、制作组、总大小和文件名相似度。</li>
+      <li><b>硬约束</b>：候选 torrent 可解析、文件映射无歧义、目标路径安全、文件长度兼容；任一硬约束不满足不得自动执行。</li>
+      <li><b>内容验证</b>：使用候选 torrent 的 piece length、文件顺序和 piece hash 校验实际本地字节，正确处理跨文件边界 piece。</li>
+      <li><b>Info-hash</b>：相同 Info-hash 是强证据；跨站种子可能因 private/source 等字段产生不同 Info-hash，不能据此否定相同内容。</li>
+      <li><b>抽样验证</b>：只可用于候选排序和风险提示，不得作为跳过完整校验的依据。</li>
+    </ol>
+    <h3>4.2 验证等级</h3>
+    <table>
+      <tr><th style="width:190px;">等级</th><th>定义与后续动作</th></tr>
+      <tr><td class="ok">FULL_VERIFIED</td><td>所有候选 piece 均由本地映射数据验证通过；qB 可按配置跳过客户端校验。</td></tr>
+      <tr><td class="warn">CLIENT_CHECK_REQUIRED</td><td>文件映射可信但未完成全部本地 piece 校验；以暂停状态添加，由下载器完整校验后决定是否做种或补齐。</td></tr>
+      <tr><td class="bad">BLOCKED</td><td>存在缺失/歧义映射、不安全路径、跨文件系统限制或其他高风险；不得自动创建链接和添加任务。</td></tr>
+    </table>
+    <h3>4.3 Torrent 兼容</h3>
+    <p>解析器必须识别 BitTorrent v1、v2 与 hybrid torrent，正确处理 padding 文件、零长度文件、UTF-8/Unicode 路径、大小写敏感差异和多文件 torrent。暂不支持的格式进入人工队列，不得降级为未验证自动辅种。</p>
+  </div>
+
+  <h2>五、硬链接与修复安全</h2>
+  <div class="card">
+    <ul>
+      <li>目标目录严格复现候选 torrent 的安全相对路径；拒绝绝对路径、<code>..</code>、NUL 字符、越过目标根目录及文件/目录冲突。</li>
+      <li>创建硬链接前检查源与目标设备 ID、源文件类型、权限、空间和现有目标；跨文件系统时阻断，不静默复制整个媒体文件。</li>
+      <li>每个目录、链接、复制文件和下载器任务写入操作日志；清理功能只处理由本系统创建且仍符合登记信息的资源。</li>
+      <li>源数据默认只读。任何可能写入媒体文件的修复，必须先把目标硬链接复制并原子替换为独立 inode，再允许下载器写入。</li>
+      <li>缺失图片、NFO、字幕等只能复用内容完全一致的文件或下载对应 piece；禁止创建占位文件冒充完成。</li>
+      <li>piece 跨越多个文件时，修复前必须识别全部受影响文件；无法隔离所有硬链接写入风险时转人工处理。</li>
+    </ul>
+    <div class="note red">系统在任何自动流程中都不得写入、截断、重命名或删除源任务文件。源数据内容发生变化视为阻断发布的严重缺陷。</div>
+    <h3>99% 修复模式</h3>
+    <ol>
+      <li><b>自动 piece 修复</b>：仅在映射明确、影响范围可隔离时执行；先解除目标硬链接，再补齐并重校验。</li>
+      <li><b>仅文件级修复</b>：只处理缺失的独立文件或可安全复制的完整文件，不修改硬链接媒体。</li>
+      <li><b>人工引导</b>：生成缺失 piece、关联文件、来源路径和建议命令，等待用户确认。</li>
+    </ol>
+  </div>
+
+  <h2>六、站点与下载器适配</h2>
+  <div class="card">
+    <p><b>SiteAdapter 统一接口：</b><code>test_connection()</code>、<code>search(query)</code>、<code>fetch_details(id)</code>、<code>fetch_torrent(id)</code>、<code>capabilities()</code>。核心引擎不得依赖具体站点响应结构。</p>
+    <table>
+      <tr><th>站点</th><th>接入方式</th><th>鉴权</th><th>v1.0 状态</th></tr>
+      <tr><td>M-Team</td><td>官方开放 API：搜索、详情与下载令牌</td><td>API Key</td><td class="ok">首批，已核实</td></tr>
+      <tr><td>HDTime</td><td>NexusPHP 网页搜索与下载接口</td><td>passkey，可选 cookie</td><td class="ok">首批，已核实</td></tr>
+      <tr><td>HHClub</td><td>研发阶段确认引擎后实现</td><td>待确认</td><td class="warn">首批，待确认</td></tr>
+    </table>
+    <ul>
+      <li>每站独立配置超时、重试、并发和请求间隔；重试采用带抖动的指数退避，并识别限流响应。</li>
+      <li>搜索结果按站点和查询条件短期缓存；连续鉴权失败、限流或服务错误时熔断，并发送一次聚合通知。</li>
+      <li>站点必须同时启用“站点可用”和“允许自动化”才参与任务，默认关闭自动化。</li>
+      <li>下载器适配器统一提供连接测试、任务查询、文件列表、添加、校验、暂停、恢复与删除系统任务能力，并通过 capabilities 声明差异。</li>
+    </ul>
+  </div>
+
+  <h2>七、任务状态、幂等与恢复</h2>
+  <div class="card">
+    <p><b>主状态：</b><code>PENDING → ANALYZING → SEARCHING → MATCHING → PREFLIGHT → VERIFYING → LINKING → ADDING → CLIENT_VERIFYING → SEEDING → DONE</code>。</p>
+    <p><b>分支状态：</b><code>AWAITING_CONFIRMATION</code>、<code>PAUSED</code>、<code>RETRY</code>、<code>FAILED</code>、<code>CANCELLING</code>、<code>ROLLING_BACK</code>、<code>CANCELLED</code>。</p>
+    <ul>
+      <li>任务级幂等键覆盖源下载器、源 hash、处理单元和任务类型；候选执行级幂等键额外包含站点、候选种子 ID 和目标下载器。</li>
+      <li>每一步先记录意图，再执行外部动作，最后记录结果；重试前检查文件系统和下载器真实状态。</li>
+      <li>进程启动时执行对账：恢复可继续任务、确认已添加种子、补记已创建链接，并标记无法判定的任务等待人工处理。</li>
+      <li>重复触发、Webhook 重放和进程崩溃不得导致重复下载器任务、重复硬链接或状态倒退。</li>
+      <li>取消默认停止后续动作并回滚本系统创建的未使用资源；已开始做种的任务需二次确认后才从下载器移除。</li>
+    </ul>
+  </div>
+
+  <h2>八、技术选型与部署</h2>
+  <div class="card">
+    <p><b>后端：</b>Python 3.11 + FastAPI + SQLAlchemy + Alembic + SQLite(WAL) + APScheduler；进程内 asyncio 队列配合数据库状态机。</p>
+    <p><b>前端：</b>Vue 3 + Vite + Element Plus + Pinia + Axios + ECharts；FastAPI 托管前端 dist。</p>
+    <p><b>镜像：</b>buildx 多阶段单镜像，v1.0 发布 linux/amd64；<code>/config</code> 保存数据库、配置和日志，<code>/data</code> 映射媒体与硬链接目录。</p>
+    <ul>
+      <li>启动时运行 Alembic 迁移；升级前备份数据库并校验备份可读，健康检查失败时回滚旧镜像和数据库。</li>
+      <li>升级中心通过可选 docker.sock 拉取并重建容器；默认不挂载，部署界面明确其等同 Docker 管理权限。</li>
+      <li>提供数据库、非敏感配置和加密凭证的备份恢复；包含凭证的导出包必须再次加密。</li>
+      <li>健康检查区分存活、就绪、数据库可写、下载器连通和站点状态，外部依赖异常不应导致容器反复重启。</li>
+    </ul>
+  </div>
+
+  <h2>九、认证、凭证与外部接口</h2>
+  <div class="card">
+    <ul>
+      <li>界面采用单管理员访问口令；口令只保存强哈希，登录会话具备过期、注销、登录失败限速和 CSRF 防护。</li>
+      <li>站点、下载器和通知凭证必须加密落盘；主密钥来自环境变量或权限为 0600 的独立文件，不写入数据库和日志。</li>
+      <li>界面默认脱敏展示凭证；测试连接、异常堆栈、日志导出和通知内容不得包含 API Key、passkey、Cookie、Token 或密码。</li>
+      <li>下载完成 Webhook 使用 HMAC-SHA256 签名、时间戳、随机值与幂等键；拒绝过期请求、重复请求和签名失败请求。</li>
+      <li>轻量 API 覆盖任务创建、查询、取消和人工确认；所有写操作记录操作者、时间、参数摘要与 trace_id。</li>
+    </ul>
+  </div>
+
+  <h2>十、界面、日志与运维</h2>
+  <div class="card">
+    <p><b>页面：</b>仪表盘、任务中心、预演/人工确认、站点管理、下载器与路径诊断、规则配置、历史辅种、清理与对账、系统设置、升级中心、日志。</p>
+    <p><b>任务详情：</b>显示状态时间线、候选评分证据、逐文件映射、piece 验证进度、验证等级、操作资源、重试记录和失败原因；支持导出脱敏诊断包。</p>
+    <p><b>日志：</b>DEBUG/INFO/WARN/ERROR 分级和大小+时间轮转；trace_id 贯穿站点、匹配、文件系统和下载器操作；支持级别、关键字、时间与任务过滤。</p>
+    <p><b>通知：</b>v1.0 实现 Server酱与 Telegram；按任务聚合重复错误，通知包含结果摘要与任务链接，不包含敏感字段。</p>
+    <p><b>交互：</b>中文本地化、响应式布局、深浅主题；危险操作展示确切影响范围，并要求二次确认。</p>
+  </div>
+
+  <h2>十一、数据模型要点</h2>
+  <table>
+    <tr><th style="width:190px;">实体</th><th>关键字段与职责</th></tr>
+    <tr><td><b>site / downloader</b></td><td>类型、地址、加密凭证引用、能力集、路径映射、限流/重试/熔断参数、健康状态和启用开关。</td></tr>
+    <tr><td><b>unpack_task / task_unit</b></td><td>源身份、幂等键、状态、处理单元、检查点、重试计数、trace_id、错误分类和时间戳。</td></tr>
+    <tr><td><b>match_candidate</b></td><td>站点种子身份、名称、媒体 token、文件列表、各维度评分、硬约束结果和证据明细。</td></tr>
+    <tr><td><b>file_mapping</b></td><td>候选路径、源路径、长度、映射方式、歧义状态、设备/inode 快照和预期动作。</td></tr>
+    <tr><td><b>content_verification</b></td><td>Torrent 类型、piece 参数、已验证范围、失败 piece、验证等级、验证时间和算法版本。</td></tr>
+    <tr><td><b>operation_journal</b></td><td>外部动作意图、执行结果、创建资源、回滚状态、前后快照和关联任务。</td></tr>
+    <tr><td><b>repair_job / history_job</b></td><td>修复策略、隔离动作、扫描路径、文件类型、排除规则、游标和任务统计。</td></tr>
+    <tr><td><b>setting / secret</b></td><td>匹配、通知、调度、升级和访问配置；敏感值只以密文保存并支持密钥轮换。</td></tr>
+  </table>
+
+  <h2>十二、v1.0 验收标准</h2>
+  <table>
+    <tr><th style="width:165px;">场景</th><th>验收要求</th></tr>
+    <tr><td><b>误辅种防护</b></td><td>真实验收语料中自动执行误辅种为 0；任一 piece 不匹配时不得标记 FULL_VERIFIED 或跳过校验。</td></tr>
+    <tr><td><b>源数据保护</b></td><td>正确、错误和中断修复场景执行前后，所有源文件内容 hash 与 inode 均保持不变。</td></tr>
+    <tr><td><b>幂等</b></td><td>相同事件连续触发 10 次，只产生一个有效任务、一个目标资源集合和一个下载器任务。</td></tr>
+    <tr><td><b>崩溃恢复</b></td><td>在 LINKING、ADDING、CLIENT_VERIFYING 阶段强制终止进程，重启后能继续或进入可解释的人工状态，无重复副作用。</td></tr>
+    <tr><td><b>路径安全</b></td><td>跨文件系统、错误映射、路径穿越、权限不足和目标冲突均在外部写操作前阻断。</td></tr>
+    <tr><td><b>协议兼容</b></td><td>合成语料覆盖 v1、v2、hybrid、多文件、padding、零长度文件和跨文件 piece。</td></tr>
+    <tr><td><b>凭证安全</b></td><td>数据库、普通配置导出、日志、通知和诊断包中不出现可直接使用的明文凭证。</td></tr>
+    <tr><td><b>主链路</b></td><td>qBittorrent 与 Transmission 分别完成至少一条真实语料端到端辅种，并覆盖人工确认和失败回滚。</td></tr>
+  </table>
+
+  <h2>十三、遗留事项与后续能力</h2>
+  <div class="card">
+    <h3>研发启动前待提供/确认</h3>
+    <ol class="q">
+      <li>蜂巢 3.3T 大包目录树、脱敏 torrent 元数据和相关日志，以及 7 个失败样例的归因。</li>
+      <li>HHClub 的实际引擎、搜索接口、鉴权方式和自动化规则。</li>
+      <li>qBittorrent / Transmission 目标版本矩阵、当前 NAS 路径映射和文件系统类型。</li>
+      <li>基于真实语料标定自动匹配阈值；在此之前默认进入人工确认，不预设宽松阈值。</li>
+    </ol>
+    <h3>v1.0 以后</h3>
+    <ul>
+      <li>多本地来源拼装同一候选、人工确认规则沉淀、辅种配额/时间窗口和复用率优选。</li>
+      <li>MoviePilot 插件、飞书/企业微信/钉钉通知、arm64/armv7 镜像。</li>
+      <li>更多 NexusPHP 变体、Gazelle、UNIT3D 与站点官方 API 适配器。</li>
+    </ul>
+  </div>
+
+  <h2>十四、里程碑</h2>
+  <table>
+    <tr><th style="width:155px;">阶段</th><th>内容</th><th style="width:210px;">验收</th></tr>
+    <tr><td><b>M0 基线与语料</b></td><td>冻结 v0.3；提供真实语料；确认 HHClub、下载器版本、路径与文件系统。</td><td>语料脱敏、分类并可重复运行。</td></tr>
+    <tr><td><b>M1 安全骨架</b></td><td>Docker、FastAPI、Vue3、SQLite、迁移、认证、凭证保护、下载器连接和路径诊断。</td><td>可安全配置并通过路径/凭证测试。</td></tr>
+    <tr><td><b>M2 解析与预演</b></td><td>大包解析、M-Team/HDTime、torrent 兼容、候选评分、文件映射、验证引擎和预演页面。</td><td>合成与真实语料生成可解释执行计划。</td></tr>
+    <tr><td><b>M3 qB 主链路</b></td><td>安全硬链接、操作日志、qB 添加/校验、幂等、取消回滚、启动对账和通知。</td><td>qB 端到端通过且源文件保持不变。</td></tr>
+    <tr><td><b>M4 TR 与修复</b></td><td>Transmission、HHClub、站点熔断、99% 三种修复、缺失文件补齐和失败重试。</td><td>真实失败样例回归及崩溃恢复通过。</td></tr>
+    <tr><td><b>M5 扩展辅种</b></td><td>历史增量扫描、排除规则、断点续扫和电视剧按季/集拆包。</td><td>历史扫描与剧集辅种形成闭环。</td></tr>
+    <tr><td><b>M6 发布</b></td><td>清理/对账、备份恢复、升级回滚、UI 完善、文档和 linux/amd64 镜像。</td><td>全部 v1.0 验收项通过并发布。</td></tr>
+  </table>
+
+  <div class="footer">自动拆包辅种系统 · 需求基线 v0.3 · 2026-09-05 · 后续变更需评估影响并升级版本号</div>
+</div>
+</body>
+</html>
