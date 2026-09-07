@@ -73,6 +73,7 @@ secrets*.yaml
 *.mp4
 *.m2ts
 *.ts
+!frontend/**/*.ts
 *.iso
 *.avi
 *.mov

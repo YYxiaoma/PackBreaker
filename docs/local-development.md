@@ -2,7 +2,9 @@
 
 ## 1. 当前状态
 
-仓库目前只有需求与设计文档，尚未创建应用骨架。本文约定 M1 应采用的工具和命令；对应 manifest 与脚本建立后，命令必须在 CI 中实际执行，不能长期只作为文档示例。
+仓库已有 `frontend/` Vue 3 / TypeScript 交互原型与演示流程测试，后端骨架尚未创建。原型运行命令与覆盖边界见 [prototype.md](./prototype.md)。下文后端、数据库与全栈命令仍属于 M1 计划。
+
+当前已可执行：前端 `install`、`dev`、`lint`（Prettier 格式检查）、`typecheck`、`test`、`build` 与 `test:e2e`。浏览器检查要求本地 5173 开发服务已启动，默认使用已安装 Microsoft Edge；可设置 `PB_BROWSER=chrome` 使用 Chrome。原型未对外开放真实 API，因此尚无 OpenAPI 生成客户端；`src/demo.ts` 明确限定为合成演示模型，正式接入时用生成类型替代。
 
 ## 2. 开发环境
 
