@@ -67,7 +67,7 @@ flowchart LR
 - 实现唯一文件映射、流式 piece 验证、验证缓存和三种验证等级。
 - 实现预演快照、逐文件证据、人工选择与映射编辑页面。
 
-当前实现进度：已开始协议安全底座，受限 bencode 解码器、原始 `info` 字节区间保留、v1/v2/hybrid `TorrentMeta` 统一模型、Info-hash/metainfo digest、路径安全、重复字段/整数/资源上限和 hybrid 一致性阻断已进入代码与合成测试；piece 字节验证、候选评分、真实站点适配器与预演持久化仍未实现。
+当前实现进度：协议安全底座已包含受限 bencode 解码器、原始 `info` 字节区间保留、v1/v2/hybrid `TorrentMeta` 统一模型、Info-hash/metainfo digest、路径安全、重复字段/整数/资源上限和 hybrid 一致性阻断；v1 piece 验证已支持跨文件逻辑流、受限分块读取、虚拟 padding、MISSING/AMBIGUOUS 判定与源快照复查。v2 Merkle 验证、候选评分、真实站点适配器与预演持久化仍未实现。
 
 ### 退出条件
 

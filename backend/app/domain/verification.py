@@ -8,6 +8,49 @@ class VerificationLevel(StrEnum):
     BLOCKED = "BLOCKED"
 
 
+class FileMappingState(StrEnum):
+    MAPPED = "MAPPED"
+    MISSING = "MISSING"
+    AMBIGUOUS = "AMBIGUOUS"
+    PADDING = "PADDING"
+
+
+class PieceStatus(StrEnum):
+    VERIFIED = "VERIFIED"
+    MISMATCH = "MISMATCH"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclass(frozen=True, slots=True)
+class FileSnapshot:
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class FileMappingEvidence:
+    torrent_path: str
+    state: FileMappingState
+    source_path: str | None
+    snapshot: FileSnapshot | None
+
+
+@dataclass(frozen=True, slots=True)
+class PieceEvidence:
+    index: int
+    status: PieceStatus
+    covered_files: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class V1VerificationResult:
+    level: VerificationLevel
+    mappings: tuple[FileMappingEvidence, ...]
+    pieces: tuple[PieceEvidence, ...]
+
+
 class DownloaderKind(StrEnum):
     QBITTORRENT = "QBITTORRENT"
     TRANSMISSION = "TRANSMISSION"
