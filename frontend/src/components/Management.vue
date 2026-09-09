@@ -26,6 +26,7 @@ import {
 } from '@lucide/vue';
 import type { Task } from '../demo';
 import DownloaderManagement from './DownloaderManagement.vue';
+import ApiTokenManagement from './AutomationAccessManagement.vue';
 const props = defineProps<{ page: string; tasks: Task[] }>();
 const emit = defineEmits<{ export: [unknown, string]; open: [Task]; createHistory: [string] }>();
 interface Connection {
@@ -739,18 +740,19 @@ async function update() {
     </div>
     <div v-else-if="settingTab === '安全与集成'" class="settings-content">
       <el-alert
-        title="后端管理员认证、CSRF、API Token 与加密 secret store 已实现；本页的登录与 Token 管理界面仍待接入。"
-        type="info"
+        title="管理员会话、CSRF、API Token 与加密 secret store 已接入真实后端。API Token 明文只在创建时展示一次。"
+        type="success"
         :closable="false"
       />
       <h3 class="detail-section-title">管理员与访问</h3>
       <div class="setting-row">
         <div>
-          <b>单管理员访问口令</b>
-          <p>正式系统：强哈希、会话过期、CSRF 与登录限速</p>
+          <b>单管理员安全会话</b>
+          <p>Argon2id 强哈希 · 持久会话撤销 · CSRF · 登录双维度限速</p>
         </div>
-        <el-tag type="info">待后端实现</el-tag>
+        <el-tag type="success">已认证</el-tag>
       </div>
+      <ApiTokenManagement />
       <h3 class="detail-section-title">下载完成 Webhook</h3>
       <code class="code-block">POST /api/v1/integrations/download-completed</code>
       <div class="check-grid">
@@ -767,13 +769,6 @@ async function update() {
         </div>
       </div>
       <p class="muted">上方为计划契约，本原型未开放真实接口。</p>
-      <h3 class="detail-section-title">API Token 权限范围</h3>
-      <el-tag
-        v-for="s in ['tasks:read', 'tasks:write', 'config:read', 'config:write']"
-        :key="s"
-        class="scope-tag"
-        >{{ s }}</el-tag
-      >
     </div>
     <div v-else class="settings-content">
       <h3>备份与恢复</h3>

@@ -217,7 +217,7 @@ nav {
   color: var(--muted);
   font-size: 11px;
 }
-.profile > .dot {
+.profile > .icon-button {
   margin-left: auto;
 }
 .avatar {

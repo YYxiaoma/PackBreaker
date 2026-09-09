@@ -1,5 +1,7 @@
 import axios from 'axios';
 
+export const AUTH_REQUIRED_EVENT = 'packbreaker:auth-required';
+
 export interface ProblemDetails {
   type?: string;
   title?: string;
@@ -34,6 +36,24 @@ export const apiClient = axios.create({
 function isProblemDetails(value: unknown): value is ProblemDetails {
   return value !== null && typeof value === 'object';
 }
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error: unknown) => {
+    if (axios.isAxiosError(error)) {
+      const payload = error.response?.data;
+      if (
+        error.response?.status === 401 &&
+        isProblemDetails(payload) &&
+        payload.code === 'AUTH_REQUIRED' &&
+        typeof window !== 'undefined'
+      ) {
+        window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+      }
+    }
+    return Promise.reject(error);
+  },
+);
 
 export function toApiProblem(error: unknown): ApiProblem {
   if (axios.isAxiosError(error)) {

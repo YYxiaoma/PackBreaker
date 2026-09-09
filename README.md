@@ -19,9 +19,9 @@ PackBreaker 是一个面向 PT 场景的自动拆包辅种系统。它以“大�
 
 ## 项目状态
 
-项目当前已从交互原型阶段进入 M1 安全骨架研发：仓库包含可运行的前端交互原型，以及后端领域安全规则、启动配置、单实例执行锁、FastAPI 存活/就绪检查、SQLite WAL / SQLAlchemy 持久化、Alembic 迁移、任务/操作日志 repository、管理员首次初始化与持久会话/CSRF、API Token scope/过期/撤销、可信代理与安全响应头、AES-256-GCM secret store，以及下载器配置 CRUD、qBittorrent/Transmission 只读连接与能力探测、路径映射/硬链接可行性诊断。前端“下载器”页面已经通过 Axios + Pinia 接入这些真实配置 API，并使用 CSRF 与 `If-Match` 版本前置条件；当前下载器适配器仍不暴露添加、删除、暂停、恢复、校验等任务写操作，真实站点接入、生产文件创建/修复与辅种执行仍未实现。
+项目当前已从交互原型阶段进入 M1 安全骨架研发：仓库包含后端领域安全规则、启动配置、单实例执行锁、FastAPI 存活/就绪检查、SQLite WAL / SQLAlchemy 持久化、Alembic 迁移、任务/操作日志 repository、管理员首次初始化与持久会话/CSRF、API Token scope/过期/撤销、可信代理与安全响应头、AES-256-GCM secret store，以及下载器配置 CRUD、qBittorrent/Transmission 只读连接与能力探测、路径映射/硬链接可行性诊断。前端已通过 Axios + Pinia 接入管理员初始化/登录/退出、API Token 管理和下载器真实配置 API，写操作使用 CSRF 与 `If-Match`；OpenAPI schema 与生成 TypeScript 类型纳入仓库漂移检查。当前下载器适配器仍不暴露添加、删除、暂停、恢复、校验等任务写操作，真实站点接入、生产文件创建/修复与辅种执行仍未实现。
 
-界面遵循 `PackBreaker-01-浅色控制台.png` 的设计风格，包含任务中心、预演审核、历史扫描、站点、下载器、规则、对账、日志、设置与升级页面。除“下载器”管理已经接入本地 PackBreaker 后端外，其余业务页面目前仍使用合成示例；主题偏好保存在浏览器。
+界面遵循 `PackBreaker-01-浅色控制台.png` 的设计风格，包含任务中心、预演审核、历史扫描、站点、下载器、规则、对账、日志、设置与升级页面。管理员认证、API Token 与“下载器”管理已经接入本地 PackBreaker 后端；任务、站点、规则和多数运维页面目前仍使用合成示例，主题偏好保存在浏览器。
 
 ### 体验原型
 

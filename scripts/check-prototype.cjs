@@ -11,6 +11,12 @@ const path = require('node:path');
   page.on('pageerror',e=>errors.push(e.message));
   const output=path.resolve(__dirname,'../frontend/test-results');fs.mkdirSync(output,{recursive:true});
   try {
+    // 默认 E2E 不依赖真实后端，只固定一个已认证管理员会话；下载器真实 API 由 Vitest/后端契约测试覆盖。
+    await page.route('**/api/v1/auth/me',route=>route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({configured:true,authenticated:true,permissions:['admin'],expires_at:'2099-01-01T00:00:00Z'}),
+    }));
     await page.goto('http://127.0.0.1:5173/',{waitUntil:'networkidle'});
     await page.getByRole('heading',{name:'任务中心',exact:true}).waitFor();
     await page.screenshot({path:path.join(output,'desktop.png'),fullPage:true});

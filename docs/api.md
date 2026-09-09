@@ -47,7 +47,7 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 - 首次启动且不存在管理员时，`POST /auth/setup` 设置单管理员口令；完成后该端点永久返回 409。
 - `POST /auth/login` 成功后设置 `HttpOnly`、`SameSite=Strict` 会话 Cookie；有效 HTTPS 请求同时设置 `Secure`。独立 CSRF Cookie 可由前端读取，但数据库只保存两个随机 token 的摘要。
 - `setup`/`login` 属于认证前入口；其余由管理会话保护的非 GET/HEAD 请求同时校验 CSRF Cookie 与 `X-CSRF-Token` 请求头。
-- `POST /auth/logout` 在 CSRF 校验后持久化撤销当前会话；`GET /auth/me` 返回会话状态和权限，不返回口令信息。会话明文 token 不入库。
+- `POST /auth/logout` 在 CSRF 校验后持久化撤销当前会话；`GET /auth/me` 返回 `configured`、当前会话状态和权限，使前端可区分“尚未初始化管理员”与“已初始化但未登录”，不返回口令信息。会话明文 token 不入库。
 - 登录失败按来源摘要和单管理员账号双维度限速，不记录口令。
 
 ### 3.2 自动化 API
@@ -78,7 +78,7 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 | POST | `/auth/setup` | 首次设置管理员口令 |
 | POST | `/auth/login` | 创建管理会话 |
 | POST | `/auth/logout` | 注销当前会话 |
-| GET | `/auth/me` | 当前会话信息 |
+| GET | `/auth/me` | 管理员是否已初始化、当前会话与权限信息 |
 | GET/POST/DELETE | `/api-tokens` | 管理自动化 Token；列表不返回明文 |
 
 ### 5.2 站点

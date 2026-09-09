@@ -1,7 +1,7 @@
+from datetime import datetime
 from time import time
 
 from fastapi import APIRouter, Cookie, Header, Request, Response, status
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr
 
 from backend.app.api.dependencies import (
@@ -19,25 +19,35 @@ class PasswordRequest(BaseModel):
     password: SecretStr = Field(min_length=12, max_length=256)
 
 
+class SetupResponse(BaseModel):
+    configured: bool
+
+
+class LoginResponse(BaseModel):
+    authenticated: bool
+    expires_at: datetime
+
+
+class AuthStatusResponse(BaseModel):
+    configured: bool
+    authenticated: bool
+    permissions: list[str]
+    expires_at: datetime | None = None
+
+
 @router.post("/auth/setup", status_code=status.HTTP_201_CREATED)
-async def setup(request: Request, payload: PasswordRequest) -> dict[str, bool]:
+async def setup(request: Request, payload: PasswordRequest) -> SetupResponse:
     auth_service(request).setup(payload.password.get_secret_value())
-    return {"configured": True}
+    return SetupResponse(configured=True)
 
 
 @router.post("/auth/login")
-async def login(request: Request, payload: PasswordRequest) -> JSONResponse:
+async def login(request: Request, response: Response, payload: PasswordRequest) -> LoginResponse:
     result = auth_service(request).login(
         password=payload.password.get_secret_value(),
         source=client_source(request),
     )
     secure = effective_scheme(request) == "https"
-    response = JSONResponse(
-        {
-            "authenticated": True,
-            "expires_at": result.expires_at.isoformat().replace("+00:00", "Z"),
-        }
-    )
     max_age = max(1, int(result.expires_at.timestamp() - time()))
     response.set_cookie(
         SESSION_COOKIE,
@@ -57,15 +67,21 @@ async def login(request: Request, payload: PasswordRequest) -> JSONResponse:
         samesite="strict",
         path="/",
     )
-    return response
+    return LoginResponse(authenticated=True, expires_at=result.expires_at)
 
 
 @router.get("/auth/me")
 async def me(
     request: Request,
     session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
-) -> dict[str, object]:
-    return auth_service(request).me(session_token)
+) -> AuthStatusResponse:
+    current = auth_service(request).me(session_token)
+    return AuthStatusResponse(
+        configured=current.configured,
+        authenticated=current.authenticated,
+        permissions=list(current.permissions),
+        expires_at=current.expires_at,
+    )
 
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)

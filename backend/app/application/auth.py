@@ -34,6 +34,14 @@ class AuthIdentity:
     expires_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class AuthStatus:
+    configured: bool
+    authenticated: bool
+    permissions: tuple[str, ...]
+    expires_at: datetime | None = None
+
+
 class AuthError(ApplicationError):
     pass
 
@@ -152,17 +160,17 @@ class AuthService:
         self._rate_limiter.clear_success(source)
         return AuthSessionResult(token=token, csrf_token=csrf_token, expires_at=expires_at)
 
-    def me(self, token: str | None) -> dict[str, object]:
-        if token is None:
-            return {"authenticated": False, "permissions": []}
-        identity = self._identity(token)
-        if identity is None:
-            return {"authenticated": False, "permissions": []}
-        return {
-            "authenticated": True,
-            "permissions": ["admin"],
-            "expires_at": identity.expires_at.isoformat().replace("+00:00", "Z"),
-        }
+    def me(self, token: str | None) -> AuthStatus:
+        with self._session_factory() as session:
+            configured = AdministratorRepository(session).get() is not None
+            if token is None:
+                return AuthStatus(configured, False, ())
+            stored = AdminSessionRepository(session).find_active(
+                token_digest(token), datetime.now(UTC)
+            )
+            if stored is None:
+                return AuthStatus(configured, False, ())
+            return AuthStatus(configured, True, ("admin",), stored.expires_at)
 
     def require_session(self, token: str | None) -> AuthIdentity:
         if token is None:

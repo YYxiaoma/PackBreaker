@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   Box,
   LayoutDashboard,
@@ -32,6 +32,7 @@ import {
   X,
   Check,
   MoreHorizontal,
+  LogOut,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
@@ -45,6 +46,21 @@ import {
 } from './demo';
 import TaskDetail from './components/TaskDetail.vue';
 import Management from './components/Management.vue';
+import AuthGate from './components/AuthGate.vue';
+import { AUTH_REQUIRED_EVENT } from './api/client';
+import { useAuthStore } from './stores/auth';
+
+const auth = useAuthStore();
+
+function handleAuthRequired(): void {
+  auth.markUnauthenticated();
+}
+
+onMounted(() => {
+  window.addEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
+  void auth.bootstrap();
+});
+onUnmounted(() => window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired));
 
 const nav = [
   { name: '总览', icon: LayoutDashboard },
@@ -199,6 +215,18 @@ function historyTask(name: string) {
   };
   createTask();
 }
+async function logout(): Promise<void> {
+  try {
+    await ElMessageBox.confirm('退出当前管理员会话？未保存的页面输入将丢失。', '退出登录', {
+      confirmButtonText: '退出登录',
+      cancelButtonText: '取消',
+      type: 'warning',
+    });
+    await auth.logout();
+    ElMessage.success('管理员会话已退出');
+  } catch {}
+}
+
 async function cancel(t: Task) {
   try {
     await ElMessageBox.confirm(
@@ -214,7 +242,8 @@ async function cancel(t: Task) {
 </script>
 
 <template>
-  <div class="app-shell">
+  <AuthGate v-if="auth.loading || !auth.authenticated" />
+  <div v-else class="app-shell">
     <div v-if="mobile" class="sidebar-mask" @click="mobile = false"></div>
     <aside class="sidebar" :class="{ visible: mobile }">
       <a class="brand" href="#任务中心" @click="route = '任务中心'"
@@ -236,9 +265,11 @@ async function cancel(t: Task) {
           <LayoutDashboard :size="18" />原型体验指南
         </button>
         <div class="profile">
-          <span class="avatar">YY</span>
-          <div><strong>YYxiaoma</strong><small>个人工作空间</small></div>
-          <span class="dot"></span>
+          <span class="avatar">A</span>
+          <div><strong>管理员</strong><small>本地安全会话</small></div>
+          <button class="icon-button" aria-label="退出登录" title="退出登录" @click="logout">
+            <LogOut :size="17" />
+          </button>
         </div>
       </div>
     </aside>
@@ -250,7 +281,7 @@ async function cancel(t: Task) {
           ><span>工作空间</span><ChevronRight :size="15" /><b>{{ route }}</b>
         </div>
         <div class="top-actions">
-          <span class="demo-tag">v0.1 · 交互原型</span
+          <span class="demo-tag">v0.1 · M1 开发</span
           ><button
             class="icon-button"
             :aria-label="dark ? '切换浅色主题' : '切换深色主题'"
@@ -290,8 +321,8 @@ async function cancel(t: Task) {
           </div>
         </div>
         <div class="demo-notice">
-          <span class="dot"></span>演示模式
-          <span>所有数据均为合成样例，操作仅影响本页；刷新恢复初始任务。</span
+          <span class="dot"></span>混合研发模式
+          <span>任务等页面仍为合成样例；下载器、管理员认证与 API Token 已接入真实后端。</span
           ><button @click="help = true">体验指南 <ArrowUpRight :size="13" /></button>
         </div>
         <template v-if="['任务中心', '预演与确认', '总览'].includes(route)">
@@ -650,7 +681,7 @@ async function cancel(t: Task) {
         </li>
       </ol>
       <el-alert
-        title="本轮已实现交互原型；真实认证、站点搜索、piece 验证、硬链接及运维操作待后续开发。请勿输入真实凭证。"
+        title="管理员认证、API Token 与下载器配置已接入真实后端；任务、站点搜索、piece 验证、生产硬链接及运维操作仍为演示或待开发能力。"
         type="info"
         :closable="false"
       /><template #footer

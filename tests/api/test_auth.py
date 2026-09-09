@@ -25,6 +25,30 @@ def _setup(client: TestClient) -> None:
     assert response.status_code == 201
 
 
+def test_auth_status_distinguishes_setup_from_logged_out(tmp_path: Path) -> None:
+    with TestClient(
+        create_app(settings=_settings(tmp_path)), base_url="https://testserver"
+    ) as client:
+        initial = client.get("/api/v1/auth/me")
+        assert initial.status_code == 200
+        assert initial.json() == {
+            "configured": False,
+            "authenticated": False,
+            "permissions": [],
+            "expires_at": None,
+        }
+
+        _setup(client)
+        configured = client.get("/api/v1/auth/me")
+        assert configured.status_code == 200
+        assert configured.json() == {
+            "configured": True,
+            "authenticated": False,
+            "permissions": [],
+            "expires_at": None,
+        }
+
+
 def test_setup_can_only_complete_once(tmp_path: Path) -> None:
     with TestClient(
         create_app(settings=_settings(tmp_path)), base_url="https://testserver"
@@ -71,6 +95,7 @@ def test_login_session_csrf_and_logout_flow(tmp_path: Path) -> None:
         me = client.get("/api/v1/auth/me")
         assert me.status_code == 200
         assert me.json()["authenticated"] is True
+        assert me.json()["configured"] is True
         assert me.json()["permissions"] == ["admin"]
 
         missing_csrf = client.post("/api/v1/auth/logout")
@@ -88,7 +113,9 @@ def test_login_session_csrf_and_logout_flow(tmp_path: Path) -> None:
             headers={"X-CSRF-Token": csrf_token},
         )
         assert logout.status_code == 204
-        assert client.get("/api/v1/auth/me").json()["authenticated"] is False
+        after_logout = client.get("/api/v1/auth/me").json()
+        assert after_logout["configured"] is True
+        assert after_logout["authenticated"] is False
 
 
 def test_revoked_session_stays_revoked_after_app_restart(tmp_path: Path) -> None:
