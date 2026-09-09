@@ -43,7 +43,7 @@ erDiagram
 
 | 实体 | 必要字段 | 约束 |
 | --- | --- | --- |
-| `unpack_task` | type、source_downloader_id、source_hash、idempotency_key、status、trace_id、checkpoint、error_code | idempotency_key 唯一；状态只能通过领域服务转换 |
+| `unpack_task` | type、source_downloader_id、source_hash、normalized_unit_key、idempotency_key、status、trace_id、checkpoint、error_code、version | idempotency_key 唯一；状态只能通过领域服务转换；version 用于乐观并发控制 |
 | `task_unit` | task_id、kind、display_name、parsed_tokens、source_files、status | 同一任务内稳定排序；解析结果保留算法版本 |
 | `match_candidate` | unit_id、site_id、remote_id、torrent_fingerprint、metadata、score、hard_gate_status、decision | `(unit_id,site_id,remote_id)` 唯一 |
 | `file_mapping` | candidate_id、candidate_path、source_path、length、mapping_type、status、device、inode | 候选路径唯一；保存执行前快照 |

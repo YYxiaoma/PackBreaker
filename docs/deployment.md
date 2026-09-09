@@ -124,6 +124,7 @@ flowchart LR
 - 镜像以 digest 固定；不能仅依赖可变 `latest`。
 - 升级开始后创建 update record，UI 即使重连也能恢复进度。
 - 新版本健康检查包含迁移版本、数据库读写、secret 解密和 worker 锁，不要求所有 PT 站在线。
+- M1 尚未启动真实任务 worker；当前 `/health/ready` 中的 `worker_slot` 表示同一 `/config` 的独占执行锁已取得。接入调度器/worker 后，该检查必须继续覆盖 worker 自身启动状态。
 - 如果新迁移不可被旧版本读取，必须通过升级前备份恢复，不能只切换旧镜像。
 - 无 docker.sock 时，界面生成明确的手动升级步骤并保持数据预检能力。
 

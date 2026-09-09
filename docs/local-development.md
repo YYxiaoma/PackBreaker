@@ -2,7 +2,7 @@
 
 ## 1. 当前状态
 
-仓库已有 `frontend/` Vue 3 / TypeScript 交互原型与演示流程测试，后端骨架尚未创建。原型运行命令与覆盖边界见 [prototype.md](./prototype.md)。下文后端、数据库与全栈命令仍属于 M1 计划。
+仓库已有 `frontend/` Vue 3 / TypeScript 交互原型与演示流程测试，并已开始建立 `backend/` M1 安全骨架。当前后端能力包含任务状态转换、幂等键、qB/TR 校验安全门、FastAPI 应用入口、`X-Trace-Id` 传播、启动配置、单实例锁、`/api/v1/health/live` 与 `/api/v1/health/ready`，以及 SQLite WAL、SQLAlchemy 核心模型、Alembic 初始迁移和任务/操作日志 repository。管理员认证、secret store、配置 API 和外部适配器仍属于后续 M1 工作。原型运行命令与覆盖边界见 [prototype.md](./prototype.md)。
 
 当前已可执行：前端 `install`、`dev`、`lint`（Prettier 格式检查）、`typecheck`、`test`、`build` 与 `test:e2e`。浏览器检查要求本地 5173 开发服务已启动，默认使用已安装 Microsoft Edge；可设置 `PB_BROWSER=chrome` 使用 Chrome。原型未对外开放真实 API，因此尚无 OpenAPI 生成客户端；`src/demo.ts` 明确限定为合成演示模型，正式接入时用生成类型替代。
 
@@ -56,7 +56,7 @@ PackBreaker/
 
 ## 4. 计划命令
 
-M1 创建统一入口，README 只展示稳定命令。底层计划命令如下：
+M1 使用根目录 `pyproject.toml` 作为 Python 工具入口；依赖锁文件将在可用的 Python 3.11 + uv 环境中生成。底层命令如下：
 
 ```bash
 # 后端
@@ -84,6 +84,7 @@ docker compose up --build
 优先级从高到低：测试显式覆盖 → 启动环境变量 → 数据库设置 → 代码安全默认值。
 
 - 环境变量只用于监听、目录、主密钥位置、日志级别等启动参数。
+- 启动配置由 `AppSettings` 校验，应用只读取进程环境，不自动读取 `.env`。
 - 站点、下载器和通知凭证通过 UI/API 写入 secret store，不进入 `.env`。
 - 仓库可提供 `.env.example`，但只能包含非敏感启动变量和说明；任何值不得指向真实内网服务。
 - 开发默认使用临时目录和 SQLite 临时数据库；不得复用生产 `/config` 或 `/data`。
@@ -109,7 +110,9 @@ docker compose up --build
 ## 8. 数据库变更
 
 ```bash
-# 计划命令，M1 建立 Alembic 后生效
+# 已建立 Alembic；使用专用开发数据库，避免误用生产数据
+mkdir -p runtime
+export PACKBREAKER_DATABASE_URL="sqlite+pysqlite:///./runtime/dev.db"
 uv run alembic revision --autogenerate -m "说明"
 uv run alembic upgrade head
 uv run alembic check

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "packbreaker"
+version = "0.1.0"
+description = "面向 PT 场景的自动拆包辅种系统"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = { file = "LICENSE" }
+dependencies = [
+  "alembic>=1.19.2,<2",
+  "fastapi>=0.141,<1",
+  "pydantic-settings>=2.15,<3",
+  "SQLAlchemy>=2.0.52,<2.1",
+  "uvicorn[standard]>=0.52,<1",
+]
+
+[dependency-groups]
+dev = [
+  "httpx2>=2.12,<3",
+  "mypy>=2.3,<3",
+  "pytest>=9.1,<10",
+  "pytest-asyncio>=1.4,<2",
+  "ruff>=0.16,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["backend", "tests"]
