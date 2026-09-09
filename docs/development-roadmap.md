@@ -67,7 +67,7 @@ flowchart LR
 - 实现唯一文件映射、流式 piece 验证、验证缓存和三种验证等级。
 - 实现预演快照、逐文件证据、人工选择与映射编辑页面。
 
-当前实现进度：协议安全底座已包含受限 bencode 解码器、原始 `info` 字节区间保留、v1/v2/hybrid `TorrentMeta` 统一模型、Info-hash/metainfo digest、路径安全、重复字段/整数/资源上限和 hybrid 一致性阻断；v1 piece 验证支持跨文件逻辑流、受限分块读取、虚拟 padding、MISSING/AMBIGUOUS 判定与源快照复查。v2 已按 BEP 52 校验 piece layer 到 pieces root，并支持 16 KiB 叶块的流式 Merkle 验证；hybrid 必须同时通过 v1/v2 且两轮映射快照一致。唯一文件映射已实现完整相对路径+长度、唯一 basename+长度、媒体 token+扩展名+长度三级确定性策略，源清单只读扫描不跟随符号链接；验证缓存键已绑定 metainfo digest、映射状态、device/inode/size/mtime/file type、算法版本和读取策略，命中前仍复查当前快照。媒体 token 规范化已区分年份、季集/范围集/EP/绝对集/Specials、分辨率、片源、编码、HDR、音轨和外部 ID；候选初始 100 分模型已保留维度证据、硬冲突、算法/配置版本且明确禁止由分数授予自动执行。真实站点适配器、真实语料阈值标定与预演持久化仍未实现。
+当前实现进度：协议安全底座已包含受限 bencode 解码器、原始 `info` 字节区间保留、v1/v2/hybrid `TorrentMeta` 统一模型、Info-hash/metainfo digest、路径安全、重复字段/整数/资源上限和 hybrid 一致性阻断；v1 piece 验证支持跨文件逻辑流、受限分块读取、虚拟 padding、MISSING/AMBIGUOUS 判定与源快照复查。v2 已按 BEP 52 校验 piece layer 到 pieces root，并支持 16 KiB 叶块的流式 Merkle 验证；hybrid 必须同时通过 v1/v2 且两轮映射快照一致。唯一文件映射已实现完整相对路径+长度、唯一 basename+长度、媒体 token+扩展名+长度三级确定性策略，源清单只读扫描不跟随符号链接；验证缓存键已绑定 metainfo digest、映射状态、device/inode/size/mtime/file type、算法版本和读取策略，命中前仍复查当前快照。媒体 token 规范化已区分年份、季集/范围集/EP/绝对集/Specials、分辨率、片源、编码、HDR、音轨和外部 ID；候选初始 100 分模型已保留维度证据、硬冲突、算法/配置版本且明确禁止由分数授予自动执行。文件型大包现在可按主媒体文件稳定识别 MOVIE/EPISODE task unit，忽略附件和未支持的光盘片段；站点无关 `SearchQuery` 支持关键词、媒体类型、季集、外部 ID、分页/排序并生成最多三条逐步放宽查询，`CandidateMeta/SearchPage/SiteSearchCapabilities` 已固定搜索结果契约且严格区分站点声明与安全解析后的 torrent 事实。真实 M-Team/HDTime 适配器、真实语料阈值标定与预演持久化仍未实现。
 
 ### 退出条件
 

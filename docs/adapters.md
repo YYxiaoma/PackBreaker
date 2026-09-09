@@ -46,7 +46,9 @@ class SiteAdapter(Protocol):
 - 是否需要先取下载令牌。
 - 建议最小请求间隔和已知限流语义。
 
-`SearchResult` 至少包含远程 ID、标题、大小、发布时间、类型、可用外部 ID 和可选文件摘要。站点未提供的字段为 `null`，不得猜测。
+领域层统一使用 `CandidateMeta` 承接搜索结果：至少包含站点稳定 ID、远程 torrent ID、标题，并可携带站点声明的大小、发布时间、分类、做种/下载人数、外部 ID 与可选文件摘要。站点未提供的字段为 `null`，不得猜测。`CandidateMeta` 中的文件摘要仍只是搜索/详情页声明；只有下载 `.torrent` 并通过安全 parser 后，文件路径、长度、piece 等字段才成为可用于内容验证的协议事实。
+
+`SearchQuery.query_text` 保持未 URL 编码；具体 adapter 根据站点契约编码参数。核心层最多生成少量、确定性的逐步放宽查询，不允许 adapter 自行把评分结果解释成自动执行许可。
 
 ### 3.3 首批实现
 
