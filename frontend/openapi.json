@@ -541,26 +541,21 @@
       },
       "SiteCreateRequest": {
         "properties": {
-          "api_key": {
-            "anyOf": [
-              {
-                "format": "password",
-                "maxLength": 512,
-                "minLength": 1,
-                "type": "string",
-                "writeOnly": true
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Api Key"
-          },
           "base_url": {
             "maxLength": 2048,
             "minLength": 1,
             "title": "Base Url",
             "type": "string"
+          },
+          "credential": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SiteCredentialInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "maxLength": 80,
@@ -580,9 +575,39 @@
         "title": "SiteCreateRequest",
         "type": "object"
       },
+      "SiteCredentialInput": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/SiteCredentialKind"
+          },
+          "value": {
+            "format": "password",
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "SiteCredentialInput",
+        "type": "object"
+      },
+      "SiteCredentialKind": {
+        "enum": [
+          "API_KEY",
+          "COOKIE"
+        ],
+        "title": "SiteCredentialKind",
+        "type": "string"
+      },
       "SiteKind": {
         "enum": [
-          "MTEAM"
+          "MTEAM",
+          "HDTIME"
         ],
         "title": "SiteKind",
         "type": "string"
@@ -605,21 +630,6 @@
       },
       "SitePatchRequest": {
         "properties": {
-          "api_key": {
-            "anyOf": [
-              {
-                "format": "password",
-                "maxLength": 512,
-                "minLength": 1,
-                "type": "string",
-                "writeOnly": true
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Api Key"
-          },
           "base_url": {
             "anyOf": [
               {
@@ -633,10 +643,20 @@
             ],
             "title": "Base Url"
           },
-          "clear_api_key": {
+          "clear_credential": {
             "default": false,
-            "title": "Clear Api Key",
+            "title": "Clear Credential",
             "type": "boolean"
+          },
+          "credential": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SiteCredentialInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "anyOf": [
@@ -696,10 +716,6 @@
       },
       "SiteViewResponse": {
         "properties": {
-          "api_key_configured": {
-            "title": "Api Key Configured",
-            "type": "boolean"
-          },
           "base_url": {
             "title": "Base Url",
             "type": "string"
@@ -716,6 +732,13 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "credential_configured": {
+            "title": "Credential Configured",
+            "type": "boolean"
+          },
+          "credential_kind": {
+            "$ref": "#/components/schemas/SiteCredentialKind"
           },
           "enabled": {
             "title": "Enabled",
@@ -759,7 +782,8 @@
           "name",
           "type",
           "base_url",
-          "api_key_configured",
+          "credential_kind",
+          "credential_configured",
           "capabilities",
           "connection_status",
           "enabled",

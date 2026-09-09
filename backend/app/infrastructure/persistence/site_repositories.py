@@ -17,13 +17,22 @@ class SiteRepository:
     def get(self, site_id: str) -> Site | None:
         return self._session.get(Site, site_id)
 
-    def create(self, *, name: str, kind: str, base_url: str, secret_id: str | None) -> Site:
+    def create(
+        self,
+        *,
+        name: str,
+        kind: str,
+        base_url: str,
+        credential_kind: str,
+        secret_id: str | None,
+    ) -> Site:
         now = utc_now()
         record = Site(
             id=new_uuid(),
             name=name,
             type=kind,
             base_url=base_url,
+            credential_kind=credential_kind,
             secret_id=secret_id,
             capabilities={},
             connection_status="UNTESTED",

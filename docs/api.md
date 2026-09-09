@@ -112,12 +112,12 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET/POST | `/sites` | 列表；创建站点配置，API Key 只写 |
+| GET/POST | `/sites` | 列表；创建站点配置，凭证只写 |
 | GET/PATCH/DELETE | `/sites/{site_id}` | 读取、并发安全修改或删除；写操作要求强 `If-Match` |
-| POST | `/sites/{site_id}/test` | 使用 SecretStore 中的 API Key 执行只读连接测试 |
+| POST | `/sites/{site_id}/test` | 使用 SecretStore 中的站点凭证执行只读连接测试 |
 | POST | `/sites/{site_id}/actions` | `enable`、`disable`、`refresh_capabilities` |
 
-站点响应永不返回 API Key 或 `secret_id`。修改 API origin/API Key 会清空旧 capability、重置连接状态并自动禁用；启用前必须已有 API Key 且最近一次连接测试成功。当前仅开放 `MTEAM` 配置类型。
+站点凭证统一为只写 `credential` 对象：`MTEAM` 要求 `API_KEY`，`HDTIME` 要求 `COOKIE`。读取只返回 `credential_kind` 与 `credential_configured`，永不返回凭证值或 `secret_id`；`clear_credential: true` 才会显式删除。修改站点地址、类型或凭证会清空旧 capability、重置连接状态并自动禁用；切换站点类型必须同时提交新类型的地址，旧凭证存在时还必须替换或清除，避免跨类型复用秘密。启用前必须已有对应类型凭证且最近一次只读连接测试成功。
 
 ### 5.5 拆包任务
 

@@ -14,7 +14,7 @@ from backend.app.api.dependencies import (
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import SiteUpdate, SiteView
 from backend.app.domain.auth import ApiScope
-from backend.app.domain.site_config import SiteKind, SiteProbeStatus
+from backend.app.domain.site_config import SiteCredentialKind, SiteKind, SiteProbeStatus
 
 router = APIRouter(tags=["sites"])
 CONFIG_READ_ACCESS = require_admin_or_scope(ApiScope.CONFIG_READ)
@@ -26,7 +26,8 @@ class SiteViewResponse(BaseModel):
     name: str
     type: SiteKind
     base_url: str
-    api_key_configured: bool
+    credential_kind: SiteCredentialKind
+    credential_configured: bool
     capabilities: dict[str, Any]
     connection_status: SiteProbeStatus
     enabled: bool
@@ -40,19 +41,24 @@ class SiteListResponse(BaseModel):
     items: list[SiteViewResponse]
 
 
+class SiteCredentialInput(BaseModel):
+    kind: SiteCredentialKind
+    value: SecretStr = Field(min_length=1, max_length=8192)
+
+
 class SiteCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     type: SiteKind
     base_url: str = Field(min_length=1, max_length=2048)
-    api_key: SecretStr | None = Field(default=None, min_length=1, max_length=512)
+    credential: SiteCredentialInput | None = None
 
 
 class SitePatchRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     type: SiteKind | None = None
     base_url: str | None = Field(default=None, min_length=1, max_length=2048)
-    api_key: SecretStr | None = Field(default=None, min_length=1, max_length=512)
-    clear_api_key: bool = False
+    credential: SiteCredentialInput | None = None
+    clear_credential: bool = False
 
 
 class SiteActionRequest(BaseModel):
@@ -70,7 +76,8 @@ def _view(record: SiteView) -> SiteViewResponse:
         name=record.name,
         type=record.type,
         base_url=record.base_url,
-        api_key_configured=record.api_key_configured,
+        credential_kind=record.credential_kind,
+        credential_configured=record.credential_configured,
         capabilities=record.capabilities,
         connection_status=record.connection_status,
         enabled=record.enabled,
@@ -141,7 +148,10 @@ async def create_site(
         name=payload.name,
         kind=payload.type,
         base_url=payload.base_url,
-        api_key=payload.api_key.get_secret_value() if payload.api_key is not None else None,
+        credential_kind=payload.credential.kind if payload.credential is not None else None,
+        credential=(
+            payload.credential.value.get_secret_value() if payload.credential is not None else None
+        ),
     )
     return _json_with_etag(created, status_code=status.HTTP_201_CREATED)
 
@@ -163,17 +173,17 @@ async def patch_site(
     _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
     if_match: Annotated[str | None, Header(alias="If-Match")] = None,
 ) -> JSONResponse:
-    if payload.clear_api_key and payload.api_key is not None:
+    if payload.clear_credential and payload.credential is not None:
         raise ApplicationError(
-            code="SITE_API_KEY_INVALID",
+            code="SITE_CREDENTIAL_INVALID",
             status=422,
-            title="站点 API Key 操作冲突",
-            detail="api_key 与 clear_api_key 不能同时使用",
+            title="站点凭证操作冲突",
+            detail="credential 与 clear_credential 不能同时使用",
         )
     action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
-    if payload.clear_api_key:
+    if payload.clear_credential:
         action = "CLEAR"
-    elif "api_key" in payload.model_fields_set and payload.api_key is not None:
+    elif "credential" in payload.model_fields_set and payload.credential is not None:
         action = "SET"
     updated = site_service(request).update(
         site_id,
@@ -182,8 +192,13 @@ async def patch_site(
             name=payload.name,
             type=payload.type,
             base_url=payload.base_url,
-            api_key_action=action,
-            api_key=payload.api_key.get_secret_value() if payload.api_key is not None else None,
+            credential_action=action,
+            credential_kind=payload.credential.kind if payload.credential is not None else None,
+            credential=(
+                payload.credential.value.get_secret_value()
+                if payload.credential is not None
+                else None
+            ),
         ),
     )
     return _json_with_etag(updated)

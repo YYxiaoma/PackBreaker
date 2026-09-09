@@ -10,12 +10,17 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretStore
-from backend.app.domain.site_config import SiteKind, SiteProbeStatus, normalize_site_base_url
+from backend.app.domain.site_config import (
+    SiteCredentialKind,
+    SiteKind,
+    SiteProbeStatus,
+    normalize_site_base_url,
+    normalize_site_credential,
+    required_site_credential_kind,
+)
 from backend.app.infrastructure.adapters.sites import SiteAdapterError, SiteAdapterFactory
 from backend.app.infrastructure.persistence.models import Site
 from backend.app.infrastructure.persistence.site_repositories import SiteRepository
-
-_API_KEY_SECRET_KIND = "SITE_API_KEY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +29,8 @@ class SiteView:
     name: str
     type: SiteKind
     base_url: str
-    api_key_configured: bool
+    credential_kind: SiteCredentialKind
+    credential_configured: bool
     capabilities: dict[str, Any]
     connection_status: SiteProbeStatus
     enabled: bool
@@ -39,8 +45,9 @@ class SiteUpdate:
     name: str | None = None
     type: SiteKind | None = None
     base_url: str | None = None
-    api_key_action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
-    api_key: str | None = None
+    credential_action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
+    credential_kind: SiteCredentialKind | None = None
+    credential: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +56,7 @@ class _SiteConnectionSnapshot:
     version: int
     type: SiteKind
     base_url: str
+    credential_kind: SiteCredentialKind
     secret_id: str | None
 
 
@@ -78,19 +86,27 @@ class SiteService:
         name: str,
         kind: SiteKind,
         base_url: str,
-        api_key: str | None,
+        credential_kind: SiteCredentialKind | None,
+        credential: str | None,
     ) -> SiteView:
         normalized_name = self._normalize_name(name)
         normalized_url = self._normalize_url(kind, base_url)
-        normalized_key = self._normalize_api_key(api_key) if api_key is not None else None
+        required_kind = required_site_credential_kind(kind)
+        normalized_credential: str | None = None
+        if credential is not None:
+            if credential_kind is not required_kind:
+                raise self._credential_kind_mismatch(required_kind)
+            normalized_credential = self._normalize_credential(required_kind, credential)
+        elif credential_kind is not None:
+            raise self._credential_invalid("凭证类型不能脱离凭证值单独提交")
         with self._session_factory() as session:
             secret_id = (
                 self._secret_store.put_in_session(
                     session,
-                    kind=_API_KEY_SECRET_KIND,
-                    value=normalized_key.encode(),
+                    kind=self._secret_kind(required_kind),
+                    value=normalized_credential.encode(),
                 )
-                if normalized_key is not None
+                if normalized_credential is not None
                 else None
             )
             try:
@@ -98,6 +114,7 @@ class SiteService:
                     name=normalized_name,
                     kind=kind.value,
                     base_url=normalized_url,
+                    credential_kind=required_kind.value,
                     secret_id=secret_id,
                 )
                 session.commit()
@@ -119,17 +136,29 @@ class SiteService:
             current = self._require_record(repository, site_id)
             current_kind = SiteKind(current.type)
             next_kind = update_request.type or current_kind
+            required_kind = required_site_credential_kind(next_kind)
+            if (
+                update_request.type is not None
+                and update_request.type is not current_kind
+                and update_request.base_url is None
+            ):
+                raise ApplicationError(
+                    code="SITE_BASE_URL_REPLACEMENT_REQUIRED",
+                    status=422,
+                    title="站点地址需要更新",
+                    detail="切换站点类型时必须同时提供新类型对应的站点地址",
+                )
             if (
                 update_request.type is not None
                 and update_request.type is not current_kind
                 and current.secret_id is not None
-                and update_request.api_key_action == "KEEP"
+                and update_request.credential_action == "KEEP"
             ):
                 raise ApplicationError(
-                    code="SITE_API_KEY_REPLACEMENT_REQUIRED",
+                    code="SITE_CREDENTIAL_REPLACEMENT_REQUIRED",
                     status=422,
-                    title="站点 API Key 需要更新",
-                    detail="切换站点类型时必须同时替换或清除现有 API Key",
+                    title="站点凭证需要更新",
+                    detail="切换站点类型时必须同时替换或清除现有凭证",
                 )
 
             values: dict[str, Any] = {}
@@ -140,22 +169,29 @@ class SiteService:
                 values["name"] = self._normalize_name(update_request.name)
             if update_request.type is not None:
                 values["type"] = next_kind.value
+                values["credential_kind"] = required_kind.value
             if update_request.base_url is not None:
                 values["base_url"] = self._normalize_url(next_kind, update_request.base_url)
 
             old_secret_id = current.secret_id
-            if update_request.api_key_action == "SET":
-                if update_request.api_key is None:
-                    raise self._api_key_invalid("新 API Key 不能为空")
-                normalized_key = self._normalize_api_key(update_request.api_key)
+            if update_request.credential_action == "SET":
+                if update_request.credential is None or update_request.credential_kind is None:
+                    raise self._credential_invalid("新凭证必须同时包含类型和值")
+                if update_request.credential_kind is not required_kind:
+                    raise self._credential_kind_mismatch(required_kind)
+                normalized_credential = self._normalize_credential(
+                    required_kind, update_request.credential
+                )
                 values["secret_id"] = self._secret_store.put_in_session(
                     session,
-                    kind=_API_KEY_SECRET_KIND,
-                    value=normalized_key.encode(),
+                    kind=self._secret_kind(required_kind),
+                    value=normalized_credential.encode(),
                 )
+                values["credential_kind"] = required_kind.value
                 connection_changed = True
-            elif update_request.api_key_action == "CLEAR":
+            elif update_request.credential_action == "CLEAR":
                 values["secret_id"] = None
+                values["credential_kind"] = required_kind.value
                 connection_changed = True
 
             if connection_changed:
@@ -177,7 +213,10 @@ class SiteService:
                 ):
                     session.rollback()
                     raise self._version_conflict()
-                if old_secret_id is not None and update_request.api_key_action in {"SET", "CLEAR"}:
+                if old_secret_id is not None and update_request.credential_action in {
+                    "SET",
+                    "CLEAR",
+                }:
                     self._secret_store.delete_in_session(session, old_secret_id)
                 session.commit()
             except IntegrityError as exc:
@@ -203,10 +242,10 @@ class SiteService:
             if enabled:
                 if current.secret_id is None:
                     raise ApplicationError(
-                        code="SITE_API_KEY_REQUIRED",
+                        code="SITE_CREDENTIAL_REQUIRED",
                         status=409,
-                        title="站点 API Key 未配置",
-                        detail="启用站点前必须绑定 API Key",
+                        title="站点凭证未配置",
+                        detail="启用站点前必须绑定对应类型的凭证",
                     )
                 if current.connection_status != SiteProbeStatus.OK.value:
                     raise ApplicationError(
@@ -233,16 +272,17 @@ class SiteService:
         snapshot = self._connection_snapshot(site_id)
         if snapshot.secret_id is None:
             raise ApplicationError(
-                code="SITE_API_KEY_REQUIRED",
+                code="SITE_CREDENTIAL_REQUIRED",
                 status=409,
-                title="站点 API Key 未配置",
-                detail="连接测试需要已配置的站点 API Key",
+                title="站点凭证未配置",
+                detail="连接测试需要已配置的站点凭证",
             )
-        api_key = self._secret_store.get(snapshot.secret_id).decode("utf-8")
+        credential = self._secret_store.get(snapshot.secret_id).decode("utf-8")
         adapter = self._adapter_factory.create(
             kind=snapshot.type,
             base_url=snapshot.base_url,
-            api_key=api_key,
+            credential_kind=snapshot.credential_kind,
+            credential=credential,
         )
         tested_at = datetime.now(UTC)
         try:
@@ -264,7 +304,7 @@ class SiteService:
                     ceil(exc.retry_after_seconds) if exc.retry_after_seconds is not None else None
                 ),
             ) from exc
-        expected_site_id = "mteam" if snapshot.type is SiteKind.MTEAM else ""
+        expected_site_id = self._expected_site_id(snapshot.type)
         if result.site_id != expected_site_id:
             raise ApplicationError(
                 code="SITE_IDENTITY_MISMATCH",
@@ -288,6 +328,7 @@ class SiteService:
                 current.version,
                 SiteKind(current.type),
                 current.base_url,
+                SiteCredentialKind(current.credential_kind),
                 current.secret_id,
             )
 
@@ -331,25 +372,50 @@ class SiteService:
             raise ApplicationError(
                 code="SITE_BASE_URL_INVALID",
                 status=422,
-                title="站点 API 地址无效",
+                title="站点地址无效",
                 detail=str(exc),
             ) from exc
 
     @classmethod
-    def _normalize_api_key(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized or len(normalized) > 512:
-            raise cls._api_key_invalid("API Key 不能为空且最长 512 个字符")
-        return normalized
+    def _normalize_credential(cls, kind: SiteCredentialKind, value: str) -> str:
+        try:
+            return normalize_site_credential(kind, value)
+        except ValueError as exc:
+            raise cls._credential_invalid(str(exc)) from exc
 
     @staticmethod
-    def _api_key_invalid(detail: str) -> ApplicationError:
+    def _credential_invalid(detail: str) -> ApplicationError:
         return ApplicationError(
-            code="SITE_API_KEY_INVALID",
+            code="SITE_CREDENTIAL_INVALID",
             status=422,
-            title="站点 API Key 无效",
+            title="站点凭证无效",
             detail=detail,
         )
+
+    @staticmethod
+    def _credential_kind_mismatch(required: SiteCredentialKind) -> ApplicationError:
+        return ApplicationError(
+            code="SITE_CREDENTIAL_KIND_MISMATCH",
+            status=422,
+            title="站点凭证类型不匹配",
+            detail=f"该站点类型要求使用 {required.value} 凭证",
+        )
+
+    @staticmethod
+    def _secret_kind(kind: SiteCredentialKind) -> str:
+        if kind is SiteCredentialKind.API_KEY:
+            return "SITE_API_KEY"
+        if kind is SiteCredentialKind.COOKIE:
+            return "SITE_COOKIE"
+        raise ValueError("未知站点凭证类型")
+
+    @staticmethod
+    def _expected_site_id(kind: SiteKind) -> str:
+        if kind is SiteKind.MTEAM:
+            return "mteam"
+        if kind is SiteKind.HDTIME:
+            return "hdtime"
+        raise ValueError("暂不支持该站点类型")
 
     @staticmethod
     def _name_conflict() -> ApplicationError:
@@ -388,7 +454,8 @@ class SiteService:
             name=record.name,
             type=SiteKind(record.type),
             base_url=record.base_url,
-            api_key_configured=record.secret_id is not None,
+            credential_kind=SiteCredentialKind(record.credential_kind),
+            credential_configured=record.secret_id is not None,
             capabilities=dict(record.capabilities),
             connection_status=SiteProbeStatus(record.connection_status),
             enabled=record.enabled,

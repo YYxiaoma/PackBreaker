@@ -15,7 +15,11 @@ from backend.app.domain.site_adapter import (
     TorrentDetails,
     TorrentPayload,
 )
-from backend.app.domain.site_config import SiteKind
+from backend.app.domain.site_config import (
+    SiteCredentialKind,
+    SiteKind,
+    required_site_credential_kind,
+)
 from backend.app.domain.site_search import (
     CandidateMeta,
     SearchMediaType,
@@ -24,6 +28,7 @@ from backend.app.domain.site_search import (
     SiteSearchCapabilities,
     normalize_candidate_meta,
 )
+from backend.app.infrastructure.adapters.nexusphp import HDTimeAdapter
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError as SiteAdapterError
 
 _MTEAM_SITE_ID = "mteam"
@@ -38,9 +43,20 @@ class SiteAdapterFactory:
     def __init__(self, *, transport: httpx2.AsyncBaseTransport | None = None) -> None:
         self._transport = transport
 
-    def create(self, *, kind: SiteKind, base_url: str, api_key: str) -> SiteAdapter:
+    def create(
+        self,
+        *,
+        kind: SiteKind,
+        base_url: str,
+        credential_kind: SiteCredentialKind,
+        credential: str,
+    ) -> SiteAdapter:
+        if credential_kind is not required_site_credential_kind(kind):
+            raise ValueError("站点类型与凭证类型不匹配")
         if kind is SiteKind.MTEAM:
-            return MTeamAdapter(api_key, base_url=base_url, transport=self._transport)
+            return MTeamAdapter(credential, base_url=base_url, transport=self._transport)
+        if kind is SiteKind.HDTIME:
+            return HDTimeAdapter(credential, base_url=base_url, transport=self._transport)
         raise ValueError("暂不支持该站点类型")
 
 

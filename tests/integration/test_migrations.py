@@ -2,7 +2,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from backend.app.infrastructure.persistence.database import sqlite_database_url
 
@@ -47,4 +47,35 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert {constraint["name"] for constraint in inspector.get_unique_constraints("site")} == {
         "uq_site_name"
     }
+    site_columns = {column["name"] for column in inspector.get_columns("site")}
+    assert "credential_kind" in site_columns
+    site_checks = {constraint["name"] for constraint in inspector.get_check_constraints("site")}
+    assert {"ck_site_type", "ck_site_credential_kind"}.issubset(site_checks)
+    engine.dispose()
+
+
+def test_site_credential_migration_backfills_existing_mteam_rows(tmp_path: Path) -> None:
+    database_path = tmp_path / "site-credential-migration.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database_path)
+    command.upgrade(config, "0005_sites")
+
+    engine = create_engine(sqlite_database_url(database_path))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO site "
+                "(id, name, type, base_url, secret_id, capabilities, connection_status, enabled, "
+                "version, last_test_at, created_at, updated_at) "
+                "VALUES ('site-1', 'legacy', 'MTEAM', 'https://api.m-team.cc', NULL, '{}', "
+                "'UNTESTED', 0, 1, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        credential_kind = connection.scalar(
+            text("SELECT credential_kind FROM site WHERE id = 'site-1'")
+        )
+    assert credential_kind == "API_KEY"
     engine.dispose()

@@ -6,7 +6,7 @@ from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.domain.operation import OperationStatus
-from backend.app.domain.site_config import SiteKind
+from backend.app.domain.site_config import SiteCredentialKind, SiteKind
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.persistence.base import Base
@@ -25,6 +25,7 @@ _TASK_STATUS_SQL = ", ".join(f"'{status.value}'" for status in TaskStatus)
 _OPERATION_STATUS_SQL = ", ".join(f"'{status.value}'" for status in OperationStatus)
 _DOWNLOADER_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in DownloaderKind)
 _SITE_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in SiteKind)
+_SITE_CREDENTIAL_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in SiteCredentialKind)
 
 
 class Administrator(Base):
@@ -114,6 +115,9 @@ class Site(Base):
     __tablename__ = "site"
     __table_args__ = (
         CheckConstraint(f"type IN ({_SITE_KIND_SQL})", name="type"),
+        CheckConstraint(
+            f"credential_kind IN ({_SITE_CREDENTIAL_KIND_SQL})", name="credential_kind"
+        ),
         Index("ix_site_type_enabled", "type", "enabled"),
     )
 
@@ -121,6 +125,7 @@ class Site(Base):
     name: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
     type: Mapped[str] = mapped_column(String(32), nullable=False)
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    credential_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     secret_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("secret.id", ondelete="SET NULL"), nullable=True
     )

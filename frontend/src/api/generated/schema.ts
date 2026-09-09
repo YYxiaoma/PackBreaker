@@ -533,19 +533,32 @@ export interface components {
     };
     /** SiteCreateRequest */
     SiteCreateRequest: {
-      /** Api Key */
-      api_key?: string | null;
       /** Base Url */
       base_url: string;
+      credential?: components['schemas']['SiteCredentialInput'] | null;
       /** Name */
       name: string;
       type: components['schemas']['SiteKind'];
     };
+    /** SiteCredentialInput */
+    SiteCredentialInput: {
+      kind: components['schemas']['SiteCredentialKind'];
+      /**
+       * Value
+       * Format: password
+       */
+      value: string;
+    };
+    /**
+     * SiteCredentialKind
+     * @enum {string}
+     */
+    SiteCredentialKind: 'API_KEY' | 'COOKIE';
     /**
      * SiteKind
      * @enum {string}
      */
-    SiteKind: 'MTEAM';
+    SiteKind: 'MTEAM' | 'HDTIME';
     /** SiteListResponse */
     SiteListResponse: {
       /** Items */
@@ -553,15 +566,14 @@ export interface components {
     };
     /** SitePatchRequest */
     SitePatchRequest: {
-      /** Api Key */
-      api_key?: string | null;
       /** Base Url */
       base_url?: string | null;
       /**
-       * Clear Api Key
+       * Clear Credential
        * @default false
        */
-      clear_api_key: boolean;
+      clear_credential: boolean;
+      credential?: components['schemas']['SiteCredentialInput'] | null;
       /** Name */
       name?: string | null;
       type?: components['schemas']['SiteKind'] | null;
@@ -585,8 +597,6 @@ export interface components {
     SiteProbeStatus: 'UNTESTED' | 'OK' | 'FAILED';
     /** SiteViewResponse */
     SiteViewResponse: {
-      /** Api Key Configured */
-      api_key_configured: boolean;
       /** Base Url */
       base_url: string;
       /** Capabilities */
@@ -599,6 +609,9 @@ export interface components {
        * Format: date-time
        */
       created_at: string;
+      /** Credential Configured */
+      credential_configured: boolean;
+      credential_kind: components['schemas']['SiteCredentialKind'];
       /** Enabled */
       enabled: boolean;
       /** Id */
