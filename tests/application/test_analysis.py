@@ -26,7 +26,10 @@ from backend.app.infrastructure.persistence.database import (
     create_session_factory,
     create_sqlite_engine,
 )
-from backend.app.infrastructure.persistence.models import PreflightSnapshotRecord
+from backend.app.infrastructure.persistence.models import (
+    PreflightSnapshotRecord,
+    TaskCandidateRecord,
+)
 from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
 
 
@@ -166,6 +169,7 @@ async def test_analysis_builds_stable_multi_site_preflight_and_persists_once(
         assert stored is not None
         assert stored.snapshot_digest == first.snapshot_digest
         assert stored.payload["snapshot_digest"] == first.snapshot_digest
+        assert session.scalar(select(func.count()).select_from(TaskCandidateRecord)) == 2
     engine.dispose()
 
 

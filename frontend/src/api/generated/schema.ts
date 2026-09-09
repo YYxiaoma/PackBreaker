@@ -340,6 +340,91 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/tasks/{task_id}/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Task Action */
+    post: operations['task_action_api_v1_tasks__task_id__actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/tasks/{task_id}/candidates': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Task Candidates */
+    get: operations['list_task_candidates_api_v1_tasks__task_id__candidates_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/tasks/{task_id}/preflight': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Task Preflight */
+    get: operations['get_task_preflight_api_v1_tasks__task_id__preflight_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/tasks/{task_id}/preflight/current': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Task Preflight Current */
+    get: operations['get_task_preflight_current_api_v1_tasks__task_id__preflight_current_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/tasks/{task_id}/units': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Task Units */
+    get: operations['list_task_units_api_v1_tasks__task_id__units_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -518,6 +603,35 @@ export interface components {
       /** Remote Prefix */
       remote_prefix: string;
     };
+    /** PreflightCurrentResponse */
+    PreflightCurrentResponse: {
+      /** Current */
+      current: boolean;
+      /** Snapshot Digest */
+      snapshot_digest: string;
+      /** Stale Reasons */
+      stale_reasons: string[];
+    };
+    /** PreflightResponse */
+    PreflightResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Current */
+      current: boolean;
+      /** Id */
+      id: string;
+      /** Payload */
+      payload: {
+        [key: string]: unknown;
+      };
+      /** Snapshot Digest */
+      snapshot_digest: string;
+      /** Stale Reasons */
+      stale_reasons: string[];
+    };
     /** SetupResponse */
     SetupResponse: {
       /** Configured */
@@ -628,6 +742,88 @@ export interface components {
       updated_at: string;
       /** Version */
       version: number;
+    };
+    /** TaskActionRequest */
+    TaskActionRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'analyze';
+      /** Source Root */
+      source_root: string;
+    };
+    /** TaskCandidateListResponse */
+    TaskCandidateListResponse: {
+      /** Items */
+      items: components['schemas']['TaskCandidateResponse'][];
+    };
+    /** TaskCandidateResponse */
+    TaskCandidateResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Display Name */
+      display_name: string;
+      /** Error Code */
+      error_code: string | null;
+      /** Evidence */
+      evidence: {
+        [key: string]: unknown;
+      };
+      /** Id */
+      id: string;
+      /** Metainfo Digest */
+      metainfo_digest: string | null;
+      /** Normalized Unit Key */
+      normalized_unit_key: string;
+      /** Rejected */
+      rejected: boolean;
+      /** Score */
+      score: number;
+      /** Selected For Verification */
+      selected_for_verification: boolean;
+      /** Site Id */
+      site_id: string;
+      /** Snapshot Id */
+      snapshot_id: string;
+      /** Torrent Id */
+      torrent_id: string;
+      /** Verification Level */
+      verification_level: string | null;
+    };
+    /** TaskUnitListResponse */
+    TaskUnitListResponse: {
+      /** Items */
+      items: components['schemas']['TaskUnitResponse'][];
+    };
+    /** TaskUnitResponse */
+    TaskUnitResponse: {
+      /** Descriptor */
+      descriptor: {
+        [key: string]: unknown;
+      };
+      /**
+       * Discovered At
+       * Format: date-time
+       */
+      discovered_at: string;
+      /** Id */
+      id: string;
+      /** Kind */
+      kind: string;
+      /** Length */
+      length: number;
+      /** Normalized Unit Key */
+      normalized_unit_key: string;
+      /** Source Inventory Digest */
+      source_inventory_digest: string;
+      /** Source Relative Path */
+      source_relative_path: string;
+      /** Source Root */
+      source_root: string;
     };
     /** ValidationError */
     ValidationError: {
@@ -1559,6 +1755,187 @@ export interface operations {
           'application/json': {
             [key: string]: unknown;
           };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  task_action_api_v1_tasks__task_id__actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PreflightResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_task_candidates_api_v1_tasks__task_id__candidates_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskCandidateListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_task_preflight_api_v1_tasks__task_id__preflight_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PreflightResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_task_preflight_current_api_v1_tasks__task_id__preflight_current_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PreflightCurrentResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_task_units_api_v1_tasks__task_id__units_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskUnitListResponse'];
         };
       };
       /** @description Validation Error */

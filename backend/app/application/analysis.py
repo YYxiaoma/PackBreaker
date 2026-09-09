@@ -27,6 +27,9 @@ from backend.app.infrastructure.persistence.preflight_repositories import (
     PreflightSnapshotRepository,
 )
 from backend.app.infrastructure.persistence.repositories import TaskRepository
+from backend.app.infrastructure.persistence.task_analysis_repositories import (
+    TaskCandidateRepository,
+)
 from backend.app.infrastructure.piece_verifier import (
     V1FileMapping,
     verify_hybrid,
@@ -78,9 +81,10 @@ class AnalysisService:
         task_id: str,
         unit: TaskUnit,
         source_root: Path,
+        source_inventory: tuple[SourceFileCandidate, ...] | None = None,
     ) -> PreflightSnapshot:
         task_version = self._task_version(task_id, unit.normalized_unit_key)
-        inventory = scan_source_inventory(source_root)
+        inventory = source_inventory or scan_source_inventory(source_root)
         inventory_digest = source_inventory_digest(inventory)
         bindings = self._site_service.enabled_adapters()
         if not bindings:
@@ -184,7 +188,11 @@ class AnalysisService:
                     title="任务发生变化",
                     detail="写入 preflight 前任务版本已变化",
                 )
-            PreflightSnapshotRepository(session).create_or_get(snapshot)
+            snapshot_record, _ = PreflightSnapshotRepository(session).create_or_get(snapshot)
+            TaskCandidateRepository(session).record_snapshot(
+                snapshot_record=snapshot_record,
+                snapshot=snapshot,
+            )
             session.commit()
         return snapshot
 

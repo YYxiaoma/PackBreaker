@@ -2,7 +2,16 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, Index, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.domain.operation import OperationStatus
@@ -192,6 +201,66 @@ class PreflightSnapshotRecord(Base):
     source_inventory_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskUnitRecord(Base):
+    __tablename__ = "task_unit"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "source_inventory_digest",
+            "normalized_unit_key",
+            name="uq_task_unit_task_inventory_key",
+        ),
+        Index("ix_task_unit_task_inventory", "task_id", "source_inventory_digest"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=False
+    )
+    normalized_unit_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_root: Mapped[str] = mapped_column(Text, nullable=False)
+    source_inventory_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    length: Mapped[int] = mapped_column(nullable=False)
+    descriptor: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    discovered_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskCandidateRecord(Base):
+    __tablename__ = "task_candidate"
+    __table_args__ = (
+        UniqueConstraint(
+            "preflight_snapshot_id",
+            "site_id",
+            "torrent_id",
+            name="uq_task_candidate_snapshot_site_torrent",
+        ),
+        Index("ix_task_candidate_task_created_at", "task_id", "created_at"),
+        Index("ix_task_candidate_snapshot_score", "preflight_snapshot_id", "score"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    preflight_snapshot_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("preflight_snapshot.id", ondelete="CASCADE"), nullable=False
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=False
+    )
+    normalized_unit_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    site_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    torrent_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    score: Mapped[float] = mapped_column(nullable=False)
+    rejected: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    selected_for_verification: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    verification_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    metainfo_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 

@@ -120,7 +120,7 @@ def _snapshot_payload(snapshot: PreflightSnapshot, *, include_digest: bool) -> d
             }
             for item in snapshot.sites
         ],
-        "candidates": [_candidate_payload(item) for item in snapshot.candidates],
+        "candidates": [candidate_evidence_to_payload(item) for item in snapshot.candidates],
         "created_at": snapshot.created_at.isoformat(),
     }
     if include_digest:
@@ -128,7 +128,7 @@ def _snapshot_payload(snapshot: PreflightSnapshot, *, include_digest: bool) -> d
     return payload
 
 
-def _candidate_payload(item: CandidatePreflightEvidence) -> dict[str, object]:
+def candidate_evidence_to_payload(item: CandidatePreflightEvidence) -> dict[str, object]:
     return {
         "site_id": item.site_id,
         "torrent_id": item.torrent_id,

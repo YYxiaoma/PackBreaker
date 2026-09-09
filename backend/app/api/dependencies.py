@@ -8,6 +8,7 @@ from backend.app.application.auth import AuthIdentity, AuthService
 from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.sites import SiteService
+from backend.app.application.tasks import TaskAnalysisService
 from backend.app.domain.auth import ApiScope
 
 SESSION_COOKIE = "packbreaker_session"
@@ -35,6 +36,10 @@ def downloader_service(request: Request) -> DownloaderService:
 
 def site_service(request: Request) -> SiteService:
     return cast(SiteService, request.app.state.site_service)
+
+
+def task_analysis_service(request: Request) -> TaskAnalysisService:
+    return cast(TaskAnalysisService, request.app.state.task_analysis_service)
 
 
 def client_source(request: Request) -> str:

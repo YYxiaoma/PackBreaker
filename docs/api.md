@@ -129,10 +129,11 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 | GET | `/tasks/{task_id}/units` | 处理单元与当前决策 |
 | GET | `/tasks/{task_id}/candidates` | 候选、评分、硬约束和验证状态 |
 | GET | `/tasks/{task_id}/preflight` | 最近一次不可变预演快照 |
-| POST | `/tasks/{task_id}/actions` | `pause`、`resume`、`retry`、`cancel`、`reconcile` |
+| GET | `/tasks/{task_id}/preflight/current` | 轻量判断最近预演是否仍匹配 task/source/site 输入 |
+| POST | `/tasks/{task_id}/actions` | M2 当前实现 `analyze`；后续扩展 `pause`、`resume`、`retry`、`cancel`、`reconcile` |
 | POST | `/task-units/{unit_id}/decision` | 批准/拒绝候选或提交人工文件映射 |
 
-任务动作是异步的，成功接收返回 202 和 action ID。取消已进入下载器的任务时，请求必须带 `remove_downloader_task` 与 `rollback_created_resources` 明确选择；服务端在风险变化时返回 409 并要求刷新预演。
+M2 的手动 `analyze` 当前同步执行，只接受相对于服务端 `/data` 的 `source_root`；绝对路径、`..`、Windows drive、反斜杠和任意符号链接路径都会拒绝。分析会持久化当前 inventory 下识别的 TaskUnit、最新 preflight 对应的 Candidate 证据和不可变 snapshot。`GET /preflight` 同时返回 `current` 与 `stale_reasons`；历史 snapshot 永不因过期而原位修改。后续通用任务动作仍按异步 202/action ID 设计；取消已进入下载器的任务时，请求必须带 `remove_downloader_task` 与 `rollback_created_resources` 明确选择。
 
 ### 5.5 历史扫描与修复
 
