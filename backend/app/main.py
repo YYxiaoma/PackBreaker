@@ -1,3 +1,5 @@
+import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
@@ -20,6 +22,8 @@ from backend.app.application.secrets import SecretStore
 from backend.app.config import AppSettings
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
 from backend.app.infrastructure.runtime import RuntimeManager
+
+_request_logger = logging.getLogger("packbreaker.http")
 
 
 def _trace_id(value: str | None) -> UUID:
@@ -120,6 +124,7 @@ def create_app(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
+        started_at = time.perf_counter()
         trace_id = _trace_id(request.headers.get("X-Trace-Id"))
         request.state.trace_id = str(trace_id)
         network = proxy_policy.resolve(
@@ -130,10 +135,39 @@ def create_app(
         )
         request.state.client_source = network.client_source
         request.state.effective_scheme = network.scheme
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            _request_logger.error(
+                "request.failed",
+                extra={
+                    "fields": {
+                        "trace_id": str(trace_id),
+                        "method": request.method,
+                        "path": request.url.path,
+                        "client_source": network.client_source,
+                        "duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
+                    }
+                },
+                exc_info=True,
+            )
+            raise
         response.headers["X-Trace-Id"] = str(trace_id)
         apply_security_headers(
             path=request.url.path, scheme=network.scheme, headers=response.headers
+        )
+        _request_logger.info(
+            "request.complete",
+            extra={
+                "fields": {
+                    "trace_id": str(trace_id),
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "client_source": network.client_source,
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
+                }
+            },
         )
         return response
 

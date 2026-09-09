@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Repository secret and large-file scan
+        run: python scripts/repository_scan.py
       - name: Install uv
         run: python -m pip install "uv==0.12.11"
       - name: Sync Python dependencies

@@ -55,7 +55,7 @@ flowchart LR
 - qB/TR fake adapter 通过基础契约；路径穿越和映射歧义被阻断。
 - 应用重启后配置、会话撤销状态和空任务队列保持一致。
 
-当前实现进度：后端下载器 CRUD、加密凭证绑定、qB/TR fake/read-only probe、路径映射与临时 hardlink 诊断已落地；前端已通过 Axios + Pinia 接入管理员首次初始化/登录/退出、API Token 管理，以及下载器 CRUD、连接测试、多映射诊断、启停、CSRF 与 `If-Match`。OpenAPI schema snapshot 与生成 TypeScript 类型已纳入漂移检查；`uv.lock`、Docker 三阶段单镜像、Compose、FastAPI 同源前端静态资源、统一 check/test 脚本和 GitHub Actions 质量/浏览器/容器 smoke 门禁也已落地。下载器响应模型仍待逐步从手写 view 类型收口为生成类型，M1 还需继续核对凭证 canary、重启一致性与完整退出清单。下载器任务写链路继续保留到 M3/M4。
+当前实现进度：后端下载器 CRUD、加密凭证绑定、qB/TR fake/read-only probe、路径映射与临时 hardlink 诊断已落地；前端已通过 Axios + Pinia 接入管理员首次初始化/登录/退出、API Token 管理，以及下载器 CRUD、连接测试、多映射诊断、启停、CSRF 与 `If-Match`。OpenAPI schema snapshot 与生成 TypeScript 类型已纳入漂移检查；`uv.lock`、Docker 三阶段单镜像、Compose、FastAPI 同源前端静态资源、统一 check/test 脚本和 GitHub Actions 质量/浏览器/容器 smoke 门禁也已落地。凭证 canary、结构化日志脱敏、仓库敏感信息/大文件扫描以及配置/会话撤销/空队列重启一致性均已有自动化证据，M1 代码门的逐项清单见 `docs/m1-exit-checklist.md`。正式里程碑切换仍受 M0 中真实语料、失败样例归因、HHClub 信息和真实下载器/NAS 版本矩阵约束；下载器任务写链路继续严格保留到 M3/M4。
 
 ## 4. M2：解析、匹配与预演
 

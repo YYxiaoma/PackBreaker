@@ -1,8 +1,10 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
 import httpx2
+from _pytest.logging import LogCaptureFixture
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -10,6 +12,7 @@ from sqlalchemy import select
 from backend.app.api.dependencies import CSRF_COOKIE
 from backend.app.config import AppSettings
 from backend.app.infrastructure.adapters.downloaders import DownloaderAdapterFactory
+from backend.app.infrastructure.app_logging import JsonLogFormatter
 from backend.app.infrastructure.persistence.models import Downloader, SecretRecord, UnpackTask
 from backend.app.main import create_app
 
@@ -125,6 +128,44 @@ def test_downloader_credential_is_encrypted_and_never_returned(tmp_path: Path) -
         assert cleared.json()["credential_configured"] is False
         with app.state.runtime.session_factory() as session:
             assert session.get(SecretRecord, secret_id) is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_downloader_canary_never_appears_in_logs_api_or_database(
+    tmp_path: Path, caplog: LogCaptureFixture
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    canary = "PACKBREAKER-CREDENTIAL-CANARY-logs-db-api-5b4f"
+    try:
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="packbreaker.http"):
+            created = _create_qb(
+                client,
+                data_root=app.state.settings.data_dir,
+                password=canary,
+            )
+
+            def handler(_request: httpx2.Request) -> httpx2.Response:
+                return httpx2.Response(200, text="Fails.")
+
+            app.state.downloader_service._adapter_factory = DownloaderAdapterFactory(  # noqa: SLF001
+                transport=httpx2.MockTransport(handler)
+            )
+            failure = client.post(
+                f"/api/v1/downloaders/{created['id']}/test",
+                headers=_csrf(client),
+            )
+
+        assert failure.status_code == 502
+        assert canary not in failure.text
+        rendered_logs = "\n".join(JsonLogFormatter().format(record) for record in caplog.records)
+        assert "request.complete" in rendered_logs
+        assert canary not in rendered_logs
+
+        for state_file in app.state.settings.config_dir.iterdir():
+            if state_file.is_file():
+                assert canary.encode() not in state_file.read_bytes()
     finally:
         client.__exit__(None, None, None)
 

@@ -115,13 +115,15 @@ M2 使用合成 1 万文件 torrent 和跨文件 piece 测试内存上界与流�
 
 ## 11. CI 门禁
 
-当前 GitHub Actions 每个 Pull Request 执行三条门禁：
+当前 GitHub Actions 每个 Pull Request 执行三条主门禁，并在 `quality` 最前执行独立仓库安全扫描：
 
 1. `quality`：Python 3.11 + `uv sync --frozen --all-groups`，运行统一静态检查、OpenAPI/生成类型漂移检查、pytest、Vitest 与 production build。
 2. `browser-e2e`：安装 Playwright bundled Chromium，启动本地 Vite；认证状态只使用合成 `/auth/me`，不需要真实后端或凭证。
 3. `container`：构建三阶段 runtime 镜像，以临时空 `/config`、`/data` 启动，验证 readiness、同源前端首页和镜像默认非 root 用户。
 
-仓库级敏感信息/大文件扫描仍需继续补成独立 CI 步骤；普通 CI 永不连接真实 PT 或下载器。任何安全不变量、迁移、契约、容器 smoke 或端到端测试失败都应阻止合并。
+`scripts/repository_scan.py` 扫描 Git 已跟踪文件以及未被 `.gitignore` 排除的工作区候选，阻断真实 `.torrent`、媒体、数据库/日志/密钥类制品、明显私钥/常见 Token 形态以及超过 5 MiB 的单个候选文件；该扫描也被 `scripts/check.py` 本地入口复用。普通 CI 永不连接真实 PT 或下载器。任何安全不变量、迁移、契约、仓库扫描、容器 smoke 或端到端测试失败都应阻止合并。
+
+M1 的逐项退出证据见 [`m1-exit-checklist.md`](./m1-exit-checklist.md)。
 
 ## 12. v1.0 验收清单
 
