@@ -21,6 +21,7 @@ import {
   type Task,
   type Level,
 } from '../demo';
+import TaskAnalysisPanel from './TaskAnalysisPanel.vue';
 const props = defineProps<{ task: Task }>();
 const emit = defineEmits<{ export: [unknown, string] }>();
 const tab = ref('计划'),
@@ -168,13 +169,24 @@ async function runRepair() {
   <div class="detail-tabs">
     <el-tabs v-model="tab"
       ><el-tab-pane
-        v-for="s in ['计划', '处理单元', '候选证据', '文件映射', '时间线与资源', '安全修复']"
+        v-for="s in [
+          '真实分析',
+          '计划',
+          '处理单元',
+          '候选证据',
+          '文件映射',
+          '时间线与资源',
+          '安全修复',
+        ]"
         :key="s"
         :name="s"
         :label="s"
     /></el-tabs>
   </div>
-  <template v-if="tab === '计划'">
+  <template v-if="tab === '真实分析'">
+    <TaskAnalysisPanel :suggested-task-id="task.id" />
+  </template>
+  <template v-else-if="tab === '计划'">
     <div class="detail-metrics">
       <div>
         <small>验证等级</small><b :class="blocked ? 'red' : 'green'">{{ levelNames[task.level] }}</b

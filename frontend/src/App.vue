@@ -322,7 +322,9 @@ async function cancel(t: Task) {
         </div>
         <div class="demo-notice">
           <span class="dot"></span>混合研发模式
-          <span>任务等页面仍为合成样例；下载器、管理员认证与 API Token 已接入真实后端。</span
+          <span
+            >任务列表仍为合成样例；任务详情中的「真实分析」、下载器、管理员认证与 API Token
+            已接入真实后端。</span
           ><button @click="help = true">体验指南 <ArrowUpRight :size="13" /></button>
         </div>
         <template v-if="['任务中心', '预演与确认', '总览'].includes(route)">
