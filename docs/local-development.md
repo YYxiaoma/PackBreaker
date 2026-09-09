@@ -2,9 +2,9 @@
 
 ## 1. 当前状态
 
-仓库已有 `frontend/` Vue 3 / TypeScript 交互原型与演示流程测试，并已开始建立 `backend/` M1 安全骨架。当前后端能力包含任务状态转换、幂等键、qB/TR 校验安全门、FastAPI 应用入口、`X-Trace-Id` 传播、启动配置、单实例锁、`/api/v1/health/live` 与 `/api/v1/health/ready`，SQLite WAL / SQLAlchemy / Alembic 持久化与任务/操作日志 repository，管理员首次初始化、Argon2id 口令哈希、持久会话、CSRF、API Token、可信代理、安全响应头、AES-256-GCM secret store，以及下载器 CRUD、qB/TR 只读连接探测和路径映射诊断。M1 的下载器适配器当前只允许连接/能力读取，不提供任何任务写方法；前端仍是合成原型，真实配置页面接 API、站点适配器与生产辅种执行属于后续工作。原型运行命令与覆盖边界见 [prototype.md](./prototype.md)。
+仓库已有 `frontend/` Vue 3 / TypeScript 交互界面与演示流程测试，并已开始建立 `backend/` M1 安全骨架。当前后端能力包含任务状态转换、幂等键、qB/TR 校验安全门、FastAPI 应用入口、`X-Trace-Id` 传播、启动配置、单实例锁、`/api/v1/health/live` 与 `/api/v1/health/ready`，SQLite WAL / SQLAlchemy / Alembic 持久化与任务/操作日志 repository，管理员首次初始化、Argon2id 口令哈希、持久会话、CSRF、API Token、可信代理、安全响应头、AES-256-GCM secret store，以及下载器 CRUD、qB/TR 只读连接探测和路径映射诊断。前端“下载器”页已用 Axios + Pinia 接入真实配置 API、CSRF 与 `If-Match` 并发控制；M1 的下载器适配器仍只允许连接/能力读取，不提供任何任务写方法。其他业务页面、站点适配器与生产辅种执行仍属于后续工作。界面覆盖边界见 [prototype.md](./prototype.md)。
 
-当前已可执行：前端 `install`、`dev`、`lint`（Prettier 格式检查）、`typecheck`、`test`、`build` 与 `test:e2e`。浏览器检查要求本地 5173 开发服务已启动，默认使用已安装 Microsoft Edge；可设置 `PB_BROWSER=chrome` 使用 Chrome。原型未对外开放真实 API，因此尚无 OpenAPI 生成客户端；`src/demo.ts` 明确限定为合成演示模型，正式接入时用生成类型替代。
+当前已可执行：前端 `install`、`dev`、`lint`（Prettier 格式检查）、`typecheck`、`test`、`build` 与 `test:e2e`。浏览器检查要求本地 5173 开发服务已启动，默认使用已安装 Microsoft Edge；可设置 `PB_BROWSER=chrome` 使用 Chrome。Vite 开发服务把 `/api` 代理到本机 8000 端口，生产部署则继续使用 FastAPI 同源入口。`src/demo.ts` 仍只服务合成任务页面；下载器切片已在 `src/api/` 建立手写 strict 类型薄封装，OpenAPI 生成客户端管线仍待后续 M1 收口。
 
 ## 2. 开发环境
 
@@ -106,6 +106,8 @@ docker compose up --build
 3. 凭证组件测试不回显、不进入 URL/store/console。
 4. 危险动作必须先展示服务器返回的最新影响范围，再提交确认。
 5. 组件测试通过后，用 Playwright 检查桌面和移动核心流程。
+
+本地调试真实下载器页面时，先启动 FastAPI 并通过认证端点建立管理员会话，再启动 Vite。浏览器始终请求同源 `/api/v1`，因此 CSRF Cookie/请求头语义与生产入口一致。只有用户主动点击“测试连接”或“运行真实诊断”时才会访问已配置下载器或服务端文件系统；默认 Vitest/pytest 不连接真实服务。
 
 ## 8. 数据库变更
 

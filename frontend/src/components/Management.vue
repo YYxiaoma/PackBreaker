@@ -15,7 +15,6 @@ import {
   Download,
   RefreshCw,
   AlertTriangle,
-  ArrowRight,
   Activity,
   Server,
   Bell,
@@ -26,6 +25,7 @@ import {
   Trash2,
 } from '@lucide/vue';
 import type { Task } from '../demo';
+import DownloaderManagement from './DownloaderManagement.vue';
 const props = defineProps<{ page: string; tasks: Task[] }>();
 const emit = defineEmits<{ export: [unknown, string]; open: [Task]; createHistory: [string] }>();
 interface Connection {
@@ -39,9 +39,6 @@ interface Connection {
   rate: number;
   timeout: number;
   retries: number;
-  source: string;
-  target: string;
-  tag: string;
 }
 const sites = ref<Connection[]>([
   {
@@ -55,9 +52,6 @@ const sites = ref<Connection[]>([
     rate: 3,
     timeout: 20,
     retries: 2,
-    source: '',
-    target: '',
-    tag: '',
   },
   {
     name: 'HDTime',
@@ -70,9 +64,6 @@ const sites = ref<Connection[]>([
     rate: 5,
     timeout: 20,
     retries: 2,
-    source: '',
-    target: '',
-    tag: '',
   },
   {
     name: 'HHClub',
@@ -85,46 +76,10 @@ const sites = ref<Connection[]>([
     rate: 5,
     timeout: 20,
     retries: 2,
-    source: '',
-    target: '',
-    tag: '',
-  },
-]);
-const clients = ref<Connection[]>([
-  {
-    name: 'qBittorrent',
-    type: 'qBittorrent',
-    url: 'http://qb.example.invalid:8080',
-    enabled: true,
-    automation: false,
-    configured: true,
-    status: '演示连接正常',
-    rate: 3,
-    timeout: 20,
-    retries: 2,
-    source: '/downloads',
-    target: '/data',
-    tag: '大包',
-  },
-  {
-    name: 'Transmission',
-    type: 'Transmission',
-    url: 'http://tr.example.invalid:9091',
-    enabled: true,
-    automation: false,
-    configured: true,
-    status: '演示连接正常',
-    rate: 3,
-    timeout: 20,
-    retries: 2,
-    source: '/downloads',
-    target: '/data',
-    tag: '大包',
   },
 ]);
 const connectionDialog = ref(false),
-  editing = ref<Connection>(),
-  editKind = ref('site');
+  editing = ref<Connection>();
 const draft = reactive<Connection>({
   name: '',
   type: '',
@@ -136,22 +91,14 @@ const draft = reactive<Connection>({
   rate: 3,
   timeout: 20,
   retries: 2,
-  source: '/downloads',
-  target: '/data',
-  tag: '大包',
 });
-const diagnostic = ref(false),
-  diagnosticTarget = ref<Connection>(),
-  crossDevice = ref(false),
-  tested = ref<string[]>([]);
-function editConnection(kind: string, item?: Connection) {
-  editKind.value = kind;
+function editConnection(item?: Connection) {
   editing.value = item;
   Object.assign(
     draft,
     item ?? {
       name: '',
-      type: kind === 'site' ? 'NexusPHP' : 'qBittorrent',
+      type: 'NexusPHP',
       url: 'https://service.example.invalid',
       enabled: false,
       automation: false,
@@ -160,9 +107,6 @@ function editConnection(kind: string, item?: Connection) {
       rate: 3,
       timeout: 20,
       retries: 2,
-      source: '/downloads',
-      target: '/data',
-      tag: '大包',
     },
   );
   connectionDialog.value = true;
@@ -172,7 +116,7 @@ function saveConnection() {
     ElMessage.warning('请输入名称和合法的 HTTP / HTTPS 地址');
     return;
   }
-  const list = editKind.value === 'site' ? sites.value : clients.value;
+  const list = sites.value;
   if (list.some((c) => c !== editing.value && c.name === draft.name.trim())) {
     ElMessage.warning('名称已存在');
     return;
@@ -189,11 +133,10 @@ function testConnection(c: Connection) {
   }
   c.configured = true;
   c.status = '演示连接正常';
-  tested.value.push(c.name);
   ElMessage.success(`${c.name} 模拟连接测试通过；未发起网络请求`);
 }
-async function removeConnection(c: Connection, kind: string) {
-  if (props.tasks.some((t) => (kind === 'site' ? t.site === c.name : t.client === c.name))) {
+async function removeConnection(c: Connection) {
+  if (props.tasks.some((t) => t.site === c.name)) {
     ElMessage.warning('该连接已被演示任务引用，不能删除；可停用');
     return;
   }
@@ -203,14 +146,8 @@ async function removeConnection(c: Connection, kind: string) {
       cancelButtonText: '取消',
       type: 'warning',
     });
-    const list = kind === 'site' ? sites.value : clients.value;
-    list.splice(list.indexOf(c), 1);
+    sites.value.splice(sites.value.indexOf(c), 1);
   } catch {}
-}
-function pathTest(c: Connection) {
-  diagnosticTarget.value = c;
-  crossDevice.value = false;
-  diagnostic.value = true;
 }
 const rules = reactive({
   automation: false,
@@ -404,28 +341,16 @@ async function update() {
 }
 </script>
 <template>
-  <div v-if="page === '站点管理' || page === '下载器'">
+  <DownloaderManagement v-if="page === '下载器'" />
+  <div v-else-if="page === '站点管理'">
     <div class="section-heading">
-      <h2>
-        {{ page === '站点管理' ? '已接入站点' : '下载器实例' }}
-        <small>{{
-          page === '站点管理' ? '站点可用与自动化独立控制' : '统一管理连接、监控规则与路径映射'
-        }}</small>
-      </h2>
-      <el-button type="primary" @click="editConnection(page === '站点管理' ? 'site' : 'client')"
-        ><Plus :size="15" />{{ page === '站点管理' ? '添加站点' : '添加下载器' }}</el-button
-      >
+      <h2>已接入站点 <small>站点可用与自动化独立控制</small></h2>
+      <el-button type="primary" @click="editConnection()"><Plus :size="15" />添加站点</el-button>
     </div>
     <div class="connection-cards">
-      <article
-        class="panel connection-card"
-        v-for="c in page === '站点管理' ? sites : clients"
-        :key="c.name"
-      >
+      <article class="panel connection-card" v-for="c in sites" :key="c.name">
         <div class="card-title">
-          <span class="connection-icon"
-            ><Globe v-if="page === '站点管理'" :size="25" /><HardDrive v-else :size="25"
-          /></span>
+          <span class="connection-icon"><Globe :size="25" /></span>
           <div>
             <h3>{{ c.name }}</h3>
             <small>{{ c.type }}</small>
@@ -443,18 +368,12 @@ async function update() {
           }}<el-tag v-if="!c.configured" type="info">未配置</el-tag>
         </div>
         <dl class="config-summary">
-          <dt>{{ page === '站点管理' ? '凭证状态' : '监控分类 / 标签' }}</dt>
+          <dt>凭证状态</dt>
+          <dd>{{ c.configured ? '演示凭证 · 已脱敏' : '未配置' }}</dd>
+          <dt>限流 / 超时</dt>
+          <dd>{{ c.rate }} 秒 / {{ c.timeout }} 秒</dd>
+          <dt>允许自动化</dt>
           <dd>
-            {{ page === '站点管理' ? (c.configured ? '演示凭证 · 已脱敏' : '未配置') : c.tag }}
-          </dd>
-          <dt>{{ page === '站点管理' ? '限流 / 超时' : '路径映射' }}</dt>
-          <dd>
-            {{
-              page === '站点管理' ? `${c.rate} 秒 / ${c.timeout} 秒` : `${c.source} → ${c.target}`
-            }}
-          </dd>
-          <dt>{{ page === '站点管理' ? '允许自动化' : '客户端校验' }}</dt>
-          <dd v-if="page === '站点管理'">
             <el-switch
               v-model="c.automation"
               size="small"
@@ -462,67 +381,42 @@ async function update() {
               :aria-label="c.name + '允许自动化'"
             />
           </dd>
-          <dd v-else>{{ c.type === 'Transmission' ? '始终完整校验' : '默认完整校验' }}</dd>
         </dl>
         <div class="card-actions">
           <el-button size="small" @click="testConnection(c)"
             ><Activity :size="14" />模拟测试</el-button
-          ><el-button v-if="page === '下载器'" size="small" @click="pathTest(c)">路径诊断</el-button
-          ><el-button
-            size="small"
-            @click="editConnection(page === '站点管理' ? 'site' : 'client', c)"
+          ><el-button size="small" @click="editConnection(c)"
             ><Settings2 :size="14" />配置</el-button
-          ><el-button
-            link
-            type="danger"
-            @click="removeConnection(c, page === '站点管理' ? 'site' : 'client')"
-            >删除</el-button
-          >
+          ><el-button link type="danger" @click="removeConnection(c)">删除</el-button>
         </div>
       </article>
     </div>
     <div class="panel section-space">
-      <h3>{{ page === '站点管理' ? '站点健康与可靠性' : '路径与能力说明' }}</h3>
-      <template v-if="page === '站点管理'"
-        ><el-table :data="sites"
-          ><el-table-column prop="name" label="站点" /><el-table-column label="缓存命中"
-            ><template #default="{ row }">{{
-              row.configured ? '68%（演示）' : '—'
-            }}</template></el-table-column
-          ><el-table-column label="熔断状态"
-            ><template #default="{ row }">{{
-              row.configured ? '关闭' : '未接入'
-            }}</template></el-table-column
-          ><el-table-column label="重试上限"
-            ><template #default="{ row }">{{ row.retries }} 次</template></el-table-column
-          ><el-table-column label="操作"
-            ><template #default="{ row }"
-              ><el-button
-                link
-                type="primary"
-                :disabled="!row.configured"
-                @click="ElMessage.success(row.name + ' 已模拟半开探测，连接恢复')"
-                >模拟熔断恢复</el-button
-              ></template
-            ></el-table-column
-          ></el-table
-        >
-        <p class="muted">HHClub 引擎与鉴权仍待确认；本页不会将其标记为已实现适配器。</p></template
-      ><template v-else
-        ><div class="safety-note">
-          <ShieldCheck :size="20" />硬链接要求源与目标处于同一文件系统；推荐挂载共同父目录 /data。
-        </div>
-        <div class="capability-grid">
-          <div>
-            <b>qBittorrent</b>
-            <p>分类 / 标签监控、暂停添加、完整校验；仅 FULL_VERIFIED 可显式跳过。</p>
-          </div>
-          <div>
-            <b>Transmission</b>
-            <p>能力由适配器声明；始终执行客户端校验，不提供跳过入口。</p>
-          </div>
-        </div></template
+      <h3>站点健康与可靠性</h3>
+      <el-table :data="sites"
+        ><el-table-column prop="name" label="站点" /><el-table-column label="缓存命中"
+          ><template #default="{ row }">{{
+            row.configured ? '68%（演示）' : '—'
+          }}</template></el-table-column
+        ><el-table-column label="熔断状态"
+          ><template #default="{ row }">{{
+            row.configured ? '关闭' : '未接入'
+          }}</template></el-table-column
+        ><el-table-column label="重试上限"
+          ><template #default="{ row }">{{ row.retries }} 次</template></el-table-column
+        ><el-table-column label="操作"
+          ><template #default="{ row }"
+            ><el-button
+              link
+              type="primary"
+              :disabled="!row.configured"
+              @click="ElMessage.success(row.name + ' 已模拟半开探测，连接恢复')"
+              >模拟熔断恢复</el-button
+            ></template
+          ></el-table-column
+        ></el-table
       >
+      <p class="muted">HHClub 引擎与鉴权仍待确认；本页不会将其标记为已实现适配器。</p>
     </div>
   </div>
   <div v-else-if="page === '规则配置'" class="settings-layout">
@@ -845,7 +739,7 @@ async function update() {
     </div>
     <div v-else-if="settingTab === '安全与集成'" class="settings-content">
       <el-alert
-        title="认证与加密属于待实现能力。当前原型不接收或保存真实口令与 Token。"
+        title="后端管理员认证、CSRF、API Token 与加密 secret store 已实现；本页的登录与 Token 管理界面仍待接入。"
         type="info"
         :closable="false"
       />
@@ -969,7 +863,7 @@ async function update() {
   </div>
   <el-dialog
     v-model="connectionDialog"
-    :title="(editing ? '编辑' : '新增') + (editKind === 'site' ? '站点' : '下载器')"
+    :title="(editing ? '编辑' : '新增') + '站点'"
     width="min(600px, 94vw)"
     ><el-form label-position="top"
       ><div class="form-grid">
@@ -978,9 +872,7 @@ async function update() {
         ><el-form-item label="适配器类型"
           ><el-select v-model="draft.type"
             ><el-option
-              v-for="s in editKind === 'site'
-                ? ['官方 API', 'NexusPHP', '待确认']
-                : ['qBittorrent', 'Transmission']"
+              v-for="s in ['官方 API', 'NexusPHP', '待确认']"
               :key="s"
               :value="s" /></el-select
         ></el-form-item>
@@ -992,7 +884,7 @@ async function update() {
       ><el-form-item label="凭证"
         ><el-input type="password" disabled placeholder="原型不接收真实凭证"
       /></el-form-item>
-      <div v-if="editKind === 'site'" class="form-grid">
+      <div class="form-grid">
         <el-form-item label="请求间隔（秒）"
           ><el-input-number v-model="draft.rate" :min="1" :max="120" /></el-form-item
         ><el-form-item label="超时（秒）"
@@ -1001,55 +893,13 @@ async function update() {
           ><el-input-number v-model="draft.retries" :min="0" :max="5"
         /></el-form-item>
       </div>
-      <template v-else
-        ><el-form-item label="下载器路径"><el-input v-model="draft.source" /></el-form-item
-        ><el-form-item label="容器内路径"><el-input v-model="draft.target" /></el-form-item
-        ><el-form-item label="监控分类 / 标签"
-          ><el-input v-model="draft.tag" /></el-form-item></template
-      ><el-alert
+      <el-alert
         title="此处只保存演示配置。测试连接不会访问填写的地址。"
         type="info"
         :closable="false" /></el-form
     ><template #footer
       ><el-button @click="connectionDialog = false">取消</el-button
       ><el-button type="primary" @click="saveConnection">保存演示配置</el-button></template
-    ></el-dialog
-  >
-  <el-dialog v-model="diagnostic" title="路径映射诊断" width="min(640px, 94vw)"
-    ><template v-if="diagnosticTarget"
-      ><p>
-        {{ diagnosticTarget.name }} · {{ diagnosticTarget.source }} <ArrowRight :size="14" />
-        {{ diagnosticTarget.target }}
-      </p>
-      <el-switch v-model="crossDevice" active-text="模拟跨文件系统异常" /><el-alert
-        :title="
-          crossDevice
-            ? 'CROSS_DEVICE_LINK：源与目标设备不同，硬链接已阻断'
-            : '演示检查通过，可以在相同文件系统内创建硬链接'
-        "
-        :type="crossDevice ? 'error' : 'success'"
-        :closable="false"
-        class="section-space"
-      />
-      <div class="health-list">
-        <div
-          v-for="s in [
-            '路径映射规则唯一命中',
-            '容器路径可见、文件类型正确',
-            '目标路径不含穿越与符号链接逃逸',
-            '源可读、目标可写、空间充足',
-          ]"
-          :key="s"
-        >
-          <Check :size="17" />{{ s }}<el-tag type="success">演示通过</el-tag>
-        </div>
-        <div>
-          <HardDrive :size="17" />设备 ID<el-tag :type="crossDevice ? 'danger' : 'success'"
-            >源 2049 / 目标 {{ crossDevice ? '2050' : '2049' }}</el-tag
-          >
-        </div>
-      </div>
-      <p class="muted">诊断使用合成结果，未访问本机或 NAS 文件系统。</p></template
     ></el-dialog
   >
   <el-dialog v-model="scanDialog" title="新建历史扫描" width="min(560px, 94vw)"
