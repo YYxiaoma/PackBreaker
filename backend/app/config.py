@@ -1,3 +1,4 @@
+from ipaddress import ip_network
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -42,6 +43,17 @@ class AppSettings(BaseSettings):
     @classmethod
     def normalize_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def validate_trusted_proxies(cls, value: str) -> str:
+        entries = [entry.strip() for entry in value.split(",") if entry.strip()]
+        for entry in entries:
+            try:
+                ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise ValueError("可信代理必须使用合法 IP 或 CIDR") from exc
+        return ",".join(entries)
 
     @field_validator("timezone")
     @classmethod

@@ -52,8 +52,10 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 
 ### 3.2 自动化 API
 
-- 管理员可生成具备范围和过期时间的 API Token；创建响应只显示一次明文，数据库保存哈希。
-- 使用 `Authorization: Bearer <token>`；范围首版包含 `tasks:read`、`tasks:write`、`config:read`、`config:write`。
+- 管理员可通过受 CSRF 保护的管理会话生成具备名称、范围和过期时间的 API Token；创建响应只显示一次 `pbk_` 前缀明文，数据库仅保存 SHA-256 摘要。
+- 使用 `Authorization: Bearer <token>`；范围首版包含 `tasks:read`、`tasks:write`、`config:read`、`config:write`。范围不足返回 `403 API_TOKEN_SCOPE_FORBIDDEN`，过期或已撤销返回 `401 API_TOKEN_INVALID`。
+- `GET /api-tokens` 只返回元数据，不返回明文或摘要；`DELETE /api-tokens/{id}` 持久化撤销且重复撤销幂等。
+- `/system/status` 允许管理员会话或具备 `config:read` 的 API Token 访问，用于统一认证/授权链路的首个只读端点。
 - Webhook 不使用管理会话或 API Token，按第 8 节独立验签。
 
 ## 4. 幂等、并发与分页

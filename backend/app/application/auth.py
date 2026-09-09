@@ -177,6 +177,14 @@ class AuthService:
             "expires_at": identity.expires_at.isoformat().replace("+00:00", "Z"),
         }
 
+    def require_session(self, token: str | None) -> AuthIdentity:
+        if token is None:
+            raise self._auth_required()
+        identity = self._identity(token)
+        if identity is None:
+            raise self._auth_required()
+        return identity
+
     def require_csrf(
         self,
         *,

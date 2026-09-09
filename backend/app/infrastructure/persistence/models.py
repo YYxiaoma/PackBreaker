@@ -51,6 +51,22 @@ class AdminSession(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class ApiToken(Base):
+    __tablename__ = "api_token"
+    __table_args__ = (
+        Index("ix_api_token_expires_at", "expires_at"),
+        Index("ix_api_token_revoked_at", "revoked_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class SecretRecord(Base):
     __tablename__ = "secret"
     __table_args__ = (Index("ix_secret_kind", "kind"),)

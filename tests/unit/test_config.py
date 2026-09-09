@@ -39,3 +39,8 @@ def test_relative_startup_paths_are_rejected() -> None:
 def test_unknown_timezone_is_rejected() -> None:
     with pytest.raises(ValidationError):
         AppSettings(timezone="Invalid/PackBreaker")
+
+
+def test_invalid_trusted_proxy_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        AppSettings(trusted_proxies="10.0.0.0/8,not-an-ip")

@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from backend.app.api.auth import CSRF_COOKIE, SESSION_COOKIE
+from backend.app.api.dependencies import CSRF_COOKIE, SESSION_COOKIE
 from backend.app.config import AppSettings
 from backend.app.infrastructure.persistence.models import AdminSession
 from backend.app.infrastructure.security import token_digest

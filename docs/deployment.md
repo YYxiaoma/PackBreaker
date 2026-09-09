@@ -84,10 +84,10 @@ services:
 ## 6. 网络与反向代理
 
 - 推荐只监听内网或通过 HTTPS 反向代理访问；公网暴露不属于 v1.0 支持范围。
-- 设置可信代理列表后才接受 `X-Forwarded-*`，其余请求使用直连信息。
-- 会话 Cookie 在 HTTPS 环境使用 Secure；反代需保留 Host、真实 scheme 和 SSE 长连接。
+- 只有 TCP 直连来源命中 `PACKBREAKER_TRUSTED_PROXIES` 中的 IP/CIDR 时才接受 `X-Forwarded-For` 与 `X-Forwarded-Proto`；客户端地址从代理链右侧逐级剥离可信代理，非法链回退到直连地址。
+- 会话 Cookie 在直接 HTTPS 或受信代理声明 HTTPS 时使用 Secure；未受信来源不能靠伪造转发头启用代理上下文。反代仍需保留 Host、真实 scheme 和 SSE 长连接。
 - 出站访问仅允许已配置站点、下载器、通知和版本检查目标；日志不得记录带查询秘密的 URL。
-- 浏览器安全头至少包括 CSP、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer` 和 frame 限制。
+- 响应统一设置 CSP、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY` 与 Permissions-Policy；HTTPS 上额外设置 HSTS。Swagger 文档只放行自身、必要 CDN 和 OpenAPI 请求。
 
 ## 7. 数据库、备份与恢复
 

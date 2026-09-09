@@ -7,10 +7,14 @@ from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
 from backend.app.api.auth import router as auth_router
+from backend.app.api.automation_access import router as api_token_router
 from backend.app.api.health import router as health_router
+from backend.app.api.system import router as system_router
 from backend.app.application.auth import AuthError, AuthService
+from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.secrets import SecretStore
 from backend.app.config import AppSettings
+from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
 from backend.app.infrastructure.runtime import RuntimeManager
 
 
@@ -37,11 +41,14 @@ def create_app(
         resolved_settings = settings or AppSettings()
         resolved_runtime = RuntimeManager(resolved_settings)
 
+    proxy_policy = TrustedProxyPolicy(resolved_settings.trusted_proxy_list)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolved_runtime.start()
         app.state.runtime = resolved_runtime
         app.state.auth_service = AuthService(resolved_runtime.session_factory)
+        app.state.api_token_service = ApiTokenService(resolved_runtime.session_factory)
         app.state.secret_store = SecretStore(
             resolved_runtime.session_factory,
             resolved_runtime.secret_cipher,
@@ -82,18 +89,31 @@ def create_app(
         )
 
     @app.middleware("http")
-    async def attach_trace_id(
+    async def request_context(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         trace_id = _trace_id(request.headers.get("X-Trace-Id"))
         request.state.trace_id = str(trace_id)
+        network = proxy_policy.resolve(
+            direct_host=request.client.host if request.client is not None else None,
+            direct_scheme=request.url.scheme,
+            forwarded_for=request.headers.get("X-Forwarded-For"),
+            forwarded_proto=request.headers.get("X-Forwarded-Proto"),
+        )
+        request.state.client_source = network.client_source
+        request.state.effective_scheme = network.scheme
         response = await call_next(request)
         response.headers["X-Trace-Id"] = str(trace_id)
+        apply_security_headers(
+            path=request.url.path, scheme=network.scheme, headers=response.headers
+        )
         return response
 
+    app.include_router(api_token_router, prefix="/api/v1")
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(system_router, prefix="/api/v1")
     return app
 
 

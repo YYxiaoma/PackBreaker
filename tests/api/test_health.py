@@ -14,6 +14,10 @@ def test_live_health_returns_trace_id() -> None:
     assert response.json() == {"status": "ok", "service": "packbreaker"}
     parsed_trace_id = UUID(response.headers["X-Trace-Id"])
     assert str(parsed_trace_id) == response.headers["X-Trace-Id"]
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert "default-src 'none'" in response.headers["Content-Security-Policy"]
 
 
 def test_valid_caller_trace_id_is_preserved() -> None:
@@ -33,3 +37,11 @@ def test_invalid_caller_trace_id_is_replaced() -> None:
     assert response.headers["X-Trace-Id"] != "not-a-uuid"
     parsed_trace_id = UUID(response.headers["X-Trace-Id"])
     assert str(parsed_trace_id) == response.headers["X-Trace-Id"]
+
+
+def test_https_responses_include_hsts() -> None:
+    client = TestClient(create_app(), base_url="https://testserver")
+
+    response = client.get("/api/v1/health/live")
+
+    assert response.headers["Strict-Transport-Security"] == "max-age=31536000"
