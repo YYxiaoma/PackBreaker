@@ -25,8 +25,9 @@ def test_runtime_migrates_database_and_becomes_ready(tmp_path: Path) -> None:
         assert report.ready
         assert report.database == "ok"
         assert report.migrations == "ok"
+        assert report.secrets == "ok"
         assert report.worker_slot == "ok"
-        assert report.current_revision == report.expected_revision == "0001_m1_core"
+        assert report.current_revision == report.expected_revision == "0002_auth_and_secrets"
         assert runtime.engine is not None
         assert {"unpack_task", "task_event", "operation_journal"}.issubset(
             set(inspect(runtime.engine).get_table_names())
@@ -69,6 +70,7 @@ def test_ready_endpoint_is_healthy_inside_lifespan(tmp_path: Path) -> None:
     assert response.json()["checks"] == {
         "database": "ok",
         "migrations": "ok",
+        "secrets": "ok",
         "worker_slot": "ok",
     }
     assert not app.state.runtime.started

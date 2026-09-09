@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, CheckConstraint, ForeignKey, Index, String
+from sqlalchemy import JSON, CheckConstraint, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.domain.operation import OperationStatus
@@ -21,6 +21,46 @@ def new_uuid() -> str:
 
 _TASK_STATUS_SQL = ", ".join(f"'{status.value}'" for status in TaskStatus)
 _OPERATION_STATUS_SQL = ", ".join(f"'{status.value}'" for status in OperationStatus)
+
+
+class Administrator(Base):
+    __tablename__ = "administrator"
+    __table_args__ = (CheckConstraint("id = 'admin'", name="singleton"),)
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default="admin")
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class AdminSession(Base):
+    __tablename__ = "admin_session"
+    __table_args__ = (Index("ix_admin_session_expires_at", "expires_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    administrator_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("administrator.id", ondelete="CASCADE"),
+        nullable=False,
+        default="admin",
+    )
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    csrf_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class SecretRecord(Base):
+    __tablename__ = "secret"
+    __table_args__ = (Index("ix_secret_kind", "kind"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    key_version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
 class UnpackTask(Base):

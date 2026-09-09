@@ -2,7 +2,7 @@
 
 ## 1. 当前状态
 
-仓库已有 `frontend/` Vue 3 / TypeScript 交互原型与演示流程测试，并已开始建立 `backend/` M1 安全骨架。当前后端能力包含任务状态转换、幂等键、qB/TR 校验安全门、FastAPI 应用入口、`X-Trace-Id` 传播、启动配置、单实例锁、`/api/v1/health/live` 与 `/api/v1/health/ready`，以及 SQLite WAL、SQLAlchemy 核心模型、Alembic 初始迁移和任务/操作日志 repository。管理员认证、secret store、配置 API 和外部适配器仍属于后续 M1 工作。原型运行命令与覆盖边界见 [prototype.md](./prototype.md)。
+仓库已有 `frontend/` Vue 3 / TypeScript 交互原型与演示流程测试，并已开始建立 `backend/` M1 安全骨架。当前后端能力包含任务状态转换、幂等键、qB/TR 校验安全门、FastAPI 应用入口、`X-Trace-Id` 传播、启动配置、单实例锁、`/api/v1/health/live` 与 `/api/v1/health/ready`，SQLite WAL / SQLAlchemy / Alembic 持久化与任务/操作日志 repository，以及管理员首次初始化、Argon2id 口令哈希、持久会话、CSRF 和 AES-256-GCM secret store 基础。API Token、配置 API 和外部适配器仍属于后续 M1 工作。原型运行命令与覆盖边界见 [prototype.md](./prototype.md)。
 
 当前已可执行：前端 `install`、`dev`、`lint`（Prettier 格式检查）、`typecheck`、`test`、`build` 与 `test:e2e`。浏览器检查要求本地 5173 开发服务已启动，默认使用已安装 Microsoft Edge；可设置 `PB_BROWSER=chrome` 使用 Chrome。原型未对外开放真实 API，因此尚无 OpenAPI 生成客户端；`src/demo.ts` 明确限定为合成演示模型，正式接入时用生成类型替代。
 

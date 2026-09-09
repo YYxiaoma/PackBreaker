@@ -45,10 +45,10 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 ### 3.1 管理界面
 
 - 首次启动且不存在管理员时，`POST /auth/setup` 设置单管理员口令；完成后该端点永久返回 409。
-- `POST /auth/login` 成功后设置 `HttpOnly`、`Secure`、`SameSite=Strict` 会话 Cookie。
-- 非 GET/HEAD 请求同时校验 CSRF Cookie 与 `X-CSRF-Token` 请求头。
-- `POST /auth/logout` 撤销当前会话；`GET /auth/me` 返回会话状态和权限，不返回口令信息。
-- 登录失败按来源和账号双维度限速，日志只记录脱敏来源与结果。
+- `POST /auth/login` 成功后设置 `HttpOnly`、`SameSite=Strict` 会话 Cookie；有效 HTTPS 请求同时设置 `Secure`。独立 CSRF Cookie 可由前端读取，但数据库只保存两个随机 token 的摘要。
+- `setup`/`login` 属于认证前入口；其余由管理会话保护的非 GET/HEAD 请求同时校验 CSRF Cookie 与 `X-CSRF-Token` 请求头。
+- `POST /auth/logout` 在 CSRF 校验后持久化撤销当前会话；`GET /auth/me` 返回会话状态和权限，不返回口令信息。会话明文 token 不入库。
+- 登录失败按来源摘要和单管理员账号双维度限速，不记录口令。
 
 ### 3.2 自动化 API
 

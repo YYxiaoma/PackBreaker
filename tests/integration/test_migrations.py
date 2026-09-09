@@ -17,9 +17,14 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
 
     engine = create_engine(sqlite_database_url(database_path))
     inspector = inspect(engine)
-    assert {"unpack_task", "task_event", "operation_journal"}.issubset(
-        set(inspector.get_table_names())
-    )
+    assert {
+        "administrator",
+        "admin_session",
+        "secret",
+        "unpack_task",
+        "task_event",
+        "operation_journal",
+    }.issubset(set(inspector.get_table_names()))
     task_unique_names = {
         constraint["name"] for constraint in inspector.get_unique_constraints("unpack_task")
     }
@@ -27,4 +32,7 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("operation_journal")
     } == {"uq_operation_journal_idempotency_key"}
+    assert {
+        constraint["name"] for constraint in inspector.get_unique_constraints("admin_session")
+    } == {"uq_admin_session_token_digest"}
     engine.dispose()

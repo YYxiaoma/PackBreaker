@@ -50,7 +50,7 @@ v1.0 以单个 `linux/amd64` Docker 镜像发布，单容器内运行 FastAPI、
 | `PACKBREAKER_TIMEZONE` | `Asia/Shanghai` | 仅影响调度和展示，数据库仍保存 UTC |
 | `PACKBREAKER_TRUSTED_PROXIES` | 空 | 明确列出的反向代理网段 |
 
-环境变量不得直接承载站点 passkey、下载器密码和通知 Token。首次主密钥使用密码学安全随机源生成，文件权限设为 0600；文件已存在但权限过宽时拒绝启动 worker。
+环境变量不得直接承载站点 passkey、下载器密码和通知 Token。首次主密钥使用密码学安全随机源生成 256-bit 随机值，文件权限设为 0600；文件已存在但权限过宽或长度无效时拒绝启动 worker。secret store 使用 AES-256-GCM，认证附加数据绑定 secret ID、类型和密钥版本，数据库只保存认证密文。
 
 ## 5. Compose 蓝图
 

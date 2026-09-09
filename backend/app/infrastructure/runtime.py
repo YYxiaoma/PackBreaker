@@ -11,12 +11,15 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.config import AppSettings
 from backend.app.infrastructure.persistence.database import (
+    create_session_factory,
     create_sqlite_engine,
     sqlite_database_url,
 )
+from backend.app.infrastructure.security import MasterKeyFile, SecretCipher
 
 
 class InstanceLockUnavailable(RuntimeError):
@@ -76,6 +79,7 @@ class ReadinessReport:
     ready: bool
     database: str
     migrations: str
+    secrets: str
     worker_slot: str
     current_revision: str | None = None
     expected_revision: str | None = None
@@ -86,6 +90,7 @@ class ReadinessReport:
             "checks": {
                 "database": self.database,
                 "migrations": self.migrations,
+                "secrets": self.secrets,
                 "worker_slot": self.worker_slot,
             },
             "migration": {
@@ -134,11 +139,25 @@ class RuntimeManager:
         self.settings = settings
         self.instance_lock = InstanceLock(settings.instance_lock_path)
         self.engine: Engine | None = None
+        self._session_factory: sessionmaker[Session] | None = None
+        self._secret_cipher: SecretCipher | None = None
         self._started = False
 
     @property
     def started(self) -> bool:
         return self._started
+
+    @property
+    def session_factory(self) -> sessionmaker[Session]:
+        if self._session_factory is None:
+            raise RuntimeError("运行时尚未建立数据库会话工厂")
+        return self._session_factory
+
+    @property
+    def secret_cipher(self) -> SecretCipher:
+        if self._secret_cipher is None:
+            raise RuntimeError("运行时尚未加载 secret 主密钥")
+        return self._secret_cipher
 
     def start(self) -> None:
         if self._started:
@@ -146,9 +165,14 @@ class RuntimeManager:
         ensure_config_directory(self.settings.config_dir)
         self.instance_lock.acquire()
         try:
+            master_key = MasterKeyFile.load_or_create(self.settings.resolved_secret_key_file)
+            self._secret_cipher = SecretCipher(master_key)
+            if not self._secret_cipher.self_test():
+                raise RuntimeError("secret 加解密自检失败")
             database_url = sqlite_database_url(self.settings.database_path)
             migrate_database(database_url)
             self.engine = create_sqlite_engine(self.settings.database_path)
+            self._session_factory = create_session_factory(self.engine)
             self._started = True
             report = self.readiness()
             if not report.ready:
@@ -162,7 +186,13 @@ class RuntimeManager:
 
     def readiness(self) -> ReadinessReport:
         if not self._started or self.engine is None:
-            return ReadinessReport(False, "not_started", "not_started", "not_started")
+            return ReadinessReport(
+                False,
+                "not_started",
+                "not_started",
+                "not_started",
+                "not_started",
+            )
 
         database_status = "ok"
         try:
@@ -182,12 +212,23 @@ class RuntimeManager:
                 # 就绪端点不能把迁移脚本/元数据异常升级成未处理的 HTTP 500。
                 migration_status = "unavailable"
 
+        secret_status = "unavailable"
+        if self._secret_cipher is not None:
+            try:
+                secret_status = "ok" if self._secret_cipher.self_test() else "unavailable"
+            except Exception:
+                secret_status = "unavailable"
+
         worker_slot = "ok" if self.instance_lock.held else "unavailable"
-        ready = database_status == migration_status == worker_slot == "ok"
+        ready = all(
+            status == "ok"
+            for status in (database_status, migration_status, secret_status, worker_slot)
+        )
         return ReadinessReport(
             ready,
             database_status,
             migration_status,
+            secret_status,
             worker_slot,
             current_revision,
             expected_revision,
@@ -196,6 +237,8 @@ class RuntimeManager:
     def _cleanup(self) -> None:
         engine = self.engine
         self.engine = None
+        self._session_factory = None
+        self._secret_cipher = None
         self._started = False
         if engine is not None:
             engine.dispose()

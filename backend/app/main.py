@@ -3,9 +3,13 @@ from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
+from backend.app.api.auth import router as auth_router
 from backend.app.api.health import router as health_router
+from backend.app.application.auth import AuthError, AuthService
+from backend.app.application.secrets import SecretStore
 from backend.app.config import AppSettings
 from backend.app.infrastructure.runtime import RuntimeManager
 
@@ -37,6 +41,11 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolved_runtime.start()
         app.state.runtime = resolved_runtime
+        app.state.auth_service = AuthService(resolved_runtime.session_factory)
+        app.state.secret_store = SecretStore(
+            resolved_runtime.session_factory,
+            resolved_runtime.secret_cipher,
+        )
         try:
             yield
         finally:
@@ -53,6 +62,25 @@ def create_app(
     app.state.settings = resolved_settings
     app.state.runtime = resolved_runtime
 
+    @app.exception_handler(AuthError)
+    async def handle_auth_error(request: Request, exc: AuthError) -> JSONResponse:
+        trace_id = getattr(request.state, "trace_id", str(uuid4()))
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
+        problem_type = exc.code.lower().replace("_", "-")
+        return JSONResponse(
+            status_code=exc.status,
+            media_type="application/problem+json",
+            headers=headers,
+            content={
+                "type": f"https://packbreaker.dev/problems/{problem_type}",
+                "title": exc.title,
+                "status": exc.status,
+                "detail": exc.detail,
+                "code": exc.code,
+                "trace_id": trace_id,
+            },
+        )
+
     @app.middleware("http")
     async def attach_trace_id(
         request: Request,
@@ -64,6 +92,7 @@ def create_app(
         response.headers["X-Trace-Id"] = str(trace_id)
         return response
 
+    app.include_router(auth_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
     return app
 
