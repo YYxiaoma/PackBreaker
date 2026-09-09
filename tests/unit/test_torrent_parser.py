@@ -82,8 +82,10 @@ def test_v1_multifile_normalizes_unicode_and_marks_padding() -> None:
 
 def test_v2_file_tree_and_piece_layers_are_parsed() -> None:
     piece_length = 16 * 1024
-    root = hashlib.sha256(b"synthetic-root").digest()
-    layer = hashlib.sha256(b"piece-a").digest() + hashlib.sha256(b"piece-b").digest()
+    first = hashlib.sha256(b"piece-a").digest()
+    second = hashlib.sha256(b"piece-b").digest()
+    root = hashlib.sha256(first + second).digest()
+    layer = first + second
     info = {
         b"file tree": {
             b"movie.mkv": {b"": {b"length": piece_length + 1, b"pieces root": root}},
@@ -104,6 +106,24 @@ def test_v2_file_tree_and_piece_layers_are_parsed() -> None:
     assert meta.files[1].zero_length is True
     assert meta.v2_piece_layers[0].pieces_root == root
     assert len(meta.v2_piece_layers[0].hashes) == 2
+
+
+def test_v2_piece_layer_must_reconstruct_pieces_root() -> None:
+    piece_length = 16 * 1024
+    root = hashlib.sha256(b"wrong-root").digest()
+    layer = hashlib.sha256(b"piece-a").digest() + hashlib.sha256(b"piece-b").digest()
+    info = {
+        b"file tree": {b"movie.mkv": {b"": {b"length": piece_length + 1, b"pieces root": root}}},
+        b"meta version": 2,
+        b"name": b"Pack",
+        b"piece length": piece_length,
+    }
+    payload, _ = _torrent(info, {b"piece layers": {root: layer}})
+
+    with pytest.raises(DomainViolation) as failure:
+        parse_torrent(payload)
+
+    assert failure.value.code is ErrorCode.TORRENT_META_INVALID
 
 
 def test_consistent_hybrid_uses_v2_files_and_both_hashes() -> None:

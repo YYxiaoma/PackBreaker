@@ -13,6 +13,7 @@ class FileMappingState(StrEnum):
     MISSING = "MISSING"
     AMBIGUOUS = "AMBIGUOUS"
     PADDING = "PADDING"
+    ZERO_LENGTH = "ZERO_LENGTH"
 
 
 class PieceStatus(StrEnum):
@@ -49,6 +50,27 @@ class V1VerificationResult:
     level: VerificationLevel
     mappings: tuple[FileMappingEvidence, ...]
     pieces: tuple[PieceEvidence, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class V2FileEvidence:
+    torrent_path: str
+    status: PieceStatus
+    pieces: tuple[PieceEvidence, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class V2VerificationResult:
+    level: VerificationLevel
+    mappings: tuple[FileMappingEvidence, ...]
+    files: tuple[V2FileEvidence, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class HybridVerificationResult:
+    level: VerificationLevel
+    v1: V1VerificationResult
+    v2: V2VerificationResult
 
 
 class DownloaderKind(StrEnum):

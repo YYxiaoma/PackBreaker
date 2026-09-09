@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from typing import TypeAlias, cast
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.torrent import PieceLayer, TorrentFile, TorrentKind, TorrentMeta
+from backend.app.infrastructure.torrent_merkle import root_from_piece_layer
 
 _V1_HASH_BYTES = 20
 _V2_HASH_BYTES = 32
@@ -353,10 +355,27 @@ def _parse_piece_layers(
         )
         layers.append(PieceLayer(root, hashes))
 
-    layer_roots = {layer.pieces_root for layer in layers}
+    by_root = {layer.pieces_root: layer for layer in layers}
     for file in files:
-        if file.length > piece_length and file.pieces_root not in layer_roots:
+        if file.pieces_root is None:
+            continue
+        layer = by_root.get(file.pieces_root)
+        if file.length <= piece_length:
+            if layer is not None:
+                raise _invalid("不大于 piece length 的 v2 file 不应包含 piece layer")
+            continue
+        if layer is None:
             raise _invalid("大于 piece length 的 v2 file 缺少 piece layer")
+        try:
+            reconstructed = root_from_piece_layer(
+                layer.hashes,
+                piece_length=piece_length,
+                file_length=file.length,
+            )
+        except ValueError as exc:
+            raise _invalid(str(exc)) from exc
+        if not hmac.compare_digest(reconstructed, file.pieces_root):
+            raise _invalid("v2 piece layer 无法重建声明的 pieces root")
     return tuple(layers)
 
 

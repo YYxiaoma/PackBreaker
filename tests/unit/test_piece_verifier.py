@@ -71,6 +71,15 @@ def test_padding_is_hashed_as_virtual_zero_bytes(tmp_path: Path) -> None:
     assert result.mappings[1].state is FileMappingState.PADDING
 
 
+def test_zero_length_v1_file_needs_no_source_mapping() -> None:
+    meta = _meta((_file("empty.txt", 0, 0),), b"")
+
+    result = verify_v1_pieces(meta, ())
+
+    assert result.level is VerificationLevel.FULL_VERIFIED
+    assert result.mappings[0].state is FileMappingState.ZERO_LENGTH
+
+
 def test_missing_range_downgrades_to_client_check_required(tmp_path: Path) -> None:
     media = tmp_path / "media.bin"
     media.write_bytes(b"abcd")
