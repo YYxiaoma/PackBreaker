@@ -24,6 +24,7 @@ from backend.app.domain.site_search import (
     SiteSearchCapabilities,
     normalize_candidate_meta,
 )
+from backend.app.infrastructure.adapters.site_errors import SiteAdapterError as SiteAdapterError
 
 _MTEAM_SITE_ID = "mteam"
 _MTEAM_DEFAULT_BASE_URL = "https://api.m-team.cc"
@@ -31,21 +32,6 @@ _MTEAM_TORRENT_LIMIT_BYTES = 20 * 1024 * 1024
 _MTEAM_MIN_REQUEST_INTERVAL_SECONDS = 90.0
 _IMDB_ID_RE = re.compile(r"tt\d{5,10}", re.IGNORECASE)
 _DOUBAN_ID_RE = re.compile(r"\d{3,12}")
-
-
-class SiteAdapterError(RuntimeError):
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        retryable: bool = False,
-        retry_after_seconds: float | None = None,
-    ) -> None:
-        self.code = code
-        self.retryable = retryable
-        self.retry_after_seconds = retry_after_seconds
-        super().__init__(message)
 
 
 class SiteAdapterFactory:
