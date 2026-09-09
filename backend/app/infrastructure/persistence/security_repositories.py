@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -167,3 +167,6 @@ class SecretRepository:
 
     def get(self, secret_id: str) -> SecretRecord | None:
         return self._session.get(SecretRecord, secret_id)
+
+    def delete(self, secret_id: str) -> None:
+        self._session.execute(delete(SecretRecord).where(SecretRecord.id == secret_id))

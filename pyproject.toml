@@ -14,6 +14,7 @@ dependencies = [
   "argon2-cffi>=25.1,<26",
   "cryptography>=50.0.1,<51",
   "fastapi>=0.141,<1",
+  "httpx2>=2.12,<3",
   "pydantic-settings>=2.15,<3",
   "SQLAlchemy>=2.0.52,<2.1",
   "uvicorn[standard]>=0.52,<1",
@@ -21,7 +22,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "httpx2>=2.12,<3",
   "mypy>=2.3,<3",
   "pytest>=9.1,<10",
   "pytest-asyncio>=1.4,<2",

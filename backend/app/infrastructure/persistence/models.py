@@ -2,11 +2,12 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, CheckConstraint, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_state import TaskStatus
+from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.types import UTCDateTime
 
@@ -21,6 +22,7 @@ def new_uuid() -> str:
 
 _TASK_STATUS_SQL = ", ".join(f"'{status.value}'" for status in TaskStatus)
 _OPERATION_STATUS_SQL = ", ".join(f"'{status.value}'" for status in OperationStatus)
+_DOWNLOADER_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in DownloaderKind)
 
 
 class Administrator(Base):
@@ -75,6 +77,33 @@ class SecretRecord(Base):
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     key_version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class Downloader(Base):
+    __tablename__ = "downloader"
+    __table_args__ = (
+        CheckConstraint(f"type IN ({_DOWNLOADER_KIND_SQL})", name="type"),
+        Index("ix_downloader_type_enabled", "type", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("secret.id", ondelete="SET NULL"), nullable=True
+    )
+    monitor_rules: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    path_mappings: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False, default=list)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    connection_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
+    path_mapping_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_path_diagnostic_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 

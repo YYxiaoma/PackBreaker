@@ -17,6 +17,12 @@ class SecretStore:
         self._cipher = cipher
 
     def put(self, *, kind: str, value: bytes) -> str:
+        with self._session_factory() as session:
+            secret_id = self.put_in_session(session, kind=kind, value=value)
+            session.commit()
+        return secret_id
+
+    def put_in_session(self, session: Session, *, kind: str, value: bytes) -> str:
         if not kind or len(kind) > 64:
             raise ValueError("secret kind 长度无效")
         secret_id = new_uuid()
@@ -27,14 +33,12 @@ class SecretStore:
             key_version=key_version,
             plaintext=value,
         )
-        with self._session_factory() as session:
-            SecretRepository(session).create(
-                secret_id=secret_id,
-                kind=kind,
-                ciphertext=ciphertext,
-                key_version=key_version,
-            )
-            session.commit()
+        SecretRepository(session).create(
+            secret_id=secret_id,
+            kind=kind,
+            ciphertext=ciphertext,
+            key_version=key_version,
+        )
         return secret_id
 
     def get(self, secret_id: str) -> bytes:
@@ -48,3 +52,6 @@ class SecretStore:
                 key_version=record.key_version,
                 ciphertext=record.ciphertext,
             )
+
+    def delete_in_session(self, session: Session, secret_id: str) -> None:
+        SecretRepository(session).delete(secret_id)

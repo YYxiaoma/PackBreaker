@@ -9,6 +9,7 @@ from threading import Lock
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.app.application.errors import ApplicationError
 from backend.app.infrastructure.persistence.security_repositories import (
     AdministratorRepository,
     AdminSessionRepository,
@@ -33,22 +34,8 @@ class AuthIdentity:
     expires_at: datetime
 
 
-class AuthError(RuntimeError):
-    def __init__(
-        self,
-        *,
-        code: str,
-        status: int,
-        title: str,
-        detail: str,
-        retry_after: int | None = None,
-    ) -> None:
-        self.code = code
-        self.status = status
-        self.title = title
-        self.detail = detail
-        self.retry_after = retry_after
-        super().__init__(detail)
+class AuthError(ApplicationError):
+    pass
 
 
 class LoginRateLimiter:

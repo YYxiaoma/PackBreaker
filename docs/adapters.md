@@ -78,6 +78,12 @@ class DownloaderAdapter(Protocol):
 
 `remove_torrent()` 的契约固定为只移除下载器任务、不删除数据；实现调用第三方 RPC 时必须显式传递“不删除数据”。首版不定义任何删除下载数据的适配器方法。即使未来开放，也必须是独立的高风险能力，不能作为普通回滚的一部分。
 
+### 4.1.1 M1 已实现边界
+
+M1 只实现下载器配置所需的只读探测切片：qBittorrent 可使用用户名/密码登录或 API Key，并读取应用/WebAPI 版本；Transmission 使用 RPC `session-get` 完成 session-id 握手并读取客户端/RPC 版本。生产适配器当前只暴露 `test_connection()`，不实现 `list_completed`、`get_torrent`、`add_torrent`、校验、暂停、恢复或移除等任务方法。完整契约仍作为 M3/M4 的目标接口，不得因配置阶段提前引入下载器写副作用。
+
+连接探测在数据库事务之外执行，结果只在配置 version 未变化时写回；错误只返回稳定分类和脱敏描述，不持久化第三方响应正文、请求头或凭证。
+
 ### 4.2 添加任务约束
 
 `AddTorrentRequest` 包含 torrent payload 引用、目标保存路径、分类/标签、paused、skip_checking 和执行计划 ID。
@@ -95,7 +101,7 @@ class DownloaderAdapter(Protocol):
 - 两侧均规范化为绝对路径。
 - 只允许映射到配置的 source roots。
 - 解析符号链接后仍必须位于允许根目录。
-- 配置保存前使用用户选择的已存在测试文件执行双向诊断。
+- 可先保存未启用配置；启用自动化前必须使用已存在测试文件覆盖并通过每一条映射的双向诊断。
 - 多条规则同长度且同时命中时视为歧义并阻断。
 
 ## 5. 通知适配器

@@ -104,7 +104,9 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 | GET | `/downloaders/{downloader_id}/tasks` | 只读查询下载器任务摘要 |
 | POST | `/downloaders/{downloader_id}/actions` | `enable`、`disable`、`refresh_capabilities` |
 
-路径诊断响应包含规则命中、容器可见性、设备 ID、文件类型、读写权限和硬链接可行性，不回显凭证。
+下载器读取端点允许管理员会话或 `config:read` API Token；创建、更新、删除、连接测试、路径诊断和 action 允许受 CSRF 保护的管理员会话或 `config:write` API Token。PATCH、DELETE、enable/disable 使用 `If-Match: "<version>"`，缺失返回 428，版本冲突返回 412。凭证对象为只写字段：创建/更新时可提交 qB 用户名+密码、qB API Key 或 Transmission 用户名+密码；读取只返回 `credential_configured`。PATCH 中 `credential: null` 表示保持原凭证，只有 `clear_credential: true` 才清除。
+
+路径映射采用最长前缀规则；当前 M1 以 `PACKBREAKER_DATA_DIR` 作为允许根目录，后续配置层可进一步收窄 source roots。诊断请求的 `probes` 数组提交一组或多组“下载器视角的已存在测试文件 + 容器内目标目录”；响应逐项返回规则命中、容器可见性、设备 ID、文件类型、读写权限、双向映射和硬链接可行性，并返回 `all_mappings_verified`。只有每条配置映射都至少被一个成功 probe 覆盖时全局路径状态才为 `OK`，否则保持阻断，不能 enable。诊断允许创建并立即删除目标目录中的临时 hardlink 以验证内核能力，但不修改源文件字节；解析到允许根目录外的符号链接直接拒绝。
 
 ### 5.4 拆包任务
 

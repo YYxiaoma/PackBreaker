@@ -37,7 +37,7 @@ erDiagram
 | `admin_session` | administrator_id、token_digest、csrf_digest、expires_at、revoked_at、created_at | session/CSRF 明文 token 不入库；撤销和过期状态持久化 |
 | `api_token` | name、token_digest、scopes、expires_at、revoked_at、created_at | 明文只在创建响应出现一次；摘要唯一；scope 使用稳定枚举；过期/撤销状态持久化 |
 | `site` | name、adapter_type、base_url、secret_id、timeout、retry、rate_limit、enabled、automation_enabled | name 唯一；未绑定凭证不得启用自动化 |
-| `downloader` | name、type、base_url、secret_id、monitor_rules、path_mappings、capabilities、enabled | name 唯一；路径映射测试通过后才可自动执行 |
+| `downloader` | name、type、base_url、secret_id、monitor_rules、path_mappings、capabilities、connection_status、path_mapping_status、enabled、version | name 唯一；凭证只通过 secret_id 关联；配置修改用 version 乐观并发；连接与路径映射均通过后才可启用自动化 |
 | `notification_channel` | type、name、secret_id、config、enabled | 测试成功与启用状态分别保存 |
 | `setting` | namespace、key、value、updated_at | `(namespace,key)` 唯一；不得存储明文秘密 |
 | `secret` | kind、ciphertext、key_version、updated_at | AES-256-GCM 认证密文；AAD 绑定 ID/类型/密钥版本；只通过加密服务访问，API 永不返回 ciphertext |

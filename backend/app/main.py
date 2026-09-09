@@ -8,10 +8,13 @@ from starlette.responses import Response
 
 from backend.app.api.auth import router as auth_router
 from backend.app.api.automation_access import router as api_token_router
+from backend.app.api.downloaders import router as downloader_router
 from backend.app.api.health import router as health_router
 from backend.app.api.system import router as system_router
-from backend.app.application.auth import AuthError, AuthService
+from backend.app.application.auth import AuthService
 from backend.app.application.automation_access import ApiTokenService
+from backend.app.application.downloaders import DownloaderService
+from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretStore
 from backend.app.config import AppSettings
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
@@ -49,9 +52,15 @@ def create_app(
         app.state.runtime = resolved_runtime
         app.state.auth_service = AuthService(resolved_runtime.session_factory)
         app.state.api_token_service = ApiTokenService(resolved_runtime.session_factory)
-        app.state.secret_store = SecretStore(
+        secret_store = SecretStore(
             resolved_runtime.session_factory,
             resolved_runtime.secret_cipher,
+        )
+        app.state.secret_store = secret_store
+        app.state.downloader_service = DownloaderService(
+            resolved_runtime.session_factory,
+            secret_store,
+            data_root=resolved_settings.data_dir,
         )
         try:
             yield
@@ -69,8 +78,8 @@ def create_app(
     app.state.settings = resolved_settings
     app.state.runtime = resolved_runtime
 
-    @app.exception_handler(AuthError)
-    async def handle_auth_error(request: Request, exc: AuthError) -> JSONResponse:
+    @app.exception_handler(ApplicationError)
+    async def handle_application_error(request: Request, exc: ApplicationError) -> JSONResponse:
         trace_id = getattr(request.state, "trace_id", str(uuid4()))
         headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
         problem_type = exc.code.lower().replace("_", "-")
@@ -112,6 +121,7 @@ def create_app(
 
     app.include_router(api_token_router, prefix="/api/v1")
     app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(downloader_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
     return app

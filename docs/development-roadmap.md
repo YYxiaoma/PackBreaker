@@ -55,6 +55,8 @@ flowchart LR
 - qB/TR fake adapter 通过基础契约；路径穿越和映射歧义被阻断。
 - 应用重启后配置、会话撤销状态和空任务队列保持一致。
 
+当前实现进度：后端下载器 CRUD、加密凭证绑定、qB/TR fake/read-only probe、路径映射与临时 hardlink 诊断已落地；真实前端配置 API 接线、Docker 镜像/CI 等其余 M1 退出条件仍需继续完成。下载器任务写链路继续保留到 M3/M4。
+
 ## 4. M2：解析、匹配与预演
 
 ### 交付项
