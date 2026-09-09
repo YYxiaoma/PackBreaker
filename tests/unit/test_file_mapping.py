@@ -132,3 +132,41 @@ def test_inventory_snapshot_tracks_identity_and_mtime(tmp_path: Path) -> None:
     assert item.snapshot.size == 4
     assert item.snapshot.mtime_ns == actual.st_mtime_ns
     assert item.snapshot.file_type == "regular"
+
+
+def test_media_token_mapping_handles_canonical_release_variants(tmp_path: Path) -> None:
+    source = tmp_path / "different" / "Movie.4K.WEBDL.HEVC.mkv"
+    source.parent.mkdir()
+    source.write_bytes(b"abcd")
+    meta = _meta((_file("Pack/Movie.2160p.WEB-DL.H.265.mkv", 4, 0),))
+
+    result = auto_map_files(meta, scan_source_inventory(tmp_path))
+
+    assert result[0].state is FileMappingState.MAPPED
+    assert result[0].method is MappingMethod.MEDIA_TOKENS
+
+
+def test_media_token_mapping_requires_same_extension(tmp_path: Path) -> None:
+    source = tmp_path / "Movie.4K.WEBDL.HEVC.mp4"
+    source.write_bytes(b"abcd")
+    meta = _meta((_file("Pack/Movie.2160p.WEB-DL.H.265.mkv", 4, 0),))
+
+    result = auto_map_files(meta, scan_source_inventory(tmp_path))
+
+    assert result[0].state is FileMappingState.MISSING
+
+
+def test_media_token_mapping_does_not_break_ties_by_scan_order(tmp_path: Path) -> None:
+    first = tmp_path / "a" / "Movie.4K.WEBDL.HEVC.mkv"
+    second = tmp_path / "b" / "movie.2160p.web-dl.h265.mkv"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_bytes(b"abcd")
+    second.write_bytes(b"abcd")
+    meta = _meta((_file("Pack/Movie.2160p.WEB-DL.H.265.mkv", 4, 0),))
+
+    result = auto_map_files(meta, scan_source_inventory(tmp_path))
+
+    assert result[0].state is FileMappingState.AMBIGUOUS
+    assert result[0].method is MappingMethod.MEDIA_TOKENS
+    assert len(result[0].candidate_paths) == 2

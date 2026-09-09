@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
 
+from backend.app.domain.media_matching import media_file_token_signature
 from backend.app.domain.torrent import TorrentFile, TorrentMeta
 from backend.app.domain.verification import FileMappingState, FileSnapshot
 
@@ -9,6 +10,7 @@ from backend.app.domain.verification import FileMappingState, FileSnapshot
 class MappingMethod(StrEnum):
     EXACT_PATH = "EXACT_PATH"
     BASENAME = "BASENAME"
+    MEDIA_TOKENS = "MEDIA_TOKENS"
     NONE = "NONE"
     PROTOCOL_PADDING = "PROTOCOL_PADDING"
     ZERO_LENGTH = "ZERO_LENGTH"
@@ -84,6 +86,23 @@ def _map_one(
     )
     if basename_decision is not None:
         return basename_decision
+
+    torrent_basename = PurePosixPath(torrent_file.path).name
+    torrent_extension = PurePosixPath(torrent_basename).suffix.casefold()
+    torrent_tokens = media_file_token_signature(torrent_basename)
+    token_matches = tuple(
+        item
+        for item in same_length
+        if PurePosixPath(item.relative_path).suffix.casefold() == torrent_extension
+        and media_file_token_signature(PurePosixPath(item.relative_path).name) == torrent_tokens
+    )
+    token_decision = _unique_or_ambiguous(
+        torrent_file.path,
+        token_matches,
+        MappingMethod.MEDIA_TOKENS,
+    )
+    if token_decision is not None:
+        return token_decision
 
     return AutoMappingDecision(
         torrent_file.path,
