@@ -45,6 +45,7 @@ import {
   type Task,
 } from './demo';
 import TaskDetail from './components/TaskDetail.vue';
+import TaskCenter from './components/TaskCenter.vue';
 import Management from './components/Management.vue';
 import AuthGate from './components/AuthGate.vue';
 import { AUTH_REQUIRED_EVENT } from './api/client';
@@ -323,11 +324,12 @@ async function cancel(t: Task) {
         <div class="demo-notice">
           <span class="dot"></span>混合研发模式
           <span
-            >任务列表仍为合成样例；任务详情中的「真实分析」、下载器、管理员认证与 API Token
-            已接入真实后端。</span
+            >「任务中心」已接入真实 SQLite 任务；总览与预演聚合仍为合成样例。任务
+            Analyze、下载器、管理员认证与 API Token 已接入真实后端。</span
           ><button @click="help = true">体验指南 <ArrowUpRight :size="13" /></button>
         </div>
-        <template v-if="['任务中心', '预演与确认', '总览'].includes(route)">
+        <TaskCenter v-if="route === '任务中心'" />
+        <template v-else-if="['预演与确认', '总览'].includes(route)">
           <div class="stats">
             <div class="stat">
               <div>演示任务<Layers :size="20" /></div>

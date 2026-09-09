@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -14,11 +15,12 @@ from backend.app.application.analysis import AnalysisService, AnalysisSiteProvid
 from backend.app.application.errors import ApplicationError
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.preflight import PreflightSnapshot
+from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
 from backend.app.infrastructure.persistence.preflight_repositories import (
     PreflightSnapshotRepository,
 )
-from backend.app.infrastructure.persistence.repositories import TaskRepository
+from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskCandidateRepository,
     TaskUnitRepository,
@@ -70,6 +72,26 @@ class PreflightView:
     created_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class TaskView:
+    id: str
+    type: str
+    source_downloader_id: str
+    source_hash: str
+    normalized_unit_key: str
+    status: str
+    error_code: str | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TaskCreateView:
+    task: TaskView
+    created: bool
+
+
 class TaskAnalysisService:
     """任务级 M2 入口：安全定位 /data、持久化 unit/candidate，并判断 preflight 当前性。"""
 
@@ -84,6 +106,50 @@ class TaskAnalysisService:
         self._site_service = site_service
         self._data_root = data_root
         self._analysis = AnalysisService(session_factory, site_service)
+
+    def list_tasks(self, *, status: TaskStatus | None = None, limit: int = 100) -> list[TaskView]:
+        with self._session_factory() as session:
+            records = TaskRepository(session).list_recent(status=status, limit=limit)
+            return [self._task_view(item) for item in records]
+
+    def get_task(self, task_id: str) -> TaskView:
+        with self._session_factory() as session:
+            task = TaskRepository(session).get(task_id)
+            if task is None:
+                raise _task_not_found()
+            return self._task_view(task)
+
+    def create_task(
+        self,
+        *,
+        task_type: str,
+        source_downloader_id: str,
+        source_hash: str,
+        normalized_unit_key: str,
+    ) -> TaskCreateView:
+        normalized_values = tuple(
+            value.strip()
+            for value in (task_type, source_downloader_id, source_hash, normalized_unit_key)
+        )
+        if any(not value for value in normalized_values):
+            raise ApplicationError(
+                code="TASK_INPUT_INVALID",
+                status=422,
+                title="任务输入无效",
+                detail="任务类型、来源下载器、source hash 与处理单元 key 均不能为空",
+            )
+        normalized_type, normalized_downloader, normalized_hash, normalized_unit = normalized_values
+        request = TaskCreate(
+            task_type=normalized_type,
+            source_downloader_id=normalized_downloader,
+            source_hash=normalized_hash,
+            normalized_unit_key=normalized_unit,
+            trace_id=str(uuid4()),
+        )
+        with self._session_factory() as session:
+            task, created = TaskRepository(session).create_or_get(request)
+            session.commit()
+            return TaskCreateView(task=self._task_view(task), created=created)
 
     async def analyze(self, task_id: str, *, source_root: str) -> PreflightSnapshot:
         normalized_root, resolved_root = self._resolve_source_root(source_root)
@@ -294,6 +360,21 @@ class TaskAnalysisService:
             error_code=record.error_code,
             evidence=deepcopy(record.evidence),
             created_at=record.created_at,
+        )
+
+    @staticmethod
+    def _task_view(record: Any) -> TaskView:
+        return TaskView(
+            id=record.id,
+            type=record.type,
+            source_downloader_id=record.source_downloader_id,
+            source_hash=record.source_hash,
+            normalized_unit_key=record.normalized_unit_key,
+            status=record.status,
+            error_code=record.error_code,
+            version=record.version,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
         )
 
 

@@ -55,6 +55,17 @@ class TaskRepository:
     def get_by_idempotency_key(self, key: str) -> UnpackTask | None:
         return self._session.scalar(select(UnpackTask).where(UnpackTask.idempotency_key == key))
 
+    def list_recent(
+        self, *, status: TaskStatus | None = None, limit: int = 100
+    ) -> list[UnpackTask]:
+        statement = select(UnpackTask)
+        if status is not None:
+            statement = statement.where(UnpackTask.status == status.value)
+        statement = statement.order_by(UnpackTask.updated_at.desc(), UnpackTask.id.desc()).limit(
+            limit
+        )
+        return list(self._session.scalars(statement))
+
     def create_or_get(self, request: TaskCreate) -> tuple[UnpackTask, bool]:
         key = task_idempotency_key(
             task_type=request.task_type,

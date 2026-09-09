@@ -1002,6 +1002,165 @@
         "title": "TaskCandidateResponse",
         "type": "object"
       },
+      "TaskCreateRequest": {
+        "properties": {
+          "normalized_unit_key": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Normalized Unit Key",
+            "type": "string"
+          },
+          "source_downloader_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Source Downloader Id",
+            "type": "string"
+          },
+          "source_hash": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source Hash",
+            "type": "string"
+          },
+          "task_type": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Task Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_type",
+          "source_downloader_id",
+          "source_hash",
+          "normalized_unit_key"
+        ],
+        "title": "TaskCreateRequest",
+        "type": "object"
+      },
+      "TaskCreateResponse": {
+        "properties": {
+          "created": {
+            "title": "Created",
+            "type": "boolean"
+          },
+          "item": {
+            "$ref": "#/components/schemas/TaskResponse"
+          }
+        },
+        "required": [
+          "item",
+          "created"
+        ],
+        "title": "TaskCreateResponse",
+        "type": "object"
+      },
+      "TaskListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "TaskListResponse",
+        "type": "object"
+      },
+      "TaskResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "normalized_unit_key": {
+            "title": "Normalized Unit Key",
+            "type": "string"
+          },
+          "source_downloader_id": {
+            "title": "Source Downloader Id",
+            "type": "string"
+          },
+          "source_hash": {
+            "title": "Source Hash",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "source_downloader_id",
+          "source_hash",
+          "normalized_unit_key",
+          "status",
+          "error_code",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "TaskResponse",
+        "type": "object"
+      },
+      "TaskStatus": {
+        "enum": [
+          "PENDING",
+          "ANALYZING",
+          "SEARCHING",
+          "MATCHING",
+          "VERIFYING",
+          "PREFLIGHT",
+          "AWAITING_CONFIRMATION",
+          "LINKING",
+          "ADDING",
+          "CLIENT_VERIFYING",
+          "SEEDING",
+          "DONE",
+          "PAUSED",
+          "RETRY",
+          "FAILED",
+          "CANCELLING",
+          "ROLLING_BACK",
+          "CANCELLED"
+        ],
+        "title": "TaskStatus",
+        "type": "string"
+      },
       "TaskUnitListResponse": {
         "properties": {
           "items": {
@@ -3295,6 +3454,276 @@
         "summary": "System Status",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "operationId": "list_tasks_api_v1_tasks_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TaskStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Tasks",
+        "tags": [
+          "tasks"
+        ]
+      },
+      "post": {
+        "operationId": "create_task_api_v1_tasks_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCreateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Task",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}": {
+      "get": {
+        "operationId": "get_task_api_v1_tasks__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task",
+        "tags": [
+          "tasks"
         ]
       }
     },

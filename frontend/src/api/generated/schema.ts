@@ -340,6 +340,41 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/tasks': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Tasks */
+    get: operations['list_tasks_api_v1_tasks_get'];
+    put?: never;
+    /** Create Task */
+    post: operations['create_task_api_v1_tasks_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/tasks/{task_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Task */
+    get: operations['get_task_api_v1_tasks__task_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/tasks/{task_id}/actions': {
     parameters: {
       query?: never;
@@ -794,6 +829,79 @@ export interface components {
       /** Verification Level */
       verification_level: string | null;
     };
+    /** TaskCreateRequest */
+    TaskCreateRequest: {
+      /** Normalized Unit Key */
+      normalized_unit_key: string;
+      /** Source Downloader Id */
+      source_downloader_id: string;
+      /** Source Hash */
+      source_hash: string;
+      /** Task Type */
+      task_type: string;
+    };
+    /** TaskCreateResponse */
+    TaskCreateResponse: {
+      /** Created */
+      created: boolean;
+      item: components['schemas']['TaskResponse'];
+    };
+    /** TaskListResponse */
+    TaskListResponse: {
+      /** Items */
+      items: components['schemas']['TaskResponse'][];
+    };
+    /** TaskResponse */
+    TaskResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Error Code */
+      error_code: string | null;
+      /** Id */
+      id: string;
+      /** Normalized Unit Key */
+      normalized_unit_key: string;
+      /** Source Downloader Id */
+      source_downloader_id: string;
+      /** Source Hash */
+      source_hash: string;
+      status: components['schemas']['TaskStatus'];
+      /** Type */
+      type: string;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+      /** Version */
+      version: number;
+    };
+    /**
+     * TaskStatus
+     * @enum {string}
+     */
+    TaskStatus:
+      | 'PENDING'
+      | 'ANALYZING'
+      | 'SEARCHING'
+      | 'MATCHING'
+      | 'VERIFYING'
+      | 'PREFLIGHT'
+      | 'AWAITING_CONFIRMATION'
+      | 'LINKING'
+      | 'ADDING'
+      | 'CLIENT_VERIFYING'
+      | 'SEEDING'
+      | 'DONE'
+      | 'PAUSED'
+      | 'RETRY'
+      | 'FAILED'
+      | 'CANCELLING'
+      | 'ROLLING_BACK'
+      | 'CANCELLED';
     /** TaskUnitListResponse */
     TaskUnitListResponse: {
       /** Items */
@@ -1755,6 +1863,116 @@ export interface operations {
           'application/json': {
             [key: string]: unknown;
           };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_tasks_api_v1_tasks_get: {
+    parameters: {
+      query?: {
+        status?: components['schemas']['TaskStatus'] | null;
+        limit?: number;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  create_task_api_v1_tasks_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskCreateResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_task_api_v1_tasks__task_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskResponse'];
         };
       };
       /** @description Validation Error */

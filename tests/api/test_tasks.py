@@ -209,6 +209,64 @@ def test_task_analyze_rejects_traversal_and_symlink_source_roots(tmp_path: Path)
         client.__exit__(None, None, None)
 
 
+def test_task_collection_create_is_idempotent_and_listed(tmp_path: Path) -> None:
+    client, _app, _settings = _authenticated_client(tmp_path)
+    payload = {
+        "task_type": "PACKAGE_UNPACK",
+        "source_downloader_id": "source-downloader",
+        "source_hash": "synthetic-source-hash",
+        "normalized_unit_key": "unit-key-001",
+    }
+    try:
+        without_csrf = client.post("/api/v1/tasks", json=payload)
+        assert without_csrf.status_code == 403
+
+        created = client.post("/api/v1/tasks", headers=_csrf(client), json=payload)
+        assert created.status_code == 200
+        assert created.json()["created"] is True
+        task = created.json()["item"]
+        assert task["status"] == "PENDING"
+        assert task["source_hash"] == payload["source_hash"]
+
+        duplicate = client.post("/api/v1/tasks", headers=_csrf(client), json=payload)
+        assert duplicate.status_code == 200
+        assert duplicate.json()["created"] is False
+        assert duplicate.json()["item"]["id"] == task["id"]
+
+        listed = client.get("/api/v1/tasks")
+        assert listed.status_code == 200
+        assert [item["id"] for item in listed.json()["items"]] == [task["id"]]
+
+        detail = client.get(f"/api/v1/tasks/{task['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["normalized_unit_key"] == payload["normalized_unit_key"]
+
+        filtered = client.get("/api/v1/tasks", params={"status": "DONE"})
+        assert filtered.status_code == 200
+        assert filtered.json()["items"] == []
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_task_collection_rejects_whitespace_only_identity(tmp_path: Path) -> None:
+    client, _app, _settings = _authenticated_client(tmp_path)
+    try:
+        response = client.post(
+            "/api/v1/tasks",
+            headers=_csrf(client),
+            json={
+                "task_type": "   ",
+                "source_downloader_id": "source",
+                "source_hash": "hash",
+                "normalized_unit_key": "unit",
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["code"] == "TASK_INPUT_INVALID"
+    finally:
+        client.__exit__(None, None, None)
+
+
 def _authenticated_client(tmp_path: Path) -> tuple[TestClient, FastAPI, AppSettings]:
     settings = AppSettings(
         config_dir=(tmp_path / "config").resolve(),

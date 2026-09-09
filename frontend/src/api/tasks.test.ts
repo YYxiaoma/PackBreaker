@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apiClient } from './client';
 import {
   analyzeTask,
+  createTask,
   getTaskPreflight,
   getTaskPreflightCurrent,
+  listTasks,
   listTaskCandidates,
   listTaskUnits,
 } from './tasks';
@@ -12,6 +14,45 @@ import {
 afterEach(() => vi.restoreAllMocks());
 
 describe('任务分析 API', () => {
+  it('任务集合使用真实 /tasks，并原样返回创建幂等结果', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValueOnce({ data: { items: [] } });
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValueOnce({
+      data: {
+        created: true,
+        item: {
+          id: 'task-1',
+          type: 'PACKAGE_UNPACK',
+          source_downloader_id: 'downloader-1',
+          source_hash: 'source-hash',
+          normalized_unit_key: 'unit-key',
+          status: 'PENDING',
+          error_code: null,
+          version: 1,
+          created_at: '2026-09-10T00:00:00Z',
+          updated_at: '2026-09-10T00:00:00Z',
+        },
+      },
+    });
+
+    await listTasks('PENDING');
+    const result = await createTask({
+      task_type: 'PACKAGE_UNPACK',
+      source_downloader_id: 'downloader-1',
+      source_hash: 'source-hash',
+      normalized_unit_key: 'unit-key',
+    });
+
+    expect(get).toHaveBeenCalledWith('/tasks', { params: { status: 'PENDING' } });
+    expect(post).toHaveBeenCalledWith('/tasks', {
+      task_type: 'PACKAGE_UNPACK',
+      source_downloader_id: 'downloader-1',
+      source_hash: 'source-hash',
+      normalized_unit_key: 'unit-key',
+    });
+    expect(result.created).toBe(true);
+    expect(result.item.id).toBe('task-1');
+  });
+
   it('使用编码后的 task id 读取 units/candidates/preflight', async () => {
     const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { items: [] } });
     await listTaskUnits('task/with slash');
