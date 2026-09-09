@@ -35,6 +35,9 @@ def test_relative_startup_paths_are_rejected() -> None:
     with pytest.raises(ValidationError):
         AppSettings(config_dir=Path("relative"))
 
+    with pytest.raises(ValidationError):
+        AppSettings(frontend_dir=Path("frontend/dist"))
+
 
 def test_unknown_timezone_is_rejected() -> None:
     with pytest.raises(ValidationError):

@@ -8,15 +8,15 @@ v1.0 以单个 `linux/amd64` Docker 镜像发布，单容器内运行 FastAPI、
 
 ## 2. 镜像结构
 
-采用多阶段构建：
+仓库根目录 `Dockerfile` 已采用三阶段构建：
 
-1. Node 22 构建 Vue 前端。
-2. Python 3.11 构建锁定依赖和应用环境。
-3. 精简 Python 3.11 runtime 复制后端、迁移和前端 dist。
+1. Node 22 + pnpm 10.34.5 按冻结锁文件构建 Vue 前端。
+2. Python 3.11 + uv 0.12.11 按 `uv.lock` 的 runtime 依赖构建 `/opt/venv`，不安装 dev group。
+3. 精简 Python 3.11 runtime 只复制运行 venv、后端/迁移和前端 dist，并由 FastAPI 同源服务 `/` 与 `/assets/*`。
 
 运行镜像要求：
 
-- 使用非 root 用户；通过 `PUID`/`PGID` 或部署时指定 user 匹配 NAS 文件所有权。
+- 镜像默认 `USER packbreaker`（UID/GID 1000）。Compose 为初始化 named `/config` 卷可短暂以 root 运行入口包装器；包装器只递归调整应用专属 `/config` 所有权，立即清空 supplementary groups 并按 `PUID`/`PGID` 永久降权后才导入/启动服务。`/data` 不自动 chown。
 - 只包含运行依赖，不包含测试工具、源码缓存、Node modules 和真实配置。
 - 固定基础镜像 digest并生成 SBOM；发布标签不可覆盖，另提供可移动 channel 标签。
 - OCI 标签包含版本、Git revision、构建时间、源码地址和许可证。
@@ -45,6 +45,7 @@ v1.0 以单个 `linux/amd64` Docker 镜像发布，单容器内运行 FastAPI、
 | `PACKBREAKER_PORT` | `8000` | HTTP 端口 |
 | `PACKBREAKER_CONFIG_DIR` | `/config` | 配置与状态目录 |
 | `PACKBREAKER_DATA_DIR` | `/data` | 数据根目录 |
+| `PACKBREAKER_FRONTEND_DIR` | 镜像内 `/app/frontend/dist`；源码运行默认空 | 前端静态构建目录；设置时必须为绝对路径且包含 `index.html`/`assets` |
 | `PACKBREAKER_SECRET_KEY_FILE` | `/config/secret.key` | 主密钥文件；首次启动安全生成 |
 | `PACKBREAKER_LOG_LEVEL` | `INFO` | 日志级别 |
 | `PACKBREAKER_TIMEZONE` | `Asia/Shanghai` | 仅影响调度和展示，数据库仍保存 UTC |
@@ -54,32 +55,18 @@ v1.0 以单个 `linux/amd64` Docker 镜像发布，单容器内运行 FastAPI、
 
 ## 5. Compose 蓝图
 
-以下是实现阶段应生成的结构，镜像名和宿主机路径由发布/部署环境替换：
+仓库根目录 `compose.yaml` 可直接用于本地构建/启动：
 
-```yaml
-services:
-  packbreaker:
-    image: <registry>/packbreaker:<immutable-version>
-    container_name: packbreaker
-    restart: unless-stopped
-    user: "${PUID}:${PGID}"
-    ports:
-      - "8000:8000"
-    environment:
-      PACKBREAKER_TIMEZONE: Asia/Shanghai
-      PACKBREAKER_SECRET_KEY_FILE: /config/secret.key
-    volumes:
-      - ./config:/config
-      - /path/to/common/storage:/data
-    healthcheck:
-      test: ["CMD", "packbreaker-healthcheck"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
+```bash
+export PACKBREAKER_DATA_PATH=/path/to/common/storage
+export PUID=1000
+export PGID=1000
+docker compose up --build -d
 ```
 
-升级中心需要 docker.sock 时，由用户在部署文件中显式增加挂载。应用必须在界面持续显示高权限状态，不能在安装脚本中默认加入。
+Compose 使用 `packbreaker-config` named volume 保存 SQLite、主密钥和锁，数据根通过 `PACKBREAKER_DATA_PATH` 显式 bind mount 到 `/data`；默认 HTTP 端口为 8000，可用 `PACKBREAKER_HTTP_PORT` 修改宿主机端口。容器设置 `no-new-privileges`，健康检查执行 `python -m backend.app.healthcheck`，只请求本机 `/api/v1/health/ready`。
+
+如果使用自定义 `PUID`/`PGID`，应确保 `/data` 内需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限。入口不会为了方便而修改媒体树所有权。升级中心需要 docker.sock 时仍必须由用户在部署文件中显式增加挂载；默认 Compose 不授予 Docker 管理权限。
 
 ## 6. 网络与反向代理
 

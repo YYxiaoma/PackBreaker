@@ -5,6 +5,7 @@
 仓库已有 `frontend/` Vue 3 / TypeScript 交互界面与演示流程测试，并已开始建立 `backend/` M1 安全骨架。当前后端能力包含任务状态转换、幂等键、qB/TR 校验安全门、FastAPI 应用入口、`X-Trace-Id` 传播、启动配置、单实例锁、`/api/v1/health/live` 与 `/api/v1/health/ready`，SQLite WAL / SQLAlchemy / Alembic 持久化与任务/操作日志 repository，管理员首次初始化、Argon2id 口令哈希、持久会话、CSRF、API Token、可信代理、安全响应头、AES-256-GCM secret store，以及下载器 CRUD、qB/TR 只读连接探测和路径映射诊断。前端已用 Axios + Pinia 接入管理员首次初始化/登录/退出、API Token 管理和下载器真实配置 API；M1 的下载器适配器仍只允许连接/能力读取，不提供任何任务写方法。其他业务页面、站点适配器与生产辅种执行仍属于后续工作。界面覆盖边界见 [prototype.md](./prototype.md)。
 
 当前已可执行：前端 `install`、`dev`、`lint`（Prettier 格式检查）、`typecheck`、`test`、`build`、`api:types` 与 `test:e2e`。浏览器检查要求本地 5173 开发服务已启动，默认使用已安装 Microsoft Edge；可设置 `PB_BROWSER=chrome` 使用 Chrome。Vite 开发服务把 `/api` 代理到本机 8000 端口，生产部署则继续使用 FastAPI 同源入口。`src/demo.ts` 仍只服务合成任务页面；认证/API Token 已直接复用生成 OpenAPI schema 类型，下载器响应因当前服务端仍使用通用响应字典，暂时保留手写 strict view 类型。
+Docker 镜像设置 `PACKBREAKER_FRONTEND_DIR=/app/frontend/dist`，FastAPI 只在该配置显式存在时服务 `/` 与 `/assets/*`；开发模式默认不设置此变量，因此 Vite 仍独立运行。镜像入口显式关闭 Uvicorn 的通用 proxy-header 解释，继续只接受应用层 `PACKBREAKER_TRUSTED_PROXIES` 白名单。
 
 ## 2. 开发环境
 
@@ -56,28 +57,25 @@ PackBreaker/
 
 ## 4. 计划命令
 
-M1 使用根目录 `pyproject.toml` 作为 Python 工具入口；依赖锁文件将在可用的 Python 3.11 + uv 环境中生成。底层命令如下：
+M1 使用根目录 `pyproject.toml` 与已提交的 `uv.lock` 固定 Python 依赖。推荐先安装依赖，再使用统一入口：
 
 ```bash
-# 后端
-uv sync --all-groups
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy backend
-uv run pytest
+uv sync --frozen --all-groups
+corepack enable
+corepack install --global pnpm@10.34.5
+corepack pnpm --dir frontend install --frozen-lockfile
 
-# 前端
-pnpm --dir frontend install --frozen-lockfile
-pnpm --dir frontend lint
-pnpm --dir frontend typecheck
-pnpm --dir frontend test
-pnpm --dir frontend build
+# 格式/lint/类型/OpenAPI 漂移
+uv run python scripts/check.py
 
-# 全栈
+# pytest + Vitest + production build
+uv run python scripts/test.py
+
+# 单镜像本地运行
 docker compose up --build
 ```
 
-应增加 `Makefile` 或 `scripts/dev`、`scripts/check`、`scripts/test` 作为稳定入口，内部调用上述工具。脚本使用严格错误处理、可重复执行，并且默认不连接真实服务。
+`scripts/check.py` 与 `scripts/test.py` 都使用严格失败语义并默认离线，不访问真实 PT 或下载器。底层 Ruff/mypy/pytest/pnpm 命令仍可单独执行用于聚焦调试。Docker/Compose 不属于默认单元测试前置条件；没有 Docker Engine 的开发机仍可完成代码与测试门禁。
 
 ## 5. 配置分层
 

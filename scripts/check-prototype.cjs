@@ -5,7 +5,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 (async()=>{
-  const browser=await chromium.launch({channel:process.env.PB_BROWSER||'msedge',headless:true});
+  const requestedBrowser=process.env.PB_BROWSER||'msedge';
+  const launchOptions={headless:true};
+  if(requestedBrowser!=='bundled') launchOptions.channel=requestedBrowser;
+  const browser=await chromium.launch(launchOptions);
   const page=await browser.newPage({viewport:{width:1440,height:1050}});
   const errors=[];
   page.on('pageerror',e=>errors.push(e.message));

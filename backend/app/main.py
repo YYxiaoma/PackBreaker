@@ -3,7 +3,8 @@ from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
 from backend.app.api.auth import router as auth_router
@@ -28,6 +29,23 @@ def _trace_id(value: str | None) -> UUID:
         except ValueError:
             return uuid4()
     return uuid4()
+
+
+def _attach_frontend(app: FastAPI, settings: AppSettings) -> None:
+    frontend_dir = settings.frontend_dir
+    if frontend_dir is None:
+        return
+
+    index_path = frontend_dir / "index.html"
+    assets_dir = frontend_dir / "assets"
+    if not frontend_dir.is_dir() or not index_path.is_file() or not assets_dir.is_dir():
+        raise ValueError("前端静态目录必须包含 index.html 与 assets 目录")
+
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    @app.get("/", include_in_schema=False)
+    async def frontend_index() -> FileResponse:
+        return FileResponse(index_path)
 
 
 def create_app(
@@ -124,6 +142,7 @@ def create_app(
     app.include_router(downloader_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
+    _attach_frontend(app, resolved_settings)
     return app
 
 

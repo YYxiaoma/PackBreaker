@@ -115,16 +115,13 @@ M2 使用合成 1 万文件 torrent 和跨文件 piece 测试内存上界与流�
 
 ## 11. CI 门禁
 
-每个 Pull Request 顺序执行：
+当前 GitHub Actions 每个 Pull Request 执行三条门禁：
 
-1. 仓库敏感信息与大文件扫描。
-2. 后端格式、lint、类型检查和单元/集成测试。
-3. 前端格式、lint、类型检查、组件测试和构建。
-4. OpenAPI 兼容检查与生成客户端漂移检查。
-5. Docker 构建和基础健康检查。
-6. Playwright 核心端到端场景。
+1. `quality`：Python 3.11 + `uv sync --frozen --all-groups`，运行统一静态检查、OpenAPI/生成类型漂移检查、pytest、Vitest 与 production build。
+2. `browser-e2e`：安装 Playwright bundled Chromium，启动本地 Vite；认证状态只使用合成 `/auth/me`，不需要真实后端或凭证。
+3. `container`：构建三阶段 runtime 镜像，以临时空 `/config`、`/data` 启动，验证 readiness、同源前端首页和镜像默认非 root 用户。
 
-任何安全不变量、迁移、契约或端到端测试失败都阻止合并。真实站点测试不进入普通 CI，避免凭证暴露和违反站点自动化规则。
+仓库级敏感信息/大文件扫描仍需继续补成独立 CI 步骤；普通 CI 永不连接真实 PT 或下载器。任何安全不变量、迁移、契约、容器 smoke 或端到端测试失败都应阻止合并。
 
 ## 12. v1.0 验收清单
 

@@ -20,6 +20,7 @@ class AppSettings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     config_dir: Path = Path("/config")
     data_dir: Path = Path("/data")
+    frontend_dir: Path | None = None
     secret_key_file: Path | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     timezone: str = "Asia/Shanghai"
@@ -32,11 +33,11 @@ class AppSettings(BaseSettings):
             raise ValueError("启动目录必须使用绝对路径")
         return value
 
-    @field_validator("secret_key_file")
+    @field_validator("secret_key_file", "frontend_dir")
     @classmethod
-    def require_absolute_secret_path(cls, value: Path | None) -> Path | None:
+    def require_absolute_optional_path(cls, value: Path | None) -> Path | None:
         if value is not None and not value.is_absolute():
-            raise ValueError("主密钥文件必须使用绝对路径")
+            raise ValueError("可选启动路径必须使用绝对路径")
         return value
 
     @field_validator("log_level", mode="before")
