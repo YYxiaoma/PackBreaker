@@ -28,6 +28,8 @@
 
 总体行和分支覆盖率目标为 85%。路径安全、验证等级、状态转换、幂等、回滚和凭证脱敏的每个安全分支必须有明确测试，不以总体覆盖率豁免。
 
+站点适配器共享只读契约固定验证 `capabilities/test_connection/search/fetch_details/fetch_torrent`。M-Team 默认测试只使用 `httpx` MockTransport 与合成响应，断言 API Key 仅发送给 API origin、下载第二跳不携带凭证、任意站外下载 URL 被拒绝、torrent payload 大小有界且错误不会回显远端 message/凭证。普通测试不得访问真实 PT 账号。
+
 ## 4. 合成语料
 
 测试运行时生成 torrent 和媒体字节，不把 `.torrent` 或媒体文件提交到仓库。生成器应支持固定随机种子，以便失败可重现。
