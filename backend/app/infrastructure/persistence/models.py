@@ -177,6 +177,24 @@ class TaskEvent(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class PreflightSnapshotRecord(Base):
+    __tablename__ = "preflight_snapshot"
+    __table_args__ = (Index("ix_preflight_snapshot_task_created_at", "task_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("unpack_task.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    task_version: Mapped[int] = mapped_column(nullable=False)
+    normalized_unit_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_inventory_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class OperationJournal(Base):
     __tablename__ = "operation_journal"
     __table_args__ = (

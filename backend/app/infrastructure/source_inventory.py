@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 import unicodedata
+from hashlib import sha256
 from pathlib import Path
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
@@ -63,6 +65,24 @@ def current_file_snapshot(path: Path) -> FileSnapshot:
     if not stat.S_ISREG(result.st_mode):
         raise DomainViolation(ErrorCode.SOURCE_CHANGED, "缓存映射源已不再是普通文件")
     return _snapshot(result)
+
+
+def source_inventory_digest(candidates: tuple[SourceFileCandidate, ...]) -> str:
+    payload = [
+        {
+            "relative_path": item.relative_path,
+            "source_path": item.source_path,
+            "length": item.length,
+            "device": item.snapshot.device,
+            "inode": item.snapshot.inode,
+            "size": item.snapshot.size,
+            "mtime_ns": item.snapshot.mtime_ns,
+            "file_type": item.snapshot.file_type,
+        }
+        for item in candidates
+    ]
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return sha256(raw).hexdigest()
 
 
 def _lstat(path: Path) -> os.stat_result:

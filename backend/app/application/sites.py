@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretStore
+from backend.app.domain.site_adapter import SiteAdapter
 from backend.app.domain.site_config import (
     SiteCredentialKind,
     SiteKind,
@@ -60,6 +61,14 @@ class _SiteConnectionSnapshot:
     secret_id: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class EnabledSiteAdapter:
+    config_id: str
+    config_version: int
+    site_id: str
+    adapter: SiteAdapter
+
+
 class SiteService:
     def __init__(
         self,
@@ -79,6 +88,51 @@ class SiteService:
     def get(self, site_id: str) -> SiteView:
         with self._session_factory() as session:
             return self._view(self._require_record(SiteRepository(session), site_id))
+
+    def enabled_adapters(self) -> tuple[EnabledSiteAdapter, ...]:
+        with self._session_factory() as session:
+            records = tuple(SiteRepository(session).list_enabled())
+            snapshots = tuple(
+                _SiteConnectionSnapshot(
+                    record.id,
+                    record.version,
+                    SiteKind(record.type),
+                    record.base_url,
+                    SiteCredentialKind(record.credential_kind),
+                    record.secret_id,
+                )
+                for record in records
+            )
+        result: list[EnabledSiteAdapter] = []
+        for snapshot in snapshots:
+            if snapshot.secret_id is None:
+                raise ApplicationError(
+                    code="SITE_ENABLED_CONFIG_INVALID",
+                    status=500,
+                    title="已启用站点配置无效",
+                    detail="已启用站点缺少凭证",
+                )
+            credential = self._secret_store.get(snapshot.secret_id).decode("utf-8")
+            result.append(
+                EnabledSiteAdapter(
+                    config_id=snapshot.id,
+                    config_version=snapshot.version,
+                    site_id=self._expected_site_id(snapshot.type),
+                    adapter=self._adapter_factory.create(
+                        kind=snapshot.type,
+                        base_url=snapshot.base_url,
+                        credential_kind=snapshot.credential_kind,
+                        credential=credential,
+                    ),
+                )
+            )
+        return tuple(result)
+
+    def enabled_site_versions(self) -> tuple[tuple[str, int], ...]:
+        with self._session_factory() as session:
+            return tuple(
+                (record.id, record.version) for record in SiteRepository(session).list_enabled()
+            )
 
     def create(
         self,

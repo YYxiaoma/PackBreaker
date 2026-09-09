@@ -14,6 +14,13 @@ class SiteRepository:
     def list_all(self) -> list[Site]:
         return list(self._session.scalars(select(Site).order_by(Site.name, Site.id)))
 
+    def list_enabled(self) -> list[Site]:
+        return list(
+            self._session.scalars(
+                select(Site).where(Site.enabled.is_(True)).order_by(Site.name, Site.id)
+            )
+        )
+
     def get(self, site_id: str) -> Site | None:
         return self._session.get(Site, site_id)
 

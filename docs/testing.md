@@ -69,6 +69,14 @@
 - 回滚只删除 operation journal 登记且 after snapshot 仍一致的资源。
 - `remove_torrent` 的底层下载器调用必须断言为“不删除数据”，并确认公共适配器不存在删除数据参数。
 
+### 5.4 Preflight 当前性与不可变性
+
+- 相同 task version、处理单元、源 inventory、启用站点版本和候选证据重复分析，`snapshot_digest` 必须稳定。
+- `created_at` 不参与 digest；相同 digest 的重复分析不得写入第二条 preflight 记录。
+- 源文件 device/inode/size/mtime、启用站点集合/version 或 task version 在分析期间变化时，必须在持久化前返回冲突并保持零新增 snapshot。
+- 单个站点搜索失败只能留下站点级错误证据，不得抹掉其他站点的安全验证结果。
+- 声明最小请求间隔的站点单次分析最多执行一条查询；没有已知速率限制的 fake/profile 才可在同一分析中执行逐步放宽查询。
+
 ## 6. 幂等与故障注入
 
 相同触发事件并发或连续执行 10 次，断言只存在一个有效任务、一个候选执行、一个最终链接集合和一个下载器任务。

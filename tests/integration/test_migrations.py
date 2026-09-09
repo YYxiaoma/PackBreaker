@@ -27,6 +27,7 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
         "unpack_task",
         "task_event",
         "operation_journal",
+        "preflight_snapshot",
     }.issubset(set(inspector.get_table_names()))
     task_unique_names = {
         constraint["name"] for constraint in inspector.get_unique_constraints("unpack_task")
@@ -47,6 +48,9 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert {constraint["name"] for constraint in inspector.get_unique_constraints("site")} == {
         "uq_site_name"
     }
+    assert {
+        constraint["name"] for constraint in inspector.get_unique_constraints("preflight_snapshot")
+    } == {"uq_preflight_snapshot_snapshot_digest"}
     site_columns = {column["name"] for column in inspector.get_columns("site")}
     assert "credential_kind" in site_columns
     site_checks = {constraint["name"] for constraint in inspector.get_check_constraints("site")}
