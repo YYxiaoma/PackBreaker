@@ -28,6 +28,7 @@ class FileSnapshot:
     inode: int
     size: int
     mtime_ns: int
+    file_type: str = "regular"
 
 
 @dataclass(frozen=True, slots=True)
