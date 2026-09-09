@@ -6,6 +6,7 @@ from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.domain.operation import OperationStatus
+from backend.app.domain.site_config import SiteKind
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.persistence.base import Base
@@ -23,6 +24,7 @@ def new_uuid() -> str:
 _TASK_STATUS_SQL = ", ".join(f"'{status.value}'" for status in TaskStatus)
 _OPERATION_STATUS_SQL = ", ".join(f"'{status.value}'" for status in OperationStatus)
 _DOWNLOADER_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in DownloaderKind)
+_SITE_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in SiteKind)
 
 
 class Administrator(Base):
@@ -104,6 +106,29 @@ class Downloader(Base):
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     last_path_diagnostic_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class Site(Base):
+    __tablename__ = "site"
+    __table_args__ = (
+        CheckConstraint(f"type IN ({_SITE_KIND_SQL})", name="type"),
+        Index("ix_site_type_enabled", "type", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("secret.id", ondelete="SET NULL"), nullable=True
+    )
+    capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    connection_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 

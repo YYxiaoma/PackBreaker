@@ -13,12 +13,14 @@ from backend.app.api.auth import router as auth_router
 from backend.app.api.automation_access import router as api_token_router
 from backend.app.api.downloaders import router as downloader_router
 from backend.app.api.health import router as health_router
+from backend.app.api.sites import router as site_router
 from backend.app.api.system import router as system_router
 from backend.app.application.auth import AuthService
 from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretStore
+from backend.app.application.sites import SiteService
 from backend.app.config import AppSettings
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
 from backend.app.infrastructure.runtime import RuntimeManager
@@ -84,6 +86,7 @@ def create_app(
             secret_store,
             data_root=resolved_settings.data_dir,
         )
+        app.state.site_service = SiteService(resolved_runtime.session_factory, secret_store)
         try:
             yield
         finally:
@@ -175,6 +178,7 @@ def create_app(
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(downloader_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(site_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
     _attach_frontend(app, resolved_settings)
     return app

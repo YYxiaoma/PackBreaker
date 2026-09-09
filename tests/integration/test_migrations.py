@@ -22,6 +22,7 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
         "admin_session",
         "api_token",
         "downloader",
+        "site",
         "secret",
         "unpack_task",
         "task_event",
@@ -43,4 +44,7 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("downloader")
     } == {"uq_downloader_name"}
+    assert {constraint["name"] for constraint in inspector.get_unique_constraints("site")} == {
+        "uq_site_name"
+    }
     engine.dispose()

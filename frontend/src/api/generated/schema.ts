@@ -252,6 +252,77 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/sites': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Sites */
+    get: operations['list_sites_api_v1_sites_get'];
+    put?: never;
+    /** Create Site */
+    post: operations['create_site_api_v1_sites_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/sites/{site_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Site */
+    get: operations['get_site_api_v1_sites__site_id__get'];
+    put?: never;
+    post?: never;
+    /** Delete Site */
+    delete: operations['delete_site_api_v1_sites__site_id__delete'];
+    options?: never;
+    head?: never;
+    /** Patch Site */
+    patch: operations['patch_site_api_v1_sites__site_id__patch'];
+    trace?: never;
+  };
+  '/api/v1/sites/{site_id}/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Site Action */
+    post: operations['site_action_api_v1_sites__site_id__actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/sites/{site_id}/test': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Test Site */
+    post: operations['test_site_api_v1_sites__site_id__test_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/system/status': {
     parameters: {
       query?: never;
@@ -451,6 +522,99 @@ export interface components {
     SetupResponse: {
       /** Configured */
       configured: boolean;
+    };
+    /** SiteActionRequest */
+    SiteActionRequest: {
+      /**
+       * Action
+       * @enum {string}
+       */
+      action: 'enable' | 'disable' | 'refresh_capabilities';
+    };
+    /** SiteCreateRequest */
+    SiteCreateRequest: {
+      /** Api Key */
+      api_key?: string | null;
+      /** Base Url */
+      base_url: string;
+      /** Name */
+      name: string;
+      type: components['schemas']['SiteKind'];
+    };
+    /**
+     * SiteKind
+     * @enum {string}
+     */
+    SiteKind: 'MTEAM';
+    /** SiteListResponse */
+    SiteListResponse: {
+      /** Items */
+      items: components['schemas']['SiteViewResponse'][];
+    };
+    /** SitePatchRequest */
+    SitePatchRequest: {
+      /** Api Key */
+      api_key?: string | null;
+      /** Base Url */
+      base_url?: string | null;
+      /**
+       * Clear Api Key
+       * @default false
+       */
+      clear_api_key: boolean;
+      /** Name */
+      name?: string | null;
+      type?: components['schemas']['SiteKind'] | null;
+    };
+    /** SiteProbeResponse */
+    SiteProbeResponse: {
+      /** Capabilities */
+      capabilities: {
+        [key: string]: unknown;
+      };
+      /**
+       * Status
+       * @constant
+       */
+      status: 'ok';
+    };
+    /**
+     * SiteProbeStatus
+     * @enum {string}
+     */
+    SiteProbeStatus: 'UNTESTED' | 'OK' | 'FAILED';
+    /** SiteViewResponse */
+    SiteViewResponse: {
+      /** Api Key Configured */
+      api_key_configured: boolean;
+      /** Base Url */
+      base_url: string;
+      /** Capabilities */
+      capabilities: {
+        [key: string]: unknown;
+      };
+      connection_status: components['schemas']['SiteProbeStatus'];
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Enabled */
+      enabled: boolean;
+      /** Id */
+      id: string;
+      /** Last Test At */
+      last_test_at: string | null;
+      /** Name */
+      name: string;
+      type: components['schemas']['SiteKind'];
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+      /** Version */
+      version: number;
     };
     /** ValidationError */
     ValidationError: {
@@ -1092,6 +1256,270 @@ export interface operations {
         };
         content: {
           'application/json': unknown;
+        };
+      };
+    };
+  };
+  list_sites_api_v1_sites_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  create_site_api_v1_sites_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SiteCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteViewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_site_api_v1_sites__site_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteViewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  delete_site_api_v1_sites__site_id__delete: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  patch_site_api_v1_sites__site_id__patch: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SitePatchRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteViewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  site_action_api_v1_sites__site_id__actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SiteActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  test_site_api_v1_sites__site_id__test_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteProbeResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
         };
       };
     };

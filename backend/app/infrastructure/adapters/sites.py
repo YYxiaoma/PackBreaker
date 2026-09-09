@@ -10,10 +10,12 @@ import httpx2
 
 from backend.app.domain.media_matching import ExternalMediaId
 from backend.app.domain.site_adapter import (
+    SiteAdapter,
     SiteConnectionResult,
     TorrentDetails,
     TorrentPayload,
 )
+from backend.app.domain.site_config import SiteKind
 from backend.app.domain.site_search import (
     CandidateMeta,
     SearchMediaType,
@@ -44,6 +46,16 @@ class SiteAdapterError(RuntimeError):
         self.retryable = retryable
         self.retry_after_seconds = retry_after_seconds
         super().__init__(message)
+
+
+class SiteAdapterFactory:
+    def __init__(self, *, transport: httpx2.AsyncBaseTransport | None = None) -> None:
+        self._transport = transport
+
+    def create(self, *, kind: SiteKind, base_url: str, api_key: str) -> SiteAdapter:
+        if kind is SiteKind.MTEAM:
+            return MTeamAdapter(api_key, base_url=base_url, transport=self._transport)
+        raise ValueError("暂不支持该站点类型")
 
 
 class MTeamAdapter:

@@ -57,7 +57,7 @@ class SiteAdapter(Protocol):
 - `HDTimeAdapter`：基于 NexusPHP profile，实现站点特有字段映射与契约测试。
 - `HHClubAdapter`：确认引擎和规则后选择 profile 或独立适配器；确认前不得按猜测上线。
 
-M2 当前已落下正式 `SiteAdapter` 只读端口和 M-Team HTTP 边界：`/api/member/profile` 用于连接探测，`/api/torrent/search` 使用 JSON POST，`/api/torrent/detail` 与 `/api/torrent/genDlToken` 使用表单 POST；所有 API 请求通过 `x-api-key`。下载令牌返回的 URL 只在内存使用，必须是配置站点域族下的 HTTPS URL，第二跳下载请求绝不携带 `x-api-key`，并使用 20 MiB 默认上限流式读取。根据站点当前公布的搜索建议上限，capability 暂以 90 秒作为保守最小请求间隔提示；真正的 endpoint 级配额、抖动和熔断仍由后续应用层调度器实现。响应 envelope/候选字段无法按已知 profile 解释时明确失败，不记录第三方 message、下载 URL 或响应头。站点配置持久化、限流调度与真实账号验收仍属于后续切片。
+M2 当前已落下正式 `SiteAdapter` 只读端口和 M-Team HTTP 边界：`/api/member/profile` 用于连接探测，`/api/torrent/search` 使用 JSON POST，`/api/torrent/detail` 与 `/api/torrent/genDlToken` 使用表单 POST；所有 API 请求通过 `x-api-key`。下载令牌返回的 URL 只在内存使用，必须是配置站点域族下的 HTTPS URL，第二跳下载请求绝不携带 `x-api-key`，并使用 20 MiB 默认上限流式读取。根据站点当前公布的搜索建议上限，capability 暂以 90 秒作为保守最小请求间隔提示；真正的 endpoint 级配额、抖动和熔断仍由后续应用层调度器实现。响应 envelope/候选字段无法按已知 profile 解释时明确失败，不记录第三方 message、下载 URL 或响应头。站点配置现已持久化到 SQLite，API Key 只写入 SecretStore，CRUD 使用强 ETag/`If-Match`，连接测试在数据库事务外执行；修改 API origin/API Key 会自动禁用并使旧探测失效，只有通过只读连接测试后才能启用。真实账号验收和限流调度仍属于后续切片。
 
 HTML 页面解析优先使用 DOM 解析器和稳定选择器。登录失效、验证码、Cloudflare、页面结构变化必须返回明确错误并熔断自动化，禁止绕过站点保护。
 

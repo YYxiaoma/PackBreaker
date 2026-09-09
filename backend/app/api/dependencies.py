@@ -7,6 +7,7 @@ from fastapi import Cookie, Header, Request
 from backend.app.application.auth import AuthIdentity, AuthService
 from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.downloaders import DownloaderService
+from backend.app.application.sites import SiteService
 from backend.app.domain.auth import ApiScope
 
 SESSION_COOKIE = "packbreaker_session"
@@ -30,6 +31,10 @@ def api_token_service(request: Request) -> ApiTokenService:
 
 def downloader_service(request: Request) -> DownloaderService:
     return cast(DownloaderService, request.app.state.downloader_service)
+
+
+def site_service(request: Request) -> SiteService:
+    return cast(SiteService, request.app.state.site_service)
 
 
 def client_source(request: Request) -> str:

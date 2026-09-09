@@ -108,7 +108,18 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 
 路径映射采用最长前缀规则；当前 M1 以 `PACKBREAKER_DATA_DIR` 作为允许根目录，后续配置层可进一步收窄 source roots。诊断请求的 `probes` 数组提交一组或多组“下载器视角的已存在测试文件 + 容器内目标目录”；响应逐项返回规则命中、容器可见性、设备 ID、文件类型、读写权限、双向映射和硬链接可行性，并返回 `all_mappings_verified`。只有每条配置映射都至少被一个成功 probe 覆盖时全局路径状态才为 `OK`，否则保持阻断，不能 enable。诊断允许创建并立即删除目标目录中的临时 hardlink 以验证内核能力，但不修改源文件字节；解析到允许根目录外的符号链接直接拒绝。
 
-### 5.4 拆包任务
+### 5.4 站点配置
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/POST | `/sites` | 列表；创建站点配置，API Key 只写 |
+| GET/PATCH/DELETE | `/sites/{site_id}` | 读取、并发安全修改或删除；写操作要求强 `If-Match` |
+| POST | `/sites/{site_id}/test` | 使用 SecretStore 中的 API Key 执行只读连接测试 |
+| POST | `/sites/{site_id}/actions` | `enable`、`disable`、`refresh_capabilities` |
+
+站点响应永不返回 API Key 或 `secret_id`。修改 API origin/API Key 会清空旧 capability、重置连接状态并自动禁用；启用前必须已有 API Key 且最近一次连接测试成功。当前仅开放 `MTEAM` 配置类型。
+
+### 5.5 拆包任务
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
