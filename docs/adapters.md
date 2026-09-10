@@ -84,9 +84,9 @@ class DownloaderAdapter(Protocol):
 
 `remove_torrent()` 的契约固定为只移除下载器任务、不删除数据；实现调用第三方 RPC 时必须显式传递“不删除数据”。首版不定义任何删除下载数据的适配器方法。即使未来开放，也必须是独立的高风险能力，不能作为普通回滚的一部分。
 
-### 4.1.1 M1 已实现边界
+### 4.1.1 当前实现边界
 
-M1 只实现下载器配置所需的只读探测切片：qBittorrent 可使用用户名/密码登录或 API Key，并读取应用/WebAPI 版本；Transmission 使用 RPC `session-get` 完成 session-id 握手并读取客户端/RPC 版本。生产适配器当前只暴露 `test_connection()`，不实现 `list_completed`、`get_torrent`、`add_torrent`、校验、暂停、恢复或移除等任务方法。完整契约仍作为 M3/M4 的目标接口，不得因配置阶段提前引入下载器写副作用。
+M1 已实现下载器配置所需的只读探测切片：qBittorrent 可使用用户名/密码登录或 API Key，并读取应用/WebAPI 版本；Transmission 使用 RPC `session-get` 完成 session-id 握手并读取客户端/RPC 版本。M3 现开始扩展 qBittorrent 写适配器，首个切片固定面向 qBittorrent 5.2.x / WebAPI 2.15.1：支持上传本地 torrent、查询 torrent、`stop`/`start` 与 `recheck`，但尚未由公开任务 API 调用；Transmission 仍保持只读探测，完整写契约留到 M4。
 
 连接探测在数据库事务之外执行，结果只在配置 version 未变化时写回；错误只返回稳定分类和脱敏描述，不持久化第三方响应正文、请求头或凭证。
 
@@ -99,6 +99,10 @@ M1 只实现下载器配置所需的只读探测切片：qBittorrent 可使用�
 - Transmission 不声明 skip checking 能力，添加后必须完整校验。
 - 适配器收到不支持或不安全的组合时再次拒绝，形成双层保护。
 - 添加完成后返回客户端实际 torrent hash；应用层核对期望 hash 并写入操作日志。
+
+qBittorrent 5.2.x 的 `torrents/add` 使用 WebAPI 2.14+ JSON 结果，应用层不会把 HTTP 200/202 本身视为成功：必须随后通过 `torrents/info` 看到实际 torrent，并核对 metainfo 对应 hash、save path、PackBreaker ownership tag 和停止状态后才能把 operation journal 推进到 `APPLIED`。若添加响应丢失，重试先查真实状态；只有先前 journal 已证明添加前不存在该 torrent，且恢复时 ownership tag/路径/身份均匹配，才能补记成功而不再次添加。
+
+当前目标 qBittorrent 5.2.3 对应 WebAPI 2.15.1，仍使用 `skip_checking`；WebAPI 2.16.0 已移除该参数，因此适配器在 API 版本层再次失败关闭，不能把面向 2.15.1 的 skip-check 语义直接带到未来版本。5.x 的暂停/恢复控制端点使用 `torrents/stop` 与 `torrents/start`。
 
 ### 4.3 路径映射
 

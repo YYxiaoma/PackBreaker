@@ -95,6 +95,8 @@ operation journal 自身必须先通过状态机/CAS 测试：非法跨级转换
 
 文件系统事务链测试必须使用临时数据根，不触碰生产 `/data`：覆盖正常目录+hardlink 创建与十次幂等重放、临时 hardlink 后崩溃并安全续跑、最终 hardlink 落位后但 APPLIED 前崩溃转 `RECONCILE_REQUIRED`、目录创建后但 APPLIED 前崩溃不自动认领、逆序回滚，以及目标被外部替换时 `ROLLBACK_BLOCKED` 且替换文件不被删除。所有场景都复核源 inode/size/mtime 不变，允许 link count 只因预期 hardlink 创建/删除发生变化。
 
+qB 添加事务测试使用 fake/MockTransport，不访问真实下载器：覆盖 WebAPI 2.15.1 JSON 添加响应、multipart 中强制 paused、FULL_VERIFIED/skip-check 双层门、WebAPI 2.16 参数失效保护、5.x `stop/start/recheck` 端点、实际 `torrents/info` 二次确认、十次重放只发一次 add、响应丢失后凭 hash+save path+ownership tag 恢复、HTTP 成功但 torrent 不可见、添加前已存在同 hash 不自动认领、save path 不符进入 `RECONCILE_REQUIRED`，以及 paused 被客户端忽略时先 stop 并重新确认后才能 APPLIED。
+
 LINKING 协调器额外覆盖两阶段当前性：调用前 plan provider 必须返回 latest/current/ready；真正推进任务前还要在数据库事务内重新核对 latest plan/gate/review/candidate/preflight/task version。测试必须模拟两次检查之间新增 review revision 并证明零文件副作用；还要模拟 LINKING checkpoint 已提交后 source inventory 改变，证明在首个 operation journal intent/目录/hardlink 前阻断。重复调用已进入 LINKING 的任务只能恢复 checkpoint 精确绑定的同一 plan。
 
 ## 7. 适配器测试矩阵

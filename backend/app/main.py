@@ -18,6 +18,7 @@ from backend.app.api.system import router as system_router
 from backend.app.api.tasks import router as task_router
 from backend.app.application.auth import AuthService
 from backend.app.application.automation_access import ApiTokenService
+from backend.app.application.downloader_operations import QbittorrentAddOperationService
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import FilesystemOperationService
@@ -90,6 +91,9 @@ def create_app(
             resolved_runtime.session_factory,
             secret_store,
             data_root=resolved_settings.data_dir,
+        )
+        app.state.qbittorrent_add_operation_service = QbittorrentAddOperationService(
+            resolved_runtime.session_factory
         )
         site_service = SiteService(resolved_runtime.session_factory, secret_store)
         app.state.site_service = site_service

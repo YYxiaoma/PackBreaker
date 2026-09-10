@@ -154,6 +154,39 @@ def reverse_map_container_path(container_path: Path, rule: PathMappingRule) -> s
     return str(PurePosixPath(rule.remote_prefix).joinpath(*suffix.parts))
 
 
+def reverse_map_container_path_unique(
+    container_path: Path,
+    rules: list[PathMappingRule],
+    *,
+    allowed_root: Path,
+) -> str:
+    resolved = container_path.resolve(strict=False)
+    root = allowed_root.resolve(strict=False)
+    if not resolved.is_relative_to(root):
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器路径必须位于数据根目录内")
+    candidates: list[tuple[int, int, PathMappingRule]] = []
+    for index, rule in enumerate(rules):
+        prefix = Path(rule.container_prefix).resolve(strict=False)
+        try:
+            resolved.relative_to(prefix)
+        except ValueError:
+            continue
+        candidates.append((len(prefix.parts), index, rule))
+    if not candidates:
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器路径无法反向映射到下载器")
+    max_depth = max(item[0] for item in candidates)
+    winners = [item for item in candidates if item[0] == max_depth]
+    if len(winners) != 1:
+        raise DomainViolation(ErrorCode.MAPPING_AMBIGUOUS, "容器路径反向映射存在等长歧义")
+    return normalize_remote_path(reverse_map_container_path(resolved, winners[0][2]))
+
+
+def normalize_remote_path(value: str) -> str:
+    """规范化下载器视角绝对路径，供写入后身份核对复用。"""
+
+    return _normalize_remote(value)
+
+
 def _normalize_remote(value: str) -> str:
     value = value.strip()
     path = PureWindowsPath(value) if _is_windows_remote(value) else PurePosixPath(value)

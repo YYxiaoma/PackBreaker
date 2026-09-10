@@ -93,6 +93,8 @@ flowchart LR
 
 任务执行协调器现已把这条文件系统事务链接到持久化 execution plan：首次执行必须重新读取 latest/current/ready plan，并在同一数据库提交点再次核对 task、latest gate、latest review、candidate、preflight 与 source inventory 绑定，然后以 task version CAS 将 `AWAITING_CONFIRMATION` 推进到 `LINKING`，同时写入 plan/gate digest 检查点。任何目录或 hardlink 动作开始前还会再次复核完整 source inventory；进程在 LINKING 中断后只能用同一检查点恢复，不能换用另一份 plan。该协调器已在应用运行时注册，但当前没有 HTTP 执行入口，也不会推进到 ADDING 或调用 qBittorrent 写接口。
 
+qBittorrent 写侧现已开始落地 5.2.3/WebAPI 2.15.1 内部切片：写适配器支持暂停上传 torrent、查询实际 torrent、`stop/start/recheck`，并在 adapter 层再次阻止非 FULL_VERIFIED 的 `skip_checking` 或 WebAPI 2.16+ 已移除参数的组合。`QbittorrentAddOperationService` 在请求前确认相同 hash 不存在并提交 journal intent，添加时附加确定性 ownership tag，响应后不信任 add 返回值而重新查询 hash/save path/tag/停止状态；响应丢失时可据此幂等恢复，外部预存任务、路径不符、所有权不明或状态无法停止则失败关闭/进入 `RECONCILE_REQUIRED`。已启用且连接/路径诊断均为 OK 的 qB 配置可生成内部 write binding 与唯一反向路径映射；真实任务的 target downloader 选择尚未进入 execution plan，因此本切片仍未接到 `LINKING → ADDING` 状态推进或公开执行 API。
+
 ### 退出条件
 
 - qB 使用合成与真实语料端到端完成，非 FULL_VERIFIED 从未跳过校验。

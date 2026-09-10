@@ -246,6 +246,12 @@ def test_connection_path_diagnostics_and_enable_gate(tmp_path: Path) -> None:
         assert enabled.json()["enabled"] is True
         assert enabled.headers["ETag"] == '"2"'
 
+        binding = app.state.downloader_service.qbittorrent_write_binding(downloader_id)
+        assert binding.downloader_id == downloader_id
+        assert binding.downloader_version == 2
+        assert binding.capabilities["api_version"] == "2.15.1"
+        assert binding.remote_save_path(app.state.settings.data_dir / "source") == "/downloads"
+
         changed = client.patch(
             f"/api/v1/downloaders/{downloader_id}",
             headers={**_csrf(client), "If-Match": '"2"'},

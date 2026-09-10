@@ -22,6 +22,7 @@ from backend.app.domain.downloader import (
     normalize_base_url,
     normalize_path_mappings,
     reverse_map_container_path,
+    reverse_map_container_path_unique,
     validate_credential,
 )
 from backend.app.domain.errors import DomainViolation, ErrorCode
@@ -29,6 +30,7 @@ from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.adapters.downloaders import (
     DownloaderAdapterError,
     DownloaderAdapterFactory,
+    QbittorrentWriteAdapter,
 )
 from backend.app.infrastructure.persistence.downloader_repositories import DownloaderRepository
 from backend.app.infrastructure.persistence.models import Downloader, UnpackTask
@@ -111,6 +113,23 @@ class PathDiagnosticReport:
         return self.all_mappings_verified and all(result.ok for result in self.results)
 
 
+@dataclass(frozen=True, slots=True)
+class QbittorrentWriteBinding:
+    downloader_id: str
+    downloader_version: int
+    path_mappings: tuple[PathMappingRule, ...]
+    capabilities: dict[str, Any]
+    adapter: QbittorrentWriteAdapter
+    data_root: Path
+
+    def remote_save_path(self, container_path: Path) -> str:
+        return reverse_map_container_path_unique(
+            container_path,
+            list(self.path_mappings),
+            allowed_root=self.data_root,
+        )
+
+
 class DownloaderService:
     def __init__(
         self,
@@ -132,6 +151,68 @@ class DownloaderService:
     def get(self, downloader_id: str) -> DownloaderView:
         with self._session_factory() as session:
             return self._view(self._require_record(DownloaderRepository(session), downloader_id))
+
+    def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBinding:
+        with self._session_factory() as session:
+            record = self._require_record(DownloaderRepository(session), downloader_id)
+            if DownloaderKind(record.type) is not DownloaderKind.QBITTORRENT:
+                raise ApplicationError(
+                    code="DOWNLOADER_KIND_UNSUPPORTED",
+                    status=409,
+                    title="目标下载器类型不支持",
+                    detail="当前写入切片只支持 qBittorrent",
+                )
+            if not record.enabled:
+                raise ApplicationError(
+                    code="DOWNLOADER_NOT_ENABLED",
+                    status=409,
+                    title="目标下载器未启用",
+                    detail="下载器写操作只能使用已通过安全门并启用的配置",
+                )
+            if (
+                record.connection_status != ProbeStatus.OK.value
+                or record.path_mapping_status != ProbeStatus.OK.value
+            ):
+                raise ApplicationError(
+                    code="DOWNLOADER_NOT_READY",
+                    status=409,
+                    title="目标下载器安全门未就绪",
+                    detail="连接探测与路径映射诊断都必须保持 OK",
+                )
+            if record.secret_id is None:
+                raise ApplicationError(
+                    code="DOWNLOADER_CREDENTIAL_REQUIRED",
+                    status=409,
+                    title="目标下载器凭证未配置",
+                    detail="qBittorrent 写操作需要已配置凭证",
+                )
+            api_version = record.capabilities.get("api_version")
+            if not isinstance(api_version, str) or not api_version:
+                raise ApplicationError(
+                    code="DOWNLOADER_CAPABILITIES_STALE",
+                    status=409,
+                    title="目标下载器能力信息不可用",
+                    detail="执行写操作前需要重新探测 qBittorrent WebAPI 能力",
+                )
+            snapshot_id = record.id
+            snapshot_version = record.version
+            secret_id = record.secret_id
+            mappings = tuple(self._record_mappings(record))
+            capabilities = dict(record.capabilities)
+            base_url = record.base_url
+
+        credential = self._decode_credential(self._secret_store.get(secret_id))
+        return QbittorrentWriteBinding(
+            downloader_id=snapshot_id,
+            downloader_version=snapshot_version,
+            path_mappings=mappings,
+            capabilities=capabilities,
+            adapter=self._adapter_factory.create_qbittorrent(
+                base_url=base_url,
+                credential=credential,
+            ),
+            data_root=self._data_root,
+        )
 
     def create(
         self,

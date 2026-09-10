@@ -7,6 +7,7 @@ from backend.app.domain.downloader import (
     map_remote_path,
     normalize_path_mappings,
     reverse_map_container_path,
+    reverse_map_container_path_unique,
 )
 from backend.app.domain.errors import DomainViolation, ErrorCode
 
@@ -84,3 +85,39 @@ def test_equal_length_mapping_ambiguity_is_blocked(tmp_path: Path) -> None:
         map_remote_path("/remote/file.mkv", rules, allowed_root=root)
 
     assert ambiguous.value.code is ErrorCode.MAPPING_AMBIGUOUS
+
+
+def test_reverse_mapping_uses_unique_longest_container_prefix(tmp_path: Path) -> None:
+    root = (tmp_path / "data").resolve()
+    rules = normalize_path_mappings(
+        [
+            PathMappingRule("/downloads", str(root / "downloads")),
+            PathMappingRule("/movies", str(root / "downloads" / "movies")),
+        ],
+        allowed_root=root,
+    )
+
+    remote = reverse_map_container_path_unique(
+        root / "downloads" / "movies" / "Example",
+        rules,
+        allowed_root=root,
+    )
+
+    assert remote == "/movies/Example"
+
+
+def test_reverse_mapping_rejects_path_outside_data_root(tmp_path: Path) -> None:
+    root = (tmp_path / "data").resolve()
+    rules = normalize_path_mappings(
+        [PathMappingRule("/downloads", str(root / "downloads"))],
+        allowed_root=root,
+    )
+
+    with pytest.raises(DomainViolation) as failure:
+        reverse_map_container_path_unique(
+            tmp_path / "outside",
+            rules,
+            allowed_root=root,
+        )
+
+    assert failure.value.code is ErrorCode.PATH_MAPPING_INVALID

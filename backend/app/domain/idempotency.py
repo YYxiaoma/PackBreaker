@@ -58,3 +58,17 @@ def file_operation_key(
         operation_type,
         normalized_target_path,
     )
+
+
+def downloader_operation_key(
+    *,
+    candidate_key: str,
+    operation_type: str,
+    downloader_id: str,
+) -> str:
+    return _digest(
+        "downloader-operation",
+        candidate_key,
+        operation_type,
+        downloader_id,
+    )
