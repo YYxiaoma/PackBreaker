@@ -327,6 +327,9 @@ class TaskExecutionGateRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def get(self, gate_id: str) -> TaskExecutionGateRecord | None:
+        return self._session.get(TaskExecutionGateRecord, gate_id)
+
     def latest(self, task_unit_id: str) -> TaskExecutionGateRecord | None:
         return self._session.scalar(
             select(TaskExecutionGateRecord)

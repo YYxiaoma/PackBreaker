@@ -91,6 +91,8 @@ flowchart LR
 
 文件系统事务链已进一步形成内部 application service：每个缺失目录与最终 hardlink 都使用独立幂等键，先在短事务中提交 operation journal intent，再通过 `dir_fd`/`O_NOFOLLOW` 做单个文件系统动作，成功后另起短事务保存 after snapshot 并推进 APPLIED。hardlink 使用确定性临时名称和 Linux `renameat2(RENAME_NOREPLACE)` 无覆盖落位；临时链接残留可在快照一致时继续，最终目标已经出现但 APPLIED 未确认时失败关闭为 `RECONCILE_REQUIRED`。回滚只处理 journal 已登记的 APPLIED 资源，快照不匹配或目录非空时进入 `ROLLBACK_BLOCKED`。该 service 当前仅由临时文件系统测试调用，尚未接入生产任务执行入口或 qB 写接口。
 
+任务执行协调器现已把这条文件系统事务链接到持久化 execution plan：首次执行必须重新读取 latest/current/ready plan，并在同一数据库提交点再次核对 task、latest gate、latest review、candidate、preflight 与 source inventory 绑定，然后以 task version CAS 将 `AWAITING_CONFIRMATION` 推进到 `LINKING`，同时写入 plan/gate digest 检查点。任何目录或 hardlink 动作开始前还会再次复核完整 source inventory；进程在 LINKING 中断后只能用同一检查点恢复，不能换用另一份 plan。该协调器已在应用运行时注册，但当前没有 HTTP 执行入口，也不会推进到 ADDING 或调用 qBittorrent 写接口。
+
 ### 退出条件
 
 - qB 使用合成与真实语料端到端完成，非 FULL_VERIFIED 从未跳过校验。

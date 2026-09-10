@@ -131,6 +131,7 @@ class TaskRepository:
         event_type: str,
         reason: str,
         occurred_at: datetime | None = None,
+        checkpoint: dict[str, Any] | None = None,
     ) -> UnpackTask:
         task = self._require_version(task_id, expected_version)
         task_transition = transition(
@@ -139,7 +140,13 @@ class TaskRepository:
             reason=reason,
             occurred_at=occurred_at,
         )
-        return self._apply_transition(task, expected_version, task_transition, event_type)
+        return self._apply_transition(
+            task,
+            expected_version,
+            task_transition,
+            event_type,
+            checkpoint=checkpoint,
+        )
 
     def transition_after_add(
         self,
@@ -184,16 +191,21 @@ class TaskRepository:
         expected_version: int,
         task_transition: TaskTransition,
         event_type: str,
+        *,
+        checkpoint: dict[str, Any] | None = None,
     ) -> UnpackTask:
+        values: dict[str, Any] = {
+            "status": task_transition.to_status.value,
+            "version": expected_version + 1,
+            "updated_at": task_transition.occurred_at,
+        }
+        if checkpoint is not None:
+            values["checkpoint"] = deepcopy(checkpoint)
         with self._session.begin_nested():
             updated_task_id = self._session.scalar(
                 update(UnpackTask)
                 .where(UnpackTask.id == task.id, UnpackTask.version == expected_version)
-                .values(
-                    status=task_transition.to_status.value,
-                    version=expected_version + 1,
-                    updated_at=task_transition.occurred_at,
-                )
+                .values(**values)
                 .returning(UnpackTask.id)
             )
             if updated_task_id is None:

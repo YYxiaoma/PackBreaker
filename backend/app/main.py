@@ -20,12 +20,15 @@ from backend.app.application.auth import AuthService
 from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
+from backend.app.application.filesystem_operations import FilesystemOperationService
 from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
+from backend.app.application.task_linking import TaskLinkingCoordinator
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.config import AppSettings
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
 from backend.app.infrastructure.runtime import RuntimeManager
+from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 
 _request_logger = logging.getLogger("packbreaker.http")
 
@@ -90,9 +93,21 @@ def create_app(
         )
         site_service = SiteService(resolved_runtime.session_factory, secret_store)
         app.state.site_service = site_service
-        app.state.task_analysis_service = TaskAnalysisService(
+        task_analysis_service = TaskAnalysisService(
             resolved_runtime.session_factory,
             site_service,
+            data_root=resolved_settings.data_dir,
+        )
+        app.state.task_analysis_service = task_analysis_service
+        filesystem_operations = FilesystemOperationService(
+            resolved_runtime.session_factory,
+            SafeFilesystemGateway(resolved_settings.data_dir),
+        )
+        app.state.filesystem_operation_service = filesystem_operations
+        app.state.task_linking_coordinator = TaskLinkingCoordinator(
+            resolved_runtime.session_factory,
+            task_analysis_service,
+            filesystem_operations,
             data_root=resolved_settings.data_dir,
         )
         try:

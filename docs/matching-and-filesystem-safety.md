@@ -176,6 +176,8 @@ M3 的 `SafeFilesystemGateway` 负责上述动作前的统一只读检查：输�
 
 崩溃恢复按可证明程度处理：若 journal 仍为 INTENT 且仅存在与源 inode/size/mtime 一致的确定性临时 hardlink，可继续原子落位；若最终路径已经出现但 APPLIED 尚未持久化，或目录在 INTENT 后出现而无法证明所有权，则改为 `RECONCILE_REQUIRED`，不得自动认领。回滚先推进 `ROLLBACK_PENDING`，再核对 journal after snapshot；hardlink 的 device/inode/size/mtime 必须一致，目录至少保持同一 device/inode 且必须为空，否则进入 `ROLLBACK_BLOCKED` 并保留现场。
 
+`TaskLinkingCoordinator` 是 plan 到文件系统动作之间的唯一内部授权入口。首次进入必须看到同一个 latest/current/ready plan，并在写入任何 journal intent 前用数据库当前值再次核对 plan、gate、review、candidate、preflight 与 task version；授权成功后 `AWAITING_CONFIRMATION → LINKING` 和 plan/gate digest checkpoint 同一事务提交。进入 LINKING 后旧 plan 按 task-version 当前性规则自然显示 stale，因此恢复不重新“批准”旧 plan，而是只接受 checkpoint 精确绑定的原 plan，并在每轮恢复前重新复核 source inventory 和逐文件源快照。
+
 ## 10. 下载器添加与修复
 
 ### 10.1 添加

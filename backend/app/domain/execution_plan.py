@@ -166,6 +166,43 @@ def execution_plan_to_payload(
     return payload
 
 
+def execution_plan_actions_from_payload(payload: object) -> tuple[ExecutionPlanAction, ...]:
+    """从持久化 execution plan 证据恢复动作，并重新执行领域约束。"""
+
+    if not isinstance(payload, dict):
+        raise ValueError("execution plan payload 必须是对象")
+    raw = payload.get("actions")
+    if not isinstance(raw, list):
+        raise ValueError("execution plan payload 缺少 actions")
+
+    actions: list[ExecutionPlanAction] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("execution plan action 格式无效")
+        torrent_path = item.get("torrent_path")
+        kind = item.get("kind")
+        length = item.get("length")
+        source_relative_path = item.get("source_relative_path")
+        source_snapshot = _file_snapshot_from_payload(item.get("source_snapshot"))
+        if (
+            not isinstance(torrent_path, str)
+            or not isinstance(kind, str)
+            or not isinstance(length, int)
+            or (source_relative_path is not None and not isinstance(source_relative_path, str))
+        ):
+            raise ValueError("execution plan action 字段格式无效")
+        actions.append(
+            ExecutionPlanAction(
+                torrent_path=torrent_path,
+                kind=ExecutionPlanActionKind(kind),
+                length=length,
+                source_relative_path=source_relative_path,
+                source_snapshot=source_snapshot,
+            )
+        )
+    return tuple(actions)
+
+
 def _action_payload(action: ExecutionPlanAction) -> dict[str, object]:
     snapshot = action.source_snapshot
     return {
@@ -185,6 +222,33 @@ def _action_payload(action: ExecutionPlanAction) -> dict[str, object]:
             else None
         ),
     }
+
+
+def _file_snapshot_from_payload(value: object) -> FileSnapshot | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("execution plan source snapshot 格式无效")
+    device = value.get("device")
+    inode = value.get("inode")
+    size = value.get("size")
+    mtime_ns = value.get("mtime_ns")
+    file_type = value.get("file_type")
+    if (
+        not isinstance(device, int)
+        or not isinstance(inode, int)
+        or not isinstance(size, int)
+        or not isinstance(mtime_ns, int)
+        or not isinstance(file_type, str)
+    ):
+        raise ValueError("execution plan source snapshot 字段格式无效")
+    return FileSnapshot(
+        device=device,
+        inode=inode,
+        size=size,
+        mtime_ns=mtime_ns,
+        file_type=file_type,
+    )
 
 
 def _safe_root(value: str) -> str:

@@ -29,6 +29,7 @@ from backend.app.domain.execution_plan import (
     ExecutionPlanActionKind,
     ExecutionPlanBlockReason,
     ExecutionPlanSnapshot,
+    execution_plan_actions_from_payload,
 )
 from backend.app.domain.file_mapping import (
     AutoMappingDecision,
@@ -2047,41 +2048,10 @@ def _site_versions_from_payload(payload: dict[str, Any]) -> tuple[tuple[str, int
 def _execution_plan_actions_from_payload(
     payload: dict[str, Any],
 ) -> tuple[ExecutionPlanAction, ...] | None:
-    raw = payload.get("actions")
-    if not isinstance(raw, list):
-        return None
-    actions: list[ExecutionPlanAction] = []
     try:
-        for item in raw:
-            if not isinstance(item, dict):
-                return None
-            torrent_path = item.get("torrent_path")
-            kind = item.get("kind")
-            length = item.get("length")
-            source_relative_path = item.get("source_relative_path")
-            snapshot_payload = item.get("source_snapshot")
-            if (
-                not isinstance(torrent_path, str)
-                or not isinstance(kind, str)
-                or not isinstance(length, int)
-                or (source_relative_path is not None and not isinstance(source_relative_path, str))
-            ):
-                return None
-            snapshot = _file_snapshot_from_payload(snapshot_payload)
-            if snapshot_payload is not None and snapshot is None:
-                return None
-            actions.append(
-                ExecutionPlanAction(
-                    torrent_path=torrent_path,
-                    kind=ExecutionPlanActionKind(kind),
-                    length=length,
-                    source_relative_path=source_relative_path,
-                    source_snapshot=snapshot,
-                )
-            )
+        return execution_plan_actions_from_payload(payload)
     except ValueError:
         return None
-    return tuple(actions)
 
 
 def _file_snapshot_from_payload(value: object) -> FileSnapshot | None:
