@@ -3,11 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apiClient } from './client';
 import {
   analyzeTask,
+  createTaskUnitExecutionPlan,
   createTask,
   getTaskPreflight,
   getTaskPreflightCurrent,
   getTaskUnitDecision,
   getTaskUnitExecutionGate,
+  getTaskUnitExecutionPlan,
   getTaskUnitReviewVerification,
   listTaskCandidates,
   listTasks,
@@ -145,5 +147,22 @@ describe('任务分析 API', () => {
 
     expect(get).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/execution-gate');
     expect(post).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/execution-gate');
+  });
+
+  it('execution plan 只提交 /data 相对 target_root', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: { id: 'plan-1', plan_digest: 'digest', current: true, ready: true },
+    });
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValueOnce({
+      data: { id: 'plan-1', plan_digest: 'digest', current: true, ready: true },
+    });
+
+    await getTaskUnitExecutionPlan('unit/with slash');
+    await createTaskUnitExecutionPlan('unit/with slash', 'seeding/movies');
+
+    expect(get).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/execution-plan');
+    expect(post).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/execution-plan', {
+      target_root: 'seeding/movies',
+    });
   });
 });

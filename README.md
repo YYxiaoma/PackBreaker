@@ -19,9 +19,9 @@ PackBreaker 是一个面向 PT 场景的自动拆包辅种系统。它以“大�
 
 ## 项目状态
 
-项目当前已完成 M1 安全骨架的代码级收口：仓库包含后端领域安全规则、启动配置、单实例执行锁、FastAPI 存活/就绪检查、SQLite WAL / SQLAlchemy 持久化、Alembic 迁移、任务/操作日志 repository、管理员首次初始化与持久会话/CSRF、API Token scope/过期/撤销、可信代理与安全响应头、AES-256-GCM secret store、JSON 结构化日志与统一敏感字段脱敏，以及下载器配置 CRUD、qBittorrent/Transmission 只读连接与能力探测、路径映射/硬链接可行性诊断。前端已通过 Axios + Pinia 接入管理员初始化/登录/退出、API Token 管理和下载器真实配置 API，写操作使用 CSRF 与 `If-Match`；OpenAPI schema 与生成 TypeScript 类型纳入仓库漂移检查。M1 部署骨架包含 `uv.lock`、Docker 多阶段单镜像、Compose、同源前端静态资源、统一 `scripts/check.py` / `scripts/test.py`、仓库敏感信息/大文件扫描和 GitHub Actions 质量/浏览器/容器门禁。M1 代码门逐项证据见 `docs/m1-exit-checklist.md`；正式进入 M2 还需远端三条 CI job 全绿，并补齐 M0 中仍待确认的真实语料、失败样例归因、HHClub 信息与真实下载器/NAS 版本矩阵。当前下载器适配器仍不暴露添加、删除、暂停、恢复、校验等任务写操作，真实站点接入、生产文件创建/修复与辅种执行仍未实现。
+项目当前已完成 M1 安全骨架，并进入 M2「解析、匹配与预演」代码级收口。后端已经具备安全 bencode 与 v1/v2/hybrid torrent 解析、TaskUnit 识别、媒体 token 规范化、候选排序、M-Team/HDTime 只读站点适配、唯一文件映射、流式 piece 验证、验证缓存、不可变 preflight、版本化人工审核与重验证、pre-execution gate，以及无副作用 `execution-plan` 预览。执行计划会重新绑定 current+eligible gate、metainfo digest、源 inventory 和目标树状态，生成 HARDLINK/CLIENT_FETCH/PADDING/ZERO_LENGTH 动作并在目标冲突、父目录异常或跨设备时失败关闭；当前响应始终保持 `execution_allowed=false`、`side_effects_started=false`，不会进入 LINKING 或调用下载器写接口。前端任务中心、真实 Analyze、预演审核、人工映射、重验证、执行门与执行计划预览均已接入真实后端；M2 代码门与外部验收缺口见 `docs/m2-exit-checklist.md`。
 
-界面遵循 `PackBreaker-01-浅色控制台.png` 的设计风格，包含任务中心、预演审核、历史扫描、站点、下载器、规则、对账、日志、设置与升级页面。管理员认证、API Token 与“下载器”管理已经接入本地 PackBreaker 后端；任务、站点、规则和多数运维页面目前仍使用合成示例，主题偏好保存在浏览器。
+界面遵循 `PackBreaker-01-浅色控制台.png` 的设计风格，包含任务中心、预演审核、历史扫描、站点、下载器、规则、对账、日志、设置与升级页面。管理员认证、API Token、下载器、站点配置以及 M2 任务分析/审核主流程已经接入本地 PackBreaker 后端；总览、规则、历史扫描、对账和多数 M4-M6 运维能力仍包含合成示例或原型交互，主题偏好保存在浏览器。
 
 ### 体验原型
 

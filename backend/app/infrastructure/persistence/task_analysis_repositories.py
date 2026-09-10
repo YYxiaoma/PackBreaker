@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.domain.execution_gate import ExecutionGateSnapshot, execution_gate_to_payload
+from backend.app.domain.execution_plan import ExecutionPlanSnapshot, execution_plan_to_payload
 from backend.app.domain.preflight import PreflightSnapshot, candidate_evidence_to_payload
 from backend.app.domain.review import (
     ReviewState,
@@ -19,6 +20,7 @@ from backend.app.infrastructure.persistence.models import (
     PreflightSnapshotRecord,
     TaskCandidateRecord,
     TaskExecutionGateRecord,
+    TaskExecutionPlanRecord,
     TaskReviewRevisionRecord,
     TaskReviewVerificationRecord,
     TaskUnitRecord,
@@ -376,6 +378,68 @@ class TaskExecutionGateRepository:
                 self._session.flush()
         except IntegrityError:
             concurrent = self.get_by_digest(snapshot.gate_digest)
+            if concurrent is None:
+                raise
+            return concurrent, False
+        return record, True
+
+
+class TaskExecutionPlanRepository:
+    """执行计划只追加；相同 plan digest 幂等复用。"""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get(self, plan_id: str) -> TaskExecutionPlanRecord | None:
+        return self._session.get(TaskExecutionPlanRecord, plan_id)
+
+    def latest(self, task_unit_id: str) -> TaskExecutionPlanRecord | None:
+        return self._session.scalar(
+            select(TaskExecutionPlanRecord)
+            .where(TaskExecutionPlanRecord.task_unit_id == task_unit_id)
+            .order_by(TaskExecutionPlanRecord.created_at.desc(), TaskExecutionPlanRecord.id.desc())
+            .limit(1)
+        )
+
+    def get_by_digest(self, plan_digest: str) -> TaskExecutionPlanRecord | None:
+        return self._session.scalar(
+            select(TaskExecutionPlanRecord).where(
+                TaskExecutionPlanRecord.plan_digest == plan_digest
+            )
+        )
+
+    def create_or_get(
+        self,
+        snapshot: ExecutionPlanSnapshot,
+    ) -> tuple[TaskExecutionPlanRecord, bool]:
+        existing = self.get_by_digest(snapshot.plan_digest)
+        if existing is not None:
+            return existing, False
+        payload = execution_plan_to_payload(snapshot)
+        record = TaskExecutionPlanRecord(
+            id=new_uuid(),
+            task_id=snapshot.task_id,
+            task_unit_id=snapshot.task_unit_id,
+            execution_gate_id=snapshot.execution_gate_id,
+            candidate_id=snapshot.candidate_id,
+            task_version=snapshot.task_version,
+            target_root=snapshot.target_root,
+            target_device=snapshot.target_device,
+            verification_level=snapshot.verification_level.value,
+            client_check_required=snapshot.client_check_required,
+            ready=snapshot.ready,
+            blocked_reasons=[item.value for item in snapshot.blocked_reasons],
+            estimated_download_bytes_upper_bound=snapshot.estimated_download_bytes_upper_bound,
+            plan_digest=snapshot.plan_digest,
+            payload=deepcopy(payload),
+            created_at=snapshot.created_at,
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(record)
+                self._session.flush()
+        except IntegrityError:
+            concurrent = self.get_by_digest(snapshot.plan_digest)
             if concurrent is None:
                 raise
             return concurrent, False

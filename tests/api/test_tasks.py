@@ -27,6 +27,7 @@ from backend.app.infrastructure.persistence.models import (
     TaskCandidateRecord,
     TaskEvent,
     TaskExecutionGateRecord,
+    TaskExecutionPlanRecord,
     TaskReviewRevisionRecord,
     TaskReviewVerificationRecord,
     TaskUnitRecord,
@@ -569,6 +570,14 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         assert blocked_gate.json()["blocked_reasons"] == ["REVERIFICATION_REQUIRED"]
         assert blocked_gate.json()["side_effects_started"] is False
 
+        blocked_plan = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/execution-plan",
+            headers=_csrf(client),
+            json={"target_root": "ambiguous"},
+        )
+        assert blocked_plan.status_code == 409
+        assert blocked_plan.json()["code"] == "EXECUTION_PLAN_GATE_NOT_READY"
+
         without_csrf = client.post(
             f"/api/v1/task-units/{current_unit['id']}/decision/actions",
             json={"action": "reverify"},
@@ -597,6 +606,63 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         assert eligible_gate.json()["verification_source"] == "REVIEW_REVERIFICATION"
         assert eligible_gate.json()["blocked_reasons"] == []
         assert eligible_gate.json()["side_effects_started"] is False
+
+        target_root = settings.data_dir / "seeding-target"
+        target_root.mkdir()
+        invalid_target = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/execution-plan",
+            headers=_csrf(client),
+            json={"target_root": "../outside"},
+        )
+        assert invalid_target.status_code == 422
+        assert invalid_target.json()["code"] == "EXECUTION_PLAN_TARGET_ROOT_INVALID"
+
+        without_plan_csrf = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/execution-plan",
+            json={"target_root": "seeding-target"},
+        )
+        assert without_plan_csrf.status_code == 403
+
+        plan = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/execution-plan",
+            headers=_csrf(client),
+            json={"target_root": "seeding-target"},
+        )
+        assert plan.status_code == 200
+        plan_body = plan.json()
+        assert plan_body["ready"] is True
+        assert plan_body["current"] is True
+        assert plan_body["current_reasons"] == []
+        assert plan_body["hardlink_count"] == 1
+        assert plan_body["client_fetch_count"] == 0
+        assert plan_body["estimated_download_bytes_upper_bound"] == 0
+        assert plan_body["execution_allowed"] is False
+        assert plan_body["side_effects_started"] is False
+        assert plan_body["actions"] == [
+            {
+                "torrent_path": "Movie.2026.mkv",
+                "kind": "HARDLINK",
+                "length": len(content),
+                "source_relative_path": "one/Movie.2026.mkv",
+            }
+        ]
+        assert "/workspace" not in plan.text
+        assert str(settings.data_dir) not in plan.text
+
+        repeated_plan = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/execution-plan",
+            headers=_csrf(client),
+            json={"target_root": "seeding-target"},
+        )
+        assert repeated_plan.status_code == 200
+        assert repeated_plan.json()["id"] == plan_body["id"]
+        assert repeated_plan.json()["plan_digest"] == plan_body["plan_digest"]
+
+        (target_root / "Movie.2026.mkv").write_bytes(b"conflict")
+        stale_plan = client.get(f"/api/v1/task-units/{current_unit['id']}/execution-plan")
+        assert stale_plan.status_code == 200
+        assert stale_plan.json()["current"] is False
+        assert stale_plan.json()["current_reasons"] == ["TARGET_STATE_CHANGED"]
 
         loaded = client.get(f"/api/v1/task-units/{current_unit['id']}/decision/verification")
         assert loaded.status_code == 200
@@ -627,6 +693,7 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
                 session.scalar(select(func.count()).select_from(TaskReviewVerificationRecord)) == 1
             )
             assert session.scalar(select(func.count()).select_from(TaskExecutionGateRecord)) == 2
+            assert session.scalar(select(func.count()).select_from(TaskExecutionPlanRecord)) == 1
     finally:
         client.__exit__(None, None, None)
 

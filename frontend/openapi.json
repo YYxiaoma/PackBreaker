@@ -515,6 +515,164 @@
         "title": "ExecutionGateResponse",
         "type": "object"
       },
+      "ExecutionPlanActionResponse": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "length": {
+            "title": "Length",
+            "type": "integer"
+          },
+          "source_relative_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Relative Path"
+          },
+          "torrent_path": {
+            "title": "Torrent Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "torrent_path",
+          "kind",
+          "length",
+          "source_relative_path"
+        ],
+        "title": "ExecutionPlanActionResponse",
+        "type": "object"
+      },
+      "ExecutionPlanRequest": {
+        "properties": {
+          "target_root": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Target Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_root"
+        ],
+        "title": "ExecutionPlanRequest",
+        "type": "object"
+      },
+      "ExecutionPlanResponse": {
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/ExecutionPlanActionResponse"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "blocked_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocked Reasons",
+            "type": "array"
+          },
+          "client_check_required": {
+            "title": "Client Check Required",
+            "type": "boolean"
+          },
+          "client_fetch_count": {
+            "title": "Client Fetch Count",
+            "type": "integer"
+          },
+          "create_directory_count": {
+            "title": "Create Directory Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "current_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Current Reasons",
+            "type": "array"
+          },
+          "estimated_download_bytes_upper_bound": {
+            "title": "Estimated Download Bytes Upper Bound",
+            "type": "integer"
+          },
+          "execution_allowed": {
+            "title": "Execution Allowed",
+            "type": "boolean"
+          },
+          "hardlink_count": {
+            "title": "Hardlink Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "plan_digest": {
+            "title": "Plan Digest",
+            "type": "string"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "side_effects_started": {
+            "title": "Side Effects Started",
+            "type": "boolean"
+          },
+          "target_device": {
+            "title": "Target Device",
+            "type": "integer"
+          },
+          "target_root": {
+            "title": "Target Root",
+            "type": "string"
+          },
+          "verification_level": {
+            "title": "Verification Level",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "plan_digest",
+          "ready",
+          "current",
+          "current_reasons",
+          "target_root",
+          "target_device",
+          "verification_level",
+          "client_check_required",
+          "hardlink_count",
+          "client_fetch_count",
+          "create_directory_count",
+          "estimated_download_bytes_upper_bound",
+          "blocked_reasons",
+          "actions",
+          "execution_allowed",
+          "side_effects_started",
+          "created_at"
+        ],
+        "title": "ExecutionPlanResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -4382,6 +4540,194 @@
           }
         },
         "summary": "Refresh Task Unit Execution Gate",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/task-units/{unit_id}/execution-plan": {
+      "get": {
+        "operationId": "get_task_unit_execution_plan_api_v1_task_units__unit_id__execution_plan_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit_id",
+            "required": true,
+            "schema": {
+              "title": "Unit Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionPlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Unit Execution Plan",
+        "tags": [
+          "tasks"
+        ]
+      },
+      "post": {
+        "operationId": "create_task_unit_execution_plan_api_v1_task_units__unit_id__execution_plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit_id",
+            "required": true,
+            "schema": {
+              "title": "Unit Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutionPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionPlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Task Unit Execution Plan",
         "tags": [
           "tasks"
         ]

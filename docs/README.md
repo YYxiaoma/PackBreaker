@@ -24,6 +24,7 @@
 | [适配器开发规范](./adapters.md) | 约定站点、下载器、通知适配器契约 | M1-M4 |
 | [匹配验证与文件安全](./matching-and-filesystem-safety.md) | 规定候选评分、piece 校验、硬链接及回滚算法 | M2-M4 |
 | [测试与验收](./testing.md) | 建立测试分层、合成语料和发布门禁 | M1-M6 |
+| [M2 退出清单](./m2-exit-checklist.md) | 区分 M2 已完成代码能力、自动化证据与真实语料/环境验收缺口 | M2 |
 | [部署、运维与安全](./deployment.md) | 约定容器、卷、备份、升级和密钥管理 | M1/M6 |
 | [本地开发指南](./local-development.md) | 统一工具链、命令、配置和日常工作流 | M1 |
 | [研发路线图](./development-roadmap.md) | 将 M0-M6 拆成可交付工作包与退出条件 | 全阶段 |

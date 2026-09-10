@@ -15,6 +15,8 @@ export type TaskReview = components['schemas']['TaskReviewResponse'];
 export type TaskReviewActionInput = components['schemas']['TaskReviewActionRequest'];
 export type ReviewVerification = components['schemas']['ReviewVerificationResponse'];
 export type ExecutionGate = components['schemas']['ExecutionGateResponse'];
+export type ExecutionPlanInput = components['schemas']['ExecutionPlanRequest'];
+export type ExecutionPlan = components['schemas']['ExecutionPlanResponse'];
 
 function taskPath(taskId: string): string {
   const normalized = taskId.trim();
@@ -162,6 +164,31 @@ export async function getTaskUnitExecutionGate(unitId: string): Promise<Executio
 export async function refreshTaskUnitExecutionGate(unitId: string): Promise<ExecutionGate> {
   try {
     const response = await apiClient.post<ExecutionGate>(`${taskUnitPath(unitId)}/execution-gate`);
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function getTaskUnitExecutionPlan(unitId: string): Promise<ExecutionPlan> {
+  try {
+    const response = await apiClient.get<ExecutionPlan>(`${taskUnitPath(unitId)}/execution-plan`);
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function createTaskUnitExecutionPlan(
+  unitId: string,
+  targetRoot: string,
+): Promise<ExecutionPlan> {
+  const payload: ExecutionPlanInput = { target_root: targetRoot };
+  try {
+    const response = await apiClient.post<ExecutionPlan>(
+      `${taskUnitPath(unitId)}/execution-plan`,
+      payload,
+    );
     return response.data;
   } catch (error) {
     throw toApiProblem(error);

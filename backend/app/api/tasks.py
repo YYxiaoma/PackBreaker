@@ -13,6 +13,7 @@ from backend.app.api.dependencies import (
 from backend.app.application.errors import ApplicationError
 from backend.app.application.tasks import (
     ExecutionGateView,
+    ExecutionPlanView,
     PreflightView,
     ReviewVerificationView,
     TaskCandidateView,
@@ -179,6 +180,38 @@ class ExecutionGateResponse(BaseModel):
     metainfo_digest: str | None
     review_revision_id: str
     review_version: int
+    side_effects_started: bool
+    created_at: datetime
+
+
+class ExecutionPlanRequest(BaseModel):
+    target_root: str = Field(min_length=1, max_length=4096)
+
+
+class ExecutionPlanActionResponse(BaseModel):
+    torrent_path: str
+    kind: str
+    length: int
+    source_relative_path: str | None
+
+
+class ExecutionPlanResponse(BaseModel):
+    id: str
+    plan_digest: str
+    ready: bool
+    current: bool
+    current_reasons: list[str]
+    target_root: str
+    target_device: int
+    verification_level: str
+    client_check_required: bool
+    hardlink_count: int
+    client_fetch_count: int
+    create_directory_count: int
+    estimated_download_bytes_upper_bound: int
+    blocked_reasons: list[str]
+    actions: list[ExecutionPlanActionResponse]
+    execution_allowed: bool
     side_effects_started: bool
     created_at: datetime
 
@@ -378,6 +411,36 @@ async def refresh_task_unit_execution_gate(
     return _execution_gate_response(task_analysis_service(request).refresh_execution_gate(unit_id))
 
 
+@router.get(
+    "/task-units/{unit_id}/execution-plan",
+    response_model=ExecutionPlanResponse,
+)
+async def get_task_unit_execution_plan(
+    unit_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
+) -> ExecutionPlanResponse:
+    return _execution_plan_response(task_analysis_service(request).get_execution_plan(unit_id))
+
+
+@router.post(
+    "/task-units/{unit_id}/execution-plan",
+    response_model=ExecutionPlanResponse,
+)
+async def create_task_unit_execution_plan(
+    unit_id: str,
+    request: Request,
+    payload: ExecutionPlanRequest,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+) -> ExecutionPlanResponse:
+    return _execution_plan_response(
+        await task_analysis_service(request).create_execution_plan(
+            unit_id,
+            target_root=payload.target_root,
+        )
+    )
+
+
 def _task_response(item: TaskView) -> TaskResponse:
     return TaskResponse(
         id=item.id,
@@ -490,6 +553,29 @@ def _execution_gate_response(item: ExecutionGateView) -> ExecutionGateResponse:
         metainfo_digest=item.metainfo_digest,
         review_revision_id=item.review_revision_id,
         review_version=item.review_version,
+        side_effects_started=item.side_effects_started,
+        created_at=item.created_at,
+    )
+
+
+def _execution_plan_response(item: ExecutionPlanView) -> ExecutionPlanResponse:
+    return ExecutionPlanResponse(
+        id=item.id,
+        plan_digest=item.plan_digest,
+        ready=item.ready,
+        current=item.current,
+        current_reasons=list(item.current_reasons),
+        target_root=item.target_root,
+        target_device=item.target_device,
+        verification_level=item.verification_level,
+        client_check_required=item.client_check_required,
+        hardlink_count=item.hardlink_count,
+        client_fetch_count=item.client_fetch_count,
+        create_directory_count=item.create_directory_count,
+        estimated_download_bytes_upper_bound=item.estimated_download_bytes_upper_bound,
+        blocked_reasons=list(item.blocked_reasons),
+        actions=[ExecutionPlanActionResponse(**action) for action in item.actions],
+        execution_allowed=item.execution_allowed,
         side_effects_started=item.side_effects_started,
         created_at=item.created_at,
     )

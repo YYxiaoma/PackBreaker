@@ -410,6 +410,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/task-units/{unit_id}/execution-plan': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Task Unit Execution Plan */
+    get: operations['get_task_unit_execution_plan_api_v1_task_units__unit_id__execution_plan_get'];
+    put?: never;
+    /** Create Task Unit Execution Plan */
+    post: operations['create_task_unit_execution_plan_api_v1_task_units__unit_id__execution_plan_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/tasks': {
     parameters: {
       query?: never;
@@ -701,6 +719,64 @@ export interface components {
       verification_level: string | null;
       /** Verification Source */
       verification_source: string | null;
+    };
+    /** ExecutionPlanActionResponse */
+    ExecutionPlanActionResponse: {
+      /** Kind */
+      kind: string;
+      /** Length */
+      length: number;
+      /** Source Relative Path */
+      source_relative_path: string | null;
+      /** Torrent Path */
+      torrent_path: string;
+    };
+    /** ExecutionPlanRequest */
+    ExecutionPlanRequest: {
+      /** Target Root */
+      target_root: string;
+    };
+    /** ExecutionPlanResponse */
+    ExecutionPlanResponse: {
+      /** Actions */
+      actions: components['schemas']['ExecutionPlanActionResponse'][];
+      /** Blocked Reasons */
+      blocked_reasons: string[];
+      /** Client Check Required */
+      client_check_required: boolean;
+      /** Client Fetch Count */
+      client_fetch_count: number;
+      /** Create Directory Count */
+      create_directory_count: number;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Current */
+      current: boolean;
+      /** Current Reasons */
+      current_reasons: string[];
+      /** Estimated Download Bytes Upper Bound */
+      estimated_download_bytes_upper_bound: number;
+      /** Execution Allowed */
+      execution_allowed: boolean;
+      /** Hardlink Count */
+      hardlink_count: number;
+      /** Id */
+      id: string;
+      /** Plan Digest */
+      plan_digest: string;
+      /** Ready */
+      ready: boolean;
+      /** Side Effects Started */
+      side_effects_started: boolean;
+      /** Target Device */
+      target_device: number;
+      /** Target Root */
+      target_root: string;
+      /** Verification Level */
+      verification_level: string;
     };
     /** HTTPValidationError */
     HTTPValidationError: {
@@ -2284,6 +2360,82 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['ExecutionGateResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_task_unit_execution_plan_api_v1_task_units__unit_id__execution_plan_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        unit_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ExecutionPlanResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  create_task_unit_execution_plan_api_v1_task_units__unit_id__execution_plan_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        unit_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ExecutionPlanRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ExecutionPlanResponse'];
         };
       };
       /** @description Validation Error */

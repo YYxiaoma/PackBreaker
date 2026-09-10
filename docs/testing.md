@@ -113,6 +113,7 @@
 - 手动 Analyze 必须按 `ANALYZING → SEARCHING → MATCHING → VERIFYING → PREFLIGHT` 记录状态事件；失败恢复只能在任务 version 仍由本次运行持有时进入 `RETRY`，不得覆盖并发状态变化。
 - 人工映射重验证必须重新校验 preflight/current、source inventory、review revision、torrent 身份和 metainfo digest；重验证结果只追加不可变证据，审核或预演在验证期间变化时不得落库。
 - Pre-execution gate 必须绑定当前 task/preflight/review/candidate/重验证证据；FULL_VERIFIED 与 CLIENT_CHECK_REQUIRED 的资格语义必须区分，后者始终携带 `client_check_required=true`。BLOCKED、hard reject、stale 或缺少必要重验证证据时必须失败关闭，且 gate 生成不得启动任何文件系统或下载器副作用。
+- Execution plan 必须绑定 current+eligible gate 和相同 metainfo digest，只保存 `/data` 相对源/目标路径；目标树只能只读检查。目标冲突、父目录/符号链接异常和跨设备必须成为稳定 blocker，目标状态变化必须让旧计划 stale；`execution_allowed` 与 `side_effects_started` 在当前阶段始终为 false。
 - 桌面与移动视口完成核心任务、人工确认、路径诊断和日志筛选流程。
 
 ## 9. 数据库与迁移
@@ -139,6 +140,7 @@ M2 使用合成 1 万文件 torrent 和跨文件 piece 测试内存上界与流�
 `scripts/repository_scan.py` 扫描 Git 已跟踪文件以及未被 `.gitignore` 排除的工作区候选，阻断真实 `.torrent`、媒体、数据库/日志/密钥类制品、明显私钥/常见 Token 形态以及超过 5 MiB 的单个候选文件；该扫描也被 `scripts/check.py` 本地入口复用。普通 CI 永不连接真实 PT 或下载器。任何安全不变量、迁移、契约、仓库扫描、容器 smoke 或端到端测试失败都应阻止合并。
 
 M1 的逐项退出证据见 [`m1-exit-checklist.md`](./m1-exit-checklist.md)。
+M2 的代码能力、自动化证据与仍依赖真实语料/环境的退出项见 [`m2-exit-checklist.md`](./m2-exit-checklist.md)。
 
 ## 12. v1.0 验收清单
 

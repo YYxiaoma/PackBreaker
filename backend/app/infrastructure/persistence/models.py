@@ -378,6 +378,40 @@ class TaskExecutionGateRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class TaskExecutionPlanRecord(Base):
+    __tablename__ = "task_execution_plan"
+    __table_args__ = (
+        UniqueConstraint("plan_digest", name="uq_task_execution_plan_plan_digest"),
+        Index("ix_task_execution_plan_unit_created_at", "task_unit_id", "created_at"),
+        Index("ix_task_execution_plan_task_ready", "task_id", "ready"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=False
+    )
+    task_unit_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_unit.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_gate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_execution_gate.id", ondelete="CASCADE"), nullable=False
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_candidate.id", ondelete="CASCADE"), nullable=False
+    )
+    task_version: Mapped[int] = mapped_column(nullable=False)
+    target_root: Mapped[str] = mapped_column(Text, nullable=False)
+    target_device: Mapped[int] = mapped_column(nullable=False)
+    verification_level: Mapped[str] = mapped_column(String(32), nullable=False)
+    client_check_required: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    ready: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    blocked_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    estimated_download_bytes_upper_bound: Mapped[int] = mapped_column(nullable=False)
+    plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class OperationJournal(Base):
     __tablename__ = "operation_journal"
     __table_args__ = (

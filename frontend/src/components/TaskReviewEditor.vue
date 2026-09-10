@@ -4,7 +4,9 @@ import { ElMessage } from 'element-plus';
 
 import { ApiProblem } from '../api/client';
 import {
+  createTaskUnitExecutionPlan,
   getTaskUnitExecutionGate,
+  getTaskUnitExecutionPlan,
   getTaskUnitReviewVerification,
   getTaskUnitDecision,
   listTaskUnits,
@@ -12,6 +14,7 @@ import {
   refreshTaskUnitExecutionGate,
   submitTaskUnitDecision,
   type ExecutionGate,
+  type ExecutionPlan,
   type ReviewVerification,
   type TaskCandidate,
   type TaskReview,
@@ -26,6 +29,7 @@ const unit = ref<TaskUnit | null>(null);
 const decision = ref<TaskReview | null>(null);
 const verification = ref<ReviewVerification | null>(null);
 const executionGate = ref<ExecutionGate | null>(null);
+const executionPlan = ref<ExecutionPlan | null>(null);
 const approvedCandidateId = ref('');
 const rejectedCandidateIds = ref<string[]>([]);
 const note = ref('');
@@ -34,6 +38,8 @@ const loading = ref(false);
 const saving = ref(false);
 const reverifying = ref(false);
 const checkingGate = ref(false);
+const planning = ref(false);
+const targetRoot = ref('');
 
 const eligibleCandidates = computed(() => props.item.candidates.filter((item) => !item.rejected));
 const approvedCandidate = computed(
@@ -59,6 +65,14 @@ const canReverify = computed(
     decision.value.approved_candidate_id !== null &&
     !loading.value &&
     !reverifying.value,
+);
+const canPlan = computed(
+  () =>
+    executionGate.value?.current === true &&
+    executionGate.value.eligible === true &&
+    props.item.task.status === 'AWAITING_CONFIRMATION' &&
+    targetRoot.value.trim().length > 0 &&
+    !planning.value,
 );
 
 watch(
@@ -110,6 +124,13 @@ async function load(): Promise<void> {
         if (!(error instanceof ApiProblem && error.code === 'EXECUTION_GATE_NOT_FOUND'))
           throw error;
       }
+      try {
+        executionPlan.value = await getTaskUnitExecutionPlan(unit.value.id);
+        targetRoot.value = executionPlan.value.target_root;
+      } catch (error) {
+        if (!(error instanceof ApiProblem && error.code === 'EXECUTION_PLAN_NOT_FOUND'))
+          throw error;
+      }
     } catch (error) {
       if (!(error instanceof ApiProblem && error.code === 'REVIEW_NOT_FOUND')) throw error;
     }
@@ -141,6 +162,7 @@ async function save(): Promise<void> {
     decision.value = result;
     verification.value = null;
     executionGate.value = null;
+    executionPlan.value = null;
     ElMessage.success(`审核 revision v${result.version} 已保存；未执行任何下载器写操作`);
     emit('saved');
   } catch (error) {
@@ -156,6 +178,7 @@ async function reverify(): Promise<void> {
   try {
     verification.value = await reverifyTaskUnitDecision(unit.value.id);
     executionGate.value = null;
+    executionPlan.value = null;
     ElMessage.success(
       `重验证完成：${verification.value.verification_level}；结果仅作为不可变证据保存`,
     );
@@ -172,6 +195,7 @@ async function checkExecutionGate(): Promise<void> {
   checkingGate.value = true;
   try {
     executionGate.value = await refreshTaskUnitExecutionGate(unit.value.id);
+    executionPlan.value = null;
     ElMessage.success(
       executionGate.value.eligible
         ? 'Pre-execution gate 已通过；本页仍不会启动任何副作用'
@@ -184,14 +208,33 @@ async function checkExecutionGate(): Promise<void> {
   }
 }
 
+async function createExecutionPlan(): Promise<void> {
+  if (!unit.value || !canPlan.value) return;
+  planning.value = true;
+  try {
+    executionPlan.value = await createTaskUnitExecutionPlan(unit.value.id, targetRoot.value.trim());
+    ElMessage.success(
+      executionPlan.value.ready
+        ? '无副作用执行计划已生成；尚未启动任何文件或下载器操作'
+        : `执行计划已生成但被阻断：${executionPlan.value.blocked_reasons.join(', ')}`,
+    );
+  } catch (error) {
+    showError(error);
+  } finally {
+    planning.value = false;
+  }
+}
+
 function resetForm(): void {
   unit.value = null;
   decision.value = null;
   verification.value = null;
   executionGate.value = null;
+  executionPlan.value = null;
   approvedCandidateId.value = '';
   rejectedCandidateIds.value = [];
   note.value = '';
+  targetRoot.value = '';
   for (const key of Object.keys(manualSources)) delete manualSources[key];
 }
 
@@ -381,6 +424,62 @@ function showError(error: unknown): void {
         </div>
       </template>
       <small v-else>尚未生成执行门证据。</small>
+    </div>
+
+    <div v-if="executionGate?.eligible" class="execution-gate-card">
+      <div class="review-editor-heading">
+        <div>
+          <h3>Execution plan preview</h3>
+          <small>只读检查目标树并生成不可变计划；不会创建目录、硬链接或下载器任务</small>
+        </div>
+        <el-button :disabled="!canPlan" :loading="planning" @click="createExecutionPlan">
+          生成无副作用计划
+        </el-button>
+      </div>
+      <el-form label-position="top">
+        <el-form-item label="目标根（相对于 /data，目录必须已存在）">
+          <el-input v-model="targetRoot" placeholder="例如 seeding/movies" />
+        </el-form-item>
+      </el-form>
+      <template v-if="executionPlan">
+        <div class="gate-tags">
+          <el-tag :type="executionPlan.ready ? 'success' : 'danger'">
+            {{ executionPlan.ready ? 'READY' : 'BLOCKED' }}
+          </el-tag>
+          <el-tag :type="executionPlan.current ? 'success' : 'warning'">
+            {{ executionPlan.current ? 'CURRENT' : 'STALE' }}
+          </el-tag>
+          <el-tag v-if="executionPlan.client_check_required" type="warning">
+            CLIENT CHECK REQUIRED
+          </el-tag>
+          <el-tag type="info">execution_allowed = false</el-tag>
+          <el-tag type="info">side_effects_started = false</el-tag>
+        </div>
+        <div class="review-editor-status">
+          <span>
+            {{ executionPlan.hardlink_count }} 个硬链接计划 ·
+            {{ executionPlan.client_fetch_count }} 个客户端补齐 ·
+            {{ executionPlan.create_directory_count }} 个待创建目录
+          </span>
+          <span>预计客户端下载上界 {{ executionPlan.estimated_download_bytes_upper_bound }} B</span>
+          <span v-if="executionPlan.blocked_reasons.length" class="gate-blocked">
+            计划阻断：{{ executionPlan.blocked_reasons.join('；') }}
+          </span>
+          <span v-if="executionPlan.current_reasons.length" class="gate-blocked">
+            当前性变化：{{ executionPlan.current_reasons.join('；') }}
+          </span>
+          <span>plan {{ executionPlan.plan_digest.slice(0, 20) }}…</span>
+        </div>
+        <el-table :data="executionPlan.actions" size="small" empty-text="没有文件动作">
+          <el-table-column prop="torrent_path" label="Torrent 路径" min-width="220" />
+          <el-table-column prop="kind" label="计划动作" width="150" />
+          <el-table-column prop="length" label="字节" width="110" />
+          <el-table-column prop="source_relative_path" label="源相对路径" min-width="220">
+            <template #default="{ row }">{{ row.source_relative_path ?? '—' }}</template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <small v-else>尚未生成执行计划。</small>
     </div>
   </section>
 </template>

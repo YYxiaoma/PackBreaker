@@ -24,6 +24,12 @@ from backend.app.domain.execution_gate import (
     ExecutionGateSnapshot,
     ExecutionVerificationSource,
 )
+from backend.app.domain.execution_plan import (
+    ExecutionPlanAction,
+    ExecutionPlanActionKind,
+    ExecutionPlanBlockReason,
+    ExecutionPlanSnapshot,
+)
 from backend.app.domain.file_mapping import (
     AutoMappingDecision,
     MappingMethod,
@@ -38,7 +44,8 @@ from backend.app.domain.review import (
 )
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
-from backend.app.domain.verification import FileMappingState, VerificationLevel
+from backend.app.domain.torrent import TorrentFile
+from backend.app.domain.verification import FileMappingState, FileSnapshot, VerificationLevel
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.persistence.models import (
     PreflightSnapshotRecord,
@@ -51,6 +58,7 @@ from backend.app.infrastructure.persistence.repositories import TaskCreate, Task
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskCandidateRepository,
     TaskExecutionGateRepository,
+    TaskExecutionPlanRepository,
     TaskReviewRepository,
     TaskReviewVerificationRepository,
     TaskUnitRepository,
@@ -176,6 +184,35 @@ class ExecutionGateView:
     review_version: int
     side_effects_started: bool
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionPlanView:
+    id: str
+    plan_digest: str
+    ready: bool
+    current: bool
+    current_reasons: tuple[str, ...]
+    target_root: str
+    target_device: int
+    verification_level: str
+    client_check_required: bool
+    hardlink_count: int
+    client_fetch_count: int
+    create_directory_count: int
+    estimated_download_bytes_upper_bound: int
+    blocked_reasons: tuple[str, ...]
+    actions: tuple[dict[str, Any], ...]
+    execution_allowed: bool
+    side_effects_started: bool
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _TargetLayout:
+    device: int
+    create_directories: tuple[str, ...]
+    blocked_reasons: tuple[ExecutionPlanBlockReason, ...]
 
 
 class _TaskAnalysisLifecycle(AnalysisLifecycle):
@@ -557,6 +594,261 @@ class TaskAnalysisService:
             record, _ = TaskExecutionGateRepository(session).create_or_get(snapshot)
             session.commit()
             return self._execution_gate_view(record, current=True)
+
+    def get_execution_plan(self, unit_id: str) -> ExecutionPlanView:
+        with self._session_factory() as session:
+            record = TaskExecutionPlanRepository(session).latest(unit_id)
+            if record is None:
+                raise ApplicationError(
+                    code="EXECUTION_PLAN_NOT_FOUND",
+                    status=404,
+                    title="执行计划不存在",
+                    detail="该处理单元尚未生成无副作用执行计划",
+                )
+            stored_payload = deepcopy(record.payload)
+            stored = self._execution_plan_view(record, current=False, current_reasons=())
+
+        reasons: list[str] = []
+        try:
+            gate = self.get_execution_gate(unit_id)
+            expected_gate_id = stored_payload.get("execution_gate_id")
+            expected_gate_digest = stored_payload.get("execution_gate_digest")
+            if (
+                not gate.current
+                or not gate.eligible
+                or gate.id != expected_gate_id
+                or gate.gate_digest != expected_gate_digest
+            ):
+                reasons.append("EXECUTION_GATE_CHANGED")
+        except ApplicationError:
+            reasons.append("EXECUTION_GATE_CHANGED")
+
+        with self._session_factory() as session:
+            task = TaskRepository(session).get(record.task_id)
+            if task is None or task.version != record.task_version:
+                reasons.append("TASK_VERSION_CHANGED")
+
+        actions = _execution_plan_actions_from_payload(stored_payload)
+        expected_directories = _string_tuple(stored_payload.get("create_directories"))
+        expected_blockers = _execution_plan_blockers(stored_payload.get("blocked_reasons"))
+        if actions is None or expected_directories is None or expected_blockers is None:
+            reasons.append("PLAN_EVIDENCE_INVALID")
+        else:
+            try:
+                normalized_target, target_path = self._resolve_execution_target_root(
+                    record.target_root
+                )
+                if normalized_target != record.target_root:
+                    reasons.append("TARGET_ROOT_CHANGED")
+                else:
+                    layout = self._inspect_target_layout(target_path, actions)
+                    target_blockers = tuple(
+                        item
+                        for item in expected_blockers
+                        if item
+                        in {
+                            ExecutionPlanBlockReason.TARGET_EXISTS,
+                            ExecutionPlanBlockReason.TARGET_PARENT_UNSAFE,
+                            ExecutionPlanBlockReason.CROSS_DEVICE,
+                        }
+                    )
+                    if layout.device != record.target_device:
+                        reasons.append("TARGET_ROOT_CHANGED")
+                    elif (
+                        layout.create_directories != expected_directories
+                        or layout.blocked_reasons != target_blockers
+                    ):
+                        reasons.append("TARGET_STATE_CHANGED")
+            except ApplicationError:
+                reasons.append("TARGET_ROOT_CHANGED")
+
+        normalized_reasons = tuple(dict.fromkeys(reasons))
+        return replace(
+            stored,
+            current=not normalized_reasons,
+            current_reasons=normalized_reasons,
+        )
+
+    async def create_execution_plan(
+        self,
+        unit_id: str,
+        *,
+        target_root: str,
+    ) -> ExecutionPlanView:
+        gate = self.get_execution_gate(unit_id)
+        if not gate.current or not gate.eligible:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_GATE_NOT_READY",
+                status=409,
+                title="执行安全门未就绪",
+                detail="只有 current 且 eligible 的 execution gate 才能生成执行计划",
+            )
+        if (
+            gate.candidate_id is None
+            or gate.metainfo_digest is None
+            or gate.verification_level is None
+        ):
+            raise ApplicationError(
+                code="EXECUTION_PLAN_GATE_INVALID",
+                status=409,
+                title="执行安全门证据不完整",
+                detail="execution gate 缺少候选、metainfo 或验证等级",
+            )
+        try:
+            verification_level = VerificationLevel(gate.verification_level)
+        except ValueError as exc:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_GATE_INVALID",
+                status=409,
+                title="执行安全门验证等级无效",
+                detail="execution gate 包含未知验证等级",
+            ) from exc
+
+        normalized_target, resolved_target = self._resolve_execution_target_root(target_root)
+        with self._session_factory() as session:
+            unit = TaskUnitRepository(session).get(unit_id)
+            if unit is None:
+                raise _review_unit_not_found()
+            gate_record = TaskExecutionGateRepository(session).latest(unit_id)
+            candidate = TaskCandidateRepository(session).get(gate.candidate_id)
+            if (
+                gate_record is None
+                or gate_record.id != gate.id
+                or gate_record.gate_digest != gate.gate_digest
+                or candidate is None
+                or candidate.id != gate.candidate_id
+                or candidate.preflight_snapshot_id != gate_record.preflight_snapshot_id
+            ):
+                raise _execution_plan_input_changed()
+            source_root = unit.source_root
+            expected_inventory_digest = gate_record.payload.get("source_inventory_digest")
+            if not isinstance(expected_inventory_digest, str):
+                raise ApplicationError(
+                    code="EXECUTION_PLAN_GATE_INVALID",
+                    status=409,
+                    title="执行安全门证据不完整",
+                    detail="execution gate 缺少 source inventory digest",
+                )
+            mapping_payload = self._execution_plan_mapping_payload(session, gate_record, candidate)
+            candidate_site_id = candidate.site_id
+            candidate_torrent_id = candidate.torrent_id
+            task_id = candidate.task_id
+            task_version = gate_record.task_version
+            preflight_snapshot_id = gate_record.preflight_snapshot_id
+            review_revision_id = gate_record.review_revision_id
+
+        _, resolved_source = self._resolve_source_root(source_root)
+        try:
+            inventory = scan_source_inventory(resolved_source)
+        except DomainViolation as exc:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_SOURCE_UNAVAILABLE",
+                status=409,
+                title="源文件不可用",
+                detail="生成执行计划时无法重新确认源文件清单",
+            ) from exc
+        if source_inventory_digest(inventory) != expected_inventory_digest:
+            raise _execution_plan_input_changed()
+
+        binding = self._execution_plan_site_binding(candidate_site_id)
+        try:
+            torrent_payload = await binding.adapter.fetch_torrent(candidate_torrent_id)
+        except SiteAdapterError as exc:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TORRENT_FETCH_FAILED",
+                status=502,
+                title="候选 torrent 获取失败",
+                detail=f"站点适配器返回安全错误码：{exc.code}",
+            ) from exc
+        if (
+            torrent_payload.site_id != candidate_site_id
+            or torrent_payload.torrent_id != candidate_torrent_id
+        ):
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TORRENT_IDENTITY_MISMATCH",
+                status=409,
+                title="torrent 身份不一致",
+                detail="执行计划取回的 torrent 身份与批准候选不一致",
+            )
+        try:
+            meta = parse_torrent(torrent_payload.content)
+        except DomainViolation as exc:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TORRENT_INVALID",
+                status=409,
+                title="候选 torrent 无法安全解析",
+                detail=f"torrent 安全解析失败：{exc.code.value}",
+            ) from exc
+        if meta.metainfo_digest != gate.metainfo_digest:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TORRENT_CHANGED",
+                status=409,
+                title="候选 torrent 已变化",
+                detail="当前获取的 metainfo digest 与 execution gate 不一致",
+            )
+
+        actions, mapping_blockers = self._build_execution_plan_actions(
+            meta.files,
+            mapping_payload=mapping_payload,
+            inventory=inventory,
+        )
+        layout = self._inspect_target_layout(resolved_target, actions)
+        blockers = tuple((*mapping_blockers, *layout.blocked_reasons))
+        estimated_download = (
+            sum(item.length for item in meta.files if not item.padding)
+            if gate.client_check_required
+            else sum(
+                action.length
+                for action in actions
+                if action.kind is ExecutionPlanActionKind.CLIENT_FETCH
+            )
+        )
+        snapshot = ExecutionPlanSnapshot(
+            task_id=task_id,
+            task_version=task_version,
+            task_unit_id=unit_id,
+            execution_gate_id=gate.id,
+            execution_gate_digest=gate.gate_digest,
+            preflight_snapshot_id=preflight_snapshot_id,
+            review_revision_id=review_revision_id,
+            candidate_id=gate.candidate_id,
+            source_inventory_digest=expected_inventory_digest,
+            metainfo_digest=meta.metainfo_digest,
+            verification_level=verification_level,
+            client_check_required=gate.client_check_required,
+            source_root=source_root,
+            target_root=normalized_target,
+            target_device=layout.device,
+            actions=actions,
+            create_directories=layout.create_directories,
+            estimated_download_bytes_upper_bound=estimated_download,
+            blocked_reasons=blockers,
+            created_at=datetime.now(UTC),
+        )
+
+        final_gate = self.get_execution_gate(unit_id)
+        if (
+            not final_gate.current
+            or not final_gate.eligible
+            or final_gate.id != gate.id
+            or final_gate.gate_digest != gate.gate_digest
+        ):
+            raise _execution_plan_input_changed()
+        try:
+            final_inventory = scan_source_inventory(resolved_source)
+        except DomainViolation as exc:
+            raise _execution_plan_input_changed() from exc
+        if source_inventory_digest(final_inventory) != expected_inventory_digest:
+            raise _execution_plan_input_changed()
+        final_layout = self._inspect_target_layout(resolved_target, actions)
+        if final_layout != layout:
+            raise _execution_plan_input_changed()
+
+        with self._session_factory() as session:
+            self._assert_execution_plan_inputs(session, snapshot)
+            record, _ = TaskExecutionPlanRepository(session).create_or_get(snapshot)
+            session.commit()
+            return self._execution_plan_view(record, current=True, current_reasons=())
 
     async def reverify_review(self, unit_id: str) -> ReviewVerificationView:
         with self._session_factory() as session:
@@ -959,6 +1251,244 @@ class TaskAnalysisService:
                 detail="生成 execution gate 期间任务、预演或审核证据发生变化，请重新检查",
             )
 
+    def _execution_plan_mapping_payload(
+        self,
+        session: Session,
+        gate_record: Any,
+        candidate: Any,
+    ) -> tuple[dict[str, Any], ...]:
+        if gate_record.review_verification_id is not None:
+            verification = TaskReviewVerificationRepository(session).get_for_revision(
+                gate_record.review_revision_id
+            )
+            if verification is None or verification.id != gate_record.review_verification_id:
+                raise _execution_plan_input_changed()
+            raw = verification.mappings
+        else:
+            raw = candidate.evidence.get("mappings")
+        if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+            raise ApplicationError(
+                code="EXECUTION_PLAN_MAPPING_EVIDENCE_INVALID",
+                status=409,
+                title="文件映射证据无效",
+                detail="execution gate 对应的候选缺少完整映射证据",
+            )
+        return tuple(deepcopy(item) for item in raw)
+
+    def _execution_plan_site_binding(self, site_id: str) -> Any:
+        bindings = tuple(
+            item for item in self._site_service.enabled_adapters() if item.site_id == site_id
+        )
+        if len(bindings) != 1:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_SITE_UNAVAILABLE",
+                status=409,
+                title="候选站点不可唯一确定",
+                detail="生成执行计划要求候选对应且仅对应一个当前启用站点配置",
+            )
+        return bindings[0]
+
+    def _build_execution_plan_actions(
+        self,
+        torrent_files: tuple[TorrentFile, ...],
+        *,
+        mapping_payload: tuple[dict[str, Any], ...],
+        inventory: tuple[SourceFileCandidate, ...],
+    ) -> tuple[tuple[ExecutionPlanAction, ...], tuple[ExecutionPlanBlockReason, ...]]:
+        mappings: dict[str, dict[str, Any]] = {}
+        malformed = False
+        for item in mapping_payload:
+            torrent_path = item.get("torrent_path")
+            if not isinstance(torrent_path, str) or torrent_path in mappings:
+                malformed = True
+                continue
+            mappings[torrent_path] = item
+        inventory_by_path = {item.source_path: item for item in inventory}
+        actions: list[ExecutionPlanAction] = []
+        blockers: list[ExecutionPlanBlockReason] = []
+        if malformed:
+            blockers.append(ExecutionPlanBlockReason.MAPPING_UNSUPPORTED)
+
+        for torrent_file in torrent_files:
+            if torrent_file.padding:
+                actions.append(
+                    ExecutionPlanAction(
+                        torrent_path=torrent_file.path,
+                        kind=ExecutionPlanActionKind.PROTOCOL_PADDING,
+                        length=torrent_file.length,
+                    )
+                )
+                continue
+            if torrent_file.zero_length:
+                actions.append(
+                    ExecutionPlanAction(
+                        torrent_path=torrent_file.path,
+                        kind=ExecutionPlanActionKind.ZERO_LENGTH,
+                        length=0,
+                    )
+                )
+                continue
+
+            mapping = mappings.get(torrent_file.path)
+            if mapping is None:
+                blockers.append(ExecutionPlanBlockReason.MAPPING_UNSUPPORTED)
+                actions.append(
+                    ExecutionPlanAction(
+                        torrent_path=torrent_file.path,
+                        kind=ExecutionPlanActionKind.CLIENT_FETCH,
+                        length=torrent_file.length,
+                    )
+                )
+                continue
+            state = mapping.get("state")
+            if state == FileMappingState.MISSING.value:
+                actions.append(
+                    ExecutionPlanAction(
+                        torrent_path=torrent_file.path,
+                        kind=ExecutionPlanActionKind.CLIENT_FETCH,
+                        length=torrent_file.length,
+                    )
+                )
+                continue
+            if state != FileMappingState.MAPPED.value:
+                blockers.append(ExecutionPlanBlockReason.MAPPING_UNSUPPORTED)
+                actions.append(
+                    ExecutionPlanAction(
+                        torrent_path=torrent_file.path,
+                        kind=ExecutionPlanActionKind.CLIENT_FETCH,
+                        length=torrent_file.length,
+                    )
+                )
+                continue
+
+            source_path = mapping.get("source_path")
+            evidence_snapshot = mapping.get("snapshot")
+            source = inventory_by_path.get(source_path) if isinstance(source_path, str) else None
+            if (
+                source is None
+                or source.length != torrent_file.length
+                or not _file_snapshot_matches_payload(source.snapshot, evidence_snapshot)
+            ):
+                blockers.append(ExecutionPlanBlockReason.MAPPING_UNSUPPORTED)
+                actions.append(
+                    ExecutionPlanAction(
+                        torrent_path=torrent_file.path,
+                        kind=ExecutionPlanActionKind.CLIENT_FETCH,
+                        length=torrent_file.length,
+                    )
+                )
+                continue
+            actions.append(
+                ExecutionPlanAction(
+                    torrent_path=torrent_file.path,
+                    kind=ExecutionPlanActionKind.HARDLINK,
+                    length=torrent_file.length,
+                    source_relative_path=source.relative_path,
+                    source_snapshot=source.snapshot,
+                )
+            )
+
+        return tuple(actions), tuple(blockers)
+
+    def _inspect_target_layout(
+        self,
+        target_root: Path,
+        actions: tuple[ExecutionPlanAction, ...],
+    ) -> _TargetLayout:
+        try:
+            root_stat = target_root.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TARGET_ROOT_NOT_FOUND",
+                status=404,
+                title="目标根目录不可用",
+                detail="目标根目录在执行计划检查期间不可见",
+            ) from exc
+        if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+            raise _execution_target_root_invalid("目标根必须是真实目录且不能是符号链接")
+
+        device = root_stat.st_dev
+        directories: set[str] = set()
+        blockers: set[ExecutionPlanBlockReason] = set()
+        for action in actions:
+            parts = action.torrent_path.split("/")
+            current = target_root
+            missing_parent = False
+            unsafe_parent = False
+            for index, part in enumerate(parts[:-1]):
+                current = current / part
+                relative = "/".join(parts[: index + 1])
+                if missing_parent:
+                    directories.add(relative)
+                    continue
+                if unsafe_parent:
+                    break
+                try:
+                    item_stat = current.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    directories.add(relative)
+                    missing_parent = True
+                    continue
+                except OSError:
+                    blockers.add(ExecutionPlanBlockReason.TARGET_PARENT_UNSAFE)
+                    unsafe_parent = True
+                    continue
+                if (
+                    stat.S_ISLNK(item_stat.st_mode)
+                    or not stat.S_ISDIR(item_stat.st_mode)
+                    or item_stat.st_dev != device
+                ):
+                    blockers.add(ExecutionPlanBlockReason.TARGET_PARENT_UNSAFE)
+                    unsafe_parent = True
+
+            if not missing_parent and not unsafe_parent:
+                target = target_root.joinpath(*parts)
+                try:
+                    target.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    blockers.add(ExecutionPlanBlockReason.TARGET_PARENT_UNSAFE)
+                else:
+                    blockers.add(ExecutionPlanBlockReason.TARGET_EXISTS)
+
+            if (
+                action.kind is ExecutionPlanActionKind.HARDLINK
+                and action.source_snapshot is not None
+                and action.source_snapshot.device != device
+            ):
+                blockers.add(ExecutionPlanBlockReason.CROSS_DEVICE)
+
+        return _TargetLayout(
+            device=device,
+            create_directories=tuple(sorted(directories)),
+            blocked_reasons=tuple(sorted(blockers, key=lambda item: item.value)),
+        )
+
+    def _assert_execution_plan_inputs(
+        self,
+        session: Session,
+        snapshot: ExecutionPlanSnapshot,
+    ) -> None:
+        task = TaskRepository(session).get(snapshot.task_id)
+        gate = TaskExecutionGateRepository(session).latest(snapshot.task_unit_id)
+        candidate = TaskCandidateRepository(session).get(snapshot.candidate_id)
+        unit = TaskUnitRepository(session).get(snapshot.task_unit_id)
+        if (
+            task is None
+            or task.version != snapshot.task_version
+            or gate is None
+            or gate.id != snapshot.execution_gate_id
+            or gate.gate_digest != snapshot.execution_gate_digest
+            or not gate.eligible
+            or candidate is None
+            or candidate.preflight_snapshot_id != snapshot.preflight_snapshot_id
+            or candidate.metainfo_digest != snapshot.metainfo_digest
+            or unit is None
+            or unit.source_inventory_digest != snapshot.source_inventory_digest
+        ):
+            raise _execution_plan_input_changed()
+
     def submit_review(
         self,
         unit_id: str,
@@ -1280,6 +1810,63 @@ class TaskAnalysisService:
             raise _source_root_invalid("source_root 必须解析到 /data 内的真实目录")
         return ("." if not parts else "/".join(parts), resolved)
 
+    def _resolve_execution_target_root(self, value: str) -> tuple[str, Path]:
+        normalized = unicodedata.normalize("NFC", value.strip())
+        has_windows_drive = (
+            len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":"
+        )
+        if (
+            not normalized
+            or "\x00" in normalized
+            or "\\" in normalized
+            or normalized.startswith("/")
+            or has_windows_drive
+        ):
+            raise _execution_target_root_invalid("target_root 必须是 /data 下的 POSIX 相对目录")
+        if normalized == ".":
+            parts: tuple[str, ...] = ()
+        else:
+            parts = tuple(normalized.split("/"))
+            if any(not part or part in {".", ".."} for part in parts):
+                raise _execution_target_root_invalid("target_root 包含不安全路径段")
+
+        try:
+            base_stat = self._data_root.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise _execution_target_root_invalid("数据根目录不可用") from exc
+        if stat.S_ISLNK(base_stat.st_mode) or not stat.S_ISDIR(base_stat.st_mode):
+            raise _execution_target_root_invalid("数据根目录必须是真实目录且不能是符号链接")
+        try:
+            base = self._data_root.resolve(strict=True)
+        except OSError as exc:
+            raise _execution_target_root_invalid("数据根目录不可用") from exc
+
+        current = self._data_root
+        for index, part in enumerate(parts):
+            current = current / part
+            try:
+                item_stat = current.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise ApplicationError(
+                    code="EXECUTION_PLAN_TARGET_ROOT_NOT_FOUND",
+                    status=404,
+                    title="目标根目录不存在",
+                    detail="target_root 指向的目录不可见",
+                ) from exc
+            if stat.S_ISLNK(item_stat.st_mode):
+                raise _execution_target_root_invalid("target_root 不能经过符号链接")
+            if not stat.S_ISDIR(item_stat.st_mode):
+                detail = (
+                    "target_root 的中间路径不是目录"
+                    if index < len(parts) - 1
+                    else "target_root 必须指向目录"
+                )
+                raise _execution_target_root_invalid(detail)
+        resolved = current.resolve(strict=True)
+        if not resolved.is_relative_to(base) or not resolved.is_dir():
+            raise _execution_target_root_invalid("target_root 必须解析到 /data 内的真实目录")
+        return ("." if not parts else "/".join(parts), resolved)
+
     @staticmethod
     def _unit_view(record: Any) -> TaskUnitView:
         return TaskUnitView(
@@ -1380,6 +1967,50 @@ class TaskAnalysisService:
         )
 
     @staticmethod
+    def _execution_plan_view(
+        record: Any,
+        *,
+        current: bool,
+        current_reasons: tuple[str, ...],
+    ) -> ExecutionPlanView:
+        actions = _execution_plan_actions_from_payload(record.payload) or ()
+        safe_actions = tuple(
+            {
+                "torrent_path": action.torrent_path,
+                "kind": action.kind.value,
+                "length": action.length,
+                "source_relative_path": action.source_relative_path,
+            }
+            for action in actions
+        )
+        return ExecutionPlanView(
+            id=record.id,
+            plan_digest=record.plan_digest,
+            ready=record.ready,
+            current=current,
+            current_reasons=current_reasons,
+            target_root=record.target_root,
+            target_device=record.target_device,
+            verification_level=record.verification_level,
+            client_check_required=record.client_check_required,
+            hardlink_count=sum(
+                action.kind is ExecutionPlanActionKind.HARDLINK for action in actions
+            ),
+            client_fetch_count=sum(
+                action.kind is ExecutionPlanActionKind.CLIENT_FETCH for action in actions
+            ),
+            create_directory_count=len(
+                _string_tuple(record.payload.get("create_directories")) or ()
+            ),
+            estimated_download_bytes_upper_bound=record.estimated_download_bytes_upper_bound,
+            blocked_reasons=tuple(record.blocked_reasons),
+            actions=safe_actions,
+            execution_allowed=False,
+            side_effects_started=False,
+            created_at=record.created_at,
+        )
+
+    @staticmethod
     def _task_view(record: Any) -> TaskView:
         return TaskView(
             id=record.id,
@@ -1411,6 +2042,96 @@ def _site_versions_from_payload(payload: dict[str, Any]) -> tuple[tuple[str, int
             return None
         values.append((item[0], item[1]))
     return tuple(sorted(values))
+
+
+def _execution_plan_actions_from_payload(
+    payload: dict[str, Any],
+) -> tuple[ExecutionPlanAction, ...] | None:
+    raw = payload.get("actions")
+    if not isinstance(raw, list):
+        return None
+    actions: list[ExecutionPlanAction] = []
+    try:
+        for item in raw:
+            if not isinstance(item, dict):
+                return None
+            torrent_path = item.get("torrent_path")
+            kind = item.get("kind")
+            length = item.get("length")
+            source_relative_path = item.get("source_relative_path")
+            snapshot_payload = item.get("source_snapshot")
+            if (
+                not isinstance(torrent_path, str)
+                or not isinstance(kind, str)
+                or not isinstance(length, int)
+                or (source_relative_path is not None and not isinstance(source_relative_path, str))
+            ):
+                return None
+            snapshot = _file_snapshot_from_payload(snapshot_payload)
+            if snapshot_payload is not None and snapshot is None:
+                return None
+            actions.append(
+                ExecutionPlanAction(
+                    torrent_path=torrent_path,
+                    kind=ExecutionPlanActionKind(kind),
+                    length=length,
+                    source_relative_path=source_relative_path,
+                    source_snapshot=snapshot,
+                )
+            )
+    except ValueError:
+        return None
+    return tuple(actions)
+
+
+def _file_snapshot_from_payload(value: object) -> FileSnapshot | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return None
+    device = value.get("device")
+    inode = value.get("inode")
+    size = value.get("size")
+    mtime_ns = value.get("mtime_ns")
+    file_type = value.get("file_type")
+    if (
+        not isinstance(device, int)
+        or not isinstance(inode, int)
+        or not isinstance(size, int)
+        or not isinstance(mtime_ns, int)
+        or not isinstance(file_type, str)
+    ):
+        return None
+    return FileSnapshot(
+        device=device,
+        inode=inode,
+        size=size,
+        mtime_ns=mtime_ns,
+        file_type=file_type,
+    )
+
+
+def _file_snapshot_matches_payload(snapshot: FileSnapshot, value: object) -> bool:
+    expected = _file_snapshot_from_payload(value)
+    return expected == snapshot
+
+
+def _string_tuple(value: object) -> tuple[str, ...] | None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return tuple(value)
+
+
+def _execution_plan_blockers(
+    value: object,
+) -> tuple[ExecutionPlanBlockReason, ...] | None:
+    strings = _string_tuple(value)
+    if strings is None:
+        return None
+    try:
+        return tuple(ExecutionPlanBlockReason(item) for item in strings)
+    except ValueError:
+        return None
 
 
 def _review_bridge_is_current(
@@ -1495,4 +2216,22 @@ def _source_root_invalid(detail: str) -> ApplicationError:
         status=422,
         title="源目录无效",
         detail=detail,
+    )
+
+
+def _execution_target_root_invalid(detail: str) -> ApplicationError:
+    return ApplicationError(
+        code="EXECUTION_PLAN_TARGET_ROOT_INVALID",
+        status=422,
+        title="执行计划目标根无效",
+        detail=detail,
+    )
+
+
+def _execution_plan_input_changed() -> ApplicationError:
+    return ApplicationError(
+        code="EXECUTION_PLAN_INPUT_CHANGED",
+        status=409,
+        title="执行计划输入已经变化",
+        detail="生成执行计划期间 task、gate、候选、源文件或目标树发生变化，请重新检查",
     )
