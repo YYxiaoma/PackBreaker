@@ -23,6 +23,8 @@
 
 M2 execution plan 定向测试覆盖：领域 digest/路径/验证等级不变量、API/CSRF、幂等 plan digest、目标树 currentity、Alembic 迁移与 Runtime migration revision。
 
+真实语料验收入口 `scripts/m2_corpus_acceptance.py` 已加入：默认对同一 torrent/source root 做至少 3 轮只读 inventory + mapping，比较稳定 digest；只有显式 `--verify-content` 才运行完整内容验证，并在验证后再次扫描源快照。报告不回显 tracker、source、Info-hash，且固定 `execution_allowed=false`、`side_effects_started=false`。
+
 全量 Python pytest、前端 Vitest 与前端 production build 均作为 M2 代码收口门禁执行。CI 仍应作为合并后的最终独立证据。
 
 ## 3. 尚未满足的正式 M2 退出条件

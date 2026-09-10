@@ -129,6 +129,8 @@ M2 使用合成 1 万文件 torrent 和跨文件 piece 测试内存上界与流�
 
 在取得真实硬件和语料前不承诺固定吞吐指标。发布门禁要求：处理过程内存不随媒体总字节线性增长；取消能在当前原子块完成后停止；API 和 UI 在后台验证时仍可响应。
 
+真实目录绑定到项目容器后，先运行 `python scripts/m2_corpus_acceptance.py <torrent> <source_root>` 做至少 3 轮只读扫描/自动映射稳定性检查。默认不会执行完整媒体 hash，也不会创建目录、硬链接或下载器任务；确认结构和映射合理后，再显式追加 `--verify-content` 执行完整 v1 piece / v2 Merkle / hybrid 双协议内容验证。JSON 输出只保留协议统计、目录/映射摘要与不可逆 digest，不输出 tracker、source 或 Info-hash。
+
 ## 11. CI 门禁
 
 当前 GitHub Actions 每个 Pull Request 执行三条主门禁，并在 `quality` 最前执行独立仓库安全扫描：
