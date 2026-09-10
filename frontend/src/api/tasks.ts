@@ -14,6 +14,7 @@ export type TaskReviewInput = components['schemas']['TaskReviewRequest'];
 export type TaskReview = components['schemas']['TaskReviewResponse'];
 export type TaskReviewActionInput = components['schemas']['TaskReviewActionRequest'];
 export type ReviewVerification = components['schemas']['ReviewVerificationResponse'];
+export type ExecutionGate = components['schemas']['ExecutionGateResponse'];
 
 function taskPath(taskId: string): string {
   const normalized = taskId.trim();
@@ -143,6 +144,24 @@ export async function reverifyTaskUnitDecision(unitId: string): Promise<ReviewVe
       `${taskUnitPath(unitId)}/decision/actions`,
       payload,
     );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function getTaskUnitExecutionGate(unitId: string): Promise<ExecutionGate> {
+  try {
+    const response = await apiClient.get<ExecutionGate>(`${taskUnitPath(unitId)}/execution-gate`);
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function refreshTaskUnitExecutionGate(unitId: string): Promise<ExecutionGate> {
+  try {
+    const response = await apiClient.post<ExecutionGate>(`${taskUnitPath(unitId)}/execution-gate`);
     return response.data;
   } catch (error) {
     throw toApiProblem(error);

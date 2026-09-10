@@ -340,6 +340,44 @@ class TaskReviewVerificationRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class TaskExecutionGateRecord(Base):
+    __tablename__ = "task_execution_gate"
+    __table_args__ = (
+        UniqueConstraint("gate_digest", name="uq_task_execution_gate_gate_digest"),
+        Index("ix_task_execution_gate_unit_created_at", "task_unit_id", "created_at"),
+        Index("ix_task_execution_gate_task_eligible", "task_id", "eligible"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=False
+    )
+    task_unit_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_unit.id", ondelete="CASCADE"), nullable=False
+    )
+    preflight_snapshot_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("preflight_snapshot.id", ondelete="CASCADE"), nullable=False
+    )
+    review_revision_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_review_revision.id", ondelete="CASCADE"), nullable=False
+    )
+    candidate_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("task_candidate.id", ondelete="SET NULL"), nullable=True
+    )
+    review_verification_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("task_review_verification.id", ondelete="SET NULL"), nullable=True
+    )
+    task_version: Mapped[int] = mapped_column(nullable=False)
+    eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    client_check_required: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    verification_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    metainfo_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    blocked_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    gate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class OperationJournal(Base):
     __tablename__ = "operation_journal"
     __table_args__ = (

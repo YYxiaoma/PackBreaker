@@ -26,6 +26,7 @@ from backend.app.domain.task_units import SourceTaskFile, identify_task_units
 from backend.app.infrastructure.persistence.models import (
     TaskCandidateRecord,
     TaskEvent,
+    TaskExecutionGateRecord,
     TaskReviewRevisionRecord,
     TaskReviewVerificationRecord,
     TaskUnitRecord,
@@ -417,6 +418,25 @@ def test_task_review_is_versioned_and_opens_awaiting_confirmation_bridge(tmp_pat
         assert current.json()["current"] is True
         assert current.json()["stale_reasons"] == []
 
+        gate_without_csrf = client.post(f"/api/v1/task-units/{unit_id}/execution-gate")
+        assert gate_without_csrf.status_code == 403
+        gate = client.post(
+            f"/api/v1/task-units/{unit_id}/execution-gate",
+            headers=_csrf(client),
+        )
+        assert gate.status_code == 200
+        assert gate.json()["eligible"] is True
+        assert gate.json()["current"] is True
+        assert gate.json()["client_check_required"] is False
+        assert gate.json()["verification_level"] == "FULL_VERIFIED"
+        assert gate.json()["verification_source"] == "PREFLIGHT"
+        assert gate.json()["blocked_reasons"] == []
+        assert gate.json()["side_effects_started"] is False
+        loaded_gate = client.get(f"/api/v1/task-units/{unit_id}/execution-gate")
+        assert loaded_gate.status_code == 200
+        assert loaded_gate.json()["gate_digest"] == gate.json()["gate_digest"]
+        assert loaded_gate.json()["current"] is True
+
         conflict = client.post(
             f"/api/v1/task-units/{unit_id}/decision",
             headers=_csrf(client),
@@ -440,6 +460,9 @@ def test_task_review_is_versioned_and_opens_awaiting_confirmation_bridge(tmp_pat
         assert rejected.json()["version"] == 2
         assert rejected.json()["rejected_candidate_ids"] == [candidate_id]
         assert client.get(f"/api/v1/tasks/{task_id}").json()["version"] == bridged_task_version
+        stale_gate = client.get(f"/api/v1/task-units/{unit_id}/execution-gate")
+        assert stale_gate.status_code == 200
+        assert stale_gate.json()["current"] is False
 
         latest = client.get(f"/api/v1/task-units/{unit_id}/decision")
         assert latest.status_code == 200
@@ -537,6 +560,15 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         assert missing_verification.status_code == 404
         assert missing_verification.json()["code"] == "REVIEW_VERIFICATION_NOT_FOUND"
 
+        blocked_gate = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/execution-gate",
+            headers=_csrf(client),
+        )
+        assert blocked_gate.status_code == 200
+        assert blocked_gate.json()["eligible"] is False
+        assert blocked_gate.json()["blocked_reasons"] == ["REVERIFICATION_REQUIRED"]
+        assert blocked_gate.json()["side_effects_started"] is False
+
         without_csrf = client.post(
             f"/api/v1/task-units/{current_unit['id']}/decision/actions",
             json={"action": "reverify"},
@@ -553,6 +585,18 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         assert verified.json()["candidate_id"] == candidate["id"]
         assert verified.json()["verification_level"] == "FULL_VERIFIED"
         assert verified.json()["execution_allowed"] is False
+
+        eligible_gate = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/execution-gate",
+            headers=_csrf(client),
+        )
+        assert eligible_gate.status_code == 200
+        assert eligible_gate.json()["eligible"] is True
+        assert eligible_gate.json()["client_check_required"] is False
+        assert eligible_gate.json()["verification_level"] == "FULL_VERIFIED"
+        assert eligible_gate.json()["verification_source"] == "REVIEW_REVERIFICATION"
+        assert eligible_gate.json()["blocked_reasons"] == []
+        assert eligible_gate.json()["side_effects_started"] is False
 
         loaded = client.get(f"/api/v1/task-units/{current_unit['id']}/decision/verification")
         assert loaded.status_code == 200
@@ -575,10 +619,14 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         )
         assert stale_reverify.status_code == 409
         assert stale_reverify.json()["code"] == "REVIEW_PREFLIGHT_STALE"
+        stale_gate = client.get(f"/api/v1/task-units/{current_unit['id']}/execution-gate")
+        assert stale_gate.status_code == 200
+        assert stale_gate.json()["current"] is False
         with app.state.runtime.session_factory() as session:
             assert (
                 session.scalar(select(func.count()).select_from(TaskReviewVerificationRecord)) == 1
             )
+            assert session.scalar(select(func.count()).select_from(TaskExecutionGateRecord)) == 2
     finally:
         client.__exit__(None, None, None)
 

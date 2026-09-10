@@ -392,6 +392,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/task-units/{unit_id}/execution-gate': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Task Unit Execution Gate */
+    get: operations['get_task_unit_execution_gate_api_v1_task_units__unit_id__execution_gate_get'];
+    put?: never;
+    /** Refresh Task Unit Execution Gate */
+    post: operations['refresh_task_unit_execution_gate_api_v1_task_units__unit_id__execution_gate_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/tasks': {
     parameters: {
       query?: never;
@@ -647,6 +665,42 @@ export interface components {
       /** Path Mappings */
       path_mappings?: components['schemas']['PathMappingInput'][] | null;
       type?: components['schemas']['DownloaderKind'] | null;
+    };
+    /** ExecutionGateResponse */
+    ExecutionGateResponse: {
+      /** Blocked Reasons */
+      blocked_reasons: string[];
+      /** Candidate Id */
+      candidate_id: string | null;
+      /** Client Check Required */
+      client_check_required: boolean;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Current */
+      current: boolean;
+      /** Eligible */
+      eligible: boolean;
+      /** Gate Digest */
+      gate_digest: string;
+      /** Id */
+      id: string;
+      /** Metainfo Digest */
+      metainfo_digest: string | null;
+      /** Preflight Stale Reasons */
+      preflight_stale_reasons: string[];
+      /** Review Revision Id */
+      review_revision_id: string;
+      /** Review Version */
+      review_version: number;
+      /** Side Effects Started */
+      side_effects_started: boolean;
+      /** Verification Level */
+      verification_level: string | null;
+      /** Verification Source */
+      verification_source: string | null;
     };
     /** HTTPValidationError */
     HTTPValidationError: {
@@ -2158,6 +2212,78 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['ReviewVerificationResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_task_unit_execution_gate_api_v1_task_units__unit_id__execution_gate_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        unit_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ExecutionGateResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  refresh_task_unit_execution_gate_api_v1_task_units__unit_id__execution_gate_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        unit_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ExecutionGateResponse'];
         };
       };
       /** @description Validation Error */

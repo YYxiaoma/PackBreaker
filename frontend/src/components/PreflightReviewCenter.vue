@@ -144,8 +144,8 @@ function staleReason(reason: string): string {
     </div>
 
     <el-alert
-      title="当前没有批准执行动作"
-      description="本页只审核不可变 preflight 与候选验证证据。Analyze 尚未自动推进任务状态，因此有 preflight 不等于任务已经进入 AWAITING_CONFIRMATION；执行/批准链路继续保留到后续安全门。"
+      title="当前没有启动副作用的执行动作"
+      description="Analyze 已按状态机推进到 PREFLIGHT；提交首个审核 revision 后进入 AWAITING_CONFIRMATION。本页可以生成只读 pre-execution gate 资格证据，但不会进入 LINKING、创建硬链接或调用下载器写接口。"
       type="info"
       :closable="false"
       show-icon

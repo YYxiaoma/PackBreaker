@@ -12,6 +12,7 @@ from backend.app.api.dependencies import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.tasks import (
+    ExecutionGateView,
     PreflightView,
     ReviewVerificationView,
     TaskCandidateView,
@@ -161,6 +162,24 @@ class ReviewVerificationResponse(BaseModel):
     verification_level: str
     metainfo_digest: str
     execution_allowed: bool
+    created_at: datetime
+
+
+class ExecutionGateResponse(BaseModel):
+    id: str
+    gate_digest: str
+    eligible: bool
+    current: bool
+    client_check_required: bool
+    verification_level: str | None
+    verification_source: str | None
+    blocked_reasons: list[str]
+    preflight_stale_reasons: list[str]
+    candidate_id: str | None
+    metainfo_digest: str | None
+    review_revision_id: str
+    review_version: int
+    side_effects_started: bool
     created_at: datetime
 
 
@@ -335,6 +354,30 @@ async def task_unit_review_action(
     raise AssertionError("未覆盖的审核动作")
 
 
+@router.get(
+    "/task-units/{unit_id}/execution-gate",
+    response_model=ExecutionGateResponse,
+)
+async def get_task_unit_execution_gate(
+    unit_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
+) -> ExecutionGateResponse:
+    return _execution_gate_response(task_analysis_service(request).get_execution_gate(unit_id))
+
+
+@router.post(
+    "/task-units/{unit_id}/execution-gate",
+    response_model=ExecutionGateResponse,
+)
+async def refresh_task_unit_execution_gate(
+    unit_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+) -> ExecutionGateResponse:
+    return _execution_gate_response(task_analysis_service(request).refresh_execution_gate(unit_id))
+
+
 def _task_response(item: TaskView) -> TaskResponse:
     return TaskResponse(
         id=item.id,
@@ -428,5 +471,25 @@ def _review_verification_response(item: ReviewVerificationView) -> ReviewVerific
         verification_level=item.verification_level,
         metainfo_digest=item.metainfo_digest,
         execution_allowed=item.execution_allowed,
+        created_at=item.created_at,
+    )
+
+
+def _execution_gate_response(item: ExecutionGateView) -> ExecutionGateResponse:
+    return ExecutionGateResponse(
+        id=item.id,
+        gate_digest=item.gate_digest,
+        eligible=item.eligible,
+        current=item.current,
+        client_check_required=item.client_check_required,
+        verification_level=item.verification_level,
+        verification_source=item.verification_source,
+        blocked_reasons=list(item.blocked_reasons),
+        preflight_stale_reasons=list(item.preflight_stale_reasons),
+        candidate_id=item.candidate_id,
+        metainfo_digest=item.metainfo_digest,
+        review_revision_id=item.review_revision_id,
+        review_version=item.review_version,
+        side_effects_started=item.side_effects_started,
         created_at=item.created_at,
     )

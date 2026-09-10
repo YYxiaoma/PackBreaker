@@ -4,11 +4,14 @@ import { ElMessage } from 'element-plus';
 
 import { ApiProblem } from '../api/client';
 import {
+  getTaskUnitExecutionGate,
   getTaskUnitReviewVerification,
   getTaskUnitDecision,
   listTaskUnits,
   reverifyTaskUnitDecision,
+  refreshTaskUnitExecutionGate,
   submitTaskUnitDecision,
+  type ExecutionGate,
   type ReviewVerification,
   type TaskCandidate,
   type TaskReview,
@@ -22,6 +25,7 @@ const emit = defineEmits<{ saved: [] }>();
 const unit = ref<TaskUnit | null>(null);
 const decision = ref<TaskReview | null>(null);
 const verification = ref<ReviewVerification | null>(null);
+const executionGate = ref<ExecutionGate | null>(null);
 const approvedCandidateId = ref('');
 const rejectedCandidateIds = ref<string[]>([]);
 const note = ref('');
@@ -29,6 +33,7 @@ const manualSources = reactive<Record<string, string>>({});
 const loading = ref(false);
 const saving = ref(false);
 const reverifying = ref(false);
+const checkingGate = ref(false);
 
 const eligibleCandidates = computed(() => props.item.candidates.filter((item) => !item.rejected));
 const approvedCandidate = computed(
@@ -99,6 +104,12 @@ async function load(): Promise<void> {
           throw error;
         }
       }
+      try {
+        executionGate.value = await getTaskUnitExecutionGate(unit.value.id);
+      } catch (error) {
+        if (!(error instanceof ApiProblem && error.code === 'EXECUTION_GATE_NOT_FOUND'))
+          throw error;
+      }
     } catch (error) {
       if (!(error instanceof ApiProblem && error.code === 'REVIEW_NOT_FOUND')) throw error;
     }
@@ -129,6 +140,7 @@ async function save(): Promise<void> {
     });
     decision.value = result;
     verification.value = null;
+    executionGate.value = null;
     ElMessage.success(`审核 revision v${result.version} 已保存；未执行任何下载器写操作`);
     emit('saved');
   } catch (error) {
@@ -143,6 +155,7 @@ async function reverify(): Promise<void> {
   reverifying.value = true;
   try {
     verification.value = await reverifyTaskUnitDecision(unit.value.id);
+    executionGate.value = null;
     ElMessage.success(
       `重验证完成：${verification.value.verification_level}；结果仅作为不可变证据保存`,
     );
@@ -154,10 +167,28 @@ async function reverify(): Promise<void> {
   }
 }
 
+async function checkExecutionGate(): Promise<void> {
+  if (!unit.value || !decision.value || !props.item.preflight.current) return;
+  checkingGate.value = true;
+  try {
+    executionGate.value = await refreshTaskUnitExecutionGate(unit.value.id);
+    ElMessage.success(
+      executionGate.value.eligible
+        ? 'Pre-execution gate 已通过；本页仍不会启动任何副作用'
+        : `Pre-execution gate 已阻断：${executionGate.value.blocked_reasons.join(', ')}`,
+    );
+  } catch (error) {
+    showError(error);
+  } finally {
+    checkingGate.value = false;
+  }
+}
+
 function resetForm(): void {
   unit.value = null;
   decision.value = null;
   verification.value = null;
+  executionGate.value = null;
   approvedCandidateId.value = '';
   rejectedCandidateIds.value = [];
   note.value = '';
@@ -307,6 +338,50 @@ function showError(error: unknown): void {
         </el-button>
       </div>
     </div>
+
+    <div v-if="decision" class="execution-gate-card">
+      <div class="review-editor-heading">
+        <div>
+          <h3>Pre-execution gate</h3>
+          <small>只生成进入后续安全准备阶段的资格证据，不创建目录、链接或下载器任务</small>
+        </div>
+        <el-button
+          :disabled="!item.preflight.current || !unit"
+          :loading="checkingGate"
+          @click="checkExecutionGate"
+        >
+          刷新执行门检查
+        </el-button>
+      </div>
+      <template v-if="executionGate">
+        <div class="gate-tags">
+          <el-tag :type="executionGate.eligible ? 'success' : 'danger'">
+            {{ executionGate.eligible ? 'ELIGIBLE' : 'BLOCKED' }}
+          </el-tag>
+          <el-tag :type="executionGate.current ? 'success' : 'warning'">
+            {{ executionGate.current ? 'CURRENT' : 'STALE' }}
+          </el-tag>
+          <el-tag v-if="executionGate.client_check_required" type="warning">
+            CLIENT CHECK REQUIRED
+          </el-tag>
+          <el-tag type="info">side_effects_started = false</el-tag>
+        </div>
+        <div class="review-editor-status">
+          <span v-if="executionGate.verification_level">
+            验证等级 {{ executionGate.verification_level }} · 来源
+            {{ executionGate.verification_source ?? 'UNKNOWN' }}
+          </span>
+          <span v-if="executionGate.blocked_reasons.length" class="gate-blocked">
+            阻断原因：{{ executionGate.blocked_reasons.join('；') }}
+          </span>
+          <span v-if="executionGate.preflight_stale_reasons.length" class="gate-blocked">
+            Preflight 失效：{{ executionGate.preflight_stale_reasons.join('；') }}
+          </span>
+          <span>gate {{ executionGate.gate_digest.slice(0, 20) }}…</span>
+        </div>
+      </template>
+      <small v-else>尚未生成执行门证据。</small>
+    </div>
   </section>
 </template>
 
@@ -340,6 +415,22 @@ function showError(error: unknown): void {
 .review-editor-buttons {
   display: flex;
   gap: 8px;
+}
+.execution-gate-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.gate-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.gate-blocked {
+  color: var(--red);
 }
 .review-editor :deep(.el-radio-group),
 .review-editor :deep(.el-checkbox-group) {

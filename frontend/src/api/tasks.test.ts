@@ -7,11 +7,13 @@ import {
   getTaskPreflight,
   getTaskPreflightCurrent,
   getTaskUnitDecision,
+  getTaskUnitExecutionGate,
   getTaskUnitReviewVerification,
   listTaskCandidates,
   listTasks,
   listTaskUnits,
   reverifyTaskUnitDecision,
+  refreshTaskUnitExecutionGate,
   submitTaskUnitDecision,
 } from './tasks';
 
@@ -128,5 +130,20 @@ describe('任务分析 API', () => {
     expect(post).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/decision/actions', {
       action: 'reverify',
     });
+  });
+
+  it('execution gate 使用独立证据路径且刷新不携带执行参数', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
+      data: { id: 'gate-1', eligible: true, side_effects_started: false },
+    });
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      data: { id: 'gate-1', eligible: true, side_effects_started: false },
+    });
+
+    await getTaskUnitExecutionGate('unit/with slash');
+    await refreshTaskUnitExecutionGate('unit/with slash');
+
+    expect(get).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/execution-gate');
+    expect(post).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/execution-gate');
   });
 });

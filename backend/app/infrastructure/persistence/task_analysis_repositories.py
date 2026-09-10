@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.app.domain.execution_gate import ExecutionGateSnapshot, execution_gate_to_payload
 from backend.app.domain.preflight import PreflightSnapshot, candidate_evidence_to_payload
 from backend.app.domain.review import (
     ReviewState,
@@ -17,6 +18,7 @@ from backend.app.domain.task_units import TaskUnit
 from backend.app.infrastructure.persistence.models import (
     PreflightSnapshotRecord,
     TaskCandidateRecord,
+    TaskExecutionGateRecord,
     TaskReviewRevisionRecord,
     TaskReviewVerificationRecord,
     TaskUnitRecord,
@@ -313,5 +315,68 @@ class TaskReviewVerificationRepository:
             concurrent = self.get_for_revision(snapshot.review_revision_id)
             if concurrent is None or concurrent.verification_digest != snapshot.verification_digest:
                 raise ValueError("REVIEW_VERIFICATION_CONFLICT") from exc
+            return concurrent, False
+        return record, True
+
+
+class TaskExecutionGateRepository:
+    """执行门证据只追加；gate digest 相同则幂等复用。"""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def latest(self, task_unit_id: str) -> TaskExecutionGateRecord | None:
+        return self._session.scalar(
+            select(TaskExecutionGateRecord)
+            .where(TaskExecutionGateRecord.task_unit_id == task_unit_id)
+            .order_by(TaskExecutionGateRecord.created_at.desc(), TaskExecutionGateRecord.id.desc())
+            .limit(1)
+        )
+
+    def get_by_digest(self, gate_digest: str) -> TaskExecutionGateRecord | None:
+        return self._session.scalar(
+            select(TaskExecutionGateRecord).where(
+                TaskExecutionGateRecord.gate_digest == gate_digest
+            )
+        )
+
+    def create_or_get(
+        self,
+        snapshot: ExecutionGateSnapshot,
+    ) -> tuple[TaskExecutionGateRecord, bool]:
+        existing = self.get_by_digest(snapshot.gate_digest)
+        if existing is not None:
+            return existing, False
+        payload = execution_gate_to_payload(snapshot)
+        record = TaskExecutionGateRecord(
+            id=new_uuid(),
+            task_id=snapshot.task_id,
+            task_unit_id=snapshot.task_unit_id,
+            preflight_snapshot_id=snapshot.preflight_snapshot_id,
+            review_revision_id=snapshot.review_revision_id,
+            candidate_id=snapshot.candidate_id,
+            review_verification_id=snapshot.review_verification_id,
+            task_version=snapshot.task_version,
+            eligible=snapshot.eligible,
+            client_check_required=snapshot.client_check_required,
+            verification_level=(
+                snapshot.verification_level.value
+                if snapshot.verification_level is not None
+                else None
+            ),
+            metainfo_digest=snapshot.metainfo_digest,
+            blocked_reasons=[item.value for item in snapshot.blocked_reasons],
+            gate_digest=snapshot.gate_digest,
+            payload=deepcopy(payload),
+            created_at=snapshot.created_at,
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(record)
+                self._session.flush()
+        except IntegrityError:
+            concurrent = self.get_by_digest(snapshot.gate_digest)
+            if concurrent is None:
+                raise
             return concurrent, False
         return record, True

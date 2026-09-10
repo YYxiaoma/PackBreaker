@@ -3,7 +3,7 @@ from __future__ import annotations
 import stat
 import unicodedata
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,11 @@ from backend.app.application.analysis import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.domain.errors import DomainViolation
+from backend.app.domain.execution_gate import (
+    ExecutionGateBlockReason,
+    ExecutionGateSnapshot,
+    ExecutionVerificationSource,
+)
 from backend.app.domain.file_mapping import (
     AutoMappingDecision,
     MappingMethod,
@@ -33,7 +38,7 @@ from backend.app.domain.review import (
 )
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
-from backend.app.domain.verification import FileMappingState
+from backend.app.domain.verification import FileMappingState, VerificationLevel
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.persistence.models import (
     PreflightSnapshotRecord,
@@ -45,6 +50,7 @@ from backend.app.infrastructure.persistence.preflight_repositories import (
 from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskCandidateRepository,
+    TaskExecutionGateRepository,
     TaskReviewRepository,
     TaskReviewVerificationRepository,
     TaskUnitRepository,
@@ -150,6 +156,25 @@ class ReviewVerificationView:
     verification_level: str
     metainfo_digest: str
     execution_allowed: bool
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionGateView:
+    id: str
+    gate_digest: str
+    eligible: bool
+    current: bool
+    client_check_required: bool
+    verification_level: str | None
+    verification_source: str | None
+    blocked_reasons: tuple[str, ...]
+    preflight_stale_reasons: tuple[str, ...]
+    candidate_id: str | None
+    metainfo_digest: str | None
+    review_revision_id: str
+    review_version: int
+    side_effects_started: bool
     created_at: datetime
 
 
@@ -507,6 +532,32 @@ class TaskAnalysisService:
                 )
             return self._review_verification_view(record)
 
+    def get_execution_gate(self, unit_id: str) -> ExecutionGateView:
+        with self._session_factory() as session:
+            record = TaskExecutionGateRepository(session).latest(unit_id)
+            if record is None:
+                raise ApplicationError(
+                    code="EXECUTION_GATE_NOT_FOUND",
+                    status=404,
+                    title="执行门证据不存在",
+                    detail="该处理单元尚未生成 pre-execution gate",
+                )
+            stored = self._execution_gate_view(record, current=False)
+        try:
+            evaluated = self._evaluate_execution_gate(unit_id)
+            current = evaluated.gate_digest == stored.gate_digest
+        except ApplicationError:
+            current = False
+        return replace(stored, current=current)
+
+    def refresh_execution_gate(self, unit_id: str) -> ExecutionGateView:
+        snapshot = self._evaluate_execution_gate(unit_id)
+        with self._session_factory() as session:
+            self._assert_execution_gate_inputs(session, snapshot)
+            record, _ = TaskExecutionGateRepository(session).create_or_get(snapshot)
+            session.commit()
+            return self._execution_gate_view(record, current=True)
+
     async def reverify_review(self, unit_id: str) -> ReviewVerificationView:
         with self._session_factory() as session:
             unit = TaskUnitRepository(session).get(unit_id)
@@ -696,6 +747,217 @@ class TaskAnalysisService:
                 ) from exc
             session.commit()
             return self._review_verification_view(record)
+
+    def _evaluate_execution_gate(self, unit_id: str) -> ExecutionGateSnapshot:
+        with self._session_factory() as session:
+            unit = TaskUnitRepository(session).get(unit_id)
+            if unit is None:
+                raise _review_unit_not_found()
+            task = TaskRepository(session).get(unit.task_id)
+            if task is None:
+                raise _task_not_found()
+            snapshot = PreflightSnapshotRepository(session).latest_for_task(unit.task_id)
+            if snapshot is None:
+                raise _review_preflight_not_found()
+            _ensure_review_unit_matches_snapshot(unit, snapshot)
+            review = TaskReviewRepository(session).latest(
+                task_unit_id=unit.id,
+                preflight_snapshot_id=snapshot.id,
+            )
+            if review is None:
+                raise ApplicationError(
+                    code="REVIEW_NOT_FOUND",
+                    status=404,
+                    title="审核决策不存在",
+                    detail="生成执行门前必须先提交人工审核 revision",
+                )
+            candidate = (
+                TaskCandidateRepository(session).get(review.approved_candidate_id)
+                if review.approved_candidate_id is not None
+                else None
+            )
+            reverification = (
+                TaskReviewVerificationRepository(session).get_for_revision(review.id)
+                if review.requires_reverification
+                else None
+            )
+
+            task_id = task.id
+            task_version = task.version
+            task_status = task.status
+            snapshot_id = snapshot.id
+            snapshot_digest = snapshot.snapshot_digest
+            inventory_digest = snapshot.source_inventory_digest
+            review_id = review.id
+            review_version = review.version
+            approved_candidate_id = review.approved_candidate_id
+            rejected_candidate_ids = frozenset(review.rejected_candidate_ids)
+            requires_reverification = review.requires_reverification
+            candidate_exists = candidate is not None
+            candidate_snapshot_id = (
+                candidate.preflight_snapshot_id if candidate is not None else None
+            )
+            candidate_rejected = candidate.rejected if candidate is not None else False
+            candidate_selected = (
+                candidate.selected_for_verification if candidate is not None else False
+            )
+            candidate_level = candidate.verification_level if candidate is not None else None
+            candidate_metainfo = candidate.metainfo_digest if candidate is not None else None
+            candidate_error = candidate.error_code if candidate is not None else None
+            if reverification is not None:
+                reverification_id = reverification.id
+                reverification_review_id = reverification.review_revision_id
+                reverification_review_version = reverification.review_version
+                reverification_snapshot_id = reverification.preflight_snapshot_id
+                reverification_candidate_id = reverification.candidate_id
+                reverification_inventory = reverification.source_inventory_digest
+                reverification_metainfo = reverification.metainfo_digest
+                reverification_level = reverification.verification_level
+                reverification_digest = reverification.verification_digest
+            else:
+                reverification_id = None
+                reverification_review_id = None
+                reverification_review_version = None
+                reverification_snapshot_id = None
+                reverification_candidate_id = None
+                reverification_inventory = None
+                reverification_metainfo = None
+                reverification_level = None
+                reverification_digest = None
+
+        preflight = self.latest_preflight(task_id)
+        reasons: list[ExecutionGateBlockReason] = []
+        if task_status != TaskStatus.AWAITING_CONFIRMATION.value:
+            reasons.append(ExecutionGateBlockReason.TASK_STATE_INVALID)
+        if preflight.id != snapshot_id or not preflight.current:
+            reasons.append(ExecutionGateBlockReason.PREFLIGHT_STALE)
+
+        verification_source: ExecutionVerificationSource | None = None
+        verification_level: VerificationLevel | None = None
+        metainfo_digest = candidate_metainfo
+        if approved_candidate_id is None:
+            reasons.append(ExecutionGateBlockReason.APPROVED_CANDIDATE_MISSING)
+        elif (
+            not candidate_exists
+            or candidate_snapshot_id != snapshot_id
+            or approved_candidate_id in rejected_candidate_ids
+        ):
+            reasons.append(ExecutionGateBlockReason.CANDIDATE_INVALID)
+        else:
+            if candidate_rejected:
+                reasons.append(ExecutionGateBlockReason.CANDIDATE_HARD_REJECTED)
+            if requires_reverification:
+                if reverification_id is None:
+                    reasons.append(ExecutionGateBlockReason.REVERIFICATION_REQUIRED)
+                elif (
+                    reverification_review_id != review_id
+                    or reverification_review_version != review_version
+                    or reverification_snapshot_id != snapshot_id
+                    or reverification_candidate_id != approved_candidate_id
+                    or reverification_inventory != inventory_digest
+                    or reverification_level is None
+                    or (
+                        candidate_metainfo is not None
+                        and reverification_metainfo != candidate_metainfo
+                    )
+                ):
+                    reasons.append(ExecutionGateBlockReason.REVERIFICATION_MISMATCH)
+                else:
+                    verification_source = ExecutionVerificationSource.REVIEW_REVERIFICATION
+                    metainfo_digest = reverification_metainfo
+                    try:
+                        verification_level = VerificationLevel(reverification_level)
+                    except ValueError:
+                        reasons.append(ExecutionGateBlockReason.VERIFICATION_LEVEL_UNSUPPORTED)
+            else:
+                verification_source = ExecutionVerificationSource.PREFLIGHT
+                if candidate_error is not None:
+                    reasons.append(ExecutionGateBlockReason.CANDIDATE_ERROR)
+                if not candidate_selected or candidate_metainfo is None or candidate_level is None:
+                    reasons.append(ExecutionGateBlockReason.CANDIDATE_NOT_VERIFIED)
+                elif candidate_error is None:
+                    try:
+                        verification_level = VerificationLevel(candidate_level)
+                    except ValueError:
+                        reasons.append(ExecutionGateBlockReason.VERIFICATION_LEVEL_UNSUPPORTED)
+
+        if verification_level is VerificationLevel.BLOCKED:
+            reasons.append(ExecutionGateBlockReason.VERIFICATION_BLOCKED)
+        elif verification_level is not None and verification_level not in {
+            VerificationLevel.FULL_VERIFIED,
+            VerificationLevel.CLIENT_CHECK_REQUIRED,
+        }:
+            reasons.append(ExecutionGateBlockReason.VERIFICATION_LEVEL_UNSUPPORTED)
+
+        blocked_reasons = tuple(reasons)
+        eligible = not blocked_reasons and verification_level in {
+            VerificationLevel.FULL_VERIFIED,
+            VerificationLevel.CLIENT_CHECK_REQUIRED,
+        }
+        return ExecutionGateSnapshot(
+            task_id=task_id,
+            task_version=task_version,
+            task_unit_id=unit_id,
+            preflight_snapshot_id=snapshot_id,
+            preflight_snapshot_digest=snapshot_digest,
+            preflight_stale_reasons=preflight.stale_reasons,
+            review_revision_id=review_id,
+            review_version=review_version,
+            candidate_id=approved_candidate_id,
+            source_inventory_digest=inventory_digest,
+            metainfo_digest=metainfo_digest,
+            verification_source=verification_source,
+            review_verification_id=reverification_id,
+            review_verification_digest=reverification_digest,
+            verification_level=verification_level,
+            eligible=eligible,
+            client_check_required=(
+                eligible and verification_level is VerificationLevel.CLIENT_CHECK_REQUIRED
+            ),
+            blocked_reasons=blocked_reasons,
+            created_at=datetime.now(UTC),
+        )
+
+    def _assert_execution_gate_inputs(
+        self,
+        session: Session,
+        snapshot: ExecutionGateSnapshot,
+    ) -> None:
+        task = TaskRepository(session).get(snapshot.task_id)
+        preflight = PreflightSnapshotRepository(session).latest_for_task(snapshot.task_id)
+        review = TaskReviewRepository(session).latest(
+            task_unit_id=snapshot.task_unit_id,
+            preflight_snapshot_id=snapshot.preflight_snapshot_id,
+        )
+        reverification = (
+            TaskReviewVerificationRepository(session).get_for_revision(snapshot.review_revision_id)
+            if snapshot.review_verification_id is not None
+            else None
+        )
+        if (
+            task is None
+            or task.version != snapshot.task_version
+            or preflight is None
+            or preflight.id != snapshot.preflight_snapshot_id
+            or review is None
+            or review.id != snapshot.review_revision_id
+            or review.version != snapshot.review_version
+            or review.approved_candidate_id != snapshot.candidate_id
+            or (
+                snapshot.review_verification_id is not None
+                and (
+                    reverification is None
+                    or reverification.id != snapshot.review_verification_id
+                    or reverification.verification_digest != snapshot.review_verification_digest
+                )
+            )
+        ):
+            raise ApplicationError(
+                code="EXECUTION_GATE_INPUT_CHANGED",
+                status=409,
+                title="执行门输入已经变化",
+                detail="生成 execution gate 期间任务、预演或审核证据发生变化，请重新检查",
+            )
 
     def submit_review(
         self,
@@ -1086,6 +1348,34 @@ class TaskAnalysisService:
             verification_level=record.verification_level,
             metainfo_digest=record.metainfo_digest,
             execution_allowed=False,
+            created_at=record.created_at,
+        )
+
+    @staticmethod
+    def _execution_gate_view(record: Any, *, current: bool) -> ExecutionGateView:
+        verification_source = record.payload.get("verification_source")
+        stale_reasons = record.payload.get("preflight_stale_reasons")
+        return ExecutionGateView(
+            id=record.id,
+            gate_digest=record.gate_digest,
+            eligible=record.eligible,
+            current=current,
+            client_check_required=record.client_check_required,
+            verification_level=record.verification_level,
+            verification_source=(
+                verification_source if isinstance(verification_source, str) else None
+            ),
+            blocked_reasons=tuple(record.blocked_reasons),
+            preflight_stale_reasons=(
+                tuple(value for value in stale_reasons if isinstance(value, str))
+                if isinstance(stale_reasons, list)
+                else ()
+            ),
+            candidate_id=record.candidate_id,
+            metainfo_digest=record.metainfo_digest,
+            review_revision_id=record.review_revision_id,
+            review_version=int(record.payload.get("review_version", 0)),
+            side_effects_started=False,
             created_at=record.created_at,
         )
 

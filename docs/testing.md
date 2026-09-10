@@ -112,6 +112,7 @@
 - 危险操作显示影响范围，预演过期后不能使用旧确认继续执行。
 - 手动 Analyze 必须按 `ANALYZING → SEARCHING → MATCHING → VERIFYING → PREFLIGHT` 记录状态事件；失败恢复只能在任务 version 仍由本次运行持有时进入 `RETRY`，不得覆盖并发状态变化。
 - 人工映射重验证必须重新校验 preflight/current、source inventory、review revision、torrent 身份和 metainfo digest；重验证结果只追加不可变证据，审核或预演在验证期间变化时不得落库。
+- Pre-execution gate 必须绑定当前 task/preflight/review/candidate/重验证证据；FULL_VERIFIED 与 CLIENT_CHECK_REQUIRED 的资格语义必须区分，后者始终携带 `client_check_required=true`。BLOCKED、hard reject、stale 或缺少必要重验证证据时必须失败关闭，且 gate 生成不得启动任何文件系统或下载器副作用。
 - 桌面与移动视口完成核心任务、人工确认、路径诊断和日志筛选流程。
 
 ## 9. 数据库与迁移
