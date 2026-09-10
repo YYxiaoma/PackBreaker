@@ -172,6 +172,10 @@ flowchart TD
 
 M3 的 `SafeFilesystemGateway` 负责上述动作前的统一只读检查：输入只接受数据根下安全 POSIX 相对路径，逐级使用不跟随符号链接的状态检查；源快照必须与 M2 证据完全一致，目标已存在立即报冲突，目标路径中的现有父目录必须保持同一 device。缺失父目录只作为待创建清单返回，网关的只读检查阶段本身不得创建它们。
 
+实际写入由 `FilesystemOperationService` 串联 journal 与网关：每个待建目录先单独记录 intent，再只创建一个目录层级并保存 after snapshot；最终文件先记录包含源快照、目标父快照和确定性临时名的 intent，再以目录 fd 重新校验源/父目录，创建临时 hardlink，并用 `renameat2(RENAME_NOREPLACE)` 原子落位，禁止任何覆盖式 rename。数据库事务不跨越文件系统 I/O。
+
+崩溃恢复按可证明程度处理：若 journal 仍为 INTENT 且仅存在与源 inode/size/mtime 一致的确定性临时 hardlink，可继续原子落位；若最终路径已经出现但 APPLIED 尚未持久化，或目录在 INTENT 后出现而无法证明所有权，则改为 `RECONCILE_REQUIRED`，不得自动认领。回滚先推进 `ROLLBACK_PENDING`，再核对 journal after snapshot；hardlink 的 device/inode/size/mtime 必须一致，目录至少保持同一 device/inode 且必须为空，否则进入 `ROLLBACK_BLOCKED` 并保留现场。
+
 ## 10. 下载器添加与修复
 
 ### 10.1 添加

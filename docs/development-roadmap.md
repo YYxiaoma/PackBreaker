@@ -89,6 +89,8 @@ flowchart LR
 
 安全文件系统网关开始落地只读前置层：统一约束 `/data` 内相对路径、逐级 `lstat` 拒绝符号链接/非目录节点、复核源 device/inode/size/mtime/file type 快照、检查目标冲突与同设备条件，并报告尚缺失的目标父目录。该层只生成快照与阻断错误，不创建目录或硬链接；真实原子 hardlink 动作仍须在 journal intent 持久化之后单独接入。
 
+文件系统事务链已进一步形成内部 application service：每个缺失目录与最终 hardlink 都使用独立幂等键，先在短事务中提交 operation journal intent，再通过 `dir_fd`/`O_NOFOLLOW` 做单个文件系统动作，成功后另起短事务保存 after snapshot 并推进 APPLIED。hardlink 使用确定性临时名称和 Linux `renameat2(RENAME_NOREPLACE)` 无覆盖落位；临时链接残留可在快照一致时继续，最终目标已经出现但 APPLIED 未确认时失败关闭为 `RECONCILE_REQUIRED`。回滚只处理 journal 已登记的 APPLIED 资源，快照不匹配或目录非空时进入 `ROLLBACK_BLOCKED`。该 service 当前仅由临时文件系统测试调用，尚未接入生产任务执行入口或 qB 写接口。
+
 ### 退出条件
 
 - qB 使用合成与真实语料端到端完成，非 FULL_VERIFIED 从未跳过校验。

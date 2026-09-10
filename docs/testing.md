@@ -93,6 +93,8 @@
 
 operation journal 自身必须先通过状态机/CAS 测试：非法跨级转换失败关闭；APPLIED 必须携带 after snapshot；旧 expected status 不能覆盖并发推进；终态 NOOP/ROLLED_BACK 不进入恢复扫描。真实文件系统动作接入前先用这些契约验证崩溃边界。
 
+文件系统事务链测试必须使用临时数据根，不触碰生产 `/data`：覆盖正常目录+hardlink 创建与十次幂等重放、临时 hardlink 后崩溃并安全续跑、最终 hardlink 落位后但 APPLIED 前崩溃转 `RECONCILE_REQUIRED`、目录创建后但 APPLIED 前崩溃不自动认领、逆序回滚，以及目标被外部替换时 `ROLLBACK_BLOCKED` 且替换文件不被删除。所有场景都复核源 inode/size/mtime 不变，允许 link count 只因预期 hardlink 创建/删除发生变化。
+
 ## 7. 适配器测试矩阵
 
 每个站点适配器覆盖连接、认证失败、分页、空结果、详情缺字段、取种、限流、超时、HTML/API 结构变化、熔断与恢复。
