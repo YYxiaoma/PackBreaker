@@ -46,6 +46,7 @@ import {
 } from './demo';
 import TaskDetail from './components/TaskDetail.vue';
 import TaskCenter from './components/TaskCenter.vue';
+import PreflightReviewCenter from './components/PreflightReviewCenter.vue';
 import Management from './components/Management.vue';
 import AuthGate from './components/AuthGate.vue';
 import { AUTH_REQUIRED_EVENT } from './api/client';
@@ -255,9 +256,7 @@ async function cancel(t: Task) {
         <template v-for="item in nav" :key="item.name"
           ><p v-if="item.group" class="nav-group">{{ item.group }}</p>
           <button :class="['nav-item', { active: route === item.name }]" @click="route = item.name">
-            <component :is="item.icon" :size="19" /><span>{{ item.name }}</span
-            ><small v-if="item.name === '任务中心'">{{ tasks.length }}</small
-            ><small v-if="item.name === '预演与确认'" class="count">{{ waiting }}</small>
+            <component :is="item.icon" :size="19" /><span>{{ item.name }}</span>
           </button></template
         >
       </nav>
@@ -294,7 +293,7 @@ async function cancel(t: Task) {
             aria-label="待确认通知"
             @click="route = '预演与确认'"
           >
-            <Bell :size="18" /><i v-if="waiting"></i></button
+            <Bell :size="18" /></button
           ><button class="icon-button" aria-label="体验指南" @click="help = true">
             <CircleHelp :size="18" />
           </button>
@@ -324,12 +323,13 @@ async function cancel(t: Task) {
         <div class="demo-notice">
           <span class="dot"></span>混合研发模式
           <span
-            >「任务中心」已接入真实 SQLite 任务；总览与预演聚合仍为合成样例。任务
+            >「任务中心」和「预演与确认」已接入真实 SQLite/API 数据；总览仍为合成样例。任务
             Analyze、下载器、管理员认证与 API Token 已接入真实后端。</span
           ><button @click="help = true">体验指南 <ArrowUpRight :size="13" /></button>
         </div>
         <TaskCenter v-if="route === '任务中心'" />
-        <template v-else-if="['预演与确认', '总览'].includes(route)">
+        <PreflightReviewCenter v-else-if="route === '预演与确认'" />
+        <template v-else-if="route === '总览'">
           <div class="stats">
             <div class="stat">
               <div>演示任务<Layers :size="20" /></div>
@@ -384,10 +384,7 @@ async function cancel(t: Task) {
           </div>
           <section class="task-section">
             <div class="section-heading">
-              <h2>
-                {{ route === '预演与确认' ? '待审核执行计划' : '拆包与辅种'
-                }}<small>电影 / 剧集 / 历史扫描</small>
-              </h2>
+              <h2>拆包与辅种<small>电影 / 剧集 / 历史扫描</small></h2>
               <div>
                 <button
                   class="icon-button"
@@ -404,7 +401,7 @@ async function cancel(t: Task) {
                 </button>
               </div>
             </div>
-            <div v-if="route !== '预演与确认'" class="tabs">
+            <div class="tabs">
               <button
                 v-for="name in ['全部任务', '进行中', '待确认', '已完成', '异常 / 暂停']"
                 :key="name"
