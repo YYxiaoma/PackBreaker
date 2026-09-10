@@ -10,8 +10,16 @@ from backend.app.api.dependencies import (
     require_admin_or_scope,
     task_analysis_service,
 )
-from backend.app.application.tasks import PreflightView, TaskCandidateView, TaskUnitView, TaskView
+from backend.app.application.errors import ApplicationError
+from backend.app.application.tasks import (
+    PreflightView,
+    TaskCandidateView,
+    TaskReviewView,
+    TaskUnitView,
+    TaskView,
+)
 from backend.app.domain.auth import ApiScope
+from backend.app.domain.review import ManualReviewMapping
 from backend.app.domain.task_state import TaskStatus
 
 router = APIRouter(tags=["tasks"])
@@ -103,6 +111,40 @@ class PreflightCurrentResponse(BaseModel):
     snapshot_digest: str
     current: bool
     stale_reasons: list[str]
+
+
+class ManualReviewMappingRequest(BaseModel):
+    torrent_path: str = Field(min_length=1, max_length=4096)
+    source_relative_path: str = Field(min_length=1, max_length=4096)
+
+
+class TaskReviewRequest(BaseModel):
+    expected_version: int = Field(ge=0)
+    approved_candidate_id: str | None = Field(default=None, max_length=36)
+    rejected_candidate_ids: list[str] = Field(default_factory=list, max_length=500)
+    manual_mappings: list[ManualReviewMappingRequest] = Field(default_factory=list, max_length=5000)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ManualReviewMappingResponse(BaseModel):
+    torrent_path: str
+    source_relative_path: str
+
+
+class TaskReviewResponse(BaseModel):
+    id: str
+    task_id: str
+    task_unit_id: str
+    preflight_snapshot_id: str
+    approved_candidate_id: str | None
+    rejected_candidate_ids: list[str]
+    manual_mappings: list[ManualReviewMappingResponse]
+    note: str | None
+    requires_reverification: bool
+    execution_allowed: bool
+    actor_kind: str
+    version: int
+    created_at: datetime
 
 
 @router.get("/tasks", response_model=TaskListResponse)
@@ -204,6 +246,47 @@ async def task_action(
     return _preflight_view_response(service.latest_preflight(task_id))
 
 
+@router.get("/task-units/{unit_id}/decision", response_model=TaskReviewResponse)
+async def get_task_unit_decision(
+    unit_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
+) -> TaskReviewResponse:
+    return _review_response(task_analysis_service(request).get_review(unit_id))
+
+
+@router.post("/task-units/{unit_id}/decision", response_model=TaskReviewResponse)
+async def submit_task_unit_decision(
+    unit_id: str,
+    request: Request,
+    payload: TaskReviewRequest,
+    principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+) -> TaskReviewResponse:
+    try:
+        mappings = tuple(
+            ManualReviewMapping(item.torrent_path, item.source_relative_path)
+            for item in payload.manual_mappings
+        )
+    except ValueError as exc:
+        raise ApplicationError(
+            code="REVIEW_INPUT_INVALID",
+            status=422,
+            title="审核输入无效",
+            detail=str(exc),
+        ) from exc
+    result = task_analysis_service(request).submit_review(
+        unit_id,
+        expected_version=payload.expected_version,
+        approved_candidate_id=payload.approved_candidate_id,
+        rejected_candidate_ids=tuple(payload.rejected_candidate_ids),
+        manual_mappings=mappings,
+        note=payload.note,
+        actor_kind=principal.kind,
+        actor_id=principal.subject_id,
+    )
+    return _review_response(result)
+
+
 def _task_response(item: TaskView) -> TaskResponse:
     return TaskResponse(
         id=item.id,
@@ -260,4 +343,28 @@ def _preflight_view_response(item: PreflightView) -> PreflightResponse:
         stale_reasons=list(item.stale_reasons),
         created_at=item.created_at,
         payload=item.payload,
+    )
+
+
+def _review_response(item: TaskReviewView) -> TaskReviewResponse:
+    return TaskReviewResponse(
+        id=item.id,
+        task_id=item.task_id,
+        task_unit_id=item.task_unit_id,
+        preflight_snapshot_id=item.preflight_snapshot_id,
+        approved_candidate_id=item.approved_candidate_id,
+        rejected_candidate_ids=list(item.rejected_candidate_ids),
+        manual_mappings=[
+            ManualReviewMappingResponse(
+                torrent_path=mapping.torrent_path,
+                source_relative_path=mapping.source_relative_path,
+            )
+            for mapping in item.manual_mappings
+        ],
+        note=item.note,
+        requires_reverification=item.requires_reverification,
+        execution_allowed=item.execution_allowed,
+        actor_kind=item.actor_kind,
+        version=item.version,
+        created_at=item.created_at,
     )

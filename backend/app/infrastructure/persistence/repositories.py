@@ -55,6 +55,14 @@ class TaskRepository:
     def get_by_idempotency_key(self, key: str) -> UnpackTask | None:
         return self._session.scalar(select(UnpackTask).where(UnpackTask.idempotency_key == key))
 
+    def latest_event(self, task_id: str) -> TaskEvent | None:
+        return self._session.scalar(
+            select(TaskEvent)
+            .where(TaskEvent.task_id == task_id)
+            .order_by(TaskEvent.created_at.desc(), TaskEvent.id.desc())
+            .limit(1)
+        )
+
     def list_recent(
         self, *, status: TaskStatus | None = None, limit: int = 100
     ) -> list[UnpackTask]:

@@ -6,9 +6,11 @@ import {
   createTask,
   getTaskPreflight,
   getTaskPreflightCurrent,
-  listTasks,
+  getTaskUnitDecision,
   listTaskCandidates,
+  listTasks,
   listTaskUnits,
+  submitTaskUnitDecision,
 } from './tasks';
 
 afterEach(() => vi.restoreAllMocks());
@@ -83,6 +85,29 @@ describe('任务分析 API', () => {
     expect(post).toHaveBeenCalledWith('/tasks/task-1/actions', {
       action: 'analyze',
       source_root: 'movie/Season.01',
+    });
+  });
+
+  it('审核 revision 使用编码后的 unit id 且保留 expected_version', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { version: 1 } });
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { version: 2 } });
+
+    await getTaskUnitDecision('unit/with slash');
+    await submitTaskUnitDecision('unit/with slash', {
+      expected_version: 1,
+      approved_candidate_id: 'candidate-1',
+      rejected_candidate_ids: ['candidate-2'],
+      manual_mappings: [],
+      note: 'review',
+    });
+
+    expect(get).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/decision');
+    expect(post).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/decision', {
+      expected_version: 1,
+      approved_candidate_id: 'candidate-1',
+      rejected_candidate_ids: ['candidate-2'],
+      manual_mappings: [],
+      note: 'review',
     });
   });
 });

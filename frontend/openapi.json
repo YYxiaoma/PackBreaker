@@ -429,6 +429,46 @@
         "title": "LoginResponse",
         "type": "object"
       },
+      "ManualReviewMappingRequest": {
+        "properties": {
+          "source_relative_path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Source Relative Path",
+            "type": "string"
+          },
+          "torrent_path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Torrent Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "torrent_path",
+          "source_relative_path"
+        ],
+        "title": "ManualReviewMappingRequest",
+        "type": "object"
+      },
+      "ManualReviewMappingResponse": {
+        "properties": {
+          "source_relative_path": {
+            "title": "Source Relative Path",
+            "type": "string"
+          },
+          "torrent_path": {
+            "title": "Torrent Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "torrent_path",
+          "source_relative_path"
+        ],
+        "title": "ManualReviewMappingResponse",
+        "type": "object"
+      },
       "PasswordRequest": {
         "properties": {
           "password": {
@@ -1135,6 +1175,154 @@
           "updated_at"
         ],
         "title": "TaskResponse",
+        "type": "object"
+      },
+      "TaskReviewRequest": {
+        "properties": {
+          "approved_candidate_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved Candidate Id"
+          },
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "manual_mappings": {
+            "items": {
+              "$ref": "#/components/schemas/ManualReviewMappingRequest"
+            },
+            "maxItems": 5000,
+            "title": "Manual Mappings",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "rejected_candidate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Rejected Candidate Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "TaskReviewRequest",
+        "type": "object"
+      },
+      "TaskReviewResponse": {
+        "properties": {
+          "actor_kind": {
+            "title": "Actor Kind",
+            "type": "string"
+          },
+          "approved_candidate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved Candidate Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "execution_allowed": {
+            "title": "Execution Allowed",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "manual_mappings": {
+            "items": {
+              "$ref": "#/components/schemas/ManualReviewMappingResponse"
+            },
+            "title": "Manual Mappings",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "preflight_snapshot_id": {
+            "title": "Preflight Snapshot Id",
+            "type": "string"
+          },
+          "rejected_candidate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rejected Candidate Ids",
+            "type": "array"
+          },
+          "requires_reverification": {
+            "title": "Requires Reverification",
+            "type": "boolean"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_unit_id": {
+            "title": "Task Unit Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "task_id",
+          "task_unit_id",
+          "preflight_snapshot_id",
+          "approved_candidate_id",
+          "rejected_candidate_ids",
+          "manual_mappings",
+          "note",
+          "requires_reverification",
+          "execution_allowed",
+          "actor_kind",
+          "version",
+          "created_at"
+        ],
+        "title": "TaskReviewResponse",
         "type": "object"
       },
       "TaskStatus": {
@@ -3454,6 +3642,194 @@
         "summary": "System Status",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/api/v1/task-units/{unit_id}/decision": {
+      "get": {
+        "operationId": "get_task_unit_decision_api_v1_task_units__unit_id__decision_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit_id",
+            "required": true,
+            "schema": {
+              "title": "Unit Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Unit Decision",
+        "tags": [
+          "tasks"
+        ]
+      },
+      "post": {
+        "operationId": "submit_task_unit_decision_api_v1_task_units__unit_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit_id",
+            "required": true,
+            "schema": {
+              "title": "Unit Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskReviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Task Unit Decision",
+        "tags": [
+          "tasks"
         ]
       }
     },

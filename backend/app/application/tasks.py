@@ -15,14 +15,20 @@ from backend.app.application.analysis import AnalysisService, AnalysisSiteProvid
 from backend.app.application.errors import ApplicationError
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.preflight import PreflightSnapshot
+from backend.app.domain.review import ManualReviewMapping, ReviewState
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
+from backend.app.infrastructure.persistence.models import (
+    PreflightSnapshotRecord,
+    TaskEvent,
+)
 from backend.app.infrastructure.persistence.preflight_repositories import (
     PreflightSnapshotRepository,
 )
 from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskCandidateRepository,
+    TaskReviewRepository,
     TaskUnitRepository,
 )
 from backend.app.infrastructure.source_inventory import (
@@ -90,6 +96,29 @@ class TaskView:
 class TaskCreateView:
     task: TaskView
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ManualReviewMappingView:
+    torrent_path: str
+    source_relative_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class TaskReviewView:
+    id: str
+    task_id: str
+    task_unit_id: str
+    preflight_snapshot_id: str
+    approved_candidate_id: str | None
+    rejected_candidate_ids: tuple[str, ...]
+    manual_mappings: tuple[ManualReviewMappingView, ...]
+    note: str | None
+    requires_reverification: bool
+    execution_allowed: bool
+    actor_kind: str
+    version: int
+    created_at: datetime
 
 
 class TaskAnalysisService:
@@ -211,8 +240,12 @@ class TaskAnalysisService:
             return [self._candidate_view(item) for item in records]
 
     def latest_preflight(self, task_id: str) -> PreflightView:
-        task_version = self._task_version(task_id)
         with self._session_factory() as session:
+            task_repository = TaskRepository(session)
+            task = task_repository.get(task_id)
+            if task is None:
+                raise _task_not_found()
+            latest_event = task_repository.latest_event(task_id)
             record = PreflightSnapshotRepository(session).latest_for_task(task_id)
             if record is None:
                 raise ApplicationError(
@@ -231,9 +264,16 @@ class TaskAnalysisService:
             digest = record.snapshot_digest
             created_at = record.created_at
             record_task_version = record.task_version
+            task_version = task.version
+            task_status = task.status
 
         reasons: list[str] = []
-        if task_version != record_task_version:
+        if task_version != record_task_version and not _review_bridge_is_current(
+            task_version=task_version,
+            task_status=task_status,
+            snapshot_task_version=record_task_version,
+            latest_event=latest_event,
+        ):
             reasons.append("TASK_VERSION_CHANGED")
         if unit is None:
             reasons.append("UNIT_RECORD_MISSING")
@@ -260,6 +300,239 @@ class TaskAnalysisService:
             stale_reasons=tuple(reasons),
             created_at=created_at,
         )
+
+    def get_review(self, unit_id: str) -> TaskReviewView:
+        with self._session_factory() as session:
+            unit = TaskUnitRepository(session).get(unit_id)
+            if unit is None:
+                raise _review_unit_not_found()
+            snapshot = PreflightSnapshotRepository(session).latest_for_task(unit.task_id)
+            if snapshot is None:
+                raise _review_preflight_not_found()
+            _ensure_review_unit_matches_snapshot(unit, snapshot)
+            record = TaskReviewRepository(session).latest(
+                task_unit_id=unit.id,
+                preflight_snapshot_id=snapshot.id,
+            )
+            if record is None:
+                raise ApplicationError(
+                    code="REVIEW_NOT_FOUND",
+                    status=404,
+                    title="审核决策不存在",
+                    detail="该处理单元尚未提交人工审核 revision",
+                )
+            return self._review_view(record)
+
+    def submit_review(
+        self,
+        unit_id: str,
+        *,
+        expected_version: int,
+        approved_candidate_id: str | None,
+        rejected_candidate_ids: tuple[str, ...],
+        manual_mappings: tuple[ManualReviewMapping, ...],
+        note: str | None,
+        actor_kind: str,
+        actor_id: str,
+    ) -> TaskReviewView:
+        if expected_version < 0:
+            raise _review_input_invalid("expected_version 不能小于 0")
+        try:
+            state = ReviewState(
+                approved_candidate_id=approved_candidate_id,
+                rejected_candidate_ids=rejected_candidate_ids,
+                manual_mappings=manual_mappings,
+                note=note,
+            )
+        except ValueError as exc:
+            raise _review_input_invalid(str(exc)) from exc
+
+        with self._session_factory() as session:
+            unit = TaskUnitRepository(session).get(unit_id)
+            if unit is None:
+                raise _review_unit_not_found()
+            task_id = unit.task_id
+            snapshot = PreflightSnapshotRepository(session).latest_for_task(task_id)
+            if snapshot is None:
+                raise _review_preflight_not_found()
+            _ensure_review_unit_matches_snapshot(unit, snapshot)
+            snapshot_id = snapshot.id
+            snapshot_inventory_digest = snapshot.source_inventory_digest
+            unit_source_root = unit.source_root
+            candidates = TaskCandidateRepository(session).list_for_snapshot(snapshot_id)
+            candidate_state = {
+                item.id: (
+                    item.rejected,
+                    item.selected_for_verification,
+                    item.verification_level,
+                    deepcopy(item.evidence),
+                )
+                for item in candidates
+            }
+
+        preflight = self.latest_preflight(task_id)
+        if preflight.id != snapshot_id or not preflight.current:
+            reasons = ",".join(preflight.stale_reasons) or "LATEST_SNAPSHOT_CHANGED"
+            raise ApplicationError(
+                code="REVIEW_PREFLIGHT_STALE",
+                status=409,
+                title="预演证据已失效",
+                detail=f"人工审核只能绑定当前 preflight：{reasons}",
+            )
+
+        referenced_ids = set(state.rejected_candidate_ids)
+        if state.approved_candidate_id is not None:
+            referenced_ids.add(state.approved_candidate_id)
+        unknown_ids = sorted(referenced_ids - candidate_state.keys())
+        if unknown_ids:
+            raise _review_input_invalid("审核引用了不属于当前 preflight 的候选")
+
+        approved = (
+            candidate_state[state.approved_candidate_id]
+            if state.approved_candidate_id is not None
+            else None
+        )
+        if approved is not None and approved[0]:
+            raise ApplicationError(
+                code="REVIEW_CANDIDATE_HARD_REJECTED",
+                status=409,
+                title="候选存在硬冲突",
+                detail="硬冲突候选不能被人工批准绕过",
+            )
+        if state.manual_mappings:
+            assert approved is not None
+            self._validate_manual_mappings(
+                source_root=unit_source_root,
+                expected_source_inventory_digest=snapshot_inventory_digest,
+                candidate_evidence=approved[3],
+                mappings=state.manual_mappings,
+            )
+
+        requires_reverification = bool(state.manual_mappings)
+        if approved is not None and (
+            not approved[1] or approved[2] != "FULL_VERIFIED" or approved[3].get("error_code")
+        ):
+            requires_reverification = True
+
+        final_preflight = self.latest_preflight(task_id)
+        if final_preflight.id != snapshot_id or not final_preflight.current:
+            reasons = ",".join(final_preflight.stale_reasons) or "LATEST_SNAPSHOT_CHANGED"
+            raise ApplicationError(
+                code="REVIEW_PREFLIGHT_STALE",
+                status=409,
+                title="预演证据已失效",
+                detail=f"提交审核前 preflight 已变化：{reasons}",
+            )
+
+        with self._session_factory() as session:
+            task_repository = TaskRepository(session)
+            task = task_repository.get(task_id)
+            if task is None:
+                raise _task_not_found()
+            latest_snapshot = PreflightSnapshotRepository(session).latest_for_task(task_id)
+            if latest_snapshot is None or latest_snapshot.id != snapshot_id:
+                raise ApplicationError(
+                    code="REVIEW_PREFLIGHT_STALE",
+                    status=409,
+                    title="预演证据已变化",
+                    detail="提交审核前已产生新的 preflight，请重新加载",
+                )
+            latest_event = task_repository.latest_event(task_id)
+            bridge_open = (
+                task.status == TaskStatus.PREFLIGHT.value and task.version == snapshot.task_version
+            )
+            if not bridge_open and not _review_bridge_is_current(
+                task_version=task.version,
+                task_status=task.status,
+                snapshot_task_version=snapshot.task_version,
+                latest_event=latest_event,
+            ):
+                raise ApplicationError(
+                    code="REVIEW_STATE_INVALID",
+                    status=409,
+                    title="任务状态不允许审核",
+                    detail="人工审核只能从当前 PREFLIGHT 或已打开的 AWAITING_CONFIRMATION 状态提交",
+                )
+            try:
+                record = TaskReviewRepository(session).append(
+                    task_id=task_id,
+                    task_unit_id=unit_id,
+                    preflight_snapshot_id=snapshot_id,
+                    expected_version=expected_version,
+                    state=state,
+                    requires_reverification=requires_reverification,
+                    actor_kind=actor_kind,
+                    actor_id=actor_id,
+                )
+            except ValueError as exc:
+                if str(exc) == "REVIEW_VERSION_CONFLICT":
+                    raise ApplicationError(
+                        code="REVIEW_VERSION_CONFLICT",
+                        status=409,
+                        title="审核版本冲突",
+                        detail="审核 revision 已变化，请重新加载后再提交",
+                    ) from exc
+                raise
+            if bridge_open:
+                task_repository.transition(
+                    task_id=task_id,
+                    expected_version=task.version,
+                    to_status=TaskStatus.AWAITING_CONFIRMATION,
+                    event_type="REVIEW_OPENED",
+                    reason="已提交首个人工审核 revision，进入待确认状态",
+                )
+            session.commit()
+            return self._review_view(record)
+
+    def _validate_manual_mappings(
+        self,
+        *,
+        source_root: str,
+        expected_source_inventory_digest: str,
+        candidate_evidence: dict[str, Any],
+        mappings: tuple[ManualReviewMapping, ...],
+    ) -> None:
+        raw_mappings = candidate_evidence.get("mappings")
+        if not isinstance(raw_mappings, list):
+            raise _review_mapping_invalid("候选缺少可验证的文件映射证据")
+        ambiguous: dict[str, tuple[str, ...]] = {}
+        for item in raw_mappings:
+            if not isinstance(item, dict) or item.get("state") != "AMBIGUOUS":
+                continue
+            torrent_path = item.get("torrent_path")
+            candidate_paths = item.get("candidate_paths")
+            if (
+                isinstance(torrent_path, str)
+                and isinstance(candidate_paths, list)
+                and all(isinstance(value, str) for value in candidate_paths)
+            ):
+                ambiguous[torrent_path] = tuple(candidate_paths)
+
+        _, resolved_root = self._resolve_source_root(source_root)
+        try:
+            inventory = scan_source_inventory(resolved_root)
+        except DomainViolation as exc:
+            raise ApplicationError(
+                code="REVIEW_SOURCE_UNAVAILABLE",
+                status=409,
+                title="源文件不可用",
+                detail="提交人工映射时无法重新确认源文件清单",
+            ) from exc
+        if source_inventory_digest(inventory) != expected_source_inventory_digest:
+            raise ApplicationError(
+                code="REVIEW_PREFLIGHT_STALE",
+                status=409,
+                title="源文件已经变化",
+                detail="人工映射提交前源 inventory 已变化，请重新分析",
+            )
+        inventory_by_relative = {item.relative_path: item for item in inventory}
+        for mapping in mappings:
+            allowed_paths = ambiguous.get(mapping.torrent_path)
+            if allowed_paths is None:
+                raise _review_mapping_invalid("人工映射只能解决当前证据中的 AMBIGUOUS torrent path")
+            source = inventory_by_relative.get(mapping.source_relative_path)
+            if source is None or source.source_path not in allowed_paths:
+                raise _review_mapping_invalid("人工映射源文件必须来自该歧义项的候选集合")
 
     def _task_unit_key(self, task_id: str) -> str:
         with self._session_factory() as session:
@@ -363,6 +636,30 @@ class TaskAnalysisService:
         )
 
     @staticmethod
+    def _review_view(record: Any) -> TaskReviewView:
+        return TaskReviewView(
+            id=record.id,
+            task_id=record.task_id,
+            task_unit_id=record.task_unit_id,
+            preflight_snapshot_id=record.preflight_snapshot_id,
+            approved_candidate_id=record.approved_candidate_id,
+            rejected_candidate_ids=tuple(record.rejected_candidate_ids),
+            manual_mappings=tuple(
+                ManualReviewMappingView(
+                    torrent_path=item["torrent_path"],
+                    source_relative_path=item["source_relative_path"],
+                )
+                for item in record.manual_mappings
+            ),
+            note=record.note,
+            requires_reverification=record.requires_reverification,
+            execution_allowed=False,
+            actor_kind=record.actor_kind,
+            version=record.version,
+            created_at=record.created_at,
+        )
+
+    @staticmethod
     def _task_view(record: Any) -> TaskView:
         return TaskView(
             id=record.id,
@@ -394,6 +691,73 @@ def _site_versions_from_payload(payload: dict[str, Any]) -> tuple[tuple[str, int
             return None
         values.append((item[0], item[1]))
     return tuple(sorted(values))
+
+
+def _review_bridge_is_current(
+    *,
+    task_version: int,
+    task_status: str,
+    snapshot_task_version: int,
+    latest_event: TaskEvent | None,
+) -> bool:
+    return (
+        task_status == TaskStatus.AWAITING_CONFIRMATION.value
+        and task_version == snapshot_task_version + 1
+        and latest_event is not None
+        and latest_event.event_type == "REVIEW_OPENED"
+        and latest_event.from_status == TaskStatus.PREFLIGHT.value
+        and latest_event.to_status == TaskStatus.AWAITING_CONFIRMATION.value
+    )
+
+
+def _ensure_review_unit_matches_snapshot(unit: Any, snapshot: PreflightSnapshotRecord) -> None:
+    if (
+        unit.task_id != snapshot.task_id
+        or unit.normalized_unit_key != snapshot.normalized_unit_key
+        or unit.source_inventory_digest != snapshot.source_inventory_digest
+    ):
+        raise ApplicationError(
+            code="REVIEW_UNIT_STALE",
+            status=409,
+            title="处理单元不是当前预演单元",
+            detail="人工审核只能绑定最新 preflight 对应的 TaskUnit",
+        )
+
+
+def _review_unit_not_found() -> ApplicationError:
+    return ApplicationError(
+        code="REVIEW_UNIT_NOT_FOUND",
+        status=404,
+        title="处理单元不存在",
+        detail="未找到指定 TaskUnit",
+    )
+
+
+def _review_preflight_not_found() -> ApplicationError:
+    return ApplicationError(
+        code="REVIEW_PREFLIGHT_NOT_FOUND",
+        status=404,
+        title="预演不存在",
+        detail="处理单元所属任务尚未生成 preflight",
+    )
+
+
+def _review_input_invalid(detail: str) -> ApplicationError:
+    return ApplicationError(
+        code="REVIEW_INPUT_INVALID",
+        status=422,
+        title="审核输入无效",
+        detail=detail,
+    )
+
+
+def _review_mapping_invalid(detail: str) -> ApplicationError:
+    return ApplicationError(
+        code="REVIEW_MAPPING_INVALID",
+        status=422,
+        title="人工文件映射无效",
+        detail=detail,
+    )
 
 
 def _task_not_found() -> ApplicationError:

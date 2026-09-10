@@ -340,6 +340,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/task-units/{unit_id}/decision': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Task Unit Decision */
+    get: operations['get_task_unit_decision_api_v1_task_units__unit_id__decision_get'];
+    put?: never;
+    /** Submit Task Unit Decision */
+    post: operations['submit_task_unit_decision_api_v1_task_units__unit_id__decision_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/tasks': {
     parameters: {
       query?: never;
@@ -611,6 +629,20 @@ export interface components {
        */
       expires_at: string;
     };
+    /** ManualReviewMappingRequest */
+    ManualReviewMappingRequest: {
+      /** Source Relative Path */
+      source_relative_path: string;
+      /** Torrent Path */
+      torrent_path: string;
+    };
+    /** ManualReviewMappingResponse */
+    ManualReviewMappingResponse: {
+      /** Source Relative Path */
+      source_relative_path: string;
+      /** Torrent Path */
+      torrent_path: string;
+    };
     /** PasswordRequest */
     PasswordRequest: {
       /**
@@ -876,6 +908,51 @@ export interface components {
        * Format: date-time
        */
       updated_at: string;
+      /** Version */
+      version: number;
+    };
+    /** TaskReviewRequest */
+    TaskReviewRequest: {
+      /** Approved Candidate Id */
+      approved_candidate_id?: string | null;
+      /** Expected Version */
+      expected_version: number;
+      /** Manual Mappings */
+      manual_mappings?: components['schemas']['ManualReviewMappingRequest'][];
+      /** Note */
+      note?: string | null;
+      /** Rejected Candidate Ids */
+      rejected_candidate_ids?: string[];
+    };
+    /** TaskReviewResponse */
+    TaskReviewResponse: {
+      /** Actor Kind */
+      actor_kind: string;
+      /** Approved Candidate Id */
+      approved_candidate_id: string | null;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Execution Allowed */
+      execution_allowed: boolean;
+      /** Id */
+      id: string;
+      /** Manual Mappings */
+      manual_mappings: components['schemas']['ManualReviewMappingResponse'][];
+      /** Note */
+      note: string | null;
+      /** Preflight Snapshot Id */
+      preflight_snapshot_id: string;
+      /** Rejected Candidate Ids */
+      rejected_candidate_ids: string[];
+      /** Requires Reverification */
+      requires_reverification: boolean;
+      /** Task Id */
+      task_id: string;
+      /** Task Unit Id */
+      task_unit_id: string;
       /** Version */
       version: number;
     };
@@ -1863,6 +1940,82 @@ export interface operations {
           'application/json': {
             [key: string]: unknown;
           };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_task_unit_decision_api_v1_task_units__unit_id__decision_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        unit_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskReviewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  submit_task_unit_decision_api_v1_task_units__unit_id__decision_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        unit_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskReviewRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskReviewResponse'];
         };
       };
       /** @description Validation Error */

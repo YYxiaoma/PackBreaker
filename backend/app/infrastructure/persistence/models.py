@@ -264,6 +264,50 @@ class TaskCandidateRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class TaskReviewRevisionRecord(Base):
+    __tablename__ = "task_review_revision"
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint(
+            "task_unit_id",
+            "preflight_snapshot_id",
+            "version",
+            name="uq_task_review_unit_snapshot_version",
+        ),
+        Index("ix_task_review_task_created_at", "task_id", "created_at"),
+        Index(
+            "ix_task_review_unit_snapshot_version",
+            "task_unit_id",
+            "preflight_snapshot_id",
+            "version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=False
+    )
+    task_unit_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_unit.id", ondelete="CASCADE"), nullable=False
+    )
+    preflight_snapshot_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("preflight_snapshot.id", ondelete="CASCADE"), nullable=False
+    )
+    approved_candidate_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("task_candidate.id", ondelete="SET NULL"), nullable=True
+    )
+    rejected_candidate_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    manual_mappings: Mapped[list[dict[str, str]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requires_reverification: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class OperationJournal(Base):
     __tablename__ = "operation_journal"
     __table_args__ = (

@@ -4,13 +4,16 @@ from copy import deepcopy
 from dataclasses import asdict
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.domain.preflight import PreflightSnapshot, candidate_evidence_to_payload
+from backend.app.domain.review import ReviewState
 from backend.app.domain.task_units import TaskUnit
 from backend.app.infrastructure.persistence.models import (
     PreflightSnapshotRecord,
     TaskCandidateRecord,
+    TaskReviewRevisionRecord,
     TaskUnitRecord,
     new_uuid,
     utc_now,
@@ -74,6 +77,9 @@ class TaskUnitRepository:
                 TaskUnitRecord.source_inventory_digest == source_inventory_digest,
             )
         )
+
+    def get(self, unit_id: str) -> TaskUnitRecord | None:
+        return self._session.get(TaskUnitRecord, unit_id)
 
     def list_latest(self, task_id: str) -> list[TaskUnitRecord]:
         latest = self._session.scalar(
@@ -166,3 +172,88 @@ class TaskCandidateRepository:
                 )
             )
         )
+
+    def list_for_snapshot(self, snapshot_id: str) -> list[TaskCandidateRecord]:
+        return list(
+            self._session.scalars(
+                select(TaskCandidateRecord)
+                .where(TaskCandidateRecord.preflight_snapshot_id == snapshot_id)
+                .order_by(
+                    TaskCandidateRecord.rejected,
+                    TaskCandidateRecord.score.desc(),
+                    TaskCandidateRecord.site_id,
+                    TaskCandidateRecord.torrent_id,
+                )
+            )
+        )
+
+
+class TaskReviewRepository:
+    """审核 revision 只追加；并发通过 expected_version + 唯一约束失败关闭。"""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def latest(
+        self,
+        *,
+        task_unit_id: str,
+        preflight_snapshot_id: str,
+    ) -> TaskReviewRevisionRecord | None:
+        return self._session.scalar(
+            select(TaskReviewRevisionRecord)
+            .where(
+                TaskReviewRevisionRecord.task_unit_id == task_unit_id,
+                TaskReviewRevisionRecord.preflight_snapshot_id == preflight_snapshot_id,
+            )
+            .order_by(TaskReviewRevisionRecord.version.desc())
+            .limit(1)
+        )
+
+    def append(
+        self,
+        *,
+        task_id: str,
+        task_unit_id: str,
+        preflight_snapshot_id: str,
+        expected_version: int,
+        state: ReviewState,
+        requires_reverification: bool,
+        actor_kind: str,
+        actor_id: str,
+    ) -> TaskReviewRevisionRecord:
+        latest = self.latest(
+            task_unit_id=task_unit_id,
+            preflight_snapshot_id=preflight_snapshot_id,
+        )
+        current_version = latest.version if latest is not None else 0
+        if current_version != expected_version:
+            raise ValueError("REVIEW_VERSION_CONFLICT")
+        record = TaskReviewRevisionRecord(
+            id=new_uuid(),
+            task_id=task_id,
+            task_unit_id=task_unit_id,
+            preflight_snapshot_id=preflight_snapshot_id,
+            approved_candidate_id=state.approved_candidate_id,
+            rejected_candidate_ids=list(state.rejected_candidate_ids),
+            manual_mappings=[
+                {
+                    "torrent_path": item.torrent_path,
+                    "source_relative_path": item.source_relative_path,
+                }
+                for item in state.manual_mappings
+            ],
+            note=state.note,
+            requires_reverification=requires_reverification,
+            actor_kind=actor_kind,
+            actor_id=actor_id,
+            version=current_version + 1,
+            created_at=utc_now(),
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(record)
+                self._session.flush()
+        except IntegrityError as exc:
+            raise ValueError("REVIEW_VERSION_CONFLICT") from exc
+        return record

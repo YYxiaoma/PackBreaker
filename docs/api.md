@@ -131,9 +131,9 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 | GET | `/tasks/{task_id}/preflight` | 最近一次不可变预演快照 |
 | GET | `/tasks/{task_id}/preflight/current` | 轻量判断最近预演是否仍匹配 task/source/site 输入 |
 | POST | `/tasks/{task_id}/actions` | M2 当前实现 `analyze`；后续扩展 `pause`、`resume`、`retry`、`cancel`、`reconcile` |
-| POST | `/task-units/{unit_id}/decision` | 批准/拒绝候选或提交人工文件映射 |
+| GET/POST | `/task-units/{unit_id}/decision` | 读取/追加版本化人工审核 revision；批准/拒绝候选或提交人工文件映射 |
 
-`POST /tasks` 只登记任务身份并复用现有幂等键；重复的 task type、来源下载器、source hash 与 normalized unit key 组合返回同一任务，不会触发扫描、站点搜索或下载器写操作。M2 的手动 `analyze` 当前同步执行，只接受相对于服务端 `/data` 的 `source_root`；绝对路径、`..`、Windows drive、反斜杠和任意符号链接路径都会拒绝。分析会持久化当前 inventory 下识别的 TaskUnit、最新 preflight 对应的 Candidate 证据和不可变 snapshot。`GET /preflight` 同时返回 `current` 与 `stale_reasons`；历史 snapshot 永不因过期而原位修改。后续通用任务动作仍按异步 202/action ID 设计；取消已进入下载器的任务时，请求必须带 `remove_downloader_task` 与 `rollback_created_resources` 明确选择。
+`POST /tasks` 只登记任务身份并复用现有幂等键；重复的 task type、来源下载器、source hash 与 normalized unit key 组合返回同一任务，不会触发扫描、站点搜索或下载器写操作。M2 的手动 `analyze` 当前同步执行，只接受相对于服务端 `/data` 的 `source_root`；绝对路径、`..`、Windows drive、反斜杠和任意符号链接路径都会拒绝。分析会持久化当前 inventory 下识别的 TaskUnit、最新 preflight 对应的 Candidate 证据和不可变 snapshot。`GET /preflight` 同时返回 `current` 与 `stale_reasons`；历史 snapshot 永不因过期而原位修改。人工审核 revision 每次保存完整当前状态，使用 `expected_version` 做乐观并发；只能引用当前 preflight 的 Candidate，硬冲突候选不能被人工批准绕过。人工映射首版只允许从当前 `AMBIGUOUS` 项的候选源文件集合中选择，并会标记 `requires_reverification=true`。首个有效 revision 仅允许从 `PREFLIGHT` 通过 `REVIEW_OPENED` 进入 `AWAITING_CONFIRMATION`；该唯一状态 bridge 不使同一 preflight 自身失效，其他 task version 变化仍会使其 stale。M2 审核响应中的 `execution_allowed` 固定为 `false`，不会进入 LINKING 或调用下载器写接口。后续通用任务动作仍按异步 202/action ID 设计；取消已进入下载器的任务时，请求必须带 `remove_downloader_task` 与 `rollback_created_resources` 明确选择。
 
 ### 5.5 历史扫描与修复
 

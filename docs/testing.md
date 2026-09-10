@@ -106,6 +106,7 @@
 - Idempotency-Key 同请求重放返回原结果，不同请求返回 409。
 - If-Match 冲突返回 412，不覆盖新配置。
 - 任务页面正确展示状态、证据、风险和失败原因；状态不只靠颜色表达。真实预演聚合必须优先标记 stale，且只使用进入深度验证的非硬拒绝候选判定 FULL/CLIENT/BLOCKED，不能让高分但已硬拒绝的候选覆盖安全结论。
+- 人工审核 revision 必须验证 `expected_version` 并只追加；空 revision、stale preflight、跨 snapshot 候选、硬冲突批准和非 AMBIGUOUS/非候选源文件映射全部失败关闭。首个有效审核只能以 `REVIEW_OPENED` 从 `PREFLIGHT` 进入 `AWAITING_CONFIRMATION`，随后 revision 不得继续改变 task version，且该唯一 bridge 后 preflight 仍应 current。
 - 真实任务分析面板只对用户显式输入的后端 task ID 发请求；`PB-*` 演示任务不得自动映射为真实任务。前端 analyze 只提交 `/data` 相对 `source_root`，并正确展示 Unit、Candidate、Preflight current/stale 与稳定错误码。
 - 凭证读取始终脱敏，浏览器 URL、store 和 console 中不出现秘密。
 - 危险操作显示影响范围，预演过期后不能使用旧确认继续执行。

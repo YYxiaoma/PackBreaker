@@ -23,7 +23,11 @@ from backend.app.domain.site_search import (
 )
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
-from backend.app.infrastructure.persistence.models import TaskCandidateRecord, TaskUnitRecord
+from backend.app.infrastructure.persistence.models import (
+    TaskCandidateRecord,
+    TaskReviewRevisionRecord,
+    TaskUnitRecord,
+)
 from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
 from backend.app.main import create_app
 
@@ -31,8 +35,9 @@ _PASSWORD = "synthetic correct horse battery staple"
 
 
 class _FakeAdapter:
-    def __init__(self, torrent_bytes: bytes) -> None:
+    def __init__(self, torrent_bytes: bytes, *, display_name: str = "Movie.2026") -> None:
         self._torrent_bytes = torrent_bytes
+        self._display_name = display_name
 
     async def capabilities(self) -> SiteSearchCapabilities:
         return SiteSearchCapabilities()
@@ -44,7 +49,7 @@ class _FakeAdapter:
         candidate = normalize_candidate_meta(
             site_id="fake",
             torrent_id="42",
-            display_name="Movie.2026",
+            display_name=self._display_name,
             total_size=16,
         )
         return SearchPage("fake", query.page, (candidate,), False, 1)
@@ -54,7 +59,7 @@ class _FakeAdapter:
             normalize_candidate_meta(
                 site_id="fake",
                 torrent_id=torrent_id,
-                display_name="Movie.2026",
+                display_name=self._display_name,
                 total_size=16,
             )
         )
@@ -267,6 +272,302 @@ def test_task_collection_rejects_whitespace_only_identity(tmp_path: Path) -> Non
         client.__exit__(None, None, None)
 
 
+def test_task_review_is_versioned_and_opens_awaiting_confirmation_bridge(tmp_path: Path) -> None:
+    client, app, settings = _authenticated_client(tmp_path)
+    source_root = settings.data_dir / "review"
+    source_root.mkdir(parents=True)
+    content = b"0123456789abcdef"
+    source_file = source_root / "Movie.2026.mkv"
+    source_file.write_bytes(content)
+    unit = identify_task_units((SourceTaskFile(source_file.name, len(content)),))[0]
+    task_id = _create_task(app, unit.normalized_unit_key)
+    _advance_task_to_preflight(app, task_id)
+    app.state.task_analysis_service = TaskAnalysisService(
+        app.state.runtime.session_factory,
+        _FakeSiteProvider(
+            _FakeAdapter(_v1_torrent(source_file.name.encode(), content, piece_length=4))
+        ),
+        data_root=settings.data_dir,
+    )
+
+    try:
+        analyzed = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers=_csrf(client),
+            json={"action": "analyze", "source_root": "review"},
+        )
+        assert analyzed.status_code == 200
+        unit_id = client.get(f"/api/v1/tasks/{task_id}/units").json()["items"][0]["id"]
+        candidate_id = client.get(f"/api/v1/tasks/{task_id}/candidates").json()["items"][0]["id"]
+
+        missing = client.get(f"/api/v1/task-units/{unit_id}/decision")
+        assert missing.status_code == 404
+        assert missing.json()["code"] == "REVIEW_NOT_FOUND"
+
+        payload = {
+            "expected_version": 0,
+            "approved_candidate_id": candidate_id,
+            "rejected_candidate_ids": [],
+            "manual_mappings": [],
+            "note": "合成审核通过",
+        }
+        without_csrf = client.post(f"/api/v1/task-units/{unit_id}/decision", json=payload)
+        assert without_csrf.status_code == 403
+
+        no_op = client.post(
+            f"/api/v1/task-units/{unit_id}/decision",
+            headers=_csrf(client),
+            json={
+                "expected_version": 0,
+                "approved_candidate_id": None,
+                "rejected_candidate_ids": [],
+                "manual_mappings": [],
+                "note": None,
+            },
+        )
+        assert no_op.status_code == 422
+        assert no_op.json()["code"] == "REVIEW_INPUT_INVALID"
+        assert client.get(f"/api/v1/tasks/{task_id}").json()["status"] == "PREFLIGHT"
+
+        created = client.post(
+            f"/api/v1/task-units/{unit_id}/decision",
+            headers=_csrf(client),
+            json=payload,
+        )
+        assert created.status_code == 200
+        assert created.json()["version"] == 1
+        assert created.json()["approved_candidate_id"] == candidate_id
+        assert created.json()["requires_reverification"] is False
+        assert created.json()["execution_allowed"] is False
+
+        task = client.get(f"/api/v1/tasks/{task_id}").json()
+        assert task["status"] == "AWAITING_CONFIRMATION"
+        bridged_task_version = task["version"]
+        current = client.get(f"/api/v1/tasks/{task_id}/preflight/current")
+        assert current.status_code == 200
+        assert current.json()["current"] is True
+        assert current.json()["stale_reasons"] == []
+
+        conflict = client.post(
+            f"/api/v1/task-units/{unit_id}/decision",
+            headers=_csrf(client),
+            json=payload,
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["code"] == "REVIEW_VERSION_CONFLICT"
+
+        rejected = client.post(
+            f"/api/v1/task-units/{unit_id}/decision",
+            headers=_csrf(client),
+            json={
+                "expected_version": 1,
+                "approved_candidate_id": None,
+                "rejected_candidate_ids": [candidate_id],
+                "manual_mappings": [],
+                "note": "改为拒绝",
+            },
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["version"] == 2
+        assert rejected.json()["rejected_candidate_ids"] == [candidate_id]
+        assert client.get(f"/api/v1/tasks/{task_id}").json()["version"] == bridged_task_version
+
+        latest = client.get(f"/api/v1/task-units/{unit_id}/decision")
+        assert latest.status_code == 200
+        assert latest.json()["version"] == 2
+        with app.state.runtime.session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(TaskReviewRevisionRecord)) == 2
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_path: Path) -> None:
+    client, app, settings = _authenticated_client(tmp_path)
+    source_root = settings.data_dir / "ambiguous"
+    (source_root / "one").mkdir(parents=True)
+    (source_root / "two").mkdir(parents=True)
+    content = b"same-size-content"
+    first = source_root / "one" / "Movie.2026.mkv"
+    second = source_root / "two" / "Movie.2026.mkv"
+    first.write_bytes(content)
+    second.write_bytes(content)
+    units = identify_task_units(
+        (
+            SourceTaskFile("one/Movie.2026.mkv", len(content)),
+            SourceTaskFile("two/Movie.2026.mkv", len(content)),
+        )
+    )
+    task_id = _create_task(app, units[0].normalized_unit_key)
+    _advance_task_to_preflight(app, task_id)
+    app.state.task_analysis_service = TaskAnalysisService(
+        app.state.runtime.session_factory,
+        _FakeSiteProvider(_FakeAdapter(_v1_torrent(b"Movie.2026.mkv", content, piece_length=4))),
+        data_root=settings.data_dir,
+    )
+
+    try:
+        analyzed = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers=_csrf(client),
+            json={"action": "analyze", "source_root": "ambiguous"},
+        )
+        assert analyzed.status_code == 200
+        current_unit = next(
+            item
+            for item in client.get(f"/api/v1/tasks/{task_id}/units").json()["items"]
+            if item["normalized_unit_key"] == units[0].normalized_unit_key
+        )
+        candidate = client.get(f"/api/v1/tasks/{task_id}/candidates").json()["items"][0]
+        assert candidate["evidence"]["mappings"][0]["state"] == "AMBIGUOUS"
+
+        invalid = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/decision",
+            headers=_csrf(client),
+            json={
+                "expected_version": 0,
+                "approved_candidate_id": candidate["id"],
+                "rejected_candidate_ids": [],
+                "manual_mappings": [
+                    {
+                        "torrent_path": "Movie.2026.mkv",
+                        "source_relative_path": "../outside.mkv",
+                    }
+                ],
+            },
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["code"] == "REVIEW_INPUT_INVALID"
+
+        mapped = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/decision",
+            headers=_csrf(client),
+            json={
+                "expected_version": 0,
+                "approved_candidate_id": candidate["id"],
+                "rejected_candidate_ids": [],
+                "manual_mappings": [
+                    {
+                        "torrent_path": "Movie.2026.mkv",
+                        "source_relative_path": "one/Movie.2026.mkv",
+                    }
+                ],
+            },
+        )
+        assert mapped.status_code == 200
+        assert mapped.json()["requires_reverification"] is True
+        assert mapped.json()["execution_allowed"] is False
+        assert mapped.json()["manual_mappings"] == [
+            {
+                "torrent_path": "Movie.2026.mkv",
+                "source_relative_path": "one/Movie.2026.mkv",
+            }
+        ]
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_review_rejects_stale_preflight_before_writing_revision(tmp_path: Path) -> None:
+    client, app, settings = _authenticated_client(tmp_path)
+    source_root = settings.data_dir / "stale-review"
+    source_root.mkdir(parents=True)
+    content = b"0123456789abcdef"
+    source_file = source_root / "Movie.2026.mkv"
+    source_file.write_bytes(content)
+    unit = identify_task_units((SourceTaskFile(source_file.name, len(content)),))[0]
+    task_id = _create_task(app, unit.normalized_unit_key)
+    _advance_task_to_preflight(app, task_id)
+    app.state.task_analysis_service = TaskAnalysisService(
+        app.state.runtime.session_factory,
+        _FakeSiteProvider(
+            _FakeAdapter(_v1_torrent(source_file.name.encode(), content, piece_length=4))
+        ),
+        data_root=settings.data_dir,
+    )
+
+    try:
+        assert (
+            client.post(
+                f"/api/v1/tasks/{task_id}/actions",
+                headers=_csrf(client),
+                json={"action": "analyze", "source_root": "stale-review"},
+            ).status_code
+            == 200
+        )
+        unit_id = client.get(f"/api/v1/tasks/{task_id}/units").json()["items"][0]["id"]
+        candidate_id = client.get(f"/api/v1/tasks/{task_id}/candidates").json()["items"][0]["id"]
+        source_file.write_bytes(b"fedcba9876543210")
+        os.utime(source_file, None)
+
+        stale = client.post(
+            f"/api/v1/task-units/{unit_id}/decision",
+            headers=_csrf(client),
+            json={
+                "expected_version": 0,
+                "approved_candidate_id": candidate_id,
+                "rejected_candidate_ids": [],
+                "manual_mappings": [],
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["code"] == "REVIEW_PREFLIGHT_STALE"
+        with app.state.runtime.session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(TaskReviewRevisionRecord)) == 0
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_review_cannot_approve_hard_rejected_candidate(tmp_path: Path) -> None:
+    client, app, settings = _authenticated_client(tmp_path)
+    source_root = settings.data_dir / "hard-conflict"
+    source_root.mkdir(parents=True)
+    content = b"0123456789abcdef"
+    source_file = source_root / "Movie.2026.mkv"
+    source_file.write_bytes(content)
+    unit = identify_task_units((SourceTaskFile(source_file.name, len(content)),))[0]
+    task_id = _create_task(app, unit.normalized_unit_key)
+    _advance_task_to_preflight(app, task_id)
+    app.state.task_analysis_service = TaskAnalysisService(
+        app.state.runtime.session_factory,
+        _FakeSiteProvider(
+            _FakeAdapter(
+                _v1_torrent(source_file.name.encode(), content, piece_length=4),
+                display_name="Movie.2025",
+            )
+        ),
+        data_root=settings.data_dir,
+    )
+
+    try:
+        assert (
+            client.post(
+                f"/api/v1/tasks/{task_id}/actions",
+                headers=_csrf(client),
+                json={"action": "analyze", "source_root": "hard-conflict"},
+            ).status_code
+            == 200
+        )
+        unit_id = client.get(f"/api/v1/tasks/{task_id}/units").json()["items"][0]["id"]
+        candidate = client.get(f"/api/v1/tasks/{task_id}/candidates").json()["items"][0]
+        assert candidate["rejected"] is True
+
+        response = client.post(
+            f"/api/v1/task-units/{unit_id}/decision",
+            headers=_csrf(client),
+            json={
+                "expected_version": 0,
+                "approved_candidate_id": candidate["id"],
+                "rejected_candidate_ids": [],
+                "manual_mappings": [],
+            },
+        )
+        assert response.status_code == 409
+        assert response.json()["code"] == "REVIEW_CANDIDATE_HARD_REJECTED"
+        with app.state.runtime.session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(TaskReviewRevisionRecord)) == 0
+    finally:
+        client.__exit__(None, None, None)
+
+
 def _authenticated_client(tmp_path: Path) -> tuple[TestClient, FastAPI, AppSettings]:
     settings = AppSettings(
         config_dir=(tmp_path / "config").resolve(),
@@ -300,6 +601,28 @@ def _create_task(app: FastAPI, normalized_unit_key: str) -> str:
         )
         session.commit()
         return task.id
+
+
+def _advance_task_to_preflight(app: FastAPI, task_id: str) -> None:
+    with app.state.runtime.session_factory() as session:
+        repository = TaskRepository(session)
+        task = repository.get(task_id)
+        assert task is not None
+        for status in (
+            TaskStatus.ANALYZING,
+            TaskStatus.SEARCHING,
+            TaskStatus.MATCHING,
+            TaskStatus.VERIFYING,
+            TaskStatus.PREFLIGHT,
+        ):
+            task = repository.transition(
+                task_id=task.id,
+                expected_version=task.version,
+                to_status=status,
+                event_type=f"TEST_ENTER_{status.value}",
+                reason="合成审核状态准备",
+            )
+        session.commit()
 
 
 def _v1_torrent(name: bytes, content: bytes, *, piece_length: int) -> bytes:

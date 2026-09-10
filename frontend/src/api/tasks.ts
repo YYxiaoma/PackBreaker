@@ -10,11 +10,19 @@ export type TaskRecord = components['schemas']['TaskResponse'];
 export type TaskStatus = components['schemas']['TaskStatus'];
 export type TaskCreateInput = components['schemas']['TaskCreateRequest'];
 export type TaskCreateResult = components['schemas']['TaskCreateResponse'];
+export type TaskReviewInput = components['schemas']['TaskReviewRequest'];
+export type TaskReview = components['schemas']['TaskReviewResponse'];
 
 function taskPath(taskId: string): string {
   const normalized = taskId.trim();
   if (!normalized) throw new Error('taskId 不能为空');
   return `/tasks/${encodeURIComponent(normalized)}`;
+}
+
+function taskUnitPath(unitId: string): string {
+  const normalized = unitId.trim();
+  if (!normalized) throw new Error('unitId 不能为空');
+  return `/task-units/${encodeURIComponent(normalized)}`;
 }
 
 export async function listTasks(status?: TaskStatus): Promise<TaskRecord[]> {
@@ -88,6 +96,27 @@ export async function analyzeTask(taskId: string, sourceRoot: string): Promise<P
   const payload: TaskActionInput = { action: 'analyze', source_root: sourceRoot };
   try {
     const response = await apiClient.post<Preflight>(`${taskPath(taskId)}/actions`, payload);
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function getTaskUnitDecision(unitId: string): Promise<TaskReview> {
+  try {
+    const response = await apiClient.get<TaskReview>(`${taskUnitPath(unitId)}/decision`);
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function submitTaskUnitDecision(
+  unitId: string,
+  payload: TaskReviewInput,
+): Promise<TaskReview> {
+  try {
+    const response = await apiClient.post<TaskReview>(`${taskUnitPath(unitId)}/decision`, payload);
     return response.data;
   } catch (error) {
     throw toApiProblem(error);

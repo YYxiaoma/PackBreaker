@@ -11,13 +11,14 @@ import {
   type PreflightReviewLevel,
 } from '../preflightReviews';
 import TaskAnalysisPanel from './TaskAnalysisPanel.vue';
+import TaskReviewEditor from './TaskReviewEditor.vue';
 
 const reviews = ref<PreflightReviewItem[]>([]);
 const loadErrors = ref<string[]>([]);
 const loading = ref(false);
 const query = ref('');
 const level = ref<PreflightReviewLevel | ''>('');
-const active = ref<TaskRecord | null>(null);
+const active = ref<PreflightReviewItem | null>(null);
 const drawerVisible = ref(false);
 
 const filtered = computed(() => {
@@ -91,8 +92,8 @@ async function loadTaskReview(task: TaskRecord): Promise<PreflightReviewItem | n
   }
 }
 
-function open(task: TaskRecord): void {
-  active.value = task;
+function open(item: PreflightReviewItem): void {
+  active.value = item;
   drawerVisible.value = true;
 }
 
@@ -206,7 +207,7 @@ function staleReason(reason: string): string {
       <el-table-column label="任务" min-width="275">
         <template #default="{ row }">
           <div class="review-identity">
-            <button @click="open(row.task)">{{ row.task.type }}</button>
+            <button @click="open(row)">{{ row.task.type }}</button>
             <code>{{ row.task.id }}</code>
             <small>{{ row.task.status }} · v{{ row.task.version }}</small>
           </div>
@@ -254,7 +255,7 @@ function staleReason(reason: string): string {
       </el-table-column>
       <el-table-column label="操作" width="105">
         <template #default="{ row }">
-          <el-button link type="primary" @click="open(row.task)">查看证据</el-button>
+          <el-button link type="primary" @click="open(row)">审核 / 证据</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -262,9 +263,12 @@ function staleReason(reason: string): string {
     <el-drawer
       v-model="drawerVisible"
       size="min(980px, 96vw)"
-      :title="active ? `审核证据 ${active.id}` : '审核证据'"
+      :title="active ? `审核证据 ${active.task.id}` : '审核证据'"
     >
-      <TaskAnalysisPanel v-if="active" :suggested-task-id="active.id" />
+      <template v-if="active">
+        <TaskReviewEditor :item="active" @saved="refresh" />
+        <TaskAnalysisPanel :suggested-task-id="active.task.id" />
+      </template>
     </el-drawer>
   </section>
 </template>
