@@ -733,6 +733,8 @@ export interface components {
     };
     /** ExecutionPlanRequest */
     ExecutionPlanRequest: {
+      /** Target Downloader Id */
+      target_downloader_id: string;
       /** Target Root */
       target_root: string;
     };
@@ -773,6 +775,12 @@ export interface components {
       side_effects_started: boolean;
       /** Target Device */
       target_device: number;
+      /** Target Downloader Id */
+      target_downloader_id: string | null;
+      /** Target Downloader Version */
+      target_downloader_version: number | null;
+      /** Target Remote Save Path */
+      target_remote_save_path: string | null;
       /** Target Root */
       target_root: string;
       /** Verification Level */

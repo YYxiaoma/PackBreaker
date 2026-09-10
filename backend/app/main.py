@@ -24,6 +24,7 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import FilesystemOperationService
 from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
+from backend.app.application.task_adding import TaskAddingCoordinator
 from backend.app.application.task_linking import TaskLinkingCoordinator
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.config import AppSettings
@@ -87,14 +88,14 @@ def create_app(
             resolved_runtime.secret_cipher,
         )
         app.state.secret_store = secret_store
-        app.state.downloader_service = DownloaderService(
+        downloader_service = DownloaderService(
             resolved_runtime.session_factory,
             secret_store,
             data_root=resolved_settings.data_dir,
         )
-        app.state.qbittorrent_add_operation_service = QbittorrentAddOperationService(
-            resolved_runtime.session_factory
-        )
+        app.state.downloader_service = downloader_service
+        qbit_operations = QbittorrentAddOperationService(resolved_runtime.session_factory)
+        app.state.qbittorrent_add_operation_service = qbit_operations
         site_service = SiteService(resolved_runtime.session_factory, secret_store)
         app.state.site_service = site_service
         task_analysis_service = TaskAnalysisService(
@@ -112,6 +113,13 @@ def create_app(
             resolved_runtime.session_factory,
             task_analysis_service,
             filesystem_operations,
+            data_root=resolved_settings.data_dir,
+        )
+        app.state.task_adding_coordinator = TaskAddingCoordinator(
+            resolved_runtime.session_factory,
+            site_service,
+            downloader_service,
+            qbit_operations,
             data_root=resolved_settings.data_dir,
         )
         try:

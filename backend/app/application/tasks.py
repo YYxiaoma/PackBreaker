@@ -18,6 +18,12 @@ from backend.app.application.analysis import (
     verify_torrent_mappings,
 )
 from backend.app.application.errors import ApplicationError
+from backend.app.domain.downloader import (
+    PathMappingRule,
+    ProbeStatus,
+    downloader_execution_binding_digest,
+    reverse_map_container_path_unique,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.execution_gate import (
     ExecutionGateBlockReason,
@@ -46,8 +52,14 @@ from backend.app.domain.review import (
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
 from backend.app.domain.torrent import TorrentFile
-from backend.app.domain.verification import FileMappingState, FileSnapshot, VerificationLevel
+from backend.app.domain.verification import (
+    DownloaderKind,
+    FileMappingState,
+    FileSnapshot,
+    VerificationLevel,
+)
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
+from backend.app.infrastructure.persistence.downloader_repositories import DownloaderRepository
 from backend.app.infrastructure.persistence.models import (
     PreflightSnapshotRecord,
     TaskEvent,
@@ -196,6 +208,9 @@ class ExecutionPlanView:
     current_reasons: tuple[str, ...]
     target_root: str
     target_device: int
+    target_downloader_id: str | None
+    target_downloader_version: int | None
+    target_remote_save_path: str | None
     verification_level: str
     client_check_required: bool
     hardlink_count: int
@@ -214,6 +229,14 @@ class _TargetLayout:
     device: int
     create_directories: tuple[str, ...]
     blocked_reasons: tuple[ExecutionPlanBlockReason, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TargetDownloaderPlanBinding:
+    downloader_id: str
+    downloader_version: int
+    binding_digest: str
+    remote_save_path: str
 
 
 class _TaskAnalysisLifecycle(AnalysisLifecycle):
@@ -632,7 +655,21 @@ class TaskAnalysisService:
         actions = _execution_plan_actions_from_payload(stored_payload)
         expected_directories = _string_tuple(stored_payload.get("create_directories"))
         expected_blockers = _execution_plan_blockers(stored_payload.get("blocked_reasons"))
-        if actions is None or expected_directories is None or expected_blockers is None:
+        target_downloader_id = _optional_text(stored_payload.get("target_downloader_id"))
+        target_downloader_version = _optional_int(stored_payload.get("target_downloader_version"))
+        target_downloader_binding_digest = _optional_text(
+            stored_payload.get("target_downloader_binding_digest")
+        )
+        target_remote_save_path = _optional_text(stored_payload.get("target_remote_save_path"))
+        if (
+            actions is None
+            or expected_directories is None
+            or expected_blockers is None
+            or target_downloader_id is None
+            or target_downloader_version is None
+            or target_downloader_binding_digest is None
+            or target_remote_save_path is None
+        ):
             reasons.append("PLAN_EVIDENCE_INVALID")
         else:
             try:
@@ -662,6 +699,23 @@ class TaskAnalysisService:
                         reasons.append("TARGET_STATE_CHANGED")
             except ApplicationError:
                 reasons.append("TARGET_ROOT_CHANGED")
+            else:
+                try:
+                    with self._session_factory() as session:
+                        binding = self._target_downloader_plan_binding(
+                            session,
+                            target_downloader_id,
+                            target_path,
+                        )
+                except ApplicationError:
+                    reasons.append("TARGET_DOWNLOADER_CHANGED")
+                else:
+                    if (
+                        binding.downloader_version != target_downloader_version
+                        or binding.binding_digest != target_downloader_binding_digest
+                        or binding.remote_save_path != target_remote_save_path
+                    ):
+                        reasons.append("TARGET_DOWNLOADER_CHANGED")
 
         normalized_reasons = tuple(dict.fromkeys(reasons))
         return replace(
@@ -675,6 +729,7 @@ class TaskAnalysisService:
         unit_id: str,
         *,
         target_root: str,
+        target_downloader_id: str,
     ) -> ExecutionPlanView:
         gate = self.get_execution_gate(unit_id)
         if not gate.current or not gate.eligible:
@@ -707,6 +762,11 @@ class TaskAnalysisService:
 
         normalized_target, resolved_target = self._resolve_execution_target_root(target_root)
         with self._session_factory() as session:
+            target_downloader = self._target_downloader_plan_binding(
+                session,
+                target_downloader_id,
+                resolved_target,
+            )
             unit = TaskUnitRepository(session).get(unit_id)
             if unit is None:
                 raise _review_unit_not_found()
@@ -820,6 +880,10 @@ class TaskAnalysisService:
             source_root=source_root,
             target_root=normalized_target,
             target_device=layout.device,
+            target_downloader_id=target_downloader.downloader_id,
+            target_downloader_version=target_downloader.downloader_version,
+            target_downloader_binding_digest=target_downloader.binding_digest,
+            target_remote_save_path=target_downloader.remote_save_path,
             actions=actions,
             create_directories=layout.create_directories,
             estimated_download_bytes_upper_bound=estimated_download,
@@ -1475,6 +1539,15 @@ class TaskAnalysisService:
         gate = TaskExecutionGateRepository(session).latest(snapshot.task_unit_id)
         candidate = TaskCandidateRepository(session).get(snapshot.candidate_id)
         unit = TaskUnitRepository(session).get(snapshot.task_unit_id)
+        try:
+            _, resolved_target = self._resolve_execution_target_root(snapshot.target_root)
+            target_downloader = self._target_downloader_plan_binding(
+                session,
+                snapshot.target_downloader_id,
+                resolved_target,
+            )
+        except ApplicationError as exc:
+            raise _execution_plan_input_changed() from exc
         if (
             task is None
             or task.version != snapshot.task_version
@@ -1487,8 +1560,89 @@ class TaskAnalysisService:
             or candidate.metainfo_digest != snapshot.metainfo_digest
             or unit is None
             or unit.source_inventory_digest != snapshot.source_inventory_digest
+            or target_downloader.downloader_version != snapshot.target_downloader_version
+            or target_downloader.binding_digest != snapshot.target_downloader_binding_digest
+            or target_downloader.remote_save_path != snapshot.target_remote_save_path
         ):
             raise _execution_plan_input_changed()
+
+    def _target_downloader_plan_binding(
+        self,
+        session: Session,
+        downloader_id: str,
+        resolved_target: Path,
+    ) -> _TargetDownloaderPlanBinding:
+        normalized_id = downloader_id.strip()
+        if not normalized_id:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TARGET_DOWNLOADER_REQUIRED",
+                status=422,
+                title="缺少目标下载器",
+                detail="execution plan 必须显式绑定目标 qBittorrent 配置",
+            )
+        record = DownloaderRepository(session).get(normalized_id)
+        if record is None:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TARGET_DOWNLOADER_NOT_FOUND",
+                status=404,
+                title="目标下载器不存在",
+                detail="指定目标下载器配置不存在",
+            )
+        if DownloaderKind(record.type) is not DownloaderKind.QBITTORRENT:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TARGET_DOWNLOADER_UNSUPPORTED",
+                status=409,
+                title="目标下载器类型暂不支持",
+                detail="M3 当前 execution plan 写链只支持 qBittorrent",
+            )
+        if (
+            not record.enabled
+            or record.connection_status != ProbeStatus.OK.value
+            or record.path_mapping_status != ProbeStatus.OK.value
+            or record.secret_id is None
+        ):
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TARGET_DOWNLOADER_NOT_READY",
+                status=409,
+                title="目标下载器安全门未就绪",
+                detail="目标 qBittorrent 必须已启用且连接、路径映射、凭证均保持有效",
+            )
+        try:
+            mappings = tuple(
+                PathMappingRule(
+                    remote_prefix=item["remote_prefix"],
+                    container_prefix=item["container_prefix"],
+                )
+                for item in record.path_mappings
+            )
+            remote_save_path = reverse_map_container_path_unique(
+                resolved_target,
+                list(mappings),
+                allowed_root=self._data_root,
+            )
+            binding_digest = downloader_execution_binding_digest(
+                downloader_id=record.id,
+                version=record.version,
+                kind=DownloaderKind(record.type),
+                enabled=record.enabled,
+                connection_status=ProbeStatus(record.connection_status),
+                path_mapping_status=ProbeStatus(record.path_mapping_status),
+                path_mappings=mappings,
+                capabilities=deepcopy(record.capabilities),
+            )
+        except (DomainViolation, KeyError, TypeError, ValueError) as exc:
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TARGET_MAPPING_INVALID",
+                status=409,
+                title="目标下载器路径映射不可用",
+                detail="target_root 必须能唯一反向映射到目标 qBittorrent 保存路径",
+            ) from exc
+        return _TargetDownloaderPlanBinding(
+            downloader_id=record.id,
+            downloader_version=record.version,
+            binding_digest=binding_digest,
+            remote_save_path=remote_save_path,
+        )
 
     def submit_review(
         self,
@@ -1992,6 +2146,11 @@ class TaskAnalysisService:
             current_reasons=current_reasons,
             target_root=record.target_root,
             target_device=record.target_device,
+            target_downloader_id=_optional_text(record.payload.get("target_downloader_id")),
+            target_downloader_version=_optional_int(
+                record.payload.get("target_downloader_version")
+            ),
+            target_remote_save_path=_optional_text(record.payload.get("target_remote_save_path")),
             verification_level=record.verification_level,
             client_check_required=record.client_check_required,
             hardlink_count=sum(
@@ -2090,6 +2249,14 @@ def _string_tuple(value: object) -> tuple[str, ...] | None:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         return None
     return tuple(value)
+
+
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else None
 
 
 def _execution_plan_blockers(

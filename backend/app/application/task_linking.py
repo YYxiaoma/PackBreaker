@@ -39,6 +39,7 @@ from backend.app.infrastructure.source_inventory import (
 )
 
 LINKING_CHECKPOINT_SCHEMA_VERSION = "packbreaker-linking-checkpoint-v1"
+ADDING_CHECKPOINT_SCHEMA_VERSION = "packbreaker-adding-checkpoint-v1"
 
 
 class CurrentExecutionPlanProvider(Protocol):
@@ -74,6 +75,10 @@ class _AuthorizedPlan:
     source_root: str
     source_inventory_digest: str
     target_root: str
+    target_downloader_id: str
+    target_downloader_version: int
+    target_downloader_binding_digest: str
+    target_remote_save_path: str
     actions: tuple[ExecutionPlanAction, ...]
     client_check_required: bool
 
@@ -110,6 +115,8 @@ class TaskLinkingCoordinator:
         elif status is TaskStatus.LINKING:
             plan = self._load_reserved_plan(unit_id, execution_plan_id)
             replayed = True
+        elif status is TaskStatus.ADDING:
+            return self._load_completed_linking_result(unit_id, execution_plan_id)
         else:
             raise ApplicationError(
                 code="LINKING_TASK_STATE_INVALID",
@@ -147,9 +154,15 @@ class TaskLinkingCoordinator:
             hardlink_journal_ids.append(result.hardlink_journal_id)
             directory_journal_ids.extend(result.directory_journal_ids)
 
+        task_version = self._advance_to_adding(
+            plan,
+            hardlink_journal_ids=tuple(hardlink_journal_ids),
+            directory_journal_ids=tuple(dict.fromkeys(directory_journal_ids)),
+            client_fetch_count=client_fetch_count,
+        )
         return TaskLinkingResult(
             task_id=plan.task_id,
-            task_version=plan.linking_task_version,
+            task_version=task_version,
             execution_plan_id=plan.id,
             execution_plan_digest=plan.digest,
             linked_file_count=len(hardlink_journal_ids),
@@ -209,6 +222,10 @@ class TaskLinkingCoordinator:
                 "execution_gate_id": authorized.gate_id,
                 "execution_gate_digest": authorized.gate_digest,
                 "task_version_before_linking": authorized.task_version_before_linking,
+                "target_downloader_id": authorized.target_downloader_id,
+                "target_downloader_version": authorized.target_downloader_version,
+                "target_downloader_binding_digest": authorized.target_downloader_binding_digest,
+                "target_remote_save_path": authorized.target_remote_save_path,
             }
             try:
                 task = task_repository.transition(
@@ -241,6 +258,18 @@ class TaskLinkingCoordinator:
                 "execution_gate_id": plan_record.execution_gate_id,
                 "execution_gate_digest": gate_digest,
                 "task_version_before_linking": plan_record.task_version,
+                "target_downloader_id": _required_payload_text(
+                    plan_record.payload, "target_downloader_id"
+                ),
+                "target_downloader_version": _required_payload_int(
+                    plan_record.payload, "target_downloader_version"
+                ),
+                "target_downloader_binding_digest": _required_payload_text(
+                    plan_record.payload, "target_downloader_binding_digest"
+                ),
+                "target_remote_save_path": _required_payload_text(
+                    plan_record.payload, "target_remote_save_path"
+                ),
             }
             if (
                 deepcopy(task.checkpoint) != expected_checkpoint
@@ -259,6 +288,107 @@ class TaskLinkingCoordinator:
                 plan_record,
                 linking_task_version=task.version,
             )
+
+    def _advance_to_adding(
+        self,
+        plan: _AuthorizedPlan,
+        *,
+        hardlink_journal_ids: tuple[str, ...],
+        directory_journal_ids: tuple[str, ...],
+        client_fetch_count: int,
+    ) -> int:
+        checkpoint = {
+            "schema_version": ADDING_CHECKPOINT_SCHEMA_VERSION,
+            "stage": TaskStatus.ADDING.value,
+            "execution_plan_id": plan.id,
+            "execution_plan_digest": plan.digest,
+            "execution_gate_id": plan.gate_id,
+            "execution_gate_digest": plan.gate_digest,
+            "task_version_before_linking": plan.task_version_before_linking,
+            "target_downloader_id": plan.target_downloader_id,
+            "target_downloader_version": plan.target_downloader_version,
+            "target_downloader_binding_digest": plan.target_downloader_binding_digest,
+            "target_remote_save_path": plan.target_remote_save_path,
+            "hardlink_journal_ids": list(hardlink_journal_ids),
+            "directory_journal_ids": list(directory_journal_ids),
+            "client_fetch_count": client_fetch_count,
+        }
+        with self._session_factory() as session:
+            repository = TaskRepository(session)
+            task = repository.get(plan.task_id)
+            if (
+                task is None
+                or task.status != TaskStatus.LINKING.value
+                or task.version != plan.linking_task_version
+            ):
+                raise ApplicationError(
+                    code="LINKING_TASK_CHANGED",
+                    status=409,
+                    title="链接任务状态已经变化",
+                    detail="文件动作完成后无法安全提交 ADDING 检查点",
+                )
+            try:
+                task = repository.transition(
+                    task_id=task.id,
+                    expected_version=task.version,
+                    to_status=TaskStatus.ADDING,
+                    event_type="LINKING_COMPLETED",
+                    reason="execution plan 文件系统动作已完成，进入暂停添加阶段",
+                    checkpoint=checkpoint,
+                )
+            except DomainViolation as exc:
+                raise ApplicationError(
+                    code="LINKING_TASK_CHANGED",
+                    status=409,
+                    title="链接任务状态已经变化",
+                    detail="文件动作完成后无法安全提交 ADDING 检查点",
+                ) from exc
+            session.commit()
+            return task.version
+
+    def _load_completed_linking_result(
+        self,
+        unit_id: str,
+        plan_id: str,
+    ) -> TaskLinkingResult:
+        with self._session_factory() as session:
+            plan = TaskExecutionPlanRepository(session).get(plan_id)
+            if plan is None or plan.task_unit_id != unit_id:
+                raise _linking_plan_not_found()
+            task = TaskRepository(session).get(plan.task_id)
+            if task is None or task.status != TaskStatus.ADDING.value:
+                raise _linking_plan_not_current()
+            checkpoint = deepcopy(task.checkpoint)
+            task_id = task.id
+            task_version = task.version
+            plan_record_id = plan.id
+            plan_record_digest = plan.plan_digest
+        if (
+            checkpoint.get("schema_version") != ADDING_CHECKPOINT_SCHEMA_VERSION
+            or checkpoint.get("stage") != TaskStatus.ADDING.value
+            or checkpoint.get("execution_plan_id") != plan_record_id
+            or checkpoint.get("execution_plan_digest") != plan_record_digest
+        ):
+            raise ApplicationError(
+                code="LINKING_CHECKPOINT_MISMATCH",
+                status=409,
+                title="链接恢复检查点不匹配",
+                detail="ADDING 任务没有与指定 execution plan 匹配的持久化链接结果",
+            )
+        hardlinks = _required_string_list(checkpoint, "hardlink_journal_ids")
+        directories = _required_string_list(checkpoint, "directory_journal_ids")
+        client_fetch_count = _required_nonnegative_int(checkpoint, "client_fetch_count")
+        return TaskLinkingResult(
+            task_id=task_id,
+            task_version=task_version,
+            execution_plan_id=plan_record_id,
+            execution_plan_digest=plan_record_digest,
+            linked_file_count=len(hardlinks),
+            client_fetch_count=client_fetch_count,
+            hardlink_journal_ids=hardlinks,
+            directory_journal_ids=directories,
+            replayed=True,
+        )
 
     def _validate_plan_graph(
         self,
@@ -358,6 +488,12 @@ def _authorized_plan_from_record(
         source_root=_required_payload_text(payload, "source_root"),
         source_inventory_digest=_required_payload_text(payload, "source_inventory_digest"),
         target_root=record.target_root,
+        target_downloader_id=_required_payload_text(payload, "target_downloader_id"),
+        target_downloader_version=_required_payload_int(payload, "target_downloader_version"),
+        target_downloader_binding_digest=_required_payload_text(
+            payload, "target_downloader_binding_digest"
+        ),
+        target_remote_save_path=_required_payload_text(payload, "target_remote_save_path"),
         actions=actions,
         client_check_required=record.client_check_required,
     )
@@ -371,6 +507,27 @@ def _required_payload_text(payload: dict[str, object], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value:
         raise _linking_plan_invalid(f"execution plan 缺少 {key}")
+    return value
+
+
+def _required_payload_int(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise _linking_plan_invalid(f"execution plan 缺少有效 {key}")
+    return value
+
+
+def _required_string_list(payload: dict[str, object], key: str) -> tuple[str, ...]:
+    value = payload.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise _linking_plan_invalid(f"checkpoint 缺少有效 {key}")
+    return tuple(value)
+
+
+def _required_nonnegative_int(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise _linking_plan_invalid(f"checkpoint 缺少有效 {key}")
     return value
 
 

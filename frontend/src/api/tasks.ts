@@ -182,8 +182,12 @@ export async function getTaskUnitExecutionPlan(unitId: string): Promise<Executio
 export async function createTaskUnitExecutionPlan(
   unitId: string,
   targetRoot: string,
+  targetDownloaderId: string,
 ): Promise<ExecutionPlan> {
-  const payload: ExecutionPlanInput = { target_root: targetRoot };
+  const payload: ExecutionPlanInput = {
+    target_root: targetRoot,
+    target_downloader_id: targetDownloaderId,
+  };
   try {
     const response = await apiClient.post<ExecutionPlan>(
       `${taskUnitPath(unitId)}/execution-plan`,

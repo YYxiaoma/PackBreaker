@@ -7,9 +7,10 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
 
+from backend.app.domain.downloader import normalize_remote_path
 from backend.app.domain.verification import FileSnapshot, VerificationLevel
 
-EXECUTION_PLAN_SCHEMA_VERSION = "packbreaker-execution-plan-v1"
+EXECUTION_PLAN_SCHEMA_VERSION = "packbreaker-execution-plan-v2"
 
 
 class ExecutionPlanActionKind(StrEnum):
@@ -70,6 +71,10 @@ class ExecutionPlanSnapshot:
     source_root: str
     target_root: str
     target_device: int
+    target_downloader_id: str
+    target_downloader_version: int
+    target_downloader_binding_digest: str
+    target_remote_save_path: str
     actions: tuple[ExecutionPlanAction, ...]
     create_directories: tuple[str, ...]
     estimated_download_bytes_upper_bound: int
@@ -97,6 +102,17 @@ class ExecutionPlanSnapshot:
         object.__setattr__(self, "target_root", _safe_root(self.target_root))
         if self.target_device < 0:
             raise ValueError("target device 无效")
+        if not self.target_downloader_id.strip() or self.target_downloader_version < 1:
+            raise ValueError("execution plan 必须绑定有效目标下载器")
+        if len(self.target_downloader_binding_digest) != 64 or any(
+            char not in "0123456789abcdef" for char in self.target_downloader_binding_digest
+        ):
+            raise ValueError("目标下载器 binding digest 无效")
+        try:
+            remote_save_path = normalize_remote_path(self.target_remote_save_path)
+        except ValueError as exc:
+            raise ValueError("目标下载器保存路径无效") from exc
+        object.__setattr__(self, "target_remote_save_path", remote_save_path)
         if self.estimated_download_bytes_upper_bound < 0:
             raise ValueError("预计下载字节不能为负数")
         action_paths = tuple(item.torrent_path for item in self.actions)
@@ -152,6 +168,10 @@ def execution_plan_to_payload(
         "source_root": snapshot.source_root,
         "target_root": snapshot.target_root,
         "target_device": snapshot.target_device,
+        "target_downloader_id": snapshot.target_downloader_id,
+        "target_downloader_version": snapshot.target_downloader_version,
+        "target_downloader_binding_digest": snapshot.target_downloader_binding_digest,
+        "target_remote_save_path": snapshot.target_remote_save_path,
         "actions": [_action_payload(item) for item in snapshot.actions],
         "create_directories": list(snapshot.create_directories),
         "estimated_download_bytes_upper_bound": snapshot.estimated_download_bytes_upper_bound,

@@ -86,7 +86,9 @@ _ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
         {TaskStatus.VERIFYING, TaskStatus.LINKING, TaskStatus.CANCELLING, TaskStatus.FAILED}
     ),
     TaskStatus.LINKING: frozenset({TaskStatus.ADDING, TaskStatus.ROLLING_BACK}),
-    TaskStatus.ADDING: frozenset({TaskStatus.CLIENT_VERIFYING, TaskStatus.ROLLING_BACK}),
+    TaskStatus.ADDING: frozenset(
+        {TaskStatus.CLIENT_VERIFYING, TaskStatus.SEEDING, TaskStatus.ROLLING_BACK}
+    ),
     TaskStatus.CLIENT_VERIFYING: frozenset(
         {TaskStatus.SEEDING, TaskStatus.RETRY, TaskStatus.ROLLING_BACK}
     ),

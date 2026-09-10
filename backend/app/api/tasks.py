@@ -186,6 +186,7 @@ class ExecutionGateResponse(BaseModel):
 
 class ExecutionPlanRequest(BaseModel):
     target_root: str = Field(min_length=1, max_length=4096)
+    target_downloader_id: str = Field(min_length=1, max_length=36)
 
 
 class ExecutionPlanActionResponse(BaseModel):
@@ -203,6 +204,9 @@ class ExecutionPlanResponse(BaseModel):
     current_reasons: list[str]
     target_root: str
     target_device: int
+    target_downloader_id: str | None
+    target_downloader_version: int | None
+    target_remote_save_path: str | None
     verification_level: str
     client_check_required: bool
     hardlink_count: int
@@ -437,6 +441,7 @@ async def create_task_unit_execution_plan(
         await task_analysis_service(request).create_execution_plan(
             unit_id,
             target_root=payload.target_root,
+            target_downloader_id=payload.target_downloader_id,
         )
     )
 
@@ -567,6 +572,9 @@ def _execution_plan_response(item: ExecutionPlanView) -> ExecutionPlanResponse:
         current_reasons=list(item.current_reasons),
         target_root=item.target_root,
         target_device=item.target_device,
+        target_downloader_id=item.target_downloader_id,
+        target_downloader_version=item.target_downloader_version,
+        target_remote_save_path=item.target_remote_save_path,
         verification_level=item.verification_level,
         client_check_required=item.client_check_required,
         hardlink_count=item.hardlink_count,

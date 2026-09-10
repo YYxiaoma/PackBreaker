@@ -74,6 +74,21 @@ class SafeFilesystemGateway:
         _assert_source_snapshot(snapshot, expected_source_snapshot)
         return snapshot
 
+    def assert_directory(
+        self,
+        *,
+        relative_path: str,
+        expected_device: int | None = None,
+    ) -> FilesystemSnapshot:
+        """重新确认 `/data` 内目录链不含符号链接，并可锁定设备身份。"""
+
+        root, root_snapshot = self._require_data_root()
+        _, parts = _normalize_relative_path(relative_path, allow_root=True)
+        _, snapshot = self._require_directory_chain(root, parts, root_snapshot)
+        if expected_device is not None and snapshot.device != expected_device:
+            raise DomainViolation(ErrorCode.CROSS_DEVICE_LINK, "目标目录设备与执行计划不一致")
+        return snapshot
+
     def inspect_hardlink(
         self,
         *,

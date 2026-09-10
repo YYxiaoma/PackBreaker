@@ -552,6 +552,12 @@
       },
       "ExecutionPlanRequest": {
         "properties": {
+          "target_downloader_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Target Downloader Id",
+            "type": "string"
+          },
           "target_root": {
             "maxLength": 4096,
             "minLength": 1,
@@ -560,7 +566,8 @@
           }
         },
         "required": [
-          "target_root"
+          "target_root",
+          "target_downloader_id"
         ],
         "title": "ExecutionPlanRequest",
         "type": "object"
@@ -641,6 +648,39 @@
             "title": "Target Device",
             "type": "integer"
           },
+          "target_downloader_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Downloader Id"
+          },
+          "target_downloader_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Downloader Version"
+          },
+          "target_remote_save_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Remote Save Path"
+          },
           "target_root": {
             "title": "Target Root",
             "type": "string"
@@ -658,6 +698,9 @@
           "current_reasons",
           "target_root",
           "target_device",
+          "target_downloader_id",
+          "target_downloader_version",
+          "target_remote_save_path",
           "verification_level",
           "client_check_required",
           "hardlink_count",

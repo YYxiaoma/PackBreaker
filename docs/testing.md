@@ -159,6 +159,8 @@ M2 的代码能力、自动化证据与仍依赖真实语料/环境的退出项�
 - 7 个失败样例完成归因并形成回归测试，其中至少覆盖 3 类失败。
 - 重复触发 10 次结果唯一。
 - LINKING、ADDING、CLIENT_VERIFYING 故障注入后恢复正确。
+- execution plan 必须绑定明确的目标下载器 version/能力摘要/远端 save path；下载器配置、能力或路径映射变化后旧计划必须 stale，不能在 ADDING 时临时换客户端。
+- ADDING 覆盖 qB 响应丢失与“journal 已 APPLIED、task 状态尚未提交”两个崩溃点；重复执行只能收敛到同一个 qB 任务。FULL_VERIFIED 可按能力进入 SEEDING，CLIENT_CHECK_REQUIRED 必须保持 `skip_checking=false` 并进入 CLIENT_VERIFYING。
 - 源文件在所有验收场景中内容与 inode 不变。
 - 数据库、配置导出、日志、通知和诊断包无可用明文凭证。
 - 备份、迁移、升级健康检查和失败回滚演练通过。

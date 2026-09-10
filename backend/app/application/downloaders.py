@@ -18,6 +18,7 @@ from backend.app.domain.downloader import (
     DownloaderCredential,
     PathMappingRule,
     ProbeStatus,
+    downloader_execution_binding_digest,
     map_remote_path,
     normalize_base_url,
     normalize_path_mappings,
@@ -117,6 +118,7 @@ class PathDiagnosticReport:
 class QbittorrentWriteBinding:
     downloader_id: str
     downloader_version: int
+    binding_digest: str
     path_mappings: tuple[PathMappingRule, ...]
     capabilities: dict[str, Any]
     adapter: QbittorrentWriteAdapter
@@ -205,6 +207,16 @@ class DownloaderService:
         return QbittorrentWriteBinding(
             downloader_id=snapshot_id,
             downloader_version=snapshot_version,
+            binding_digest=downloader_execution_binding_digest(
+                downloader_id=snapshot_id,
+                version=snapshot_version,
+                kind=DownloaderKind.QBITTORRENT,
+                enabled=True,
+                connection_status=ProbeStatus.OK,
+                path_mapping_status=ProbeStatus.OK,
+                path_mappings=mappings,
+                capabilities=capabilities,
+            ),
             path_mappings=mappings,
             capabilities=capabilities,
             adapter=self._adapter_factory.create_qbittorrent(

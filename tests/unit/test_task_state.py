@@ -21,10 +21,11 @@ def test_normal_analysis_path_is_allowed() -> None:
     assert can_transition(TaskStatus.VERIFYING, TaskStatus.PREFLIGHT)
 
 
-def test_side_effect_states_cannot_fail_without_rollback_path() -> None:
+def test_side_effect_states_require_rollback_for_failure_but_allow_confirmed_add_result() -> None:
     assert not can_transition(TaskStatus.LINKING, TaskStatus.FAILED)
     assert not can_transition(TaskStatus.ADDING, TaskStatus.FAILED)
-    assert not can_transition(TaskStatus.ADDING, TaskStatus.SEEDING)
+    assert can_transition(TaskStatus.ADDING, TaskStatus.SEEDING)
+    assert can_transition(TaskStatus.ADDING, TaskStatus.CLIENT_VERIFYING)
     assert not can_transition(TaskStatus.CLIENT_VERIFYING, TaskStatus.FAILED)
     assert can_transition(TaskStatus.LINKING, TaskStatus.ROLLING_BACK)
 

@@ -34,6 +34,10 @@ def _plan(**overrides: object) -> ExecutionPlanSnapshot:
         "source_root": "source/movie",
         "target_root": "seeding/movie",
         "target_device": 1,
+        "target_downloader_id": "downloader-1",
+        "target_downloader_version": 3,
+        "target_downloader_binding_digest": "d" * 64,
+        "target_remote_save_path": "/downloads/seeding/movie",
         "actions": (
             ExecutionPlanAction(
                 torrent_path="Movie.2026.mkv",

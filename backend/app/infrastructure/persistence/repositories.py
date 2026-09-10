@@ -160,6 +160,7 @@ class TaskRepository:
         event_type: str,
         reason: str,
         occurred_at: datetime | None = None,
+        checkpoint: dict[str, Any] | None = None,
     ) -> UnpackTask:
         task = self._require_version(task_id, expected_version)
         if TaskStatus(task.status) is not TaskStatus.ADDING:
@@ -175,7 +176,13 @@ class TaskRepository:
             reason=reason,
             occurred_at=occurred_at,
         )
-        return self._apply_transition(task, expected_version, task_transition, event_type)
+        return self._apply_transition(
+            task,
+            expected_version,
+            task_transition,
+            event_type,
+            checkpoint=checkpoint,
+        )
 
     def _require_version(self, task_id: str, expected_version: int) -> UnpackTask:
         task = self.get(task_id)

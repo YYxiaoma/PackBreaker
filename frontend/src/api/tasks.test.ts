@@ -149,7 +149,7 @@ describe('任务分析 API', () => {
     expect(post).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/execution-gate');
   });
 
-  it('execution plan 只提交 /data 相对 target_root', async () => {
+  it('execution plan 同时冻结 /data 相对 target_root 与目标下载器', async () => {
     const get = vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
       data: { id: 'plan-1', plan_digest: 'digest', current: true, ready: true },
     });
@@ -158,11 +158,12 @@ describe('任务分析 API', () => {
     });
 
     await getTaskUnitExecutionPlan('unit/with slash');
-    await createTaskUnitExecutionPlan('unit/with slash', 'seeding/movies');
+    await createTaskUnitExecutionPlan('unit/with slash', 'seeding/movies', 'qb-target');
 
     expect(get).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/execution-plan');
     expect(post).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/execution-plan', {
       target_root: 'seeding/movies',
+      target_downloader_id: 'qb-target',
     });
   });
 });

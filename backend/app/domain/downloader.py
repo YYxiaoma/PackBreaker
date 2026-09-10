@@ -1,6 +1,9 @@
+import json
 from dataclasses import dataclass
 from enum import StrEnum
+from hashlib import sha256
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.verification import DownloaderKind
@@ -185,6 +188,42 @@ def normalize_remote_path(value: str) -> str:
     """规范化下载器视角绝对路径，供写入后身份核对复用。"""
 
     return _normalize_remote(value)
+
+
+def downloader_execution_binding_digest(
+    *,
+    downloader_id: str,
+    version: int,
+    kind: DownloaderKind,
+    enabled: bool,
+    connection_status: ProbeStatus,
+    path_mapping_status: ProbeStatus,
+    path_mappings: tuple[PathMappingRule, ...],
+    capabilities: dict[str, Any],
+) -> str:
+    """冻结执行所依赖的非秘密下载器配置/能力证据。"""
+
+    if not downloader_id or version < 1:
+        raise ValueError("下载器执行绑定缺少有效 ID 或版本")
+    payload = {
+        "downloader_id": downloader_id,
+        "version": version,
+        "kind": kind.value,
+        "enabled": enabled,
+        "connection_status": connection_status.value,
+        "path_mapping_status": path_mapping_status.value,
+        "path_mappings": [
+            {
+                "remote_prefix": item.remote_prefix,
+                "container_prefix": item.container_prefix,
+            }
+            for item in path_mappings
+        ],
+        "capabilities": capabilities,
+    }
+    return sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _normalize_remote(value: str) -> str:

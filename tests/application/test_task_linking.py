@@ -68,6 +68,7 @@ class _LinkingFixture:
     data_root: Path
     source_file: Path
     target_file: Path
+    target_downloader_id: str
     task_id: str
     unit_id: str
     plan_id: str
@@ -103,6 +104,7 @@ def linking_fixture(tmp_path: Path) -> Iterator[_LinkingFixture]:
     task_version = 7
     metainfo_digest = "c" * 64
     gate_digest = "d" * 64
+    target_downloader_id = "target-downloader"
 
     with factory() as session:
         session.add(
@@ -226,6 +228,10 @@ def linking_fixture(tmp_path: Path) -> Iterator[_LinkingFixture]:
             source_root="source",
             target_root="target",
             target_device=target_root.stat().st_dev,
+            target_downloader_id=target_downloader_id,
+            target_downloader_version=1,
+            target_downloader_binding_digest="e" * 64,
+            target_remote_save_path="/downloads/target",
             actions=(
                 ExecutionPlanAction(
                     torrent_path="Pack/movie.mkv",
@@ -251,6 +257,9 @@ def linking_fixture(tmp_path: Path) -> Iterator[_LinkingFixture]:
         current_reasons=(),
         target_root="target",
         target_device=target_root.stat().st_dev,
+        target_downloader_id=target_downloader_id,
+        target_downloader_version=1,
+        target_remote_save_path="/downloads/target",
         verification_level=VerificationLevel.FULL_VERIFIED.value,
         client_check_required=False,
         hardlink_count=1,
@@ -288,6 +297,7 @@ def linking_fixture(tmp_path: Path) -> Iterator[_LinkingFixture]:
         data_root=data_root,
         source_file=source_file,
         target_file=target_root / "Pack" / "movie.mkv",
+        target_downloader_id=target_downloader_id,
         task_id=task_id,
         unit_id=unit_id,
         plan_id=plan.id,
@@ -313,9 +323,10 @@ def test_linking_reserves_checkpoint_and_replays_without_new_side_effects(
     with linking_fixture.factory() as session:
         task = session.get(UnpackTask, linking_fixture.task_id)
         assert task is not None
-        assert task.status == TaskStatus.LINKING.value
-        assert task.version == 8
+        assert task.status == TaskStatus.ADDING.value
+        assert task.version == 9
         assert task.checkpoint["execution_plan_id"] == linking_fixture.plan_id
+        assert task.checkpoint["target_downloader_id"] == linking_fixture.target_downloader_id
         events = list(
             session.scalars(
                 select(TaskEvent)
@@ -324,7 +335,7 @@ def test_linking_reserves_checkpoint_and_replays_without_new_side_effects(
             )
         )
         journal_count = session.scalar(select(func.count()).select_from(OperationJournal))
-        assert events[-1].event_type == "LINKING_STARTED"
+        assert events[-1].event_type == "LINKING_COMPLETED"
         assert journal_count == 2
 
     repeated = linking_fixture.coordinator.execute(

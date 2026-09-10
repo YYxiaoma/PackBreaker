@@ -24,6 +24,7 @@ from backend.app.domain.site_search import (
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
 from backend.app.infrastructure.persistence.models import (
+    Downloader,
     TaskCandidateRecord,
     TaskEvent,
     TaskExecutionGateRecord,
@@ -31,6 +32,7 @@ from backend.app.infrastructure.persistence.models import (
     TaskReviewRevisionRecord,
     TaskReviewVerificationRecord,
     TaskUnitRecord,
+    new_uuid,
 )
 from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
 from backend.app.main import create_app
@@ -573,7 +575,7 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         blocked_plan = client.post(
             f"/api/v1/task-units/{current_unit['id']}/execution-plan",
             headers=_csrf(client),
-            json={"target_root": "ambiguous"},
+            json={"target_root": "ambiguous", "target_downloader_id": "blocked-target"},
         )
         assert blocked_plan.status_code == 409
         assert blocked_plan.json()["code"] == "EXECUTION_PLAN_GATE_NOT_READY"
@@ -609,24 +611,34 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
 
         target_root = settings.data_dir / "seeding-target"
         target_root.mkdir()
+        target_downloader_id = _create_ready_qb_target(app, settings)
         invalid_target = client.post(
             f"/api/v1/task-units/{current_unit['id']}/execution-plan",
             headers=_csrf(client),
-            json={"target_root": "../outside"},
+            json={
+                "target_root": "../outside",
+                "target_downloader_id": target_downloader_id,
+            },
         )
         assert invalid_target.status_code == 422
         assert invalid_target.json()["code"] == "EXECUTION_PLAN_TARGET_ROOT_INVALID"
 
         without_plan_csrf = client.post(
             f"/api/v1/task-units/{current_unit['id']}/execution-plan",
-            json={"target_root": "seeding-target"},
+            json={
+                "target_root": "seeding-target",
+                "target_downloader_id": target_downloader_id,
+            },
         )
         assert without_plan_csrf.status_code == 403
 
         plan = client.post(
             f"/api/v1/task-units/{current_unit['id']}/execution-plan",
             headers=_csrf(client),
-            json={"target_root": "seeding-target"},
+            json={
+                "target_root": "seeding-target",
+                "target_downloader_id": target_downloader_id,
+            },
         )
         assert plan.status_code == 200
         plan_body = plan.json()
@@ -638,6 +650,9 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         assert plan_body["estimated_download_bytes_upper_bound"] == 0
         assert plan_body["execution_allowed"] is False
         assert plan_body["side_effects_started"] is False
+        assert plan_body["target_downloader_id"] == target_downloader_id
+        assert plan_body["target_downloader_version"] == 1
+        assert plan_body["target_remote_save_path"] == "/downloads/seeding-target"
         assert plan_body["actions"] == [
             {
                 "torrent_path": "Movie.2026.mkv",
@@ -652,11 +667,29 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         repeated_plan = client.post(
             f"/api/v1/task-units/{current_unit['id']}/execution-plan",
             headers=_csrf(client),
-            json={"target_root": "seeding-target"},
+            json={
+                "target_root": "seeding-target",
+                "target_downloader_id": target_downloader_id,
+            },
         )
         assert repeated_plan.status_code == 200
         assert repeated_plan.json()["id"] == plan_body["id"]
         assert repeated_plan.json()["plan_digest"] == plan_body["plan_digest"]
+
+        with app.state.runtime.session_factory() as session:
+            downloader = session.get(Downloader, target_downloader_id)
+            assert downloader is not None
+            downloader.capabilities = {**downloader.capabilities, "supports_skip_checking": False}
+            session.commit()
+        downloader_stale = client.get(f"/api/v1/task-units/{current_unit['id']}/execution-plan")
+        assert downloader_stale.status_code == 200
+        assert downloader_stale.json()["current"] is False
+        assert downloader_stale.json()["current_reasons"] == ["TARGET_DOWNLOADER_CHANGED"]
+        with app.state.runtime.session_factory() as session:
+            downloader = session.get(Downloader, target_downloader_id)
+            assert downloader is not None
+            downloader.capabilities = {**downloader.capabilities, "supports_skip_checking": True}
+            session.commit()
 
         (target_root / "Movie.2026.mkv").write_bytes(b"conflict")
         stale_plan = client.get(f"/api/v1/task-units/{current_unit['id']}/execution-plan")
@@ -831,6 +864,49 @@ def _create_task(app: FastAPI, normalized_unit_key: str) -> str:
         )
         session.commit()
         return task.id
+
+
+def _create_ready_qb_target(app: FastAPI, settings: AppSettings) -> str:
+    secret_id = app.state.secret_store.put(
+        kind="DOWNLOADER_CREDENTIAL",
+        value=b'{"username":"admin","password":"synthetic-password","api_key":null}',
+    )
+    downloader_id = new_uuid()
+    now = datetime.now(UTC)
+    with app.state.runtime.session_factory() as session:
+        session.add(
+            Downloader(
+                id=downloader_id,
+                name=f"target-{downloader_id[:8]}",
+                type="QBITTORRENT",
+                base_url="http://qb.invalid:8080",
+                secret_id=secret_id,
+                monitor_rules={},
+                path_mappings=[
+                    {
+                        "remote_prefix": "/downloads",
+                        "container_prefix": str(settings.data_dir),
+                    }
+                ],
+                capabilities={
+                    "client": "qBittorrent",
+                    "version": "v5.2.3",
+                    "api_version": "2.15.1",
+                    "supports_skip_checking": True,
+                    "read_only_probe": True,
+                },
+                connection_status="OK",
+                path_mapping_status="OK",
+                enabled=True,
+                version=1,
+                last_test_at=now,
+                last_path_diagnostic_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+    return downloader_id
 
 
 def _v1_torrent(name: bytes, content: bytes, *, piece_length: int) -> bytes:

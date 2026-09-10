@@ -148,7 +148,7 @@ flowchart TD
 - 资源：目标根、设备 ID、预计新增目录/链接/复制字节/下载字节和临时空间。
 - 风险：源变化、跨文件 piece、缺失文件、目标冲突、权限和下载器能力。
 
-当前 M2 只生成/读取计划预览：计划生成会重新核对 torrent metainfo，并只读检查目标树；响应固定 `execution_allowed=false`、`side_effects_started=false`。未来真正执行时必须引用 plan ID，并重新验证所有快照和能力。自动批准仅对规则允许且无警告的计划生效；真实语料阈值未标定前默认人工批准。
+execution plan v2 除 torrent/source/target 证据外，还冻结显式 `target_downloader_id`、配置 version、非秘密能力/路径映射 digest 与由 target root 唯一反向映射得到的 qB save path。计划生成仍是无副作用 API，响应固定 `execution_allowed=false`、`side_effects_started=false`；目标 qB 未启用、连接/路径诊断失效、类型不支持或无法唯一反向映射都不能生成可执行计划。真正内部执行必须引用 plan ID，并在 LINKING/ADDING 每个副作用边界重新验证相应快照与下载器绑定。自动批准仅对规则允许且无警告的计划生效；真实语料阈值未标定前默认人工批准。
 
 ## 9. 安全创建目录与硬链接
 

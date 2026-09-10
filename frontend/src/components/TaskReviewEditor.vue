@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 
 import { ApiProblem } from '../api/client';
+import { listDownloaders, type Downloader } from '../api/downloaders';
 import {
   createTaskUnitExecutionPlan,
   getTaskUnitExecutionGate,
@@ -30,6 +31,8 @@ const decision = ref<TaskReview | null>(null);
 const verification = ref<ReviewVerification | null>(null);
 const executionGate = ref<ExecutionGate | null>(null);
 const executionPlan = ref<ExecutionPlan | null>(null);
+const targetDownloaders = ref<Downloader[]>([]);
+const targetDownloaderId = ref('');
 const approvedCandidateId = ref('');
 const rejectedCandidateIds = ref<string[]>([]);
 const note = ref('');
@@ -71,6 +74,7 @@ const canPlan = computed(
     executionGate.value?.current === true &&
     executionGate.value.eligible === true &&
     props.item.task.status === 'AWAITING_CONFIRMATION' &&
+    targetDownloaders.value.some((item) => item.id === targetDownloaderId.value) &&
     targetRoot.value.trim().length > 0 &&
     !planning.value,
 );
@@ -94,7 +98,17 @@ async function load(): Promise<void> {
   loading.value = true;
   resetForm();
   try {
-    const units = await listTaskUnits(props.item.task.id);
+    const [units, downloaders] = await Promise.all([
+      listTaskUnits(props.item.task.id),
+      listDownloaders(),
+    ]);
+    targetDownloaders.value = downloaders.filter(
+      (item) =>
+        item.type === 'QBITTORRENT' &&
+        item.enabled &&
+        item.connection_status === 'OK' &&
+        item.path_mapping_status === 'OK',
+    );
     const inventoryDigest = preflightInventoryDigest(props.item);
     unit.value =
       units.find(
@@ -127,6 +141,7 @@ async function load(): Promise<void> {
       try {
         executionPlan.value = await getTaskUnitExecutionPlan(unit.value.id);
         targetRoot.value = executionPlan.value.target_root;
+        targetDownloaderId.value = executionPlan.value.target_downloader_id ?? '';
       } catch (error) {
         if (!(error instanceof ApiProblem && error.code === 'EXECUTION_PLAN_NOT_FOUND'))
           throw error;
@@ -212,7 +227,11 @@ async function createExecutionPlan(): Promise<void> {
   if (!unit.value || !canPlan.value) return;
   planning.value = true;
   try {
-    executionPlan.value = await createTaskUnitExecutionPlan(unit.value.id, targetRoot.value.trim());
+    executionPlan.value = await createTaskUnitExecutionPlan(
+      unit.value.id,
+      targetRoot.value.trim(),
+      targetDownloaderId.value,
+    );
     ElMessage.success(
       executionPlan.value.ready
         ? '无副作用执行计划已生成；尚未启动任何文件或下载器操作'
@@ -231,6 +250,8 @@ function resetForm(): void {
   verification.value = null;
   executionGate.value = null;
   executionPlan.value = null;
+  targetDownloaders.value = [];
+  targetDownloaderId.value = '';
   approvedCandidateId.value = '';
   rejectedCandidateIds.value = [];
   note.value = '';
@@ -437,6 +458,16 @@ function showError(error: unknown): void {
         </el-button>
       </div>
       <el-form label-position="top">
+        <el-form-item label="目标 qBittorrent（必须已通过连接与路径安全门）">
+          <el-select v-model="targetDownloaderId" placeholder="选择目标 qBittorrent" filterable>
+            <el-option
+              v-for="downloader in targetDownloaders"
+              :key="downloader.id"
+              :label="`${downloader.name} · v${downloader.version}`"
+              :value="downloader.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="目标根（相对于 /data，目录必须已存在）">
           <el-input v-model="targetRoot" placeholder="例如 seeding/movies" />
         </el-form-item>
@@ -462,6 +493,9 @@ function showError(error: unknown): void {
             {{ executionPlan.create_directory_count }} 个待创建目录
           </span>
           <span>预计客户端下载上界 {{ executionPlan.estimated_download_bytes_upper_bound }} B</span>
+          <span v-if="executionPlan.target_remote_save_path">
+            qB 保存路径 {{ executionPlan.target_remote_save_path }}
+          </span>
           <span v-if="executionPlan.blocked_reasons.length" class="gate-blocked">
             计划阻断：{{ executionPlan.blocked_reasons.join('；') }}
           </span>
