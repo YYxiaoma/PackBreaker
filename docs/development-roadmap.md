@@ -87,6 +87,8 @@ flowchart LR
 
 当前前置实现：`operation_journal` 已从仅登记 INTENT 扩展为受约束的领域状态机和持久化 CAS 推进，覆盖 APPLIED、NOOP、ROLLBACK_PENDING、ROLLED_BACK、RECONCILE_REQUIRED、ROLLBACK_BLOCKED；APPLIED 必须保存 after snapshot，恢复扫描只返回非终态记录。该切片仍不创建生产目录/硬链接，也不调用 qBittorrent 写接口，作为后续安全文件系统网关和崩溃恢复的前置骨架。
 
+安全文件系统网关开始落地只读前置层：统一约束 `/data` 内相对路径、逐级 `lstat` 拒绝符号链接/非目录节点、复核源 device/inode/size/mtime/file type 快照、检查目标冲突与同设备条件，并报告尚缺失的目标父目录。该层只生成快照与阻断错误，不创建目录或硬链接；真实原子 hardlink 动作仍须在 journal intent 持久化之后单独接入。
+
 ### 退出条件
 
 - qB 使用合成与真实语料端到端完成，非 FULL_VERIFIED 从未跳过校验。
