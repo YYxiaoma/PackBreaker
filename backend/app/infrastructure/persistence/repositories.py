@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.idempotency import task_idempotency_key
-from backend.app.domain.operation import OperationStatus
+from backend.app.domain.operation import OperationStatus, transition_operation
 from backend.app.domain.task_state import (
     TaskStatus,
     TaskTransition,
@@ -224,6 +224,28 @@ class OperationJournalRepository:
             select(OperationJournal).where(OperationJournal.idempotency_key == key)
         )
 
+    def get(self, journal_id: str) -> OperationJournal | None:
+        return self._session.get(OperationJournal, journal_id)
+
+    def list_recoverable(self, *, limit: int = 100) -> list[OperationJournal]:
+        if limit <= 0:
+            raise ValueError("limit 必须大于 0")
+        recoverable = (
+            OperationStatus.INTENT_RECORDED.value,
+            OperationStatus.APPLIED.value,
+            OperationStatus.ROLLBACK_PENDING.value,
+            OperationStatus.RECONCILE_REQUIRED.value,
+            OperationStatus.ROLLBACK_BLOCKED.value,
+        )
+        return list(
+            self._session.scalars(
+                select(OperationJournal)
+                .where(OperationJournal.status.in_(recoverable))
+                .order_by(OperationJournal.updated_at.asc(), OperationJournal.id.asc())
+                .limit(limit)
+            )
+        )
+
     def record_intent(self, request: OperationIntent) -> tuple[OperationJournal, bool]:
         existing = self.get_by_idempotency_key(request.idempotency_key)
         if existing is not None:
@@ -255,6 +277,57 @@ class OperationJournalRepository:
             self._ensure_same_intent(concurrent, request)
             return concurrent, False
         return journal, True
+
+    def transition_status(
+        self,
+        *,
+        journal_id: str,
+        expected_status: OperationStatus,
+        to_status: OperationStatus,
+        after_snapshot: dict[str, Any] | None = None,
+    ) -> OperationJournal:
+        journal = self.get(journal_id)
+        if journal is None:
+            raise DomainViolation(ErrorCode.TASK_NOT_FOUND, "operation journal 不存在")
+        current = OperationStatus(journal.status)
+        if current is not expected_status:
+            raise DomainViolation(
+                ErrorCode.TASK_VERSION_CONFLICT,
+                "operation journal 状态已变化，请重新读取后对账",
+            )
+        transition_operation(current, to_status)
+        if to_status is OperationStatus.APPLIED and after_snapshot is None:
+            raise DomainViolation(
+                ErrorCode.SOURCE_NOT_STABLE,
+                "APPLIED 必须保存副作用完成后的目标快照",
+            )
+        if to_status is not OperationStatus.APPLIED and after_snapshot is not None:
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                "只有 APPLIED 转换可以写入 after snapshot",
+            )
+
+        values: dict[str, Any] = {"status": to_status.value, "updated_at": utc_now()}
+        if after_snapshot is not None:
+            values["after_snapshot"] = deepcopy(after_snapshot)
+        with self._session.begin_nested():
+            updated_id = self._session.scalar(
+                update(OperationJournal)
+                .where(
+                    OperationJournal.id == journal_id,
+                    OperationJournal.status == expected_status.value,
+                )
+                .values(**values)
+                .returning(OperationJournal.id)
+            )
+            if updated_id is None:
+                raise DomainViolation(
+                    ErrorCode.TASK_VERSION_CONFLICT,
+                    "operation journal 状态已变化，请重新读取后对账",
+                )
+        self._session.expire(journal)
+        self._session.refresh(journal)
+        return journal
 
     @staticmethod
     def _ensure_same_intent(existing: OperationJournal, request: OperationIntent) -> None:

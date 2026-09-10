@@ -219,3 +219,91 @@ def test_operation_intent_replay_is_noop_but_changed_payload_conflicts(
         repository.record_intent(changed)
 
     assert exc_info.value.code is ErrorCode.IDEMPOTENCY_CONFLICT
+
+
+def test_operation_journal_transition_uses_status_cas_and_requires_applied_snapshot(
+    db_session: Session,
+) -> None:
+    task, _ = TaskRepository(db_session).create_or_get(_task_request())
+    db_session.commit()
+    repository = OperationJournalRepository(db_session)
+    journal, _ = repository.record_intent(
+        OperationIntent(
+            task_id=task.id,
+            idempotency_key="b" * 64,
+            operation_type="CREATE_HARDLINK",
+            target={"relative_path": "Movie/title.mkv"},
+            intent={"source_snapshot": "synthetic"},
+        )
+    )
+
+    with pytest.raises(DomainViolation) as missing_snapshot:
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+        )
+    assert missing_snapshot.value.code is ErrorCode.SOURCE_NOT_STABLE
+
+    applied = repository.transition_status(
+        journal_id=journal.id,
+        expected_status=OperationStatus.INTENT_RECORDED,
+        to_status=OperationStatus.APPLIED,
+        after_snapshot={"device": 1, "inode": 2, "size": 4, "file_type": "regular"},
+    )
+    assert applied.status == OperationStatus.APPLIED.value
+    assert applied.after_snapshot == {
+        "device": 1,
+        "inode": 2,
+        "size": 4,
+        "file_type": "regular",
+    }
+
+    with pytest.raises(DomainViolation) as stale:
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+    assert stale.value.code is ErrorCode.TASK_VERSION_CONFLICT
+
+    pending = repository.transition_status(
+        journal_id=journal.id,
+        expected_status=OperationStatus.APPLIED,
+        to_status=OperationStatus.ROLLBACK_PENDING,
+    )
+    assert pending.status == OperationStatus.ROLLBACK_PENDING.value
+    assert pending.after_snapshot == applied.after_snapshot
+
+
+def test_operation_journal_lists_only_nonterminal_recovery_work(db_session: Session) -> None:
+    task, _ = TaskRepository(db_session).create_or_get(_task_request())
+    db_session.commit()
+    repository = OperationJournalRepository(db_session)
+    first, _ = repository.record_intent(
+        OperationIntent(
+            task_id=task.id,
+            idempotency_key="c" * 64,
+            operation_type="CREATE_DIRECTORY",
+            target={"relative_path": "Movie"},
+            intent={},
+        )
+    )
+    second, _ = repository.record_intent(
+        OperationIntent(
+            task_id=task.id,
+            idempotency_key="d" * 64,
+            operation_type="CREATE_DIRECTORY",
+            target={"relative_path": "Other"},
+            intent={},
+        )
+    )
+    repository.transition_status(
+        journal_id=second.id,
+        expected_status=OperationStatus.INTENT_RECORDED,
+        to_status=OperationStatus.NOOP,
+    )
+
+    recoverable = repository.list_recoverable()
+
+    assert [item.id for item in recoverable] == [first.id]

@@ -85,6 +85,8 @@ flowchart LR
 - 完成任务协调器、并发限制、幂等键、取消、回滚和启动对账。
 - 实现任务列表/详情/时间线、SSE 更新和 Server酱/Telegram 通知。
 
+当前前置实现：`operation_journal` 已从仅登记 INTENT 扩展为受约束的领域状态机和持久化 CAS 推进，覆盖 APPLIED、NOOP、ROLLBACK_PENDING、ROLLED_BACK、RECONCILE_REQUIRED、ROLLBACK_BLOCKED；APPLIED 必须保存 after snapshot，恢复扫描只返回非终态记录。该切片仍不创建生产目录/硬链接，也不调用 qBittorrent 写接口，作为后续安全文件系统网关和崩溃恢复的前置骨架。
+
 ### 退出条件
 
 - qB 使用合成与真实语料端到端完成，非 FULL_VERIFIED 从未跳过校验。

@@ -91,6 +91,8 @@
 
 重启对账必须收敛为正确继续、NOOP、完整回滚或 `RECONCILE_REQUIRED`，不能重复产生副作用。
 
+operation journal 自身必须先通过状态机/CAS 测试：非法跨级转换失败关闭；APPLIED 必须携带 after snapshot；旧 expected status 不能覆盖并发推进；终态 NOOP/ROLLED_BACK 不进入恢复扫描。真实文件系统动作接入前先用这些契约验证崩溃边界。
+
 ## 7. 适配器测试矩阵
 
 每个站点适配器覆盖连接、认证失败、分页、空结果、详情缺字段、取种、限流、超时、HTML/API 结构变化、熔断与恢复。
