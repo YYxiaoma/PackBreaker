@@ -110,6 +110,8 @@
 - 真实任务分析面板只对用户显式输入的后端 task ID 发请求；`PB-*` 演示任务不得自动映射为真实任务。前端 analyze 只提交 `/data` 相对 `source_root`，并正确展示 Unit、Candidate、Preflight current/stale 与稳定错误码。
 - 凭证读取始终脱敏，浏览器 URL、store 和 console 中不出现秘密。
 - 危险操作显示影响范围，预演过期后不能使用旧确认继续执行。
+- 手动 Analyze 必须按 `ANALYZING → SEARCHING → MATCHING → VERIFYING → PREFLIGHT` 记录状态事件；失败恢复只能在任务 version 仍由本次运行持有时进入 `RETRY`，不得覆盖并发状态变化。
+- 人工映射重验证必须重新校验 preflight/current、source inventory、review revision、torrent 身份和 metainfo digest；重验证结果只追加不可变证据，审核或预演在验证期间变化时不得落库。
 - 桌面与移动视口完成核心任务、人工确认、路径诊断和日志筛选流程。
 
 ## 9. 数据库与迁移

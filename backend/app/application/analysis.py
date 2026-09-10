@@ -61,6 +61,16 @@ class AnalysisSiteProvider(Protocol):
     def enabled_site_versions(self) -> tuple[tuple[str, int], ...]: ...
 
 
+class AnalysisLifecycle(Protocol):
+    def enter_searching(self) -> int: ...
+
+    def enter_matching(self) -> int: ...
+
+    def enter_verifying(self) -> int: ...
+
+    def enter_preflight(self) -> int: ...
+
+
 class AnalysisService:
     """M2 只读分析编排：搜索、取种、解析、映射、验证、落不可变 preflight。"""
 
@@ -82,6 +92,7 @@ class AnalysisService:
         unit: TaskUnit,
         source_root: Path,
         source_inventory: tuple[SourceFileCandidate, ...] | None = None,
+        lifecycle: AnalysisLifecycle | None = None,
     ) -> PreflightSnapshot:
         task_version = self._task_version(task_id, unit.normalized_unit_key)
         inventory = source_inventory or scan_source_inventory(source_root)
@@ -97,7 +108,11 @@ class AnalysisService:
 
         queries = build_search_queries(unit, max_queries=self._policy.max_queries_per_site)
         planned_query_signatures = tuple(search_query_signature(query) for query in queries)
+        if lifecycle is not None:
+            task_version = lifecycle.enter_searching()
         candidates, site_evidence = await self._search_sites(bindings, queries)
+        if lifecycle is not None:
+            task_version = lifecycle.enter_matching()
         ranked = rank_candidates(
             unit.descriptor,
             tuple(
@@ -113,6 +128,8 @@ class AnalysisService:
             ]
         }
 
+        if lifecycle is not None:
+            task_version = lifecycle.enter_verifying()
         evidence: list[CandidatePreflightEvidence] = []
         binding_by_site = {binding.site_id: binding for binding in bindings}
         for ranked_item in ranked:
@@ -160,13 +177,18 @@ class AnalysisService:
                 title="站点配置发生变化",
                 detail="分析期间启用站点或版本发生变化，请重新执行分析",
             )
-        if self._task_version(task_id, unit.normalized_unit_key) != task_version:
+        if (
+            lifecycle is None
+            and self._task_version(task_id, unit.normalized_unit_key) != task_version
+        ):
             raise ApplicationError(
                 code="ANALYSIS_TASK_CHANGED",
                 status=409,
                 title="任务发生变化",
                 detail="分析期间任务版本发生变化，请重新执行分析",
             )
+        if lifecycle is not None:
+            task_version = lifecycle.enter_preflight()
 
         snapshot = PreflightSnapshot(
             task_id=task_id,
@@ -273,7 +295,7 @@ class AnalysisService:
                 raise SiteAdapterError("SITE_IDENTITY_MISMATCH", "torrent payload 身份与候选不一致")
             meta = parse_torrent(payload.content)
             mappings = auto_map_files(meta, inventory)
-            level = _verification_level(meta, mappings)
+            level = verify_torrent_mappings(meta, mappings)
             return CandidatePreflightEvidence(
                 site_id=detailed.site_id,
                 torrent_id=detailed.torrent_id,
@@ -319,7 +341,7 @@ class AnalysisService:
             return task.version
 
 
-def _verification_level(
+def verify_torrent_mappings(
     meta: TorrentMeta,
     mappings: tuple[AutoMappingDecision, ...],
 ) -> VerificationLevel:

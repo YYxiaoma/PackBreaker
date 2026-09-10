@@ -12,6 +12,8 @@ export type TaskCreateInput = components['schemas']['TaskCreateRequest'];
 export type TaskCreateResult = components['schemas']['TaskCreateResponse'];
 export type TaskReviewInput = components['schemas']['TaskReviewRequest'];
 export type TaskReview = components['schemas']['TaskReviewResponse'];
+export type TaskReviewActionInput = components['schemas']['TaskReviewActionRequest'];
+export type ReviewVerification = components['schemas']['ReviewVerificationResponse'];
 
 function taskPath(taskId: string): string {
   const normalized = taskId.trim();
@@ -117,6 +119,30 @@ export async function submitTaskUnitDecision(
 ): Promise<TaskReview> {
   try {
     const response = await apiClient.post<TaskReview>(`${taskUnitPath(unitId)}/decision`, payload);
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function getTaskUnitReviewVerification(unitId: string): Promise<ReviewVerification> {
+  try {
+    const response = await apiClient.get<ReviewVerification>(
+      `${taskUnitPath(unitId)}/decision/verification`,
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function reverifyTaskUnitDecision(unitId: string): Promise<ReviewVerification> {
+  const payload: TaskReviewActionInput = { action: 'reverify' };
+  try {
+    const response = await apiClient.post<ReviewVerification>(
+      `${taskUnitPath(unitId)}/decision/actions`,
+      payload,
+    );
     return response.data;
   } catch (error) {
     throw toApiProblem(error);

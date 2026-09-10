@@ -358,6 +358,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/task-units/{unit_id}/decision/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Task Unit Review Action */
+    post: operations['task_unit_review_action_api_v1_task_units__unit_id__decision_actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-units/{unit_id}/decision/verification': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Task Unit Review Verification */
+    get: operations['get_task_unit_review_verification_api_v1_task_units__unit_id__decision_verification_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/tasks': {
     parameters: {
       query?: never;
@@ -699,6 +733,30 @@ export interface components {
       /** Stale Reasons */
       stale_reasons: string[];
     };
+    /** ReviewVerificationResponse */
+    ReviewVerificationResponse: {
+      /** Candidate Id */
+      candidate_id: string;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Execution Allowed */
+      execution_allowed: boolean;
+      /** Id */
+      id: string;
+      /** Metainfo Digest */
+      metainfo_digest: string;
+      /** Review Revision Id */
+      review_revision_id: string;
+      /** Review Version */
+      review_version: number;
+      /** Verification Digest */
+      verification_digest: string;
+      /** Verification Level */
+      verification_level: string;
+    };
     /** SetupResponse */
     SetupResponse: {
       /** Configured */
@@ -910,6 +968,14 @@ export interface components {
       updated_at: string;
       /** Version */
       version: number;
+    };
+    /** TaskReviewActionRequest */
+    TaskReviewActionRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'reverify';
     };
     /** TaskReviewRequest */
     TaskReviewRequest: {
@@ -2016,6 +2082,82 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['TaskReviewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  task_unit_review_action_api_v1_task_units__unit_id__decision_actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        unit_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskReviewActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ReviewVerificationResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_task_unit_review_verification_api_v1_task_units__unit_id__decision_verification_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        unit_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ReviewVerificationResponse'];
         };
       };
       /** @description Validation Error */

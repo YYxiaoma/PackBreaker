@@ -13,6 +13,7 @@ from backend.app.api.dependencies import (
 from backend.app.application.errors import ApplicationError
 from backend.app.application.tasks import (
     PreflightView,
+    ReviewVerificationView,
     TaskCandidateView,
     TaskReviewView,
     TaskUnitView,
@@ -144,6 +145,22 @@ class TaskReviewResponse(BaseModel):
     execution_allowed: bool
     actor_kind: str
     version: int
+    created_at: datetime
+
+
+class TaskReviewActionRequest(BaseModel):
+    action: Literal["reverify"]
+
+
+class ReviewVerificationResponse(BaseModel):
+    id: str
+    review_revision_id: str
+    review_version: int
+    candidate_id: str
+    verification_digest: str
+    verification_level: str
+    metainfo_digest: str
+    execution_allowed: bool
     created_at: datetime
 
 
@@ -287,6 +304,37 @@ async def submit_task_unit_decision(
     return _review_response(result)
 
 
+@router.get(
+    "/task-units/{unit_id}/decision/verification",
+    response_model=ReviewVerificationResponse,
+)
+async def get_task_unit_review_verification(
+    unit_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
+) -> ReviewVerificationResponse:
+    return _review_verification_response(
+        task_analysis_service(request).get_review_verification(unit_id)
+    )
+
+
+@router.post(
+    "/task-units/{unit_id}/decision/actions",
+    response_model=ReviewVerificationResponse,
+)
+async def task_unit_review_action(
+    unit_id: str,
+    request: Request,
+    payload: TaskReviewActionRequest,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+) -> ReviewVerificationResponse:
+    if payload.action == "reverify":
+        return _review_verification_response(
+            await task_analysis_service(request).reverify_review(unit_id)
+        )
+    raise AssertionError("未覆盖的审核动作")
+
+
 def _task_response(item: TaskView) -> TaskResponse:
     return TaskResponse(
         id=item.id,
@@ -366,5 +414,19 @@ def _review_response(item: TaskReviewView) -> TaskReviewResponse:
         execution_allowed=item.execution_allowed,
         actor_kind=item.actor_kind,
         version=item.version,
+        created_at=item.created_at,
+    )
+
+
+def _review_verification_response(item: ReviewVerificationView) -> ReviewVerificationResponse:
+    return ReviewVerificationResponse(
+        id=item.id,
+        review_revision_id=item.review_revision_id,
+        review_version=item.review_version,
+        candidate_id=item.candidate_id,
+        verification_digest=item.verification_digest,
+        verification_level=item.verification_level,
+        metainfo_digest=item.metainfo_digest,
+        execution_allowed=item.execution_allowed,
         created_at=item.created_at,
     )

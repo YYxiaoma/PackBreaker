@@ -308,6 +308,38 @@ class TaskReviewRevisionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class TaskReviewVerificationRecord(Base):
+    __tablename__ = "task_review_verification"
+    __table_args__ = (
+        UniqueConstraint("review_revision_id", name="uq_task_review_verification_revision"),
+        Index("ix_task_review_verification_task_created_at", "task_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    review_revision_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_review_revision.id", ondelete="CASCADE"), nullable=False
+    )
+    review_version: Mapped[int] = mapped_column(nullable=False)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=False
+    )
+    task_unit_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_unit.id", ondelete="CASCADE"), nullable=False
+    )
+    preflight_snapshot_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("preflight_snapshot.id", ondelete="CASCADE"), nullable=False
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_candidate.id", ondelete="CASCADE"), nullable=False
+    )
+    source_inventory_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    metainfo_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    verification_level: Mapped[str] = mapped_column(String(32), nullable=False)
+    mappings: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    verification_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class OperationJournal(Base):
     __tablename__ = "operation_journal"
     __table_args__ = (

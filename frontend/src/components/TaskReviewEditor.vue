@@ -4,9 +4,12 @@ import { ElMessage } from 'element-plus';
 
 import { ApiProblem } from '../api/client';
 import {
+  getTaskUnitReviewVerification,
   getTaskUnitDecision,
   listTaskUnits,
+  reverifyTaskUnitDecision,
   submitTaskUnitDecision,
+  type ReviewVerification,
   type TaskCandidate,
   type TaskReview,
   type TaskUnit,
@@ -18,12 +21,14 @@ const emit = defineEmits<{ saved: [] }>();
 
 const unit = ref<TaskUnit | null>(null);
 const decision = ref<TaskReview | null>(null);
+const verification = ref<ReviewVerification | null>(null);
 const approvedCandidateId = ref('');
 const rejectedCandidateIds = ref<string[]>([]);
 const note = ref('');
 const manualSources = reactive<Record<string, string>>({});
 const loading = ref(false);
 const saving = ref(false);
+const reverifying = ref(false);
 
 const eligibleCandidates = computed(() => props.item.candidates.filter((item) => !item.rejected));
 const approvedCandidate = computed(
@@ -39,6 +44,16 @@ const canSubmit = computed(
     stateAllowsReview.value &&
     unit.value !== null &&
     !loading.value,
+);
+const canReverify = computed(
+  () =>
+    props.item.preflight.current &&
+    stateAllowsReview.value &&
+    unit.value !== null &&
+    decision.value?.requires_reverification === true &&
+    decision.value.approved_candidate_id !== null &&
+    !loading.value &&
+    !reverifying.value,
 );
 
 watch(
@@ -77,6 +92,13 @@ async function load(): Promise<void> {
       for (const mapping of decision.value.manual_mappings) {
         manualSources[mapping.torrent_path] = mapping.source_relative_path;
       }
+      try {
+        verification.value = await getTaskUnitReviewVerification(unit.value.id);
+      } catch (error) {
+        if (!(error instanceof ApiProblem && error.code === 'REVIEW_VERIFICATION_NOT_FOUND')) {
+          throw error;
+        }
+      }
     } catch (error) {
       if (!(error instanceof ApiProblem && error.code === 'REVIEW_NOT_FOUND')) throw error;
     }
@@ -106,6 +128,7 @@ async function save(): Promise<void> {
       note: note.value.trim() || null,
     });
     decision.value = result;
+    verification.value = null;
     ElMessage.success(`审核 revision v${result.version} 已保存；未执行任何下载器写操作`);
     emit('saved');
   } catch (error) {
@@ -115,9 +138,26 @@ async function save(): Promise<void> {
   }
 }
 
+async function reverify(): Promise<void> {
+  if (!unit.value || !canReverify.value) return;
+  reverifying.value = true;
+  try {
+    verification.value = await reverifyTaskUnitDecision(unit.value.id);
+    ElMessage.success(
+      `重验证完成：${verification.value.verification_level}；结果仅作为不可变证据保存`,
+    );
+    emit('saved');
+  } catch (error) {
+    showError(error);
+  } finally {
+    reverifying.value = false;
+  }
+}
+
 function resetForm(): void {
   unit.value = null;
   decision.value = null;
+  verification.value = null;
   approvedCandidateId.value = '';
   rejectedCandidateIds.value = [];
   note.value = '';
@@ -245,11 +285,27 @@ function showError(error: unknown): void {
     </el-form>
 
     <div class="review-editor-actions">
-      <span v-if="decision?.requires_reverification">当前 revision 标记为需要重新验证</span>
-      <span v-else-if="decision">当前 revision 不要求重新验证，但仍不授予执行权限</span>
-      <el-button type="primary" :disabled="!canSubmit" :loading="saving" @click="save">
-        保存审核 revision
-      </el-button>
+      <div class="review-editor-status">
+        <span v-if="decision?.requires_reverification">当前 revision 标记为需要重新验证</span>
+        <span v-else-if="decision">当前 revision 不要求重新验证，但仍不授予执行权限</span>
+        <span v-if="verification">
+          重验证 {{ verification.verification_level }} ·
+          {{ verification.verification_digest.slice(0, 20) }}…
+        </span>
+      </div>
+      <div class="review-editor-buttons">
+        <el-button
+          v-if="decision?.requires_reverification"
+          :disabled="!canReverify"
+          :loading="reverifying"
+          @click="reverify"
+        >
+          重新验证当前 revision
+        </el-button>
+        <el-button type="primary" :disabled="!canSubmit" :loading="saving" @click="save">
+          保存审核 revision
+        </el-button>
+      </div>
     </div>
   </section>
 </template>
@@ -276,6 +332,14 @@ function showError(error: unknown): void {
 .review-editor-actions span {
   color: var(--muted);
   font-size: 11px;
+}
+.review-editor-status {
+  display: grid;
+  gap: 4px;
+}
+.review-editor-buttons {
+  display: flex;
+  gap: 8px;
 }
 .review-editor :deep(.el-radio-group),
 .review-editor :deep(.el-checkbox-group) {

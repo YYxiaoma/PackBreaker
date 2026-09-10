@@ -4,20 +4,37 @@ import stat
 import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.app.application.analysis import AnalysisService, AnalysisSiteProvider
+from backend.app.application.analysis import (
+    AnalysisLifecycle,
+    AnalysisService,
+    AnalysisSiteProvider,
+    verify_torrent_mappings,
+)
 from backend.app.application.errors import ApplicationError
 from backend.app.domain.errors import DomainViolation
+from backend.app.domain.file_mapping import (
+    AutoMappingDecision,
+    MappingMethod,
+    SourceFileCandidate,
+    auto_map_files,
+)
 from backend.app.domain.preflight import PreflightSnapshot
-from backend.app.domain.review import ManualReviewMapping, ReviewState
+from backend.app.domain.review import (
+    ManualReviewMapping,
+    ReviewState,
+    ReviewVerificationSnapshot,
+)
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
+from backend.app.domain.verification import FileMappingState
+from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.persistence.models import (
     PreflightSnapshotRecord,
     TaskEvent,
@@ -29,12 +46,14 @@ from backend.app.infrastructure.persistence.repositories import TaskCreate, Task
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskCandidateRepository,
     TaskReviewRepository,
+    TaskReviewVerificationRepository,
     TaskUnitRepository,
 )
 from backend.app.infrastructure.source_inventory import (
     scan_source_inventory,
     source_inventory_digest,
 )
+from backend.app.infrastructure.torrent_parser import parse_torrent
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +140,113 @@ class TaskReviewView:
     created_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewVerificationView:
+    id: str
+    review_revision_id: str
+    review_version: int
+    candidate_id: str
+    verification_digest: str
+    verification_level: str
+    metainfo_digest: str
+    execution_allowed: bool
+    created_at: datetime
+
+
+class _TaskAnalysisLifecycle(AnalysisLifecycle):
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        *,
+        task_id: str,
+        version: int,
+    ) -> None:
+        self._session_factory = session_factory
+        self._task_id = task_id
+        self._version = version
+
+    @property
+    def version(self) -> int:
+        return self._version
+
+    def start(self) -> int:
+        return self._advance(TaskStatus.ANALYZING, "ANALYSIS_STARTED", "开始只读任务分析")
+
+    def enter_searching(self) -> int:
+        return self._advance(TaskStatus.SEARCHING, "ANALYSIS_SEARCHING", "开始搜索启用站点")
+
+    def enter_matching(self) -> int:
+        return self._advance(TaskStatus.MATCHING, "ANALYSIS_MATCHING", "开始候选排序与匹配")
+
+    def enter_verifying(self) -> int:
+        return self._advance(
+            TaskStatus.VERIFYING, "ANALYSIS_VERIFYING", "开始 torrent 解析与内容验证"
+        )
+
+    def enter_preflight(self) -> int:
+        return self._advance(TaskStatus.PREFLIGHT, "ANALYSIS_PREFLIGHT_READY", "只读预演证据已生成")
+
+    def recover_to_retry(self, *, reason: str) -> None:
+        with self._session_factory() as session:
+            repository = TaskRepository(session)
+            task = repository.get(self._task_id)
+            if task is None or task.version != self._version:
+                return
+            status = TaskStatus(task.status)
+            if status not in {
+                TaskStatus.ANALYZING,
+                TaskStatus.SEARCHING,
+                TaskStatus.MATCHING,
+                TaskStatus.VERIFYING,
+                TaskStatus.PREFLIGHT,
+            }:
+                return
+            try:
+                task = repository.transition(
+                    task_id=self._task_id,
+                    expected_version=self._version,
+                    to_status=TaskStatus.RETRY,
+                    event_type="ANALYSIS_RETRY_REQUIRED",
+                    reason=reason,
+                )
+            except DomainViolation:
+                return
+            session.commit()
+            self._version = task.version
+
+    def _advance(self, to_status: TaskStatus, event_type: str, reason: str) -> int:
+        with self._session_factory() as session:
+            repository = TaskRepository(session)
+            task = repository.get(self._task_id)
+            if task is None:
+                raise _task_not_found()
+            if task.version != self._version:
+                raise ApplicationError(
+                    code="ANALYSIS_TASK_CHANGED",
+                    status=409,
+                    title="任务发生变化",
+                    detail="分析状态推进时任务版本已被其他操作修改",
+                )
+            try:
+                task = repository.transition(
+                    task_id=self._task_id,
+                    expected_version=self._version,
+                    to_status=to_status,
+                    event_type=event_type,
+                    reason=reason,
+                )
+            except DomainViolation as exc:
+                raise ApplicationError(
+                    code="ANALYSIS_STATE_INVALID",
+                    status=409,
+                    title="任务状态不允许分析",
+                    detail=str(exc),
+                ) from exc
+            session.commit()
+            self._version = task.version
+            return self._version
+
+
 class TaskAnalysisService:
     """任务级 M2 入口：安全定位 /data、持久化 unit/candidate，并判断 preflight 当前性。"""
 
@@ -182,10 +308,32 @@ class TaskAnalysisService:
 
     async def analyze(self, task_id: str, *, source_root: str) -> PreflightSnapshot:
         normalized_root, resolved_root = self._resolve_source_root(source_root)
-        task_key = self._task_unit_key(task_id)
+        with self._session_factory() as session:
+            task = TaskRepository(session).get(task_id)
+            if task is None:
+                raise _task_not_found()
+            if TaskStatus(task.status) not in {
+                TaskStatus.PENDING,
+                TaskStatus.RETRY,
+                TaskStatus.PAUSED,
+            }:
+                raise ApplicationError(
+                    code="ANALYSIS_STATE_INVALID",
+                    status=409,
+                    title="任务状态不允许分析",
+                    detail="手动 Analyze 只允许从 PENDING、RETRY 或 PAUSED 开始",
+                )
+            task_key = task.normalized_unit_key
+            lifecycle = _TaskAnalysisLifecycle(
+                self._session_factory,
+                task_id=task_id,
+                version=task.version,
+            )
+        lifecycle.start()
         try:
             inventory = scan_source_inventory(resolved_root)
         except DomainViolation as exc:
+            lifecycle.recover_to_retry(reason=f"源目录扫描失败：{exc.code.value}")
             raise ApplicationError(
                 code=exc.code.value,
                 status=422,
@@ -198,6 +346,7 @@ class TaskAnalysisService:
         )
         selected = next((item for item in units if item.normalized_unit_key == task_key), None)
         if selected is None:
+            lifecycle.recover_to_retry(reason="当前源目录未找到任务处理单元")
             raise ApplicationError(
                 code="ANALYSIS_UNIT_NOT_FOUND",
                 status=409,
@@ -218,8 +367,13 @@ class TaskAnalysisService:
                 unit=selected,
                 source_root=resolved_root,
                 source_inventory=inventory,
+                lifecycle=lifecycle,
             )
+        except ApplicationError as exc:
+            lifecycle.recover_to_retry(reason=f"分析失败：{exc.code}")
+            raise
         except DomainViolation as exc:
+            lifecycle.recover_to_retry(reason=f"分析安全检查失败：{exc.code.value}")
             raise ApplicationError(
                 code=exc.code.value,
                 status=409,
@@ -322,6 +476,226 @@ class TaskAnalysisService:
                     detail="该处理单元尚未提交人工审核 revision",
                 )
             return self._review_view(record)
+
+    def get_review_verification(self, unit_id: str) -> ReviewVerificationView:
+        with self._session_factory() as session:
+            unit = TaskUnitRepository(session).get(unit_id)
+            if unit is None:
+                raise _review_unit_not_found()
+            snapshot = PreflightSnapshotRepository(session).latest_for_task(unit.task_id)
+            if snapshot is None:
+                raise _review_preflight_not_found()
+            _ensure_review_unit_matches_snapshot(unit, snapshot)
+            review = TaskReviewRepository(session).latest(
+                task_unit_id=unit.id,
+                preflight_snapshot_id=snapshot.id,
+            )
+            if review is None:
+                raise ApplicationError(
+                    code="REVIEW_NOT_FOUND",
+                    status=404,
+                    title="审核决策不存在",
+                    detail="该处理单元尚未提交人工审核 revision",
+                )
+            record = TaskReviewVerificationRepository(session).get_for_revision(review.id)
+            if record is None:
+                raise ApplicationError(
+                    code="REVIEW_VERIFICATION_NOT_FOUND",
+                    status=404,
+                    title="重验证证据不存在",
+                    detail="当前审核 revision 尚未生成重验证证据",
+                )
+            return self._review_verification_view(record)
+
+    async def reverify_review(self, unit_id: str) -> ReviewVerificationView:
+        with self._session_factory() as session:
+            unit = TaskUnitRepository(session).get(unit_id)
+            if unit is None:
+                raise _review_unit_not_found()
+            task_id = unit.task_id
+            snapshot = PreflightSnapshotRepository(session).latest_for_task(task_id)
+            if snapshot is None:
+                raise _review_preflight_not_found()
+            _ensure_review_unit_matches_snapshot(unit, snapshot)
+            review = TaskReviewRepository(session).latest(
+                task_unit_id=unit.id,
+                preflight_snapshot_id=snapshot.id,
+            )
+            if review is None:
+                raise ApplicationError(
+                    code="REVIEW_NOT_FOUND",
+                    status=404,
+                    title="审核决策不存在",
+                    detail="必须先提交人工审核 revision 才能执行重验证",
+                )
+            if not review.requires_reverification:
+                raise ApplicationError(
+                    code="REVIEW_REVERIFICATION_NOT_REQUIRED",
+                    status=409,
+                    title="当前审核无需重验证",
+                    detail="当前审核 revision 没有需要重新验证的候选或人工映射",
+                )
+            if review.approved_candidate_id is None:
+                raise ApplicationError(
+                    code="REVIEW_APPROVED_CANDIDATE_REQUIRED",
+                    status=409,
+                    title="缺少批准候选",
+                    detail="重验证必须绑定一个当前审核批准的候选",
+                )
+            candidate = TaskCandidateRepository(session).get(review.approved_candidate_id)
+            if candidate is None or candidate.preflight_snapshot_id != snapshot.id:
+                raise ApplicationError(
+                    code="REVIEW_CANDIDATE_INVALID",
+                    status=409,
+                    title="审核候选不可用",
+                    detail="批准候选已不属于当前 preflight",
+                )
+            review_id = review.id
+            review_version = review.version
+            manual_mappings = tuple(deepcopy(review.manual_mappings))
+            snapshot_id = snapshot.id
+            expected_inventory_digest = snapshot.source_inventory_digest
+            source_root = unit.source_root
+            candidate_id = candidate.id
+            candidate_site_id = candidate.site_id
+            candidate_torrent_id = candidate.torrent_id
+            expected_metainfo_digest = candidate.metainfo_digest
+
+        preflight = self.latest_preflight(task_id)
+        if preflight.id != snapshot_id or not preflight.current:
+            raise ApplicationError(
+                code="REVIEW_PREFLIGHT_STALE",
+                status=409,
+                title="预演证据已失效",
+                detail="重验证只能基于当前 preflight 执行",
+            )
+
+        _, resolved_root = self._resolve_source_root(source_root)
+        try:
+            inventory = scan_source_inventory(resolved_root)
+        except DomainViolation as exc:
+            raise ApplicationError(
+                code="REVIEW_SOURCE_UNAVAILABLE",
+                status=409,
+                title="源文件不可用",
+                detail="重验证时无法重新确认源文件清单",
+            ) from exc
+        if source_inventory_digest(inventory) != expected_inventory_digest:
+            raise ApplicationError(
+                code="REVIEW_PREFLIGHT_STALE",
+                status=409,
+                title="源文件已经变化",
+                detail="重验证前 source inventory 已变化，请重新 Analyze",
+            )
+
+        bindings = tuple(
+            item
+            for item in self._site_service.enabled_adapters()
+            if item.site_id == candidate_site_id
+        )
+        if len(bindings) != 1:
+            raise ApplicationError(
+                code="REVIEW_SITE_UNAVAILABLE",
+                status=409,
+                title="候选站点不可唯一确定",
+                detail="重验证要求批准候选对应且仅对应一个当前启用站点配置",
+            )
+        binding = bindings[0]
+        try:
+            payload = await binding.adapter.fetch_torrent(candidate_torrent_id)
+        except SiteAdapterError as exc:
+            raise ApplicationError(
+                code="REVIEW_TORRENT_FETCH_FAILED",
+                status=502,
+                title="候选 torrent 获取失败",
+                detail=f"站点适配器返回安全错误码：{exc.code}",
+            ) from exc
+        if payload.site_id != candidate_site_id or payload.torrent_id != candidate_torrent_id:
+            raise ApplicationError(
+                code="REVIEW_TORRENT_IDENTITY_MISMATCH",
+                status=409,
+                title="torrent 身份不一致",
+                detail="重验证取回的 torrent 身份与批准候选不一致",
+            )
+        try:
+            meta = parse_torrent(payload.content)
+        except DomainViolation as exc:
+            raise ApplicationError(
+                code="REVIEW_TORRENT_INVALID",
+                status=409,
+                title="候选 torrent 无法安全解析",
+                detail=f"torrent 安全解析失败：{exc.code.value}",
+            ) from exc
+        if (
+            expected_metainfo_digest is not None
+            and meta.metainfo_digest != expected_metainfo_digest
+        ):
+            raise ApplicationError(
+                code="REVIEW_TORRENT_CHANGED",
+                status=409,
+                title="候选 torrent 已变化",
+                detail="当前获取的 metainfo digest 与 preflight 候选证据不一致",
+            )
+
+        mappings = self._apply_review_mappings(
+            auto_map_files(meta, inventory),
+            manual_mappings=manual_mappings,
+            inventory=inventory,
+        )
+        try:
+            level = verify_torrent_mappings(meta, mappings)
+        except DomainViolation as exc:
+            raise ApplicationError(
+                code="REVIEW_VERIFICATION_FAILED",
+                status=409,
+                title="人工映射重验证失败",
+                detail=f"内容验证失败：{exc.code.value}",
+            ) from exc
+
+        final_preflight = self.latest_preflight(task_id)
+        if final_preflight.id != snapshot_id or not final_preflight.current:
+            raise ApplicationError(
+                code="REVIEW_PREFLIGHT_STALE",
+                status=409,
+                title="预演证据已失效",
+                detail="重验证完成后 preflight 已变化，本次结果不会落库",
+            )
+        verification = ReviewVerificationSnapshot(
+            task_id=task_id,
+            task_unit_id=unit_id,
+            review_revision_id=review_id,
+            review_version=review_version,
+            preflight_snapshot_id=snapshot_id,
+            candidate_id=candidate_id,
+            source_inventory_digest=expected_inventory_digest,
+            metainfo_digest=meta.metainfo_digest,
+            verification_level=level,
+            mappings=mappings,
+            created_at=datetime.now(UTC),
+        )
+        with self._session_factory() as session:
+            latest_review = TaskReviewRepository(session).latest(
+                task_unit_id=unit_id,
+                preflight_snapshot_id=snapshot_id,
+            )
+            if latest_review is None or latest_review.id != review_id:
+                raise ApplicationError(
+                    code="REVIEW_VERSION_CONFLICT",
+                    status=409,
+                    title="审核版本冲突",
+                    detail="重验证期间审核 revision 已变化，本次结果不会落库",
+                )
+            try:
+                record, _ = TaskReviewVerificationRepository(session).create_or_get(verification)
+            except ValueError as exc:
+                raise ApplicationError(
+                    code="REVIEW_VERIFICATION_CONFLICT",
+                    status=409,
+                    title="重验证证据冲突",
+                    detail="同一审核 revision 已存在不同的重验证证据",
+                ) from exc
+            session.commit()
+            return self._review_verification_view(record)
 
     def submit_review(
         self,
@@ -483,6 +857,48 @@ class TaskAnalysisService:
                 )
             session.commit()
             return self._review_view(record)
+
+    def _apply_review_mappings(
+        self,
+        automatic: tuple[AutoMappingDecision, ...],
+        *,
+        manual_mappings: tuple[dict[str, str], ...],
+        inventory: tuple[SourceFileCandidate, ...],
+    ) -> tuple[AutoMappingDecision, ...]:
+        overrides: dict[str, str] = {}
+        for item in manual_mappings:
+            torrent_path = item.get("torrent_path")
+            source_relative_path = item.get("source_relative_path")
+            if not torrent_path or not source_relative_path:
+                raise _review_mapping_invalid("审核 revision 中的人工映射证据无效")
+            overrides[torrent_path] = source_relative_path
+        inventory_by_relative = {item.relative_path: item for item in inventory}
+        applied: list[AutoMappingDecision] = []
+        used: set[str] = set()
+        for mapping in automatic:
+            source_relative_path = overrides.get(mapping.torrent_path)
+            if source_relative_path is None:
+                applied.append(mapping)
+                continue
+            if mapping.state is not FileMappingState.AMBIGUOUS:
+                raise _review_mapping_invalid("人工映射只能覆盖当前重新计算出的 AMBIGUOUS 项")
+            source = inventory_by_relative.get(source_relative_path)
+            if source is None or source.source_path not in mapping.candidate_paths:
+                raise _review_mapping_invalid("人工映射源文件已不属于当前歧义候选集合")
+            applied.append(
+                AutoMappingDecision(
+                    torrent_path=mapping.torrent_path,
+                    state=FileMappingState.MAPPED,
+                    method=MappingMethod.MANUAL_REVIEW,
+                    source_path=source.source_path,
+                    snapshot=source.snapshot,
+                    candidate_paths=(source.source_path,),
+                )
+            )
+            used.add(mapping.torrent_path)
+        if used != set(overrides):
+            raise _review_mapping_invalid("审核 revision 引用了当前 torrent 中不存在的人工映射路径")
+        return tuple(applied)
 
     def _validate_manual_mappings(
         self,
@@ -656,6 +1072,20 @@ class TaskAnalysisService:
             execution_allowed=False,
             actor_kind=record.actor_kind,
             version=record.version,
+            created_at=record.created_at,
+        )
+
+    @staticmethod
+    def _review_verification_view(record: Any) -> ReviewVerificationView:
+        return ReviewVerificationView(
+            id=record.id,
+            review_revision_id=record.review_revision_id,
+            review_version=record.review_version,
+            candidate_id=record.candidate_id,
+            verification_digest=record.verification_digest,
+            verification_level=record.verification_level,
+            metainfo_digest=record.metainfo_digest,
+            execution_allowed=False,
             created_at=record.created_at,
         )
 

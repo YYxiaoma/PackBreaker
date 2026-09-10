@@ -25,7 +25,9 @@ from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
 from backend.app.infrastructure.persistence.models import (
     TaskCandidateRecord,
+    TaskEvent,
     TaskReviewRevisionRecord,
+    TaskReviewVerificationRecord,
     TaskUnitRecord,
 )
 from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
@@ -80,6 +82,14 @@ class _FakeSiteProvider:
         return (("cfg-fake", self.version),)
 
 
+class _EmptySiteProvider:
+    def enabled_adapters(self) -> tuple[EnabledSiteAdapter, ...]:
+        return ()
+
+    def enabled_site_versions(self) -> tuple[tuple[str, int], ...]:
+        return ()
+
+
 def test_task_analyze_persists_units_candidates_and_reports_preflight_currentity(
     tmp_path: Path,
 ) -> None:
@@ -117,6 +127,25 @@ def test_task_analyze_persists_units_candidates_and_reports_preflight_currentity
         assert analyzed.json()["current"] is True
         assert analyzed.json()["stale_reasons"] == []
         assert analyzed.json()["payload"]["candidates"][0]["verification_level"] == "FULL_VERIFIED"
+        with app.state.runtime.session_factory() as session:
+            task = TaskRepository(session).get(task_id)
+            assert task is not None
+            assert task.status == TaskStatus.PREFLIGHT.value
+            assert analyzed.json()["payload"]["task_version"] == task.version
+            events = list(
+                session.scalars(
+                    select(TaskEvent)
+                    .where(TaskEvent.task_id == task_id)
+                    .order_by(TaskEvent.created_at, TaskEvent.id)
+                )
+            )
+            assert [item.event_type for item in events[-5:]] == [
+                "ANALYSIS_STARTED",
+                "ANALYSIS_SEARCHING",
+                "ANALYSIS_MATCHING",
+                "ANALYSIS_VERIFYING",
+                "ANALYSIS_PREFLIGHT_READY",
+            ]
 
         units = client.get(f"/api/v1/tasks/{task_id}/units")
         assert units.status_code == 200
@@ -151,7 +180,7 @@ def test_task_analyze_persists_units_candidates_and_reports_preflight_currentity
             TaskRepository(session).transition(
                 task_id=task_id,
                 expected_version=task.version,
-                to_status=TaskStatus.ANALYZING,
+                to_status=TaskStatus.RETRY,
                 event_type="TEST_TASK_VERSION_CHANGE",
                 reason="验证 preflight task version 失效",
             )
@@ -162,6 +191,47 @@ def test_task_analyze_persists_units_candidates_and_reports_preflight_currentity
         with app.state.runtime.session_factory() as session:
             assert session.scalar(select(func.count()).select_from(TaskUnitRecord)) == 1
             assert session.scalar(select(func.count()).select_from(TaskCandidateRecord)) == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_task_analyze_failure_recovers_owned_state_to_retry(tmp_path: Path) -> None:
+    client, app, settings = _authenticated_client(tmp_path)
+    source_root = settings.data_dir / "retry"
+    source_root.mkdir(parents=True)
+    content = b"0123456789abcdef"
+    source_file = source_root / "Movie.2026.mkv"
+    source_file.write_bytes(content)
+    unit = identify_task_units((SourceTaskFile(source_file.name, len(content)),))[0]
+    task_id = _create_task(app, unit.normalized_unit_key)
+    app.state.task_analysis_service = TaskAnalysisService(
+        app.state.runtime.session_factory,
+        _EmptySiteProvider(),
+        data_root=settings.data_dir,
+    )
+
+    try:
+        failed = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers=_csrf(client),
+            json={"action": "analyze", "source_root": "retry"},
+        )
+        assert failed.status_code == 409
+        assert failed.json()["code"] == "ANALYSIS_NO_ENABLED_SITES"
+        task = client.get(f"/api/v1/tasks/{task_id}").json()
+        assert task["status"] == "RETRY"
+        with app.state.runtime.session_factory() as session:
+            events = list(
+                session.scalars(
+                    select(TaskEvent)
+                    .where(TaskEvent.task_id == task_id)
+                    .order_by(TaskEvent.created_at, TaskEvent.id)
+                )
+            )
+        assert [item.event_type for item in events[-2:]] == [
+            "ANALYSIS_STARTED",
+            "ANALYSIS_RETRY_REQUIRED",
+        ]
     finally:
         client.__exit__(None, None, None)
 
@@ -281,7 +351,6 @@ def test_task_review_is_versioned_and_opens_awaiting_confirmation_bridge(tmp_pat
     source_file.write_bytes(content)
     unit = identify_task_units((SourceTaskFile(source_file.name, len(content)),))[0]
     task_id = _create_task(app, unit.normalized_unit_key)
-    _advance_task_to_preflight(app, task_id)
     app.state.task_analysis_service = TaskAnalysisService(
         app.state.runtime.session_factory,
         _FakeSiteProvider(
@@ -398,7 +467,6 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         )
     )
     task_id = _create_task(app, units[0].normalized_unit_key)
-    _advance_task_to_preflight(app, task_id)
     app.state.task_analysis_service = TaskAnalysisService(
         app.state.runtime.session_factory,
         _FakeSiteProvider(_FakeAdapter(_v1_torrent(b"Movie.2026.mkv", content, piece_length=4))),
@@ -462,6 +530,55 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
                 "source_relative_path": "one/Movie.2026.mkv",
             }
         ]
+
+        missing_verification = client.get(
+            f"/api/v1/task-units/{current_unit['id']}/decision/verification"
+        )
+        assert missing_verification.status_code == 404
+        assert missing_verification.json()["code"] == "REVIEW_VERIFICATION_NOT_FOUND"
+
+        without_csrf = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/decision/actions",
+            json={"action": "reverify"},
+        )
+        assert without_csrf.status_code == 403
+
+        verified = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/decision/actions",
+            headers=_csrf(client),
+            json={"action": "reverify"},
+        )
+        assert verified.status_code == 200
+        assert verified.json()["review_version"] == 1
+        assert verified.json()["candidate_id"] == candidate["id"]
+        assert verified.json()["verification_level"] == "FULL_VERIFIED"
+        assert verified.json()["execution_allowed"] is False
+
+        loaded = client.get(f"/api/v1/task-units/{current_unit['id']}/decision/verification")
+        assert loaded.status_code == 200
+        assert loaded.json()["verification_digest"] == verified.json()["verification_digest"]
+
+        repeated = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/decision/actions",
+            headers=_csrf(client),
+            json={"action": "reverify"},
+        )
+        assert repeated.status_code == 200
+        assert repeated.json()["id"] == verified.json()["id"]
+
+        first.write_bytes(b"changed-content!!!")
+        os.utime(first, None)
+        stale_reverify = client.post(
+            f"/api/v1/task-units/{current_unit['id']}/decision/actions",
+            headers=_csrf(client),
+            json={"action": "reverify"},
+        )
+        assert stale_reverify.status_code == 409
+        assert stale_reverify.json()["code"] == "REVIEW_PREFLIGHT_STALE"
+        with app.state.runtime.session_factory() as session:
+            assert (
+                session.scalar(select(func.count()).select_from(TaskReviewVerificationRecord)) == 1
+            )
     finally:
         client.__exit__(None, None, None)
 
@@ -475,7 +592,6 @@ def test_review_rejects_stale_preflight_before_writing_revision(tmp_path: Path) 
     source_file.write_bytes(content)
     unit = identify_task_units((SourceTaskFile(source_file.name, len(content)),))[0]
     task_id = _create_task(app, unit.normalized_unit_key)
-    _advance_task_to_preflight(app, task_id)
     app.state.task_analysis_service = TaskAnalysisService(
         app.state.runtime.session_factory,
         _FakeSiteProvider(
@@ -525,7 +641,6 @@ def test_review_cannot_approve_hard_rejected_candidate(tmp_path: Path) -> None:
     source_file.write_bytes(content)
     unit = identify_task_units((SourceTaskFile(source_file.name, len(content)),))[0]
     task_id = _create_task(app, unit.normalized_unit_key)
-    _advance_task_to_preflight(app, task_id)
     app.state.task_analysis_service = TaskAnalysisService(
         app.state.runtime.session_factory,
         _FakeSiteProvider(
@@ -601,28 +716,6 @@ def _create_task(app: FastAPI, normalized_unit_key: str) -> str:
         )
         session.commit()
         return task.id
-
-
-def _advance_task_to_preflight(app: FastAPI, task_id: str) -> None:
-    with app.state.runtime.session_factory() as session:
-        repository = TaskRepository(session)
-        task = repository.get(task_id)
-        assert task is not None
-        for status in (
-            TaskStatus.ANALYZING,
-            TaskStatus.SEARCHING,
-            TaskStatus.MATCHING,
-            TaskStatus.VERIFYING,
-            TaskStatus.PREFLIGHT,
-        ):
-            task = repository.transition(
-                task_id=task.id,
-                expected_version=task.version,
-                to_status=status,
-                event_type=f"TEST_ENTER_{status.value}",
-                reason="合成审核状态准备",
-            )
-        session.commit()
 
 
 def _v1_torrent(name: bytes, content: bytes, *, piece_length: int) -> bytes:

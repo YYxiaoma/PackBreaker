@@ -617,6 +617,60 @@
         "title": "PreflightResponse",
         "type": "object"
       },
+      "ReviewVerificationResponse": {
+        "properties": {
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "execution_allowed": {
+            "title": "Execution Allowed",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "metainfo_digest": {
+            "title": "Metainfo Digest",
+            "type": "string"
+          },
+          "review_revision_id": {
+            "title": "Review Revision Id",
+            "type": "string"
+          },
+          "review_version": {
+            "title": "Review Version",
+            "type": "integer"
+          },
+          "verification_digest": {
+            "title": "Verification Digest",
+            "type": "string"
+          },
+          "verification_level": {
+            "title": "Verification Level",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "review_revision_id",
+          "review_version",
+          "candidate_id",
+          "verification_digest",
+          "verification_level",
+          "metainfo_digest",
+          "execution_allowed",
+          "created_at"
+        ],
+        "title": "ReviewVerificationResponse",
+        "type": "object"
+      },
       "SetupResponse": {
         "properties": {
           "configured": {
@@ -1175,6 +1229,20 @@
           "updated_at"
         ],
         "title": "TaskResponse",
+        "type": "object"
+      },
+      "TaskReviewActionRequest": {
+        "properties": {
+          "action": {
+            "const": "reverify",
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "TaskReviewActionRequest",
         "type": "object"
       },
       "TaskReviewRequest": {
@@ -3828,6 +3896,196 @@
           }
         },
         "summary": "Submit Task Unit Decision",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/task-units/{unit_id}/decision/actions": {
+      "post": {
+        "operationId": "task_unit_review_action_api_v1_task_units__unit_id__decision_actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit_id",
+            "required": true,
+            "schema": {
+              "title": "Unit Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskReviewActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewVerificationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Task Unit Review Action",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/task-units/{unit_id}/decision/verification": {
+      "get": {
+        "operationId": "get_task_unit_review_verification_api_v1_task_units__unit_id__decision_verification_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit_id",
+            "required": true,
+            "schema": {
+              "title": "Unit Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewVerificationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Unit Review Verification",
         "tags": [
           "tasks"
         ]

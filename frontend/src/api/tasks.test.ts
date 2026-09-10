@@ -7,9 +7,11 @@ import {
   getTaskPreflight,
   getTaskPreflightCurrent,
   getTaskUnitDecision,
+  getTaskUnitReviewVerification,
   listTaskCandidates,
   listTasks,
   listTaskUnits,
+  reverifyTaskUnitDecision,
   submitTaskUnitDecision,
 } from './tasks';
 
@@ -108,6 +110,23 @@ describe('任务分析 API', () => {
       rejected_candidate_ids: ['candidate-2'],
       manual_mappings: [],
       note: 'review',
+    });
+  });
+
+  it('审核重验证使用独立只读证据路径与 reverify 动作', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
+      data: { id: 'verification-1', verification_level: 'FULL_VERIFIED' },
+    });
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      data: { id: 'verification-1', verification_level: 'FULL_VERIFIED' },
+    });
+
+    await getTaskUnitReviewVerification('unit/with slash');
+    await reverifyTaskUnitDecision('unit/with slash');
+
+    expect(get).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/decision/verification');
+    expect(post).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/decision/actions', {
+      action: 'reverify',
     });
   });
 });

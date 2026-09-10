@@ -8,12 +8,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.domain.preflight import PreflightSnapshot, candidate_evidence_to_payload
-from backend.app.domain.review import ReviewState
+from backend.app.domain.review import (
+    ReviewState,
+    ReviewVerificationSnapshot,
+    review_verification_to_payload,
+)
 from backend.app.domain.task_units import TaskUnit
 from backend.app.infrastructure.persistence.models import (
     PreflightSnapshotRecord,
     TaskCandidateRecord,
     TaskReviewRevisionRecord,
+    TaskReviewVerificationRecord,
     TaskUnitRecord,
     new_uuid,
     utc_now,
@@ -187,6 +192,9 @@ class TaskCandidateRepository:
             )
         )
 
+    def get(self, candidate_id: str) -> TaskCandidateRecord | None:
+        return self._session.get(TaskCandidateRecord, candidate_id)
+
 
 class TaskReviewRepository:
     """审核 revision 只追加；并发通过 expected_version + 唯一约束失败关闭。"""
@@ -257,3 +265,53 @@ class TaskReviewRepository:
         except IntegrityError as exc:
             raise ValueError("REVIEW_VERSION_CONFLICT") from exc
         return record
+
+
+class TaskReviewVerificationRepository:
+    """人工映射重验证证据只追加；同一审核 revision 最多保存一份结果。"""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get_for_revision(self, review_revision_id: str) -> TaskReviewVerificationRecord | None:
+        return self._session.scalar(
+            select(TaskReviewVerificationRecord).where(
+                TaskReviewVerificationRecord.review_revision_id == review_revision_id
+            )
+        )
+
+    def create_or_get(
+        self,
+        snapshot: ReviewVerificationSnapshot,
+    ) -> tuple[TaskReviewVerificationRecord, bool]:
+        existing = self.get_for_revision(snapshot.review_revision_id)
+        if existing is not None:
+            if existing.verification_digest != snapshot.verification_digest:
+                raise ValueError("REVIEW_VERIFICATION_CONFLICT")
+            return existing, False
+        payload = review_verification_to_payload(snapshot)
+        record = TaskReviewVerificationRecord(
+            id=new_uuid(),
+            review_revision_id=snapshot.review_revision_id,
+            review_version=snapshot.review_version,
+            task_id=snapshot.task_id,
+            task_unit_id=snapshot.task_unit_id,
+            preflight_snapshot_id=snapshot.preflight_snapshot_id,
+            candidate_id=snapshot.candidate_id,
+            source_inventory_digest=snapshot.source_inventory_digest,
+            metainfo_digest=snapshot.metainfo_digest,
+            verification_level=snapshot.verification_level.value,
+            mappings=deepcopy(payload["mappings"]),
+            verification_digest=snapshot.verification_digest,
+            created_at=snapshot.created_at,
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(record)
+                self._session.flush()
+        except IntegrityError as exc:
+            concurrent = self.get_for_revision(snapshot.review_revision_id)
+            if concurrent is None or concurrent.verification_digest != snapshot.verification_digest:
+                raise ValueError("REVIEW_VERIFICATION_CONFLICT") from exc
+            return concurrent, False
+        return record, True
