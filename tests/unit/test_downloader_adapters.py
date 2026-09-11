@@ -296,3 +296,25 @@ async def test_qbittorrent_5x_uses_stop_start_and_recheck_endpoints() -> None:
         "/api/v2/torrents/start",
         "/api/v2/torrents/recheck",
     ]
+
+
+@pytest.mark.asyncio
+async def test_qbittorrent_remove_always_keeps_data_files() -> None:
+    torrent_hash = "d" * 40
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        assert request.url.path == "/api/v2/torrents/delete"
+        assert request.content == f"hashes={torrent_hash}&deleteFiles=false".encode()
+        return httpx2.Response(200)
+
+    adapter = QbittorrentAdapter(
+        "http://qb.invalid",
+        DownloaderCredential(api_key="qbt_synthetic_key"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    await adapter.remove_torrent_keep_files(torrent_hash)
+
+    assert len(requests) == 1

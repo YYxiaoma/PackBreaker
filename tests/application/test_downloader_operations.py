@@ -15,12 +15,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.downloader_operations import (
     QBITTORRENT_ADD_OPERATION,
     QBITTORRENT_RECHECK_OPERATION,
+    QBITTORRENT_REMOVE_OPERATION,
     QBITTORRENT_START_OPERATION,
     QbittorrentAddOperationRequest,
     QbittorrentAddOperationResult,
     QbittorrentAddOperationService,
     QbittorrentRecheckOperationRequest,
     QbittorrentRecheckOperationService,
+    QbittorrentRemoveOperationRequest,
+    QbittorrentRemoveOperationService,
     QbittorrentStartOperationRequest,
     QbittorrentStartOperationService,
 )
@@ -62,6 +65,10 @@ class _FakeQbittorrent:
         self.apply_on_start = True
         self.raise_after_start_apply_once = False
         self.delay_start = False
+        self.remove_calls = 0
+        self.apply_on_remove = True
+        self.raise_after_remove_apply_once = False
+        self.delay_remove = False
 
     async def add_torrent(self, request: QbittorrentAddRequest) -> QbittorrentAddResult:
         self.add_calls += 1
@@ -127,6 +134,16 @@ class _FakeQbittorrent:
         if self.raise_after_recheck_apply_once:
             self.raise_after_recheck_apply_once = False
             raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "qBittorrent recheck 响应丢失")
+
+    async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
+        self.remove_calls += 1
+        if self.delay_remove:
+            await asyncio.sleep(0.01)
+        if self.apply_on_remove:
+            self.states.pop(torrent_hash, None)
+        if self.raise_after_remove_apply_once:
+            self.raise_after_remove_apply_once = False
+            raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "qBittorrent remove 响应丢失")
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +267,23 @@ def _start_request(
         execution_plan_id="plan-1",
         qbit_add_journal_id=add_result.journal_id,
         verification_journal_id=verification_journal_id,
+        torrent_hash=add_result.torrent_hash,
+        remote_save_path=add_result.save_path,
+        ownership_tag=add_result.ownership_tag,
+    )
+
+
+def _remove_request(
+    task_id: str,
+    add_result: QbittorrentAddOperationResult,
+) -> QbittorrentRemoveOperationRequest:
+    return QbittorrentRemoveOperationRequest(
+        task_id=task_id,
+        candidate_key="c" * 64,
+        downloader_id="target-qb",
+        downloader_version=7,
+        execution_plan_id="plan-1",
+        qbit_add_journal_id=add_result.journal_id,
         torrent_hash=add_result.torrent_hash,
         remote_save_path=add_result.save_path,
         ownership_tag=add_result.ownership_tag,
@@ -703,3 +737,117 @@ async def test_started_torrent_external_stop_requires_reconciliation(
     assert failure.value.code == "DOWNLOADER_STATE_MISMATCH"
     assert adapter.start_calls == 1
     assert _journals(factory)[1].status == OperationStatus.RECONCILE_REQUIRED.value
+
+
+@pytest.mark.asyncio
+async def test_remove_keeps_files_contract_and_replays_without_second_remove(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    binding = _FakeBinding(adapter)
+    add_result = await add_service.execute(_request(task_id, skip_checking=True), binding)
+    service = QbittorrentRemoveOperationService(factory)
+    request = _remove_request(task_id, add_result)
+
+    first = await service.execute(request, binding)
+    replayed = await service.execute(request, binding)
+
+    assert first.removed is True
+    assert replayed.replayed is True
+    assert adapter.remove_calls == 1
+    assert add_result.torrent_hash not in adapter.states
+    journals = _journals(factory)
+    assert journals[-1].operation_type == QBITTORRENT_REMOVE_OPERATION
+    assert journals[-1].status == OperationStatus.APPLIED.value
+    assert journals[-1].intent["delete_files"] is False
+    assert journals[-1].after_snapshot == {
+        "torrent_absent": True,
+        "torrent_hash": add_result.torrent_hash,
+        "delete_files": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_remove_stops_active_owned_torrent_before_removing(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    binding = _FakeBinding(adapter)
+    add_result = await add_service.execute(_request(task_id, skip_checking=True), binding)
+    adapter.states[add_result.torrent_hash] = replace(
+        adapter.states[add_result.torrent_hash],
+        state="stalledUP",
+    )
+
+    result = await QbittorrentRemoveOperationService(factory).execute(
+        _remove_request(task_id, add_result),
+        binding,
+    )
+
+    assert result.removed is True
+    assert adapter.stop_calls == 1
+    assert adapter.remove_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_remove_response_loss_recovers_from_absence(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    binding = _FakeBinding(adapter)
+    add_result = await add_service.execute(_request(task_id, skip_checking=True), binding)
+    adapter.raise_after_remove_apply_once = True
+
+    result = await QbittorrentRemoveOperationService(factory).execute(
+        _remove_request(task_id, add_result),
+        binding,
+    )
+
+    assert result.removed is True
+    assert result.recovered_after_unknown_result is True
+    assert adapter.remove_calls == 1
+    assert _journals(factory)[-1].status == OperationStatus.APPLIED.value
+
+
+@pytest.mark.asyncio
+async def test_ten_concurrent_remove_calls_only_remove_once(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    binding = _FakeBinding(adapter)
+    add_result = await add_service.execute(_request(task_id, skip_checking=True), binding)
+    adapter.delay_remove = True
+    service = QbittorrentRemoveOperationService(factory)
+    request = _remove_request(task_id, add_result)
+
+    results = await asyncio.gather(*(service.execute(request, binding) for _ in range(10)))
+
+    assert all(item.removed for item in results)
+    assert adapter.remove_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_remove_rejects_ownership_mismatch_before_external_write(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    binding = _FakeBinding(adapter)
+    add_result = await add_service.execute(_request(task_id, skip_checking=True), binding)
+    adapter.states[add_result.torrent_hash] = replace(
+        adapter.states[add_result.torrent_hash],
+        tags=("external",),
+    )
+
+    with pytest.raises(ApplicationError) as failure:
+        await QbittorrentRemoveOperationService(factory).execute(
+            _remove_request(task_id, add_result),
+            binding,
+        )
+
+    assert failure.value.code == "DOWNLOADER_STATE_MISMATCH"
+    assert adapter.remove_calls == 0

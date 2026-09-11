@@ -107,6 +107,7 @@ stateDiagram-v2
 - `RETRY` 保存 next_retry_at、attempt、错误类别；达到上限后进入 `FAILED` 或人工队列。
 - `PAUSED` 不取消正在进行的单个原子文件操作，但完成后不得启动下一步。
 - `SEEDING` 表示 torrent 已满足启动做种的全部安全前置条件或正在确认 start 结果；只有下载器实际返回完整上行状态后才进入 `DONE`。`DONE` 表示 PackBreaker 本次辅种建立流程完成，不表示下载器停止做种。
+- `ROLLING_BACK` 使用冻结取消选项与 journal ID 恢复；qB 任务若存在且请求回滚文件，必须先以“只移除任务、不删除数据”的操作确认客户端下载器引用消失，再按 hardlink → directory 的逆序撤销 journal-owned 资源。未决或所有权不明的 journal 不得为了完成取消而强制清理。
 - `DONE`、`FAILED`、`CANCELLED` 为终态；重新处理必须创建新 attempt 并关联原任务。
 
 ## 5. 操作日志状态

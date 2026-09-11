@@ -34,6 +34,8 @@ QBITTORRENT_RECHECK_OPERATION = "QBITTORRENT_RECHECK"
 QBITTORRENT_RECHECK_SCHEMA_VERSION = "packbreaker-qbittorrent-recheck-v1"
 QBITTORRENT_START_OPERATION = "QBITTORRENT_START"
 QBITTORRENT_START_SCHEMA_VERSION = "packbreaker-qbittorrent-start-v1"
+QBITTORRENT_REMOVE_OPERATION = "QBITTORRENT_REMOVE"
+QBITTORRENT_REMOVE_SCHEMA_VERSION = "packbreaker-qbittorrent-remove-v1"
 _OPERATION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
@@ -119,6 +121,28 @@ class QbittorrentStartOperationResult:
     progress: float
     ownership_tag: str
     seeding: bool
+    replayed: bool
+    recovered_after_unknown_result: bool
+
+
+@dataclass(frozen=True, slots=True)
+class QbittorrentRemoveOperationRequest:
+    task_id: str
+    candidate_key: str
+    downloader_id: str
+    downloader_version: int
+    execution_plan_id: str
+    qbit_add_journal_id: str
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+
+
+@dataclass(frozen=True, slots=True)
+class QbittorrentRemoveOperationResult:
+    journal_id: str
+    torrent_hash: str
+    removed: bool
     replayed: bool
     recovered_after_unknown_result: bool
 
@@ -911,6 +935,249 @@ class QbittorrentStartOperationService:
             session.commit()
 
 
+class QbittorrentRemoveOperationService:
+    """以 journal 包围 qB 任务移除；永远保留数据文件，并先验证 PackBreaker 所有权。"""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    async def execute(
+        self,
+        request: QbittorrentRemoveOperationRequest,
+        binding: QbittorrentWriteBindingPort,
+    ) -> QbittorrentRemoveOperationResult:
+        if (
+            binding.downloader_id != request.downloader_id
+            or binding.downloader_version != request.downloader_version
+        ):
+            raise ApplicationError(
+                code="DOWNLOADER_CONFIG_CHANGED",
+                status=409,
+                title="qBittorrent 配置已经变化",
+                detail="remove intent 必须绑定同一个下载器 ID 与配置版本",
+            )
+        prepared = _prepare_remove(request)
+        self._assert_add_journal(prepared)
+        async with _operation_lock(prepared.operation_key):
+            return await self._execute_prepared(prepared, binding)
+
+    async def _execute_prepared(
+        self,
+        prepared: _PreparedRemove,
+        binding: QbittorrentWriteBindingPort,
+    ) -> QbittorrentRemoveOperationResult:
+        adapter = binding.adapter
+        existing = self._load_by_key(prepared.operation_key)
+        if existing is not None:
+            _assert_same_remove_intent(existing, prepared)
+            if existing.status is OperationStatus.NOOP:
+                return _remove_result(existing, prepared, replayed=True, recovered=False)
+            if existing.status is OperationStatus.APPLIED:
+                observed = await self._get_state(
+                    adapter, prepared, reconcile_journal_id=existing.id
+                )
+                if observed is not None:
+                    self._mark_reconcile(existing.id)
+                    raise _state_mismatch("已确认移除的 qBittorrent torrent 再次出现")
+                return _remove_result(existing, prepared, replayed=True, recovered=False)
+            if existing.status is not OperationStatus.INTENT_RECORDED:
+                raise _journal_not_executable(existing)
+
+            observed = await self._get_state(adapter, prepared, reconcile_journal_id=existing.id)
+            if observed is None:
+                applied = self._transition(
+                    existing.id,
+                    OperationStatus.INTENT_RECORDED,
+                    OperationStatus.APPLIED,
+                    after_snapshot=_removed_snapshot(prepared),
+                )
+                return _remove_result(applied, prepared, replayed=True, recovered=True)
+            journal = existing
+            replayed = True
+        else:
+            observed = await self._get_state(adapter, prepared, reconcile_journal_id=None)
+            if observed is None:
+                journal = self._record_intent(prepared, before=None)
+                noop = self._transition(
+                    journal.id,
+                    OperationStatus.INTENT_RECORDED,
+                    OperationStatus.NOOP,
+                )
+                return _remove_result(noop, prepared, replayed=False, recovered=False)
+            journal = self._record_intent(prepared, before=observed)
+            replayed = False
+
+        if not observed.stopped:
+            try:
+                await adapter.stop_torrent(prepared.torrent_hash)
+            except DownloaderAdapterError as exc:
+                raise _adapter_application_error(exc, "qBittorrent stop 结果未知") from exc
+            observed = await self._get_state(adapter, prepared, reconcile_journal_id=journal.id)
+            if observed is None:
+                applied = self._transition(
+                    journal.id,
+                    OperationStatus.INTENT_RECORDED,
+                    OperationStatus.APPLIED,
+                    after_snapshot=_removed_snapshot(prepared),
+                )
+                return _remove_result(applied, prepared, replayed=replayed, recovered=True)
+            if not observed.stopped:
+                raise ApplicationError(
+                    code="DOWNLOADER_STOP_NOT_CONFIRMED",
+                    status=409,
+                    title="qBittorrent stop 尚未确认",
+                    detail="移除任务前 torrent 仍未进入停止状态；后续重试会先查询真实状态",
+                )
+
+        try:
+            await adapter.remove_torrent_keep_files(prepared.torrent_hash)
+        except DownloaderAdapterError as exc:
+            after_error = await self._get_state(
+                adapter,
+                prepared,
+                reconcile_journal_id=journal.id,
+            )
+            if after_error is None:
+                applied = self._transition(
+                    journal.id,
+                    OperationStatus.INTENT_RECORDED,
+                    OperationStatus.APPLIED,
+                    after_snapshot=_removed_snapshot(prepared),
+                )
+                return _remove_result(applied, prepared, replayed=replayed, recovered=True)
+            raise _adapter_application_error(exc, "qBittorrent remove 结果未知") from exc
+
+        after = await self._get_state(adapter, prepared, reconcile_journal_id=journal.id)
+        if after is not None:
+            raise ApplicationError(
+                code="DOWNLOADER_REMOVE_NOT_CONFIRMED",
+                status=409,
+                title="qBittorrent remove 尚未确认",
+                detail="deleteFiles=false 请求后 torrent 仍可见；后续重试会先查询真实状态",
+            )
+        applied = self._transition(
+            journal.id,
+            OperationStatus.INTENT_RECORDED,
+            OperationStatus.APPLIED,
+            after_snapshot=_removed_snapshot(prepared),
+        )
+        return _remove_result(applied, prepared, replayed=replayed, recovered=False)
+
+    async def _get_state(
+        self,
+        adapter: QbittorrentWriteAdapter,
+        prepared: _PreparedRemove,
+        *,
+        reconcile_journal_id: str | None,
+    ) -> QbittorrentTorrentState | None:
+        try:
+            observed = await adapter.get_torrents((prepared.torrent_hash,))
+        except DownloaderAdapterError as exc:
+            raise _adapter_application_error(exc, "无法确认 qBittorrent remove 状态") from exc
+        if not observed:
+            return None
+        matching = tuple(
+            state
+            for state in observed
+            if state.torrent_hash == prepared.torrent_hash
+            and state.save_path == prepared.remote_save_path
+            and prepared.ownership_tag in state.tags
+        )
+        if len(observed) != 1 or len(matching) != 1:
+            if reconcile_journal_id is not None:
+                self._mark_reconcile(reconcile_journal_id)
+            raise _state_mismatch("remove torrent 的 hash、save path、ownership tag 或存在性不匹配")
+        return matching[0]
+
+    def _assert_add_journal(self, prepared: _PreparedRemove) -> None:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).get(prepared.request.qbit_add_journal_id)
+            if (
+                journal is None
+                or journal.task_id != prepared.request.task_id
+                or journal.operation_type != QBITTORRENT_ADD_OPERATION
+                or OperationStatus(journal.status) is not OperationStatus.APPLIED
+                or journal.intent.get("execution_plan_id") != prepared.request.execution_plan_id
+                or journal.target.get("downloader_id") != prepared.request.downloader_id
+                or journal.after_snapshot is None
+                or journal.after_snapshot.get("torrent_hash") != prepared.torrent_hash
+                or journal.after_snapshot.get("save_path") != prepared.remote_save_path
+                or journal.after_snapshot.get("ownership_tag") != prepared.ownership_tag
+            ):
+                raise ApplicationError(
+                    code="DOWNLOADER_REMOVE_OWNERSHIP_INVALID",
+                    status=409,
+                    title="qBittorrent 移除所有权证据无效",
+                    detail="只有 APPLIED 的 PackBreaker add journal 才能授权 qB remove",
+                )
+
+    def _record_intent(
+        self,
+        prepared: _PreparedRemove,
+        *,
+        before: QbittorrentTorrentState | None,
+    ) -> _JournalView:
+        request = prepared.request
+        intent = OperationIntent(
+            task_id=request.task_id,
+            idempotency_key=prepared.operation_key,
+            operation_type=QBITTORRENT_REMOVE_OPERATION,
+            target={
+                "downloader_id": request.downloader_id,
+                "torrent_hash": prepared.torrent_hash,
+            },
+            intent=_remove_intent_payload(prepared),
+            before_snapshot=(
+                {"torrent_absent": True}
+                if before is None
+                else _state_snapshot(before, prepared.ownership_tag)
+            ),
+        )
+        with self._session_factory() as session:
+            journal, _ = OperationJournalRepository(session).record_intent(intent)
+            session.commit()
+            return _journal_view(journal)
+
+    def _load_by_key(self, key: str) -> _JournalView | None:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).get_by_idempotency_key(key)
+            return None if journal is None else _journal_view(journal)
+
+    def _transition(
+        self,
+        journal_id: str,
+        expected_status: OperationStatus,
+        to_status: OperationStatus,
+        *,
+        after_snapshot: dict[str, Any] | None = None,
+    ) -> _JournalView:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).transition_status(
+                journal_id=journal_id,
+                expected_status=expected_status,
+                to_status=to_status,
+                after_snapshot=after_snapshot,
+            )
+            session.commit()
+            return _journal_view(journal)
+
+    def _mark_reconcile(self, journal_id: str) -> None:
+        with self._session_factory() as session:
+            repository = OperationJournalRepository(session)
+            journal = repository.get(journal_id)
+            if journal is None:
+                return
+            current = OperationStatus(journal.status)
+            if current not in {OperationStatus.INTENT_RECORDED, OperationStatus.APPLIED}:
+                return
+            repository.transition_status(
+                journal_id=journal_id,
+                expected_status=current,
+                to_status=OperationStatus.RECONCILE_REQUIRED,
+            )
+            session.commit()
+
+
 @dataclass(frozen=True, slots=True)
 class _PreparedAdd:
     operation_key: str
@@ -937,6 +1204,15 @@ class _PreparedStart:
     remote_save_path: str
     ownership_tag: str
     request: QbittorrentStartOperationRequest
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRemove:
+    operation_key: str
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+    request: QbittorrentRemoveOperationRequest
 
 
 def _prepare_recheck(request: QbittorrentRecheckOperationRequest) -> _PreparedRecheck:
@@ -1049,6 +1325,109 @@ def _start_intent_payload(prepared: _PreparedStart) -> dict[str, Any]:
         "remote_save_path": prepared.remote_save_path,
         "ownership_tag": prepared.ownership_tag,
     }
+
+
+def _prepare_remove(request: QbittorrentRemoveOperationRequest) -> _PreparedRemove:
+    if request.downloader_version < 1:
+        raise ValueError("downloader version 必须大于等于 1")
+    if len(request.candidate_key) != 64 or any(
+        character not in "0123456789abcdef" for character in request.candidate_key
+    ):
+        raise ValueError("candidate_key 必须是 64 位十六进制摘要")
+    torrent_hash = request.torrent_hash.strip().lower()
+    if len(torrent_hash) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in torrent_hash
+    ):
+        raise ValueError("torrent_hash 格式无效")
+    if not request.qbit_add_journal_id.strip() or not request.execution_plan_id.strip():
+        raise ValueError("remove 必须绑定 add journal 与 execution plan")
+    ownership_tag = request.ownership_tag.strip()
+    if not ownership_tag or len(ownership_tag) > 128 or "," in ownership_tag:
+        raise ValueError("ownership tag 格式无效")
+    try:
+        remote_save_path = normalize_remote_path(request.remote_save_path)
+    except DomainViolation as exc:
+        raise ValueError("remote save path 格式无效") from exc
+    normalized_request = QbittorrentRemoveOperationRequest(
+        task_id=request.task_id,
+        candidate_key=request.candidate_key,
+        downloader_id=request.downloader_id,
+        downloader_version=request.downloader_version,
+        execution_plan_id=request.execution_plan_id,
+        qbit_add_journal_id=request.qbit_add_journal_id,
+        torrent_hash=torrent_hash,
+        remote_save_path=remote_save_path,
+        ownership_tag=ownership_tag,
+    )
+    return _PreparedRemove(
+        operation_key=downloader_operation_key(
+            candidate_key=request.candidate_key,
+            operation_type=QBITTORRENT_REMOVE_OPERATION,
+            downloader_id=request.downloader_id,
+        ),
+        torrent_hash=torrent_hash,
+        remote_save_path=remote_save_path,
+        ownership_tag=ownership_tag,
+        request=normalized_request,
+    )
+
+
+def _remove_intent_payload(prepared: _PreparedRemove) -> dict[str, Any]:
+    request = prepared.request
+    return {
+        "schema_version": QBITTORRENT_REMOVE_SCHEMA_VERSION,
+        "downloader_version": request.downloader_version,
+        "execution_plan_id": request.execution_plan_id,
+        "qbit_add_journal_id": request.qbit_add_journal_id,
+        "torrent_hash": prepared.torrent_hash,
+        "remote_save_path": prepared.remote_save_path,
+        "ownership_tag": prepared.ownership_tag,
+        "delete_files": False,
+    }
+
+
+def _assert_same_remove_intent(journal: _JournalView, prepared: _PreparedRemove) -> None:
+    request = prepared.request
+    if (
+        journal.task_id != request.task_id
+        or journal.operation_type != QBITTORRENT_REMOVE_OPERATION
+        or journal.target
+        != {
+            "downloader_id": request.downloader_id,
+            "torrent_hash": prepared.torrent_hash,
+        }
+        or journal.intent != _remove_intent_payload(prepared)
+    ):
+        raise ApplicationError(
+            code="DOWNLOADER_REMOVE_IDEMPOTENCY_CONFLICT",
+            status=409,
+            title="qBittorrent remove 幂等键冲突",
+            detail="同一 candidate/downloader 对应了不同的 remove 意图",
+        )
+
+
+def _removed_snapshot(prepared: _PreparedRemove) -> dict[str, Any]:
+    return {
+        "torrent_absent": True,
+        "torrent_hash": prepared.torrent_hash,
+        "delete_files": False,
+    }
+
+
+def _remove_result(
+    journal: _JournalView,
+    prepared: _PreparedRemove,
+    *,
+    replayed: bool,
+    recovered: bool,
+) -> QbittorrentRemoveOperationResult:
+    return QbittorrentRemoveOperationResult(
+        journal_id=journal.id,
+        torrent_hash=prepared.torrent_hash,
+        removed=journal.status is OperationStatus.APPLIED,
+        replayed=replayed,
+        recovered_after_unknown_result=recovered,
+    )
 
 
 def _assert_same_start_intent(journal: _JournalView, prepared: _PreparedStart) -> None:

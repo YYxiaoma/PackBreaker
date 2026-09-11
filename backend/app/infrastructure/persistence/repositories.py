@@ -324,6 +324,23 @@ class OperationJournalRepository:
     def get(self, journal_id: str) -> OperationJournal | None:
         return self._session.get(OperationJournal, journal_id)
 
+    def list_for_task(
+        self,
+        task_id: str,
+        *,
+        operation_types: tuple[str, ...] | None = None,
+    ) -> list[OperationJournal]:
+        statement = select(OperationJournal).where(OperationJournal.task_id == task_id)
+        if operation_types is not None:
+            if not operation_types:
+                return []
+            statement = statement.where(OperationJournal.operation_type.in_(operation_types))
+        return list(
+            self._session.scalars(
+                statement.order_by(OperationJournal.created_at.asc(), OperationJournal.id.asc())
+            )
+        )
+
     def list_recoverable(self, *, limit: int = 100) -> list[OperationJournal]:
         if limit <= 0:
             raise ValueError("limit 必须大于 0")

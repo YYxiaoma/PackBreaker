@@ -125,6 +125,8 @@ class QbittorrentWriteAdapter(Protocol):
 
     async def recheck_torrent(self, torrent_hash: str) -> None: ...
 
+    async def remove_torrent_keep_files(self, torrent_hash: str) -> None: ...
+
 
 class DownloaderAdapterFactory:
     def __init__(self, *, transport: httpx2.AsyncBaseTransport | None = None) -> None:
@@ -312,6 +314,21 @@ class QbittorrentAdapter:
 
     async def recheck_torrent(self, torrent_hash: str) -> None:
         await self._torrent_action("recheck", torrent_hash)
+
+    async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
+        normalized = _normalize_torrent_hash(torrent_hash)
+        async with self._authenticated_client() as client:
+            response = await client.post(
+                f"{self._base_url}/api/v2/torrents/delete",
+                data={"hashes": normalized, "deleteFiles": "false"},
+            )
+            if response.status_code in {401, 403}:
+                raise DownloaderAdapterError("DOWNLOADER_AUTH_FAILED", "qBittorrent 认证失败")
+            if response.status_code not in {200, 204}:
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_WRITE_FAILED",
+                    "qBittorrent 移除 torrent 任务失败",
+                )
 
     async def _torrent_action(self, action: str, torrent_hash: str) -> None:
         normalized = _normalize_torrent_hash(torrent_hash)

@@ -14,12 +14,21 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.downloader_operations import (
     QbittorrentAddOperationService,
     QbittorrentRecheckOperationService,
+    QbittorrentRemoveOperationService,
     QbittorrentStartOperationService,
 )
 from backend.app.application.downloaders import QbittorrentWriteBinding
 from backend.app.application.errors import ApplicationError
+from backend.app.application.filesystem_operations import (
+    FilesystemOperationService,
+    HardlinkExecutionRequest,
+)
 from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.task_adding import TaskAddingCoordinator
+from backend.app.application.task_cancellation import (
+    TaskCancellationCoordinator,
+    TaskCancellationRequest,
+)
 from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
 from backend.app.application.task_recovery import RecoveryOutcome, TaskRecoveryCoordinator
 from backend.app.application.task_seeding import TaskSeedingCoordinator
@@ -28,6 +37,7 @@ from backend.app.domain.downloader import (
     ProbeStatus,
     downloader_execution_binding_digest,
 )
+from backend.app.domain.errors import DomainViolation
 from backend.app.domain.execution_plan import (
     ExecutionPlanAction,
     ExecutionPlanActionKind,
@@ -41,7 +51,7 @@ from backend.app.domain.site_search import (
     normalize_candidate_meta,
 )
 from backend.app.domain.task_state import TaskStatus
-from backend.app.domain.verification import DownloaderKind, VerificationLevel
+from backend.app.domain.verification import DownloaderKind, FileSnapshot, VerificationLevel
 from backend.app.infrastructure.adapters.downloaders import (
     DownloaderAdapterError,
     QbittorrentAddRequest,
@@ -67,6 +77,7 @@ from backend.app.infrastructure.persistence.models import (
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskExecutionPlanRepository,
 )
+from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 from backend.app.infrastructure.source_inventory import (
     scan_source_inventory,
     source_inventory_digest,
@@ -127,6 +138,8 @@ class _FakeQbittorrent:
         self.start_calls = 0
         self.raise_after_start_apply_once = False
         self.apply_on_start = True
+        self.remove_calls = 0
+        self.raise_after_remove_apply_once = False
 
     async def add_torrent(self, request: QbittorrentAddRequest) -> QbittorrentAddResult:
         self.add_calls += 1
@@ -179,6 +192,13 @@ class _FakeQbittorrent:
             raise DownloaderAdapterError(
                 "DOWNLOADER_UNAVAILABLE", "synthetic recheck response lost"
             )
+
+    async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
+        self.remove_calls += 1
+        self.states.pop(torrent_hash, None)
+        if self.raise_after_remove_apply_once:
+            self.raise_after_remove_apply_once = False
+            raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "synthetic remove response lost")
 
 
 @dataclass
@@ -1168,7 +1188,10 @@ async def test_seeding_source_change_blocks_before_start_intent(
         assert session.scalar(select(func.count()).select_from(OperationJournal)) == 1
 
 
-def _recovery_coordinator(fixture: _AddingFixture) -> TaskRecoveryCoordinator:
+def _recovery_coordinator(
+    fixture: _AddingFixture,
+    cancellation: TaskCancellationCoordinator | None = None,
+) -> TaskRecoveryCoordinator:
     class _LinkingMustNotRun:
         def execute(self, unit_id: str, *, execution_plan_id: str) -> object:
             raise AssertionError("ADDING 起始夹具不应回退到 LINKING")
@@ -1179,6 +1202,7 @@ def _recovery_coordinator(fixture: _AddingFixture) -> TaskRecoveryCoordinator:
         fixture.coordinator,
         fixture.verifier,
         fixture.seeder,
+        cancellation,
     )
 
 
@@ -1354,6 +1378,271 @@ async def test_startup_recovery_limit_reports_truncation_without_touching_later_
     assert report.items[0].outcome is RecoveryOutcome.BLOCKED
     assert adding_fixture.qbit.add_calls == 0
     assert adding_fixture.qbit.start_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_cancellation_removes_qb_and_rolls_back_only_journal_owned_files(
+    adding_fixture: _AddingFixture,
+) -> None:
+    filesystem = FilesystemOperationService(
+        adding_fixture.factory,
+        SafeFilesystemGateway(adding_fixture.data_root),
+    )
+    source_stat = adding_fixture.source_file.stat(follow_symlinks=False)
+    link_result = filesystem.execute_hardlink(
+        HardlinkExecutionRequest(
+            task_id=adding_fixture.task_id,
+            candidate_key="d" * 64,
+            source_relative_path=f"source/{adding_fixture.source_file.name}",
+            target_root_relative_path="target",
+            target_relative_path="owned/copy.mkv",
+            expected_source_snapshot=FileSnapshot(
+                device=source_stat.st_dev,
+                inode=source_stat.st_ino,
+                size=source_stat.st_size,
+                mtime_ns=source_stat.st_mtime_ns,
+            ),
+        )
+    )
+    added = await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert added.status is TaskStatus.SEEDING
+    owned_target = adding_fixture.data_root / "target" / "owned" / "copy.mkv"
+    unowned_target = adding_fixture.data_root / "target" / adding_fixture.source_file.name
+    cancellation = TaskCancellationCoordinator(
+        adding_fixture.factory,
+        adding_fixture.downloader_provider,
+        QbittorrentRemoveOperationService(adding_fixture.factory),
+        filesystem,
+    )
+    request = TaskCancellationRequest(
+        task_id=adding_fixture.task_id,
+        remove_downloader_task=True,
+        rollback_created_resources=True,
+    )
+
+    result = await cancellation.execute(request)
+    replayed = await cancellation.execute(request)
+
+    assert result.status is TaskStatus.CANCELLED
+    assert replayed.status is TaskStatus.CANCELLED
+    assert replayed.replayed is True
+    assert adding_fixture.qbit.remove_calls == 1
+    assert not owned_target.exists()
+    assert unowned_target.exists()
+    assert adding_fixture.source_file.read_bytes() == b"0123456789abcdef"
+    with adding_fixture.factory() as session:
+        hardlink = session.get(OperationJournal, link_result.hardlink_journal_id)
+        assert hardlink is not None and hardlink.status == "ROLLED_BACK"
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None and task.status == TaskStatus.CANCELLED.value
+
+
+@pytest.mark.asyncio
+async def test_cancellation_requires_qb_removal_before_file_rollback(
+    adding_fixture: _AddingFixture,
+) -> None:
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    cancellation = TaskCancellationCoordinator(
+        adding_fixture.factory,
+        adding_fixture.downloader_provider,
+        QbittorrentRemoveOperationService(adding_fixture.factory),
+        FilesystemOperationService(
+            adding_fixture.factory,
+            SafeFilesystemGateway(adding_fixture.data_root),
+        ),
+    )
+
+    with pytest.raises(ApplicationError) as failure:
+        await cancellation.execute(
+            TaskCancellationRequest(
+                task_id=adding_fixture.task_id,
+                remove_downloader_task=False,
+                rollback_created_resources=True,
+            )
+        )
+
+    assert failure.value.code == "CANCELLATION_DOWNLOADER_REQUIRED"
+    assert adding_fixture.qbit.remove_calls == 0
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None and task.status == TaskStatus.SEEDING.value
+
+
+@pytest.mark.asyncio
+async def test_cancellation_blocks_if_owned_hardlink_was_replaced(
+    adding_fixture: _AddingFixture,
+) -> None:
+    filesystem = FilesystemOperationService(
+        adding_fixture.factory,
+        SafeFilesystemGateway(adding_fixture.data_root),
+    )
+    source_stat = adding_fixture.source_file.stat(follow_symlinks=False)
+    filesystem.execute_hardlink(
+        HardlinkExecutionRequest(
+            task_id=adding_fixture.task_id,
+            candidate_key="e" * 64,
+            source_relative_path=f"source/{adding_fixture.source_file.name}",
+            target_root_relative_path="target",
+            target_relative_path="owned/copy.mkv",
+            expected_source_snapshot=FileSnapshot(
+                device=source_stat.st_dev,
+                inode=source_stat.st_ino,
+                size=source_stat.st_size,
+                mtime_ns=source_stat.st_mtime_ns,
+            ),
+        )
+    )
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    owned_target = adding_fixture.data_root / "target" / "owned" / "copy.mkv"
+    owned_target.unlink()
+    owned_target.write_bytes(b"external-replacement")
+    cancellation = TaskCancellationCoordinator(
+        adding_fixture.factory,
+        adding_fixture.downloader_provider,
+        QbittorrentRemoveOperationService(adding_fixture.factory),
+        filesystem,
+    )
+
+    with pytest.raises(DomainViolation):
+        await cancellation.execute(
+            TaskCancellationRequest(
+                task_id=adding_fixture.task_id,
+                remove_downloader_task=True,
+                rollback_created_resources=True,
+            )
+        )
+
+    assert owned_target.read_bytes() == b"external-replacement"
+    assert adding_fixture.qbit.remove_calls == 1
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None and task.status == TaskStatus.ROLLING_BACK.value
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_resumes_rolling_back_without_second_qb_remove(
+    adding_fixture: _AddingFixture,
+) -> None:
+    filesystem = FilesystemOperationService(
+        adding_fixture.factory,
+        SafeFilesystemGateway(adding_fixture.data_root),
+    )
+    source_stat = adding_fixture.source_file.stat(follow_symlinks=False)
+    filesystem.execute_hardlink(
+        HardlinkExecutionRequest(
+            task_id=adding_fixture.task_id,
+            candidate_key="f" * 64,
+            source_relative_path=f"source/{adding_fixture.source_file.name}",
+            target_root_relative_path="target",
+            target_relative_path="owned/recovery.mkv",
+            expected_source_snapshot=FileSnapshot(
+                device=source_stat.st_dev,
+                inode=source_stat.st_ino,
+                size=source_stat.st_size,
+                mtime_ns=source_stat.st_mtime_ns,
+            ),
+        )
+    )
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    owned_target = adding_fixture.data_root / "target" / "owned" / "recovery.mkv"
+    cancellation = TaskCancellationCoordinator(
+        adding_fixture.factory,
+        adding_fixture.downloader_provider,
+        QbittorrentRemoveOperationService(adding_fixture.factory),
+        filesystem,
+    )
+    request = TaskCancellationRequest(
+        task_id=adding_fixture.task_id,
+        remove_downloader_task=True,
+        rollback_created_resources=True,
+    )
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_qb_removed":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        await cancellation.execute(request, fault_hook=crash)
+
+    assert adding_fixture.qbit.remove_calls == 1
+    assert owned_target.exists()
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None and task.status == TaskStatus.ROLLING_BACK.value
+
+    report = await _recovery_coordinator(adding_fixture, cancellation).reconcile_once()
+
+    assert report.scanned_count == 1
+    assert report.completed_count == 1
+    assert report.items[0].initial_status is TaskStatus.ROLLING_BACK
+    assert report.items[0].final_status is TaskStatus.CANCELLED
+    assert report.items[0].steps == (TaskStatus.ROLLING_BACK,)
+    assert adding_fixture.qbit.remove_calls == 1
+    assert not owned_target.exists()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_blocks_on_unresolved_filesystem_intent(
+    adding_fixture: _AddingFixture,
+) -> None:
+    filesystem = FilesystemOperationService(
+        adding_fixture.factory,
+        SafeFilesystemGateway(adding_fixture.data_root),
+    )
+    source_stat = adding_fixture.source_file.stat(follow_symlinks=False)
+    request = HardlinkExecutionRequest(
+        task_id=adding_fixture.task_id,
+        candidate_key="1" * 64,
+        source_relative_path=f"source/{adding_fixture.source_file.name}",
+        target_root_relative_path="target",
+        target_relative_path="owned/unresolved.mkv",
+        expected_source_snapshot=FileSnapshot(
+            device=source_stat.st_dev,
+            inode=source_stat.st_ino,
+            size=source_stat.st_size,
+            mtime_ns=source_stat.st_mtime_ns,
+        ),
+    )
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_temporary_hardlink":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        filesystem.execute_hardlink(request, fault_hook=crash)
+
+    cancellation = TaskCancellationCoordinator(
+        adding_fixture.factory,
+        adding_fixture.downloader_provider,
+        QbittorrentRemoveOperationService(adding_fixture.factory),
+        filesystem,
+    )
+    with pytest.raises(ApplicationError) as failure:
+        await cancellation.execute(
+            TaskCancellationRequest(
+                task_id=adding_fixture.task_id,
+                remove_downloader_task=False,
+                rollback_created_resources=True,
+            )
+        )
+
+    assert failure.value.code == "CANCELLATION_EVIDENCE_INVALID"
+    assert adding_fixture.qbit.remove_calls == 0
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None and task.status == TaskStatus.ADDING.value
 
 
 def _set_verification_level(

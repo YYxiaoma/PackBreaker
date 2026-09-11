@@ -163,7 +163,8 @@ M2 的代码能力、自动化证据与仍依赖真实语料/环境的退出项�
 - ADDING 覆盖 qB 响应丢失与“journal 已 APPLIED、task 状态尚未提交”两个崩溃点；重复执行只能收敛到同一个 qB 任务。FULL_VERIFIED 可按能力进入 SEEDING，CLIENT_CHECK_REQUIRED 必须保持 `skip_checking=false` 并进入 CLIENT_VERIFYING。
 - CLIENT_VERIFYING 必须以独立 recheck journal + 单步状态 tick 工作：校验开始后崩溃或响应丢失不得重复 recheck；只有存在 checking/完成变化证据且最终 `progress=1` 才进入 SEEDING，观察过 checking 后以 `<1` 停止则进入 RETRY；外部删除、save path/tag 变化必须失败关闭并要求对账。
 - SEEDING 必须以独立 start journal 驱动：start intent 前再次确认 source inventory、target root、下载器 binding、add journal 与可选 recheck journal；只允许停止且 `progress=1` 的本系统 torrent 启动，实际进入 `uploading`/`stalledUP`/`queuedUP`/`forcedUP` 且 `progress=1` 后才能 `SEEDING → DONE`。连续或 10 路并发触发只允许一个有效 start；start 响应丢失和“journal 已 APPLIED、task 尚未 DONE”必须无重复副作用恢复，外部停止、删除、save path/tag 漂移必须失败关闭或进入对账。
-- 启动恢复必须有界扫描 `LINKING/ADDING/CLIENT_VERIFYING/SEEDING`，按最久未更新优先；同一 stage 未变化时停止本轮，坏 checkpoint/plan 只能阻断对应任务且不能阻断后续任务或 readiness。恢复程序级异常必须让启动失败，同时释放实例锁；limit 截断不得触发未扫描任务的任何副作用。
+- 启动恢复必须有界扫描 `LINKING/ADDING/CLIENT_VERIFYING/SEEDING/ROLLING_BACK`，按最久未更新优先；同一 stage 未变化时停止本轮，坏 checkpoint/plan 只能阻断对应任务且不能阻断后续任务或 readiness。恢复程序级异常必须让启动失败，同时释放实例锁；limit 截断不得触发未扫描任务的任何副作用。
+- 取消/回滚必须证明 qB 与文件资源都属于当前 task/execution plan：qB remove 必须固定 `deleteFiles=false`，响应丢失后不得盲目重复；若 qB 任务仍存在，文件回滚前必须先移除下载器任务。hardlink 与目录只按 journal ID 逆序撤销，外部替换、非空目录或未决文件 journal 必须阻断自动完成。故障注入覆盖“qB remove 已 APPLIED、task 仍 ROLLING_BACK”，启动恢复不得产生第二次 remove。
 - 源文件在所有验收场景中内容与 inode 不变。
 - 数据库、配置导出、日志、通知和诊断包无可用明文凭证。
 - 备份、迁移、升级健康检查和失败回滚演练通过。

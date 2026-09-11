@@ -21,6 +21,7 @@ from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.downloader_operations import (
     QbittorrentAddOperationService,
     QbittorrentRecheckOperationService,
+    QbittorrentRemoveOperationService,
     QbittorrentStartOperationService,
 )
 from backend.app.application.downloaders import DownloaderService
@@ -29,6 +30,7 @@ from backend.app.application.filesystem_operations import FilesystemOperationSer
 from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
 from backend.app.application.task_adding import TaskAddingCoordinator
+from backend.app.application.task_cancellation import TaskCancellationCoordinator
 from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
 from backend.app.application.task_linking import TaskLinkingCoordinator
 from backend.app.application.task_recovery import TaskRecoveryCoordinator
@@ -110,6 +112,8 @@ def create_app(
         app.state.qbittorrent_recheck_operation_service = qbit_recheck_operations
         qbit_start_operations = QbittorrentStartOperationService(resolved_runtime.session_factory)
         app.state.qbittorrent_start_operation_service = qbit_start_operations
+        qbit_remove_operations = QbittorrentRemoveOperationService(resolved_runtime.session_factory)
+        app.state.qbittorrent_remove_operation_service = qbit_remove_operations
         site_service = SiteService(resolved_runtime.session_factory, secret_store)
         app.state.site_service = site_service
         task_analysis_service = TaskAnalysisService(
@@ -152,12 +156,20 @@ def create_app(
             data_root=resolved_settings.data_dir,
         )
         app.state.task_seeding_coordinator = task_seeding_coordinator
+        task_cancellation_coordinator = TaskCancellationCoordinator(
+            resolved_runtime.session_factory,
+            downloader_service,
+            qbit_remove_operations,
+            filesystem_operations,
+        )
+        app.state.task_cancellation_coordinator = task_cancellation_coordinator
         task_recovery_coordinator = TaskRecoveryCoordinator(
             resolved_runtime.session_factory,
             task_linking_coordinator,
             task_adding_coordinator,
             task_client_verification_coordinator,
             task_seeding_coordinator,
+            task_cancellation_coordinator,
         )
         app.state.task_recovery_coordinator = task_recovery_coordinator
         try:

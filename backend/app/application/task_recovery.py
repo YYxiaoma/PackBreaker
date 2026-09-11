@@ -20,6 +20,7 @@ _RECOVERABLE_STATUSES = (
     TaskStatus.ADDING,
     TaskStatus.CLIENT_VERIFYING,
     TaskStatus.SEEDING,
+    TaskStatus.ROLLING_BACK,
 )
 _DEFAULT_RECOVERY_LIMIT = 100
 _DEFAULT_MAX_STEPS_PER_TASK = 4
@@ -60,6 +61,10 @@ class AsyncTaskRecoveryPort(Protocol):
     async def execute(self, unit_id: str, *, execution_plan_id: str) -> object: ...
 
 
+class CancellationRecoveryPort(Protocol):
+    async def resume(self, task_id: str) -> object: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _RecoveryTarget:
     task_id: str
@@ -78,12 +83,14 @@ class TaskRecoveryCoordinator:
         adding: AsyncTaskRecoveryPort,
         client_verification: AsyncTaskRecoveryPort,
         seeding: AsyncTaskRecoveryPort,
+        cancellation: CancellationRecoveryPort | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._linking = linking
         self._adding = adding
         self._client_verification = client_verification
         self._seeding = seeding
+        self._cancellation = cancellation
 
     async def reconcile_once(
         self,
@@ -122,7 +129,7 @@ class TaskRecoveryCoordinator:
                 code="RECOVERY_TASK_STATE_INVALID",
                 status=409,
                 title="任务状态不需要启动恢复",
-                detail="只有 LINKING/ADDING/CLIENT_VERIFYING/SEEDING 会进入启动恢复扫描",
+                detail="仅 LINKING/ADDING/CLIENT_VERIFYING/SEEDING/ROLLING_BACK 进入启动恢复",
             )
 
         steps: list[TaskStatus] = []
@@ -218,6 +225,16 @@ class TaskRecoveryCoordinator:
                 target.unit_id,
                 execution_plan_id=target.execution_plan_id,
             )
+            return
+        if target.status is TaskStatus.ROLLING_BACK:
+            if self._cancellation is None:
+                raise ApplicationError(
+                    code="RECOVERY_CANCELLATION_UNAVAILABLE",
+                    status=409,
+                    title="启动恢复缺少取消协调器",
+                    detail="ROLLING_BACK 任务不能在未注册取消协调器时自动恢复",
+                )
+            await self._cancellation.resume(target.task_id)
             return
         raise AssertionError(f"未处理的恢复状态: {target.status.value}")
 
