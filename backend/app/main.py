@@ -44,6 +44,10 @@ from backend.app.application.task_operations import TaskOperationService
 from backend.app.application.task_recovery import TaskRecoveryCoordinator
 from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.application.tasks import TaskAnalysisService
+from backend.app.application.transmission_operations import (
+    TransmissionAddOperationService,
+    TransmissionVerifyOperationService,
+)
 from backend.app.config import AppSettings
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
 from backend.app.infrastructure.runtime import RuntimeManager
@@ -120,6 +124,14 @@ def create_app(
             resolved_runtime.session_factory
         )
         app.state.qbittorrent_recheck_operation_service = qbit_recheck_operations
+        transmission_add_operations = TransmissionAddOperationService(
+            resolved_runtime.session_factory
+        )
+        app.state.transmission_add_operation_service = transmission_add_operations
+        transmission_verify_operations = TransmissionVerifyOperationService(
+            resolved_runtime.session_factory
+        )
+        app.state.transmission_verify_operation_service = transmission_verify_operations
         qbit_start_operations = QbittorrentStartOperationService(resolved_runtime.session_factory)
         app.state.qbittorrent_start_operation_service = qbit_start_operations
         qbit_remove_operations = QbittorrentRemoveOperationService(resolved_runtime.session_factory)
@@ -160,6 +172,7 @@ def create_app(
             site_service,
             downloader_service,
             qbit_operations,
+            transmission_add_operations,
             data_root=resolved_settings.data_dir,
         )
         app.state.task_adding_coordinator = task_adding_coordinator
@@ -167,6 +180,7 @@ def create_app(
             resolved_runtime.session_factory,
             downloader_service,
             qbit_recheck_operations,
+            transmission_verify_operations,
             data_root=resolved_settings.data_dir,
         )
         app.state.task_client_verification_coordinator = task_client_verification_coordinator

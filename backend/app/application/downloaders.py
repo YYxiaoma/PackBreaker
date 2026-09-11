@@ -173,6 +173,23 @@ class DownloaderService:
         with self._session_factory() as session:
             return self._view(self._require_record(DownloaderRepository(session), downloader_id))
 
+    def write_binding(
+        self, downloader_id: str
+    ) -> QbittorrentWriteBinding | TransmissionWriteBinding:
+        with self._session_factory() as session:
+            record = self._require_record(DownloaderRepository(session), downloader_id)
+            kind = DownloaderKind(record.type)
+        if kind is DownloaderKind.QBITTORRENT:
+            return self.qbittorrent_write_binding(downloader_id)
+        if kind is DownloaderKind.TRANSMISSION:
+            return self.transmission_write_binding(downloader_id)
+        raise ApplicationError(
+            code="DOWNLOADER_KIND_UNSUPPORTED",
+            status=409,
+            title="目标下载器类型不支持",
+            detail="当前写入主链不支持该下载器类型",
+        )
+
     def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBinding:
         with self._session_factory() as session:
             record = self._require_record(DownloaderRepository(session), downloader_id)

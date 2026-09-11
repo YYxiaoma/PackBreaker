@@ -1703,26 +1703,27 @@ class TaskAnalysisService:
                 title="目标下载器不存在",
                 detail="指定目标下载器配置不存在",
             )
-        if DownloaderKind(record.type) is not DownloaderKind.QBITTORRENT:
+        kind = DownloaderKind(record.type)
+        if kind not in {DownloaderKind.QBITTORRENT, DownloaderKind.TRANSMISSION}:
             raise ApplicationError(
                 code="EXECUTION_PLAN_TARGET_DOWNLOADER_UNSUPPORTED",
                 status=409,
                 title="目标下载器类型暂不支持",
-                detail="M3 当前 execution plan 写链只支持 qBittorrent",
+                detail="当前 execution plan 写链只支持 qBittorrent 与 Transmission",
             )
         if (
             not record.enabled
             or record.connection_status != ProbeStatus.OK.value
             or record.path_mapping_status != ProbeStatus.OK.value
-            or record.secret_id is None
+            or (kind is DownloaderKind.QBITTORRENT and record.secret_id is None)
         ):
             raise ApplicationError(
                 code="EXECUTION_PLAN_TARGET_DOWNLOADER_NOT_READY",
                 status=409,
                 title="目标下载器安全门未就绪",
-                detail="目标 qBittorrent 必须已启用且连接、路径映射、凭证均保持有效",
+                detail="目标下载器必须已启用且连接、路径映射与所需凭证均保持有效",
             )
-        if require_client_verification and (
+        if (require_client_verification or kind is DownloaderKind.TRANSMISSION) and (
             record.capabilities.get("supports_force_recheck") is not True
             or record.capabilities.get("supports_verify_progress") is not True
         ):
@@ -1730,7 +1731,7 @@ class TaskAnalysisService:
                 code="EXECUTION_PLAN_TARGET_DOWNLOADER_NOT_READY",
                 status=409,
                 title="目标下载器客户端校验能力未就绪",
-                detail="CLIENT_VERIFYING 计划要求 qBittorrent 明确支持强制 recheck 与校验进度读取",
+                detail="客户端校验计划要求目标下载器明确支持强制校验与校验进度读取",
             )
         try:
             mappings = tuple(
@@ -1760,7 +1761,7 @@ class TaskAnalysisService:
                 code="EXECUTION_PLAN_TARGET_MAPPING_INVALID",
                 status=409,
                 title="目标下载器路径映射不可用",
-                detail="target_root 必须能唯一反向映射到目标 qBittorrent 保存路径",
+                detail="target_root 必须能唯一反向映射到目标下载器保存路径",
             ) from exc
         return _TargetDownloaderPlanBinding(
             downloader_id=record.id,

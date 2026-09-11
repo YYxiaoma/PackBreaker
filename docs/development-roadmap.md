@@ -118,7 +118,7 @@ qBittorrent 写侧现已落地 5.2.3/WebAPI 2.15.1 内部主链切片：executio
 - 实现三种 99% 修复模式、跨文件 piece 分析、硬链接写入隔离和缺失小文件补齐。
 - 实现清理/对账报告与人工修复清单。
 
-当前实现进度：Transmission 4.1.3 的 JSON-RPC 2.0 写侧前置层已落地，包含 session-id 握手、暂停添加、重复 torrent 显式识别、状态读取、强制校验、启动/停止，以及保留本地数据的任务移除；下载器连接探测会冻结 `rpc_version_semver` 与校验能力，并可生成受安全门约束的 Transmission write binding。该切片尚未接入 operation journal、TaskAdding/CLIENT_VERIFYING/SEEDING 状态机，因此生产任务执行链仍只允许 qBittorrent，不能把这些 RPC 原语视为 Transmission 端到端已完成。
+当前实现进度：Transmission 4.1.3 的 JSON-RPC 2.0 写侧已从 RPC 原语继续接入 journal-backed 主链。execution plan 现在允许绑定已通过安全门的 Transmission，并且无论上游是否 `FULL_VERIFIED` 都要求能力快照明确支持 force verify 与校验进度；`TaskAddingCoordinator` 使用独立 `TRANSMISSION_ADD` journal 包围暂停添加，以 ownership label + hash + save path 证明归属，10 路并发只会产生一次远端 add，响应丢失时也只凭真实已归属状态恢复，已有/duplicate torrent 不会被隐式认领。`TaskClientVerificationCoordinator` 再以独立 `TRANSMISSION_VERIFY` journal 包围 `torrent_verify`，未知结果只有 checking 或相对 before snapshot 的可证明状态变化才能恢复为 APPLIED，否则转入对账而不盲目重复 verify；即使计划证据为 `FULL_VERIFIED`，Transmission 也固定进入 `CLIENT_VERIFYING`，绝不携带 skip-checking 语义。校验完成后当前切片安全停靠在 `SEEDING`，启动恢复/周期驱动会返回 WAITING 而不会误调用 qBittorrent start；Transmission start/做种确认、取消/回滚和 journal 对账仍待后续 M4 切片，因此尚不能视为 Transmission 端到端完成。
 
 ### 退出条件
 

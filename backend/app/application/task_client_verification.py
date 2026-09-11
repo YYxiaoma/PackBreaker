@@ -14,18 +14,25 @@ from backend.app.application.downloader_operations import (
     QbittorrentRecheckOperationResult,
     QbittorrentRecheckOperationService,
 )
-from backend.app.application.downloaders import QbittorrentWriteBinding
+from backend.app.application.downloaders import QbittorrentWriteBinding, TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
 from backend.app.application.task_adding import (
     CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION,
     POST_ADD_CHECKPOINT_SCHEMA_VERSION,
     SEEDING_CHECKPOINT_SCHEMA_VERSION,
 )
+from backend.app.application.transmission_operations import (
+    TRANSMISSION_ADD_OPERATION,
+    TransmissionVerifyOperationRequest,
+    TransmissionVerifyOperationResult,
+    TransmissionVerifyOperationService,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.execution_plan import EXECUTION_PLAN_SCHEMA_VERSION
 from backend.app.domain.idempotency import candidate_execution_key
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_state import TaskStatus
+from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.persistence.models import OperationJournal, TaskExecutionPlanRecord
 from backend.app.infrastructure.persistence.repositories import (
     OperationJournalRepository,
@@ -38,8 +45,10 @@ from backend.app.infrastructure.persistence.task_analysis_repositories import (
 from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 
 
-class QbittorrentBindingProvider(Protocol):
-    def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBinding: ...
+class DownloaderBindingProvider(Protocol):
+    def write_binding(
+        self, downloader_id: str
+    ) -> QbittorrentWriteBinding | TransmissionWriteBinding: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +83,8 @@ class _AuthorizedVerification:
     target_downloader_version: int
     target_downloader_binding_digest: str
     target_remote_save_path: str
-    qbit_add_journal_id: str
+    add_journal_id: str
+    downloader_kind: DownloaderKind
     torrent_hash: str
     ownership_tag: str
     checkpoint: dict[str, object]
@@ -82,19 +92,21 @@ class _AuthorizedVerification:
 
 
 class TaskClientVerificationCoordinator:
-    """CLIENT_VERIFYING 的单步 tick；不长轮询、不重复 recheck，只凭真实 qB 状态推进。"""
+    """CLIENT_VERIFYING 单步 tick；不长轮询、不盲目重复校验，只凭真实下载器状态推进。"""
 
     def __init__(
         self,
         session_factory: sessionmaker[Session],
-        downloader_service: QbittorrentBindingProvider,
+        downloader_service: DownloaderBindingProvider,
         recheck_operations: QbittorrentRecheckOperationService,
+        transmission_verify_operations: TransmissionVerifyOperationService | None = None,
         *,
         data_root: Path,
     ) -> None:
         self._session_factory = session_factory
         self._downloader_service = downloader_service
         self._recheck_operations = recheck_operations
+        self._transmission_verify_operations = transmission_verify_operations
         self._data_root = data_root
         self._filesystem = SafeFilesystemGateway(data_root)
 
@@ -117,22 +129,55 @@ class TaskClientVerificationCoordinator:
             remote_torrent_id=authorized.candidate_torrent_id,
             target_downloader_id=authorized.target_downloader_id,
         )
-        result = await self._recheck_operations.execute(
-            QbittorrentRecheckOperationRequest(
-                task_id=authorized.task_id,
-                candidate_key=candidate_key,
-                downloader_id=authorized.target_downloader_id,
-                downloader_version=authorized.target_downloader_version,
-                execution_plan_id=authorized.plan_id,
-                qbit_add_journal_id=authorized.qbit_add_journal_id,
-                torrent_hash=authorized.torrent_hash,
-                remote_save_path=authorized.target_remote_save_path,
-                ownership_tag=authorized.ownership_tag,
-            ),
-            binding,
-        )
+        if authorized.downloader_kind is DownloaderKind.QBITTORRENT:
+            if not isinstance(binding, QbittorrentWriteBinding):
+                raise _verification_binding_changed("目标下载器类型与 ADDING checkpoint 不一致")
+            result: (
+                QbittorrentRecheckOperationResult | TransmissionVerifyOperationResult
+            ) = await self._recheck_operations.execute(
+                QbittorrentRecheckOperationRequest(
+                    task_id=authorized.task_id,
+                    candidate_key=candidate_key,
+                    downloader_id=authorized.target_downloader_id,
+                    downloader_version=authorized.target_downloader_version,
+                    execution_plan_id=authorized.plan_id,
+                    qbit_add_journal_id=authorized.add_journal_id,
+                    torrent_hash=authorized.torrent_hash,
+                    remote_save_path=authorized.target_remote_save_path,
+                    ownership_tag=authorized.ownership_tag,
+                ),
+                binding,
+            )
+            fault_stage = "after_recheck_applied"
+            client_name = "qBittorrent"
+        else:
+            if not isinstance(binding, TransmissionWriteBinding):
+                raise _verification_binding_changed("目标下载器类型与 ADDING checkpoint 不一致")
+            if self._transmission_verify_operations is None:
+                raise ApplicationError(
+                    code="CLIENT_VERIFYING_DOWNLOADER_UNSUPPORTED",
+                    status=409,
+                    title="Transmission 校验服务未注册",
+                    detail="当前运行时尚未注册 journal-backed Transmission verify 服务",
+                )
+            result = await self._transmission_verify_operations.execute(
+                TransmissionVerifyOperationRequest(
+                    task_id=authorized.task_id,
+                    candidate_key=candidate_key,
+                    downloader_id=authorized.target_downloader_id,
+                    downloader_version=authorized.target_downloader_version,
+                    execution_plan_id=authorized.plan_id,
+                    add_journal_id=authorized.add_journal_id,
+                    torrent_hash=authorized.torrent_hash,
+                    remote_save_path=authorized.target_remote_save_path,
+                    ownership_tag=authorized.ownership_tag,
+                ),
+                binding,
+            )
+            fault_stage = "after_transmission_verify_applied"
+            client_name = "Transmission"
         if fault_hook is not None:
-            fault_hook("after_recheck_applied")
+            fault_hook(fault_stage)
 
         checking_observed = authorized.checking_observed or result.checking_observed
         if result.checking:
@@ -149,7 +194,7 @@ class TaskClientVerificationCoordinator:
                 to_status=TaskStatus.SEEDING,
                 checking_observed=checking_observed,
                 outcome="VERIFIED",
-                reason="qBittorrent 完整 recheck 已确认 100%，进入 SEEDING",
+                reason=f"{client_name} 完整客户端校验已确认 100%，进入 SEEDING",
             )
         if result.verification_incomplete and checking_observed:
             return self._finish(
@@ -158,7 +203,7 @@ class TaskClientVerificationCoordinator:
                 to_status=TaskStatus.RETRY,
                 checking_observed=True,
                 outcome="INCOMPLETE",
-                reason="qBittorrent recheck 已结束但内容未达到 100%，转入 RETRY",
+                reason=f"{client_name} 客户端校验已结束但内容未达到 100%，转入 RETRY",
             )
         if result.verification_complete or result.verification_incomplete:
             return self._record_progress(
@@ -170,7 +215,7 @@ class TaskClientVerificationCoordinator:
         raise ApplicationError(
             code="CLIENT_VERIFYING_STATE_UNSAFE",
             status=409,
-            title="qBittorrent 校验状态不可安全解释",
+            title="客户端下载器校验状态不可安全解释",
             detail="torrent 离开 checking 后既不是停止且完整，也不是停止且不完整；禁止自动推进",
         )
 
@@ -202,10 +247,10 @@ class TaskClientVerificationCoordinator:
             candidate = TaskCandidateRepository(session).get(plan.candidate_id)
             if candidate is None or candidate.task_id != plan.task_id:
                 raise _verification_plan_not_current()
-            add_journal = OperationJournalRepository(session).get(
-                _required_text(checkpoint, "qbit_journal_id")
-            )
-            self._assert_add_journal(plan, checkpoint, add_journal)
+            downloader_kind = _checkpoint_downloader_kind(checkpoint)
+            add_journal_id = _required_add_journal_id(checkpoint)
+            add_journal = OperationJournalRepository(session).get(add_journal_id)
+            self._assert_add_journal(plan, checkpoint, add_journal, downloader_kind)
 
             return _AuthorizedVerification(
                 task_id=task.id,
@@ -226,7 +271,8 @@ class TaskClientVerificationCoordinator:
                     checkpoint, "target_downloader_binding_digest"
                 ),
                 target_remote_save_path=_required_text(checkpoint, "target_remote_save_path"),
-                qbit_add_journal_id=_required_text(checkpoint, "qbit_journal_id"),
+                add_journal_id=add_journal_id,
+                downloader_kind=downloader_kind,
                 torrent_hash=_required_text(checkpoint, "torrent_hash").lower(),
                 ownership_tag=_required_text(checkpoint, "ownership_tag"),
                 checkpoint=checkpoint,
@@ -271,11 +317,17 @@ class TaskClientVerificationCoordinator:
         plan: TaskExecutionPlanRecord,
         checkpoint: dict[str, object],
         journal: OperationJournal | None,
+        downloader_kind: DownloaderKind,
     ) -> None:
+        expected_operation = (
+            QBITTORRENT_ADD_OPERATION
+            if downloader_kind is DownloaderKind.QBITTORRENT
+            else TRANSMISSION_ADD_OPERATION
+        )
         if (
             journal is None
             or journal.task_id != plan.task_id
-            or journal.operation_type != QBITTORRENT_ADD_OPERATION
+            or journal.operation_type != expected_operation
             or OperationStatus(journal.status) is not OperationStatus.APPLIED
             or journal.intent.get("execution_plan_id") != plan.id
             or journal.target.get("downloader_id") != checkpoint.get("target_downloader_id")
@@ -284,28 +336,24 @@ class TaskClientVerificationCoordinator:
             or journal.after_snapshot.get("save_path") != checkpoint.get("remote_save_path")
             or journal.after_snapshot.get("ownership_tag") != checkpoint.get("ownership_tag")
         ):
-            raise _verification_evidence_invalid(
-                "qBittorrent add journal 无法证明当前 torrent 归属"
-            )
+            raise _verification_evidence_invalid("下载器 add journal 无法证明当前 torrent 归属")
 
     def _load_target_binding(
         self,
         authorized: _AuthorizedVerification,
-    ) -> QbittorrentWriteBinding:
+    ) -> QbittorrentWriteBinding | TransmissionWriteBinding:
         try:
             self._filesystem.assert_directory(
                 relative_path=authorized.target_root,
                 expected_device=authorized.target_device,
             )
-            binding = self._downloader_service.qbittorrent_write_binding(
-                authorized.target_downloader_id
-            )
+            binding = self._downloader_service.write_binding(authorized.target_downloader_id)
         except (ApplicationError, DomainViolation) as exc:
             raise ApplicationError(
                 code="CLIENT_VERIFYING_BINDING_CHANGED",
                 status=409,
                 title="CLIENT_VERIFYING 目标环境已变化",
-                detail="target root 或目标 qBittorrent 已不能证明与 execution plan 一致",
+                detail="target root 或目标下载器已不能证明与 execution plan 一致",
             ) from exc
         normalized_target = self._filesystem.normalize_relative_path(
             authorized.target_root,
@@ -323,10 +371,18 @@ class TaskClientVerificationCoordinator:
                 code="CLIENT_VERIFYING_BINDING_CHANGED",
                 status=409,
                 title="CLIENT_VERIFYING 路径映射已变化",
-                detail="target root 已无法唯一反向映射到计划中的 qBittorrent save path",
+                detail="target root 已无法唯一反向映射到计划中的下载器 save path",
             ) from exc
         if (
-            binding.downloader_version != authorized.target_downloader_version
+            (
+                authorized.downloader_kind is DownloaderKind.QBITTORRENT
+                and not isinstance(binding, QbittorrentWriteBinding)
+            )
+            or (
+                authorized.downloader_kind is DownloaderKind.TRANSMISSION
+                and not isinstance(binding, TransmissionWriteBinding)
+            )
+            or binding.downloader_version != authorized.target_downloader_version
             or binding.binding_digest != authorized.target_downloader_binding_digest
             or remote_save_path != authorized.target_remote_save_path
             or binding.capabilities.get("supports_force_recheck") is not True
@@ -335,7 +391,7 @@ class TaskClientVerificationCoordinator:
             raise ApplicationError(
                 code="CLIENT_VERIFYING_BINDING_CHANGED",
                 status=409,
-                title="CLIENT_VERIFYING qBittorrent 能力已变化",
+                title="CLIENT_VERIFYING 下载器能力已变化",
                 detail="下载器 version、binding digest、save path 或客户端校验能力与计划不一致",
             )
         return binding
@@ -343,7 +399,7 @@ class TaskClientVerificationCoordinator:
     def _record_progress(
         self,
         authorized: _AuthorizedVerification,
-        result: QbittorrentRecheckOperationResult,
+        result: QbittorrentRecheckOperationResult | TransmissionVerifyOperationResult,
         *,
         checking_observed: bool,
         outcome: str,
@@ -381,7 +437,7 @@ class TaskClientVerificationCoordinator:
                     expected_status=TaskStatus.CLIENT_VERIFYING,
                     checkpoint=checkpoint,
                     event_type="CLIENT_VERIFYING_PROGRESS",
-                    reason="已保存 qBittorrent recheck 可恢复进度证据",
+                    reason="已保存客户端下载器校验的可恢复进度证据",
                 )
             except DomainViolation as exc:
                 raise _verification_task_changed() from exc
@@ -399,7 +455,7 @@ class TaskClientVerificationCoordinator:
     def _finish(
         self,
         authorized: _AuthorizedVerification,
-        result: QbittorrentRecheckOperationResult,
+        result: QbittorrentRecheckOperationResult | TransmissionVerifyOperationResult,
         *,
         to_status: TaskStatus,
         checking_observed: bool,
@@ -486,7 +542,7 @@ class TaskClientVerificationCoordinator:
             task_version=task_version,
             status=status,
             execution_plan_id=plan_record_id,
-            recheck_journal_id=_required_text(checkpoint, "recheck_journal_id"),
+            recheck_journal_id=_required_verification_journal_id(checkpoint),
             torrent_hash=_required_text(checkpoint, "torrent_hash"),
             client_state=_required_text(checkpoint, "client_state"),
             progress=_required_progress(checkpoint, "client_progress"),
@@ -499,7 +555,7 @@ class TaskClientVerificationCoordinator:
 
 def _verification_checkpoint(
     previous: dict[str, object],
-    result: QbittorrentRecheckOperationResult,
+    result: QbittorrentRecheckOperationResult | TransmissionVerifyOperationResult,
     *,
     status: TaskStatus,
     checking_observed: bool,
@@ -511,6 +567,7 @@ def _verification_checkpoint(
             "schema_version": CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION,
             "stage": status.value,
             "recheck_journal_id": result.journal_id,
+            "verification_journal_id": result.journal_id,
             "client_state": result.state,
             "client_progress": result.progress,
             "checking_observed": checking_observed,
@@ -525,7 +582,7 @@ def _result_from_values(
     task_version: int,
     status: TaskStatus,
     plan_id: str,
-    result: QbittorrentRecheckOperationResult,
+    result: QbittorrentRecheckOperationResult | TransmissionVerifyOperationResult,
     *,
     outcome: str,
     checking_observed: bool,
@@ -544,6 +601,26 @@ def _result_from_values(
         replayed=result.replayed,
         recovered_after_unknown_result=result.recovered_after_unknown_result,
     )
+
+
+def _required_add_journal_id(payload: dict[str, object]) -> str:
+    value = payload.get("add_journal_id")
+    if value is None:
+        return _required_text(payload, "qbit_journal_id")
+    if not isinstance(value, str) or not value:
+        raise _verification_evidence_invalid("CLIENT_VERIFYING 证据缺少有效 add_journal_id")
+    return value
+
+
+def _required_verification_journal_id(payload: dict[str, object]) -> str:
+    value = payload.get("verification_journal_id")
+    if value is None:
+        return _required_text(payload, "recheck_journal_id")
+    if not isinstance(value, str) or not value:
+        raise _verification_evidence_invalid(
+            "CLIENT_VERIFYING 证据缺少有效 verification_journal_id"
+        )
+    return value
 
 
 def _required_text(payload: dict[str, object], key: str) -> str:
@@ -582,6 +659,30 @@ def _required_progress(payload: dict[str, object], key: str) -> float:
     if not 0.0 <= normalized <= 1.0:
         raise _verification_evidence_invalid(f"CLIENT_VERIFYING {key} 超出 0..1")
     return normalized
+
+
+def _checkpoint_downloader_kind(checkpoint: dict[str, object]) -> DownloaderKind:
+    value = checkpoint.get("downloader_kind")
+    if value is None:
+        return DownloaderKind.QBITTORRENT
+    if not isinstance(value, str):
+        raise _verification_evidence_invalid("CLIENT_VERIFYING downloader_kind 无效")
+    try:
+        kind = DownloaderKind(value)
+    except ValueError as exc:
+        raise _verification_evidence_invalid("CLIENT_VERIFYING downloader_kind 无效") from exc
+    if kind not in {DownloaderKind.QBITTORRENT, DownloaderKind.TRANSMISSION}:
+        raise _verification_evidence_invalid("CLIENT_VERIFYING downloader_kind 不受支持")
+    return kind
+
+
+def _verification_binding_changed(detail: str) -> ApplicationError:
+    return ApplicationError(
+        code="CLIENT_VERIFYING_BINDING_CHANGED",
+        status=409,
+        title="CLIENT_VERIFYING 目标环境已变化",
+        detail=detail,
+    )
 
 
 def _verification_plan_not_found() -> ApplicationError:

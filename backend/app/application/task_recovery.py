@@ -15,6 +15,7 @@ from backend.app.domain.task_state import (
     TaskCancellationMode,
     TaskStatus,
 )
+from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.persistence.repositories import (
     OperationJournalRepository,
     TaskRepository,
@@ -268,6 +269,8 @@ class TaskRecoveryCoordinator:
             )
             return
         if target.status is TaskStatus.SEEDING:
+            if self._transmission_seeding_is_parked(target.task_id):
+                return
             await self._seeding.execute(
                 target.unit_id,
                 execution_plan_id=target.execution_plan_id,
@@ -317,6 +320,28 @@ class TaskRecoveryCoordinator:
                     title="启动恢复任务状态无效",
                     detail="任务保存了未知状态",
                 ) from exc
+
+    def _transmission_seeding_is_parked(self, task_id: str) -> bool:
+        with self._session_factory() as session:
+            task = TaskRepository(session).get(task_id)
+            if task is None:
+                raise ApplicationError(
+                    code="RECOVERY_TASK_NOT_FOUND",
+                    status=404,
+                    title="启动恢复任务不存在",
+                    detail="检查 Transmission SEEDING 停靠状态时任务已不存在",
+                )
+            value = task.checkpoint.get("downloader_kind")
+            if value is None or value == DownloaderKind.QBITTORRENT.value:
+                return False
+            if value == DownloaderKind.TRANSMISSION.value:
+                return True
+            raise ApplicationError(
+                code="RECOVERY_CHECKPOINT_INVALID",
+                status=409,
+                title="启动恢复检查点无效",
+                detail="SEEDING checkpoint 包含未知 downloader_kind，禁止猜测下载器类型",
+            )
 
     def _recover_abandoned_analysis_cancellation(self, task_id: str) -> None:
         with self._session_factory() as session:

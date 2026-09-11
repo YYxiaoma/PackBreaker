@@ -18,7 +18,7 @@ from backend.app.application.downloader_operations import (
     QbittorrentRemoveOperationService,
     QbittorrentStartOperationService,
 )
-from backend.app.application.downloaders import QbittorrentWriteBinding
+from backend.app.application.downloaders import QbittorrentWriteBinding, TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import (
     FilesystemOperationService,
@@ -34,6 +34,12 @@ from backend.app.application.task_client_verification import TaskClientVerificat
 from backend.app.application.task_driver import ActiveTaskDriver
 from backend.app.application.task_recovery import RecoveryOutcome, TaskRecoveryCoordinator
 from backend.app.application.task_seeding import TaskSeedingCoordinator
+from backend.app.application.transmission_operations import (
+    TRANSMISSION_ADD_OPERATION,
+    TRANSMISSION_VERIFY_OPERATION,
+    TransmissionAddOperationService,
+    TransmissionVerifyOperationService,
+)
 from backend.app.domain.downloader import (
     PathMappingRule,
     ProbeStatus,
@@ -59,6 +65,9 @@ from backend.app.infrastructure.adapters.downloaders import (
     QbittorrentAddRequest,
     QbittorrentAddResult,
     QbittorrentTorrentState,
+    TransmissionAddRequest,
+    TransmissionAddResult,
+    TransmissionTorrentState,
 )
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.database import (
@@ -204,12 +213,65 @@ class _FakeQbittorrent:
             raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "synthetic remove response lost")
 
 
+class _FakeTransmission:
+    def __init__(self) -> None:
+        self.states: dict[str, TransmissionTorrentState] = {}
+        self.add_calls = 0
+        self.verify_calls = 0
+
+    async def add_torrent(self, request: TransmissionAddRequest) -> TransmissionAddResult:
+        self.add_calls += 1
+        meta = parse_torrent(request.torrent_content)
+        torrent_hash = meta.v1_info_hash or meta.v2_info_hash
+        assert torrent_hash is not None
+        if torrent_hash in self.states:
+            return TransmissionAddResult(torrent_hash=torrent_hash, duplicate=True)
+        self.states[torrent_hash] = TransmissionTorrentState(
+            torrent_hash=torrent_hash,
+            download_dir=request.save_path,
+            status=0,
+            labels=request.labels,
+            percent_done=1.0,
+            recheck_progress=0.0,
+        )
+        return TransmissionAddResult(torrent_hash=torrent_hash, duplicate=False)
+
+    async def get_torrents(
+        self, torrent_hashes: tuple[str, ...]
+    ) -> tuple[TransmissionTorrentState, ...]:
+        return tuple(self.states[item] for item in torrent_hashes if item in self.states)
+
+    async def stop_torrent(self, torrent_hash: str) -> None:
+        self.states[torrent_hash] = replace(self.states[torrent_hash], status=0)
+
+    async def start_torrent(self, torrent_hash: str) -> None:
+        raise AssertionError("本切片不能启动 Transmission 做种")
+
+    async def verify_torrent(self, torrent_hash: str) -> None:
+        self.verify_calls += 1
+        self.states[torrent_hash] = replace(
+            self.states[torrent_hash],
+            status=2,
+            recheck_progress=0.1,
+        )
+
+    async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
+        raise AssertionError("本切片不能移除 Transmission 任务")
+
+
 @dataclass
 class _FakeDownloaderProvider:
-    binding: QbittorrentWriteBinding
+    binding: QbittorrentWriteBinding | TransmissionWriteBinding
+
+    def write_binding(
+        self, downloader_id: str
+    ) -> QbittorrentWriteBinding | TransmissionWriteBinding:
+        assert downloader_id == self.binding.downloader_id
+        return self.binding
 
     def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBinding:
         assert downloader_id == self.binding.downloader_id
+        assert isinstance(self.binding, QbittorrentWriteBinding)
         return self.binding
 
 
@@ -526,6 +588,137 @@ async def test_client_check_required_transitions_to_client_verifying_without_ski
 
     assert result.status is TaskStatus.CLIENT_VERIFYING
     assert result.skip_checking is False
+
+
+@pytest.mark.asyncio
+async def test_transmission_full_verified_still_verifies_and_parks_before_start(
+    adding_fixture: _AddingFixture,
+) -> None:
+    current_binding = adding_fixture.downloader_provider.binding
+    assert isinstance(current_binding, QbittorrentWriteBinding)
+    capabilities = {
+        "client": "Transmission",
+        "version": "4.1.3",
+        "api_version": "6.0.0",
+        "supports_skip_checking": False,
+        "supports_force_recheck": True,
+        "supports_verify_progress": True,
+    }
+    binding_digest = downloader_execution_binding_digest(
+        downloader_id=current_binding.downloader_id,
+        version=current_binding.downloader_version,
+        kind=DownloaderKind.TRANSMISSION,
+        enabled=True,
+        connection_status=ProbeStatus.OK,
+        path_mapping_status=ProbeStatus.OK,
+        path_mappings=current_binding.path_mappings,
+        capabilities=capabilities,
+    )
+    transmission = _FakeTransmission()
+    adding_fixture.downloader_provider.binding = TransmissionWriteBinding(
+        downloader_id=current_binding.downloader_id,
+        downloader_version=current_binding.downloader_version,
+        binding_digest=binding_digest,
+        path_mappings=current_binding.path_mappings,
+        capabilities=capabilities,
+        adapter=transmission,
+        data_root=adding_fixture.data_root,
+    )
+    with adding_fixture.factory() as session:
+        plan = TaskExecutionPlanRepository(session).get(adding_fixture.plan_id)
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert plan is not None and task is not None
+        plan_payload = dict(plan.payload)
+        plan_payload["target_downloader_binding_digest"] = binding_digest
+        plan.payload = plan_payload
+        checkpoint = dict(task.checkpoint)
+        checkpoint["target_downloader_binding_digest"] = binding_digest
+        task.checkpoint = checkpoint
+        session.commit()
+
+    adding = TaskAddingCoordinator(
+        adding_fixture.factory,
+        _FakeSiteProvider(adding_fixture.site_adapter),
+        adding_fixture.downloader_provider,
+        QbittorrentAddOperationService(adding_fixture.factory),
+        TransmissionAddOperationService(adding_fixture.factory),
+        data_root=adding_fixture.data_root,
+    )
+    verifier = TaskClientVerificationCoordinator(
+        adding_fixture.factory,
+        adding_fixture.downloader_provider,
+        QbittorrentRecheckOperationService(adding_fixture.factory),
+        TransmissionVerifyOperationService(adding_fixture.factory),
+        data_root=adding_fixture.data_root,
+    )
+
+    added = await adding.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+
+    assert added.status is TaskStatus.CLIENT_VERIFYING
+    assert added.skip_checking is False
+    assert transmission.add_calls == 1
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None
+        assert task.checkpoint["downloader_kind"] == DownloaderKind.TRANSMISSION.value
+        add_journal = session.get(OperationJournal, added.qbit_journal_id)
+        assert add_journal is not None
+        assert add_journal.operation_type == TRANSMISSION_ADD_OPERATION
+
+    checking = await verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert checking.status is TaskStatus.CLIENT_VERIFYING
+    assert checking.verification_outcome == "CHECKING"
+    assert transmission.verify_calls == 1
+
+    transmission.states[added.torrent_hash] = replace(
+        transmission.states[added.torrent_hash],
+        status=0,
+        percent_done=1.0,
+        recheck_progress=1.0,
+    )
+    verified = await verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert verified.status is TaskStatus.SEEDING
+    assert verified.verification_outcome == "VERIFIED"
+    assert transmission.verify_calls == 1
+    with adding_fixture.factory() as session:
+        verify_journal = session.get(OperationJournal, verified.recheck_journal_id)
+        assert verify_journal is not None
+        assert verify_journal.operation_type == TRANSMISSION_VERIFY_OPERATION
+
+    class _NeverLinking:
+        def execute(self, unit_id: str, *, execution_plan_id: str) -> object:
+            raise AssertionError(f"unexpected linking recovery: {unit_id}/{execution_plan_id}")
+
+    class _NeverAsync:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(self, unit_id: str, *, execution_plan_id: str) -> object:
+            self.calls += 1
+            raise AssertionError(f"unexpected async recovery: {unit_id}/{execution_plan_id}")
+
+    seeding = _NeverAsync()
+    recovery = TaskRecoveryCoordinator(
+        adding_fixture.factory,
+        _NeverLinking(),
+        _NeverAsync(),
+        _NeverAsync(),
+        seeding,
+    )
+    recovery_result = await recovery.reconcile_task(adding_fixture.task_id)
+
+    assert recovery_result.outcome is RecoveryOutcome.WAITING
+    assert recovery_result.final_status is TaskStatus.SEEDING
+    assert seeding.calls == 0
 
 
 @pytest.mark.asyncio

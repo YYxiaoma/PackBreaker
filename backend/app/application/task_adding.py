@@ -14,8 +14,13 @@ from backend.app.application.downloader_operations import (
     QbittorrentAddOperationResult,
     QbittorrentAddOperationService,
 )
-from backend.app.application.downloaders import QbittorrentWriteBinding
+from backend.app.application.downloaders import QbittorrentWriteBinding, TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
+from backend.app.application.transmission_operations import (
+    TransmissionAddOperationRequest,
+    TransmissionAddOperationResult,
+    TransmissionAddOperationService,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.execution_plan import EXECUTION_PLAN_SCHEMA_VERSION
 from backend.app.domain.idempotency import candidate_execution_key
@@ -46,8 +51,10 @@ CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION = "packbreaker-client-verification
 SEEDING_CHECKPOINT_SCHEMA_VERSION = "packbreaker-seeding-checkpoint-v1"
 
 
-class QbittorrentBindingProvider(Protocol):
-    def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBinding: ...
+class DownloaderBindingProvider(Protocol):
+    def write_binding(
+        self, downloader_id: str
+    ) -> QbittorrentWriteBinding | TransmissionWriteBinding: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,14 +102,15 @@ class _AuthorizedAdd:
 
 
 class TaskAddingCoordinator:
-    """把 ADDING 检查点安全兑现为一个 qB torrent，并推进客户端下载器校验/做种状态。"""
+    """把 ADDING 检查点安全兑现为受控下载器任务，并推进客户端校验/做种状态。"""
 
     def __init__(
         self,
         session_factory: sessionmaker[Session],
         site_service: AnalysisSiteProvider,
-        downloader_service: QbittorrentBindingProvider,
+        downloader_service: DownloaderBindingProvider,
         qbit_operations: QbittorrentAddOperationService,
+        transmission_operations: TransmissionAddOperationService | None = None,
         *,
         data_root: Path,
     ) -> None:
@@ -110,6 +118,7 @@ class TaskAddingCoordinator:
         self._site_service = site_service
         self._downloader_service = downloader_service
         self._qbit_operations = qbit_operations
+        self._transmission_operations = transmission_operations
         self._data_root = data_root
         self._filesystem = SafeFilesystemGateway(data_root)
 
@@ -136,30 +145,59 @@ class TaskAddingCoordinator:
             remote_torrent_id=authorized.candidate_torrent_id,
             target_downloader_id=authorized.target_downloader_id,
         )
-        skip_checking = (
-            authorized.verification_level is VerificationLevel.FULL_VERIFIED
-            and not authorized.client_check_required
-            and binding.capabilities.get("supports_skip_checking") is True
-        )
-        result = await self._qbit_operations.execute(
-            QbittorrentAddOperationRequest(
-                task_id=authorized.task_id,
-                candidate_key=candidate_key,
-                downloader_id=authorized.target_downloader_id,
-                downloader_version=authorized.target_downloader_version,
-                execution_plan_id=authorized.plan_id,
-                execution_plan_digest=authorized.plan_digest,
-                expected_metainfo_digest=authorized.metainfo_digest,
-                torrent_content=torrent_content,
-                remote_save_path=authorized.target_remote_save_path,
-                verification_level=authorized.verification_level,
-                skip_checking=skip_checking,
-            ),
-            binding,
-        )
+        if isinstance(binding, QbittorrentWriteBinding):
+            skip_checking = (
+                authorized.verification_level is VerificationLevel.FULL_VERIFIED
+                and not authorized.client_check_required
+                and binding.capabilities.get("supports_skip_checking") is True
+            )
+            result: (
+                QbittorrentAddOperationResult | TransmissionAddOperationResult
+            ) = await self._qbit_operations.execute(
+                QbittorrentAddOperationRequest(
+                    task_id=authorized.task_id,
+                    candidate_key=candidate_key,
+                    downloader_id=authorized.target_downloader_id,
+                    downloader_version=authorized.target_downloader_version,
+                    execution_plan_id=authorized.plan_id,
+                    execution_plan_digest=authorized.plan_digest,
+                    expected_metainfo_digest=authorized.metainfo_digest,
+                    torrent_content=torrent_content,
+                    remote_save_path=authorized.target_remote_save_path,
+                    verification_level=authorized.verification_level,
+                    skip_checking=skip_checking,
+                ),
+                binding,
+            )
+            downloader_kind = DownloaderKind.QBITTORRENT
+            fault_stage = "after_qb_applied"
+        else:
+            if self._transmission_operations is None:
+                raise ApplicationError(
+                    code="ADDING_DOWNLOADER_UNSUPPORTED",
+                    status=409,
+                    title="Transmission 添加服务未注册",
+                    detail="当前运行时尚未注册 journal-backed Transmission 添加服务",
+                )
+            result = await self._transmission_operations.execute(
+                TransmissionAddOperationRequest(
+                    task_id=authorized.task_id,
+                    candidate_key=candidate_key,
+                    downloader_id=authorized.target_downloader_id,
+                    downloader_version=authorized.target_downloader_version,
+                    execution_plan_id=authorized.plan_id,
+                    execution_plan_digest=authorized.plan_digest,
+                    expected_metainfo_digest=authorized.metainfo_digest,
+                    torrent_content=torrent_content,
+                    remote_save_path=authorized.target_remote_save_path,
+                ),
+                binding,
+            )
+            downloader_kind = DownloaderKind.TRANSMISSION
+            fault_stage = "after_transmission_applied"
         if fault_hook is not None:
-            fault_hook("after_qb_applied")
-        return self._complete_task(authorized, result)
+            fault_hook(fault_stage)
+        return self._complete_task(authorized, result, downloader_kind=downloader_kind)
 
     def _load_authorized(self, unit_id: str, plan_id: str) -> _AuthorizedAdd:
         with self._session_factory() as session:
@@ -324,19 +362,19 @@ class TaskAddingCoordinator:
                 code="ADDING_TARGET_CHANGED",
                 status=409,
                 title="ADDING 目标目录已变化",
-                detail="qBittorrent 写入前 target root 身份或设备已变化",
+                detail="下载器写入前 target root 身份或设备已变化",
             ) from exc
 
-    def _load_target_binding(self, authorized: _AuthorizedAdd) -> QbittorrentWriteBinding:
+    def _load_target_binding(
+        self, authorized: _AuthorizedAdd
+    ) -> QbittorrentWriteBinding | TransmissionWriteBinding:
         try:
-            binding = self._downloader_service.qbittorrent_write_binding(
-                authorized.target_downloader_id
-            )
+            binding = self._downloader_service.write_binding(authorized.target_downloader_id)
         except ApplicationError as exc:
             raise ApplicationError(
                 code="ADDING_DOWNLOADER_CHANGED",
                 status=409,
-                title="目标 qBittorrent 配置已变化",
+                title="目标下载器配置已变化",
                 detail="execution plan 授权后的目标下载器已不可用于安全写入",
             ) from exc
         normalized_target = self._filesystem.normalize_relative_path(
@@ -355,7 +393,7 @@ class TaskAddingCoordinator:
                 code="ADDING_TARGET_MAPPING_CHANGED",
                 status=409,
                 title="目标下载器路径映射已变化",
-                detail="target root 已无法按 execution plan 唯一映射到 qBittorrent",
+                detail="target root 已无法按 execution plan 唯一映射到目标下载器",
             ) from exc
         if (
             binding.downloader_version != authorized.target_downloader_version
@@ -365,7 +403,7 @@ class TaskAddingCoordinator:
             raise ApplicationError(
                 code="ADDING_DOWNLOADER_CHANGED",
                 status=409,
-                title="目标 qBittorrent 配置已变化",
+                title="目标下载器配置已变化",
                 detail="execution plan 授权后的下载器版本、能力或路径映射已变化",
             )
         return binding
@@ -423,7 +461,9 @@ class TaskAddingCoordinator:
     def _complete_task(
         self,
         authorized: _AuthorizedAdd,
-        result: QbittorrentAddOperationResult,
+        result: QbittorrentAddOperationResult | TransmissionAddOperationResult,
+        *,
+        downloader_kind: DownloaderKind,
     ) -> TaskAddingResult:
         checkpoint = {
             "schema_version": POST_ADD_CHECKPOINT_SCHEMA_VERSION,
@@ -437,6 +477,8 @@ class TaskAddingCoordinator:
             "target_downloader_binding_digest": authorized.target_downloader_binding_digest,
             "target_remote_save_path": authorized.target_remote_save_path,
             "qbit_journal_id": result.journal_id,
+            "add_journal_id": result.journal_id,
+            "downloader_kind": downloader_kind.value,
             "torrent_hash": result.torrent_hash,
             "remote_save_path": result.save_path,
             "ownership_tag": result.ownership_tag,
@@ -455,18 +497,26 @@ class TaskAddingCoordinator:
                     code="ADDING_TASK_CHANGED",
                     status=409,
                     title="ADDING 任务状态已经变化",
-                    detail="qBittorrent 已登记完成，但任务状态无法安全推进，需要对账",
+                    detail="下载器添加已登记完成，但任务状态无法安全推进，需要对账",
                 )
             try:
                 task = repository.transition_after_add(
                     task_id=task.id,
                     expected_version=task.version,
-                    downloader=DownloaderKind.QBITTORRENT,
+                    downloader=downloader_kind,
                     verification_level=authorized.verification_level,
                     skip_checking_enabled=result.skip_checking,
                     preflight_current=True,
-                    event_type="QBITTORRENT_ADD_CONFIRMED",
-                    reason="qBittorrent 暂停添加已由 operation journal 和实际状态共同确认",
+                    event_type=(
+                        "QBITTORRENT_ADD_CONFIRMED"
+                        if downloader_kind is DownloaderKind.QBITTORRENT
+                        else "TRANSMISSION_ADD_CONFIRMED"
+                    ),
+                    reason=(
+                        "qBittorrent 暂停添加已由 operation journal 和实际状态共同确认"
+                        if downloader_kind is DownloaderKind.QBITTORRENT
+                        else "Transmission 暂停添加已由 operation journal 和实际状态共同确认"
+                    ),
                     checkpoint=checkpoint,
                 )
             except DomainViolation as exc:
@@ -474,7 +524,7 @@ class TaskAddingCoordinator:
                     code="ADDING_TASK_CHANGED",
                     status=409,
                     title="ADDING 任务状态已经变化",
-                    detail="qBittorrent 已登记完成，但任务状态无法安全推进，需要对账",
+                    detail="下载器添加已登记完成，但任务状态无法安全推进，需要对账",
                 ) from exc
             session.commit()
             status = TaskStatus(task.status)
@@ -538,7 +588,7 @@ class TaskAddingCoordinator:
             raise ApplicationError(
                 code="POST_ADD_CHECKPOINT_MISMATCH",
                 status=409,
-                title="qBittorrent 添加完成检查点不匹配",
+                title="下载器添加完成检查点不匹配",
                 detail="当前任务状态不能证明来自指定 execution plan 的已确认添加结果",
             )
         return TaskAddingResult(
@@ -546,7 +596,7 @@ class TaskAddingCoordinator:
             task_version=task_version,
             status=status,
             execution_plan_id=plan_record_id,
-            qbit_journal_id=_required_text(checkpoint, "qbit_journal_id"),
+            qbit_journal_id=_required_add_journal_id(checkpoint),
             torrent_hash=_required_text(checkpoint, "torrent_hash"),
             remote_save_path=_required_text(checkpoint, "remote_save_path"),
             ownership_tag=_required_text(checkpoint, "ownership_tag"),
@@ -554,6 +604,15 @@ class TaskAddingCoordinator:
             replayed=True,
             recovered_after_unknown_result=False,
         )
+
+
+def _required_add_journal_id(payload: dict[str, object]) -> str:
+    value = payload.get("add_journal_id")
+    if value is None:
+        return _required_text(payload, "qbit_journal_id")
+    if not isinstance(value, str) or not value:
+        raise _adding_plan_invalid("证据缺少有效 add_journal_id")
+    return value
 
 
 def _required_text(payload: dict[str, object], key: str) -> str:

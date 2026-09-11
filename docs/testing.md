@@ -62,6 +62,10 @@
 - 任一 missing/ambiguous 范围、协议不支持或源快照变化均阻止 FULL_VERIFIED。
 - Transmission 请求永远不携带跳过校验语义；添加必须显式 `paused=true`，校验只能通过独立 `torrent_verify` 动作触发。
 - Transmission 4.1.x 使用 JSON-RPC 2.0 snake_case 协议；测试覆盖 409 session-id 重试、`torrent_add` 重复结果、`torrent_get` 状态/进度解析，以及 stop/verify/start 动作。
+- Transmission execution plan 即使面对 `FULL_VERIFIED` 也必须要求 force verify + verify progress 能力；ADDING 固定进入 `CLIENT_VERIFYING`，不得因已有 piece 证据直接跳到做种。
+- `TRANSMISSION_ADD` 与 `TRANSMISSION_VERIFY` 必须各自先提交 operation journal intent；相同 candidate/downloader 10 路并发只允许一个远端 add/verify 动作，响应丢失不得盲目重发。
+- Transmission 已存在或返回 duplicate 的 torrent 不能仅凭 info-hash 认领；恢复必须同时证明 PackBreaker ownership label、hash 与 save path。verify 未知结果只有 checking 或相对 before snapshot 的可证明变化才能收敛为 APPLIED。
+- 本阶段 Transmission 校验成功后停靠 `SEEDING`；在独立 start/做种确认切片完成前，启动恢复和周期驱动必须保持 WAITING，且不得调用 qBittorrent seeding/start 端口。
 
 ### 5.3 路径与清理
 

@@ -1043,6 +1043,8 @@ export interface components {
       | 'QBITTORRENT_RECHECK'
       | 'QBITTORRENT_START'
       | 'QBITTORRENT_REMOVE'
+      | 'TRANSMISSION_ADD'
+      | 'TRANSMISSION_VERIFY'
       | 'OTHER';
     /**
      * OperationStatus

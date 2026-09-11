@@ -6,11 +6,13 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from backend.app.api.dependencies import CSRF_COOKIE
+from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.task_actions import (
     CancelTaskAction,
@@ -1188,6 +1190,51 @@ def test_task_operation_api_redacts_journal_and_reconciles_idempotently(tmp_path
         client.__exit__(None, None, None)
 
 
+def test_transmission_plan_binding_is_allowed_and_requires_verify_capabilities(
+    tmp_path: Path,
+) -> None:
+    client, app, settings = _authenticated_client(tmp_path)
+    try:
+        target_root = settings.data_dir / "tr-plan-target"
+        target_root.mkdir()
+        downloader_id = _create_ready_transmission_target(app, settings)
+        service = app.state.task_analysis_service
+
+        with app.state.runtime.session_factory() as session:
+            binding = service._target_downloader_plan_binding(  # noqa: SLF001
+                session,
+                downloader_id,
+                target_root,
+                require_client_verification=False,
+            )
+        assert binding.downloader_id == downloader_id
+        assert binding.downloader_version == 1
+        assert binding.remote_save_path == "/downloads/tr-plan-target"
+
+        with app.state.runtime.session_factory() as session:
+            downloader = session.get(Downloader, downloader_id)
+            assert downloader is not None
+            downloader.capabilities = {
+                **downloader.capabilities,
+                "supports_force_recheck": False,
+            }
+            session.commit()
+
+        with (
+            app.state.runtime.session_factory() as session,
+            pytest.raises(ApplicationError) as failure,
+        ):
+            service._target_downloader_plan_binding(  # noqa: SLF001
+                session,
+                downloader_id,
+                target_root,
+                require_client_verification=False,
+            )
+        assert failure.value.code == "EXECUTION_PLAN_TARGET_DOWNLOADER_NOT_READY"
+    finally:
+        client.__exit__(None, None, None)
+
+
 def _authenticated_client(tmp_path: Path) -> tuple[TestClient, FastAPI, AppSettings]:
     settings = AppSettings(
         config_dir=(tmp_path / "config").resolve(),
@@ -1250,6 +1297,47 @@ def _create_ready_qb_target(app: FastAPI, settings: AppSettings) -> str:
                     "version": "v5.2.3",
                     "api_version": "2.15.1",
                     "supports_skip_checking": True,
+                    "supports_force_recheck": True,
+                    "supports_verify_progress": True,
+                    "read_only_probe": True,
+                },
+                connection_status="OK",
+                path_mapping_status="OK",
+                enabled=True,
+                version=1,
+                last_test_at=now,
+                last_path_diagnostic_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+    return downloader_id
+
+
+def _create_ready_transmission_target(app: FastAPI, settings: AppSettings) -> str:
+    downloader_id = new_uuid()
+    now = datetime.now(UTC)
+    with app.state.runtime.session_factory() as session:
+        session.add(
+            Downloader(
+                id=downloader_id,
+                name=f"target-tr-{downloader_id[:8]}",
+                type="TRANSMISSION",
+                base_url="http://tr.invalid:9091/transmission/rpc",
+                secret_id=None,
+                monitor_rules={},
+                path_mappings=[
+                    {
+                        "remote_prefix": "/downloads",
+                        "container_prefix": str(settings.data_dir),
+                    }
+                ],
+                capabilities={
+                    "client": "Transmission",
+                    "version": "4.1.3",
+                    "api_version": "6.0.0",
+                    "supports_skip_checking": False,
                     "supports_force_recheck": True,
                     "supports_verify_progress": True,
                     "read_only_probe": True,
