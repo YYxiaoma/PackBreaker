@@ -25,17 +25,26 @@ const path = require('node:path');
       'task-e2e-execute':{id:'task-e2e-execute',type:'MOVIE',source_downloader_id:'source-qb',source_hash:'source-execute',normalized_unit_key:'movie:execute',status:'AWAITING_CONFIRMATION',version:1,error_code:null,created_at:now(),updated_at:now()},
       'task-e2e-cancel':{id:'task-e2e-cancel',type:'MOVIE',source_downloader_id:'source-qb',source_hash:'source-cancel',normalized_unit_key:'movie:cancel',status:'LINKING',version:2,error_code:null,created_at:now(),updated_at:now()},
       'task-e2e-reconcile':{id:'task-e2e-reconcile',type:'MOVIE',source_downloader_id:'source-qb',source_hash:'source-reconcile',normalized_unit_key:'movie:reconcile',status:'LINKING',version:2,error_code:null,created_at:now(),updated_at:now()},
+      'task-e2e-pre-cancel':{id:'task-e2e-pre-cancel',type:'MOVIE',source_downloader_id:'source-qb',source_hash:'source-pre-cancel',normalized_unit_key:'movie:pre-cancel',status:'PENDING',version:1,error_code:null,created_at:now(),updated_at:now()},
+      'task-e2e-analysis-cancel':{id:'task-e2e-analysis-cancel',type:'MOVIE',source_downloader_id:'source-qb',source_hash:'source-analysis-cancel',normalized_unit_key:'movie:analysis-cancel',status:'SEARCHING',version:3,error_code:null,created_at:now(),updated_at:now()},
     };
     const executeKeys=[];
     const cancelKeys=[];
     const cancelBodies=[];
     const reconcileKeys=[];
+    const preCancelKeys=[];
+    const preCancelBodies=[];
+    const analysisCancelKeys=[];
+    const analysisCancelBodies=[];
+    let preCancelAttempts=0;
     let reconcileAttempts=0;
     let executeAttempts=0;
     const taskEvents={
       'task-e2e-execute':[{id:'event-execute-1',task_id:'task-e2e-execute',from_status:'PREFLIGHT',to_status:'AWAITING_CONFIRMATION',event_type:'REVIEW_OPENED',reason:'E2E 初始审核已确认',created_at:now()}],
       'task-e2e-cancel':[{id:'event-cancel-1',task_id:'task-e2e-cancel',from_status:'AWAITING_CONFIRMATION',to_status:'LINKING',event_type:'LINKING_STARTED',reason:'E2E 初始链接阶段',created_at:now()}],
       'task-e2e-reconcile':[{id:'event-reconcile-1',task_id:'task-e2e-reconcile',from_status:'AWAITING_CONFIRMATION',to_status:'LINKING',event_type:'FILESYSTEM_HARDLINK_RECONCILE_REQUIRED',reason:'文件系统硬链接创建：当前证据不足以自动确认真实状态，已要求安全对账',created_at:now()}],
+      'task-e2e-pre-cancel':[{id:'event-pre-cancel-1',task_id:'task-e2e-pre-cancel',from_status:null,to_status:'PENDING',event_type:'TASK_CREATED',reason:'E2E 零副作用取消初始任务',created_at:now()}],
+      'task-e2e-analysis-cancel':[{id:'event-analysis-cancel-1',task_id:'task-e2e-analysis-cancel',from_status:'ANALYZING',to_status:'SEARCHING',event_type:'ANALYSIS_SEARCHING',reason:'E2E 只读分析正在搜索站点',created_at:now()}],
     };
     const appendTaskEvent=(id,eventType,fromStatus,toStatus,reason)=>{
       const event={id:`event-${id}-${taskEvents[id].length+1}`,task_id:id,from_status:fromStatus,to_status:toStatus,event_type:eventType,reason,created_at:now()};
@@ -68,6 +77,8 @@ const path = require('node:path');
         {id:'journal-reconcile-fs',task_id:'task-e2e-reconcile',kind:'FILESYSTEM_HARDLINK',status:'RECONCILE_REQUIRED',attention_required:true,reconcile_supported:true,created_at:now(),updated_at:now()},
         {id:'journal-reconcile-qb',task_id:'task-e2e-reconcile',kind:'QBITTORRENT_ADD',status:'ROLLBACK_BLOCKED',attention_required:true,reconcile_supported:false,created_at:now(),updated_at:now()},
       ],
+      'task-e2e-pre-cancel':[],
+      'task-e2e-analysis-cancel':[],
     };
     const taskUnit=id=>({
       id:`unit-${id}`,
@@ -187,7 +198,7 @@ const path = require('node:path');
       const request=route.request();
       const url=new URL(request.url());
       if(url.pathname==='/api/v1/tasks'&&request.method()==='GET')return fulfillJson(route,{items:Object.values(realTasks)});
-      const match=url.pathname.match(/\/api\/v1\/tasks\/(task-e2e-(?:execute|cancel|reconcile))(?:\/(.+))?$/);
+      const match=url.pathname.match(/\/api\/v1\/tasks\/(task-e2e-(?:execute|cancel|reconcile|pre-cancel|analysis-cancel))(?:\/(.+))?$/);
       if(!match)return route.fallback();
       const id=match[1],tail=match[2]||'';
       if(request.method()==='GET'&&!tail)return fulfillJson(route,realTasks[id]);
@@ -239,6 +250,25 @@ const path = require('node:path');
           return fulfillJson(route,{action:'execute',task_id:id,status:'ADDING',task_version:2,execution_plan_id:`plan-${id}`,operation_replayed:true,receipt_id:'receipt-execute',idempotency_replayed:true});
         }
         if(body.action==='cancel'){
+          if(id==='task-e2e-pre-cancel'){
+            preCancelKeys.push(key);preCancelBodies.push(body);preCancelAttempts+=1;
+            assert.equal(body.remove_downloader_task,false);
+            assert.equal(body.rollback_created_resources,false);
+            if(preCancelAttempts===1){
+              transitionTask(id,'CANCELLING','CANCELLATION_STARTED','E2E 零副作用取消已开始');
+              transitionTask(id,'CANCELLED','CANCELLATION_COMPLETED','E2E 未发现 operation journal，副作用开始前安全取消');
+              return route.abort('connectionreset');
+            }
+            return fulfillJson(route,{action:'cancel',task_id:id,status:'CANCELLED',task_version:realTasks[id].version,execution_plan_id:null,operation_replayed:true,receipt_id:'receipt-pre-cancel',idempotency_replayed:true});
+          }
+          if(id==='task-e2e-analysis-cancel'){
+            analysisCancelKeys.push(key);analysisCancelBodies.push(body);
+            assert.equal(body.remove_downloader_task,false);
+            assert.equal(body.rollback_created_resources,false);
+            transitionTask(id,'CANCELLING','CANCELLATION_STARTED','E2E 协作式分析取消请求已登记');
+            setTimeout(()=>transitionTask(id,'CANCELLED','CANCELLATION_COMPLETED','E2E 只读分析已在安全检查点停止'),350);
+            return fulfillJson(route,{action:'cancel',task_id:id,status:'CANCELLING',task_version:realTasks[id].version,execution_plan_id:null,operation_replayed:false,receipt_id:'receipt-analysis-cancel',idempotency_replayed:false});
+          }
           cancelKeys.push(key);cancelBodies.push(body);
           transitionTask(id,'ROLLING_BACK','ROLLBACK_STARTED','E2E 取消请求已冻结并开始回滚');
           setTimeout(()=>appendTaskEvent(id,'QBITTORRENT_REMOVE_INTENT_RECORDED','ROLLING_BACK','ROLLING_BACK','qBittorrent 移除任务：已记录 operation journal intent'),150);
@@ -256,6 +286,33 @@ const path = require('node:path');
     await page.getByText('数据库中暂无真实任务').waitFor();
     await page.getByPlaceholder('搜索 UUID、source hash、unit key…').fill('');
     await page.getByText('task-e2e-execute',{exact:true}).waitFor();
+
+    // 零副作用取消：PENDING 不要求 execution plan，首次响应丢失后 SSE 已 CANCELLED 仍必须复用同一 key 确认 receipt。
+    const preCancelRow=page.locator('.el-table__row').filter({hasText:'task-e2e-pre-cancel'});
+    await preCancelRow.getByRole('button',{name:'分析',exact:true}).click();
+    await page.getByRole('button',{name:'取消未执行任务',exact:true}).click();
+    await page.locator('.el-message-box').getByRole('button',{name:'取消未执行任务',exact:true}).click();
+    await page.getByText(/API_UNAVAILABLE/).waitFor();
+    await page.getByText('CANCELLATION_COMPLETED',{exact:true}).waitFor({timeout:7000});
+    await page.getByRole('button',{name:'重试确认取消结果',exact:true}).click();
+    await page.getByText(/取消结果已确认：CANCELLED/).waitFor();
+    assert.equal(preCancelKeys.length,2,'零副作用取消响应丢失后应重试一次');
+    assert.equal(preCancelKeys[0],preCancelKeys[1],'零副作用取消必须复用相同 Idempotency-Key');
+    assert.equal(preCancelBodies[0].remove_downloader_task,false);
+    assert.equal(preCancelBodies[0].rollback_created_resources,false);
+    await page.keyboard.press('Escape');
+
+    // 协作式分析取消：SEARCHING 不抢改终态，公开动作先返回 CANCELLING，再由原分析流的 SSE 收敛到 CANCELLED。
+    const analysisCancelRow=page.locator('.el-table__row').filter({hasText:'task-e2e-analysis-cancel'});
+    await analysisCancelRow.getByRole('button',{name:'分析',exact:true}).click();
+    await page.getByRole('button',{name:'请求停止只读分析',exact:true}).click();
+    await page.locator('.el-message-box').getByRole('button',{name:'请求停止只读分析',exact:true}).click();
+    await page.getByText(/取消请求已登记：CANCELLING/).waitFor();
+    assert.equal(analysisCancelKeys.length,1,'协作式分析取消只应提交一次');
+    assert.equal(analysisCancelBodies[0].remove_downloader_task,false);
+    assert.equal(analysisCancelBodies[0].rollback_created_resources,false);
+    await page.getByText('CANCELLATION_COMPLETED',{exact:true}).waitFor({timeout:7000});
+    await page.keyboard.press('Escape');
 
     // 真实动作 UI：首次 execute 响应丢失后必须复用同一幂等键，随后由 TaskEvent SSE 自动收敛到 DONE。
     await page.locator('nav').getByRole('button',{name:'预演与确认',exact:true}).click();

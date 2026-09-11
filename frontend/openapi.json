@@ -1631,8 +1631,15 @@
             "type": "string"
           },
           "execution_plan_id": {
-            "title": "Execution Plan Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Plan Id"
           },
           "idempotency_replayed": {
             "title": "Idempotency Replayed",

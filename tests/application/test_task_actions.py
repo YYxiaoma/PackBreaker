@@ -31,6 +31,7 @@ from backend.app.infrastructure.persistence.models import (
     PreflightSnapshotRecord,
     TaskActionReceipt,
     TaskCandidateRecord,
+    TaskEvent,
     TaskExecutionGateRecord,
     TaskExecutionPlanRecord,
     TaskReviewRevisionRecord,
@@ -38,9 +39,18 @@ from backend.app.infrastructure.persistence.models import (
     UnpackTask,
     new_uuid,
 )
-from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
+from backend.app.infrastructure.persistence.repositories import (
+    OperationIntent,
+    OperationJournalRepository,
+    TaskCreate,
+    TaskRepository,
+)
 
 ActionFixture = tuple[sessionmaker[Session], str]
+
+
+class SimulatedCrash(RuntimeError):
+    pass
 
 
 @dataclass
@@ -235,11 +245,26 @@ def _add_execution_plan(factory: sessionmaker[Session], task_id: str) -> tuple[s
     return plan_id, unit_id
 
 
+def _set_task_status(
+    factory: sessionmaker[Session],
+    task_id: str,
+    status: TaskStatus,
+) -> None:
+    with factory() as session:
+        task = session.get(UnpackTask, task_id)
+        assert task is not None
+        task.status = status.value
+        task.version += 1
+        task.checkpoint = {}
+        session.commit()
+
+
 @pytest.mark.asyncio
 async def test_cancel_action_replays_success_without_second_side_effect(
     action_fixture: ActionFixture,
 ) -> None:
     factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.LINKING)
     cancellation = _Cancellation()
     service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
     request = CancelTaskAction(task_id, True, True)
@@ -324,6 +349,7 @@ async def test_cancel_action_same_key_changed_request_conflicts(
     action_fixture: ActionFixture,
 ) -> None:
     factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.LINKING)
     cancellation = _Cancellation()
     service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
     actor = TaskActionActor("admin_session", "session-1")
@@ -349,6 +375,7 @@ async def test_cancel_action_safe_failure_is_persisted_and_replayed(
     action_fixture: ActionFixture,
 ) -> None:
     factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.LINKING)
     cancellation = _Cancellation(
         error=ApplicationError(
             code="CANCELLATION_BLOCKED",
@@ -379,6 +406,7 @@ async def test_cancel_action_unknown_failure_leaves_pending_for_safe_retry(
     action_fixture: ActionFixture,
 ) -> None:
     factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.LINKING)
     cancellation = _Cancellation(error=RuntimeError("synthetic unknown result"))
     service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
     actor = TaskActionActor("api_token", "actor-3")
@@ -399,6 +427,7 @@ async def test_cancel_action_ten_concurrent_replays_call_side_effect_once(
     action_fixture: ActionFixture,
 ) -> None:
     factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.LINKING)
     cancellation = _Cancellation(delay=0.01)
     service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
     actor = TaskActionActor("api_token", "actor-4")
@@ -411,6 +440,341 @@ async def test_cancel_action_ten_concurrent_replays_call_side_effect_once(
     assert cancellation.calls == 1
     assert len({result.receipt_id for result in results}) == 1
     assert sum(not result.idempotency_replayed for result in results) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_status",
+    [
+        TaskStatus.PENDING,
+        TaskStatus.PREFLIGHT,
+        TaskStatus.AWAITING_CONFIRMATION,
+        TaskStatus.PAUSED,
+        TaskStatus.RETRY,
+    ],
+)
+async def test_pre_side_effect_cancel_finishes_without_resource_coordinator(
+    action_fixture: ActionFixture,
+    initial_status: TaskStatus,
+) -> None:
+    factory, task_id = action_fixture
+    if initial_status is not TaskStatus.PENDING:
+        _set_task_status(factory, task_id, initial_status)
+    cancellation = _Cancellation()
+    service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
+    actor = TaskActionActor("admin_session", f"pre-cancel-{initial_status.value}")
+    request = CancelTaskAction(task_id, False, False)
+
+    first = await service.cancel(request, actor=actor, idempotency_key="pre-cancel")
+    second = await service.cancel(request, actor=actor, idempotency_key="pre-cancel")
+
+    assert cancellation.calls == 0
+    assert first.status is TaskStatus.CANCELLED
+    assert first.execution_plan_id is None
+    assert first.operation_replayed is False
+    assert second.status is TaskStatus.CANCELLED
+    assert second.idempotency_replayed is True
+    with factory() as session:
+        task = session.get(UnpackTask, task_id)
+        assert task is not None
+        assert task.status == TaskStatus.CANCELLED.value
+        assert task.checkpoint == {
+            "schema_version": "packbreaker-pre-side-effect-cancellation-v1",
+            "stage": "CANCELLED",
+            "mode": "NO_SIDE_EFFECTS",
+            "requested_from_status": initial_status.value,
+            "remove_downloader_task": False,
+            "rollback_created_resources": False,
+        }
+        event_types = [
+            item.event_type
+            for item in session.query(TaskEvent)
+            .filter(TaskEvent.task_id == task_id)
+            .order_by(TaskEvent.created_at, TaskEvent.id)
+            .all()
+        ]
+        assert event_types[-3:] == [
+            "TASK_CANCEL_REQUESTED",
+            "CANCELLATION_STARTED",
+            "CANCELLATION_COMPLETED",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_pre_side_effect_cancel_recovers_pending_receipt_after_response_loss(
+    action_fixture: ActionFixture,
+) -> None:
+    factory, task_id = action_fixture
+    cancellation = _Cancellation()
+    service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
+    actor = TaskActionActor("api_token", "pre-cancel-response-loss")
+    request = CancelTaskAction(task_id, False, False)
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_cancellation_applied":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        await service.cancel(
+            request,
+            actor=actor,
+            idempotency_key="pre-cancel-response-loss",
+            fault_hook=crash,
+        )
+
+    with factory() as session:
+        task = session.get(UnpackTask, task_id)
+        receipt = session.query(TaskActionReceipt).one()
+        assert task is not None and task.status == TaskStatus.CANCELLED.value
+        assert receipt.state == "PENDING"
+
+    recovered = await service.cancel(
+        request,
+        actor=actor,
+        idempotency_key="pre-cancel-response-loss",
+    )
+    assert recovered.status is TaskStatus.CANCELLED
+    assert recovered.operation_replayed is True
+    assert recovered.idempotency_replayed is True
+    assert cancellation.calls == 0
+    with factory() as session:
+        assert session.query(TaskActionReceipt).one().state == "SUCCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_pre_side_effect_cancel_rejects_resource_options_and_existing_journal(
+    action_fixture: ActionFixture,
+) -> None:
+    factory, task_id = action_fixture
+    cancellation = _Cancellation()
+    service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
+
+    with pytest.raises(ApplicationError) as options:
+        await service.cancel(
+            CancelTaskAction(task_id, True, False),
+            actor=TaskActionActor("admin_session", "pre-cancel-options"),
+            idempotency_key="pre-cancel-options",
+        )
+    assert options.value.code == "CANCELLATION_OPTIONS_NOT_APPLICABLE"
+
+    with factory() as session:
+        OperationJournalRepository(session).record_intent(
+            OperationIntent(
+                task_id=task_id,
+                idempotency_key="operation-before-cancel",
+                operation_type="CREATE_HARDLINK",
+                target={"resource": "synthetic"},
+                intent={"synthetic": True},
+            )
+        )
+        session.commit()
+
+    with pytest.raises(ApplicationError) as evidence:
+        await service.cancel(
+            CancelTaskAction(task_id, False, False),
+            actor=TaskActionActor("admin_session", "pre-cancel-journal"),
+            idempotency_key="pre-cancel-journal",
+        )
+    assert evidence.value.code == "CANCELLATION_EVIDENCE_CONFLICT"
+    assert cancellation.calls == 0
+    with factory() as session:
+        task = session.get(UnpackTask, task_id)
+        assert task is not None and task.status == TaskStatus.PENDING.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_status",
+    [
+        TaskStatus.ANALYZING,
+        TaskStatus.SEARCHING,
+        TaskStatus.MATCHING,
+        TaskStatus.VERIFYING,
+    ],
+)
+async def test_active_analysis_cancel_records_cooperative_request_without_resource_coordinator(
+    action_fixture: ActionFixture,
+    initial_status: TaskStatus,
+) -> None:
+    factory, task_id = action_fixture
+    _set_task_status(factory, task_id, initial_status)
+    cancellation = _Cancellation()
+    service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
+    actor = TaskActionActor("admin_session", f"active-{initial_status.value}")
+    request = CancelTaskAction(task_id, False, False)
+    with factory() as session:
+        task = session.get(UnpackTask, task_id)
+        assert task is not None
+        analysis_version = task.version
+
+    first = await service.cancel(
+        request,
+        actor=actor,
+        idempotency_key=f"active-{initial_status.value}",
+    )
+    replay = await service.cancel(
+        request,
+        actor=actor,
+        idempotency_key=f"active-{initial_status.value}",
+    )
+
+    assert first.status is TaskStatus.CANCELLING
+    assert first.execution_plan_id is None
+    assert first.operation_replayed is False
+    assert replay.status is TaskStatus.CANCELLING
+    assert replay.idempotency_replayed is True
+    assert cancellation.calls == 0
+    with factory() as session:
+        task = session.get(UnpackTask, task_id)
+        assert task is not None
+        assert task.status == TaskStatus.CANCELLING.value
+        assert task.checkpoint == {
+            "schema_version": "packbreaker-pre-side-effect-cancellation-v1",
+            "stage": "CANCELLING",
+            "mode": "COOPERATIVE_ANALYSIS",
+            "requested_from_status": initial_status.value,
+            "remove_downloader_task": False,
+            "rollback_created_resources": False,
+            "analysis_version": analysis_version,
+        }
+
+
+@pytest.mark.asyncio
+async def test_active_analysis_cancel_recovers_pending_receipt_without_resource_coordinator(
+    action_fixture: ActionFixture,
+) -> None:
+    factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.SEARCHING)
+    cancellation = _Cancellation()
+    service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
+    request = CancelTaskAction(task_id, False, False)
+    actor = TaskActionActor("api_token", "active-analysis-response-loss")
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_cancellation_applied":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        await service.cancel(
+            request,
+            actor=actor,
+            idempotency_key="active-analysis-response-loss",
+            fault_hook=crash,
+        )
+    with factory() as session:
+        task = session.get(UnpackTask, task_id)
+        receipt = session.query(TaskActionReceipt).one()
+        assert task is not None and task.status == TaskStatus.CANCELLING.value
+        assert receipt.state == "PENDING"
+
+    recovered = await service.cancel(
+        request,
+        actor=actor,
+        idempotency_key="active-analysis-response-loss",
+    )
+    assert recovered.status is TaskStatus.CANCELLING
+    assert recovered.operation_replayed is True
+    assert recovered.idempotency_replayed is True
+    assert cancellation.calls == 0
+    with factory() as session:
+        assert session.query(TaskActionReceipt).one().state == "SUCCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_active_analysis_cancel_rejects_resource_options_without_changing_stage(
+    action_fixture: ActionFixture,
+) -> None:
+    factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.SEARCHING)
+    cancellation = _Cancellation()
+    service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
+
+    with pytest.raises(ApplicationError) as failure:
+        await service.cancel(
+            CancelTaskAction(task_id, True, False),
+            actor=TaskActionActor("admin_session", "active-analysis-options"),
+            idempotency_key="active-analysis-options",
+        )
+    assert failure.value.code == "CANCELLATION_OPTIONS_NOT_APPLICABLE"
+    assert cancellation.calls == 0
+    with factory() as session:
+        task = session.get(UnpackTask, task_id)
+        assert task is not None
+        assert task.status == TaskStatus.SEARCHING.value
+        assert task.checkpoint == {}
+
+
+@pytest.mark.asyncio
+async def test_resource_cancelled_task_is_delegated_to_resource_coordinator(
+    action_fixture: ActionFixture,
+) -> None:
+    factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.CANCELLED)
+    cancellation = _Cancellation()
+    service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
+
+    result = await service.cancel(
+        CancelTaskAction(task_id, True, True),
+        actor=TaskActionActor("admin_session", "resource-cancelled-replay"),
+        idempotency_key="resource-cancelled-replay",
+    )
+
+    assert cancellation.calls == 1
+    assert result.status is TaskStatus.CANCELLED
+    assert result.execution_plan_id == "plan-1"
+
+
+@pytest.mark.asyncio
+async def test_cooperative_cancelled_replay_rejects_malformed_analysis_binding(
+    action_fixture: ActionFixture,
+) -> None:
+    factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.CANCELLED)
+    with factory() as session:
+        task = session.get(UnpackTask, task_id)
+        assert task is not None
+        task.checkpoint = {
+            "schema_version": "packbreaker-pre-side-effect-cancellation-v1",
+            "stage": "CANCELLED",
+            "mode": "COOPERATIVE_ANALYSIS",
+            "requested_from_status": "SEARCHING",
+            "analysis_version": "invalid",
+            "remove_downloader_task": False,
+            "rollback_created_resources": False,
+        }
+        session.commit()
+    cancellation = _Cancellation()
+    service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
+
+    with pytest.raises(ApplicationError) as failure:
+        await service.cancel(
+            CancelTaskAction(task_id, False, False),
+            actor=TaskActionActor("admin_session", "malformed-cooperative-cancelled"),
+            idempotency_key="malformed-cooperative-cancelled",
+        )
+    assert failure.value.code == "CANCELLATION_EVIDENCE_INVALID"
+    assert cancellation.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial_status", [TaskStatus.DONE, TaskStatus.FAILED])
+async def test_pre_side_effect_cancel_rejects_terminal_tasks(
+    action_fixture: ActionFixture,
+    initial_status: TaskStatus,
+) -> None:
+    factory, task_id = action_fixture
+    _set_task_status(factory, task_id, initial_status)
+    cancellation = _Cancellation()
+    service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
+
+    with pytest.raises(ApplicationError) as failure:
+        await service.cancel(
+            CancelTaskAction(task_id, False, False),
+            actor=TaskActionActor("admin_session", f"blocked-{initial_status.value}"),
+            idempotency_key=f"blocked-{initial_status.value}",
+        )
+    assert failure.value.code == "CANCELLATION_STATE_INVALID"
+    assert cancellation.calls == 0
 
 
 @pytest.mark.asyncio

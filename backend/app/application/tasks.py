@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import stat
 import unicodedata
 from copy import deepcopy
@@ -49,7 +50,12 @@ from backend.app.domain.review import (
     ReviewState,
     ReviewVerificationSnapshot,
 )
-from backend.app.domain.task_state import TaskStatus
+from backend.app.domain.task_state import (
+    ACTIVE_ANALYSIS_STATUSES,
+    PRE_SIDE_EFFECT_CANCELLATION_SCHEMA_VERSION,
+    TaskCancellationMode,
+    TaskStatus,
+)
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
 from backend.app.domain.torrent import TorrentFile
 from backend.app.domain.verification import (
@@ -67,7 +73,11 @@ from backend.app.infrastructure.persistence.models import (
 from backend.app.infrastructure.persistence.preflight_repositories import (
     PreflightSnapshotRepository,
 )
-from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
+from backend.app.infrastructure.persistence.repositories import (
+    OperationJournalRepository,
+    TaskCreate,
+    TaskRepository,
+)
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskCandidateRepository,
     TaskExecutionGateRepository,
@@ -272,11 +282,36 @@ class _TaskAnalysisLifecycle(AnalysisLifecycle):
     def enter_preflight(self) -> int:
         return self._advance(TaskStatus.PREFLIGHT, "ANALYSIS_PREFLIGHT_READY", "只读预演证据已生成")
 
+    def check_cancel_requested(self) -> None:
+        with self._session_factory() as session:
+            repository = TaskRepository(session)
+            task = repository.get(self._task_id)
+            if task is None:
+                raise _task_not_found()
+            if self._finalize_cooperative_cancellation(session, repository, task):
+                session.commit()
+                raise _analysis_cancelled()
+            if task.version != self._version:
+                raise ApplicationError(
+                    code="ANALYSIS_TASK_CHANGED",
+                    status=409,
+                    title="任务发生变化",
+                    detail="分析安全检查点发现任务版本已被其他操作修改",
+                )
+
     def recover_to_retry(self, *, reason: str) -> None:
         with self._session_factory() as session:
             repository = TaskRepository(session)
             task = repository.get(self._task_id)
-            if task is None or task.version != self._version:
+            if task is None:
+                return
+            try:
+                if self._finalize_cooperative_cancellation(session, repository, task):
+                    session.commit()
+                    return
+            except ApplicationError:
+                return
+            if task.version != self._version:
                 return
             status = TaskStatus(task.status)
             if status not in {
@@ -306,6 +341,9 @@ class _TaskAnalysisLifecycle(AnalysisLifecycle):
             task = repository.get(self._task_id)
             if task is None:
                 raise _task_not_found()
+            if self._finalize_cooperative_cancellation(session, repository, task):
+                session.commit()
+                raise _analysis_cancelled()
             if task.version != self._version:
                 raise ApplicationError(
                     code="ANALYSIS_TASK_CHANGED",
@@ -331,6 +369,72 @@ class _TaskAnalysisLifecycle(AnalysisLifecycle):
             session.commit()
             self._version = task.version
             return self._version
+
+    def _finalize_cooperative_cancellation(
+        self,
+        session: Session,
+        repository: TaskRepository,
+        task: Any,
+    ) -> bool:
+        checkpoint = task.checkpoint
+        mode = checkpoint.get("mode")
+        if mode != TaskCancellationMode.COOPERATIVE_ANALYSIS.value:
+            return False
+        if checkpoint.get("schema_version") != PRE_SIDE_EFFECT_CANCELLATION_SCHEMA_VERSION:
+            raise _analysis_cancellation_evidence_invalid("协作式取消 checkpoint schema 无效")
+        requested_from = checkpoint.get("requested_from_status")
+        analysis_version = checkpoint.get("analysis_version")
+        if (
+            requested_from not in {status.value for status in ACTIVE_ANALYSIS_STATUSES}
+            or not isinstance(analysis_version, int)
+            or isinstance(analysis_version, bool)
+            or analysis_version != self._version
+            or checkpoint.get("remove_downloader_task") is not False
+            or checkpoint.get("rollback_created_resources") is not False
+        ):
+            raise _analysis_cancellation_evidence_invalid(
+                "协作式取消未与当前分析 stage/version 或零资源选项精确绑定"
+            )
+        if OperationJournalRepository(session).list_for_task(task.id):
+            raise ApplicationError(
+                code="CANCELLATION_EVIDENCE_CONFLICT",
+                status=409,
+                title="分析取消证据与副作用日志冲突",
+                detail="分析取消期间发现 operation journal；拒绝自动收敛到 CANCELLED",
+            )
+        status = TaskStatus(task.status)
+        if status is TaskStatus.CANCELLED:
+            if checkpoint.get("stage") != TaskStatus.CANCELLED.value:
+                raise _analysis_cancellation_evidence_invalid(
+                    "已取消任务的协作式 checkpoint stage 无效"
+                )
+            self._version = task.version
+            return True
+        if (
+            status is not TaskStatus.CANCELLING
+            or checkpoint.get("stage") != TaskStatus.CANCELLING.value
+        ):
+            return False
+        cancelled_checkpoint = deepcopy(checkpoint)
+        cancelled_checkpoint["stage"] = TaskStatus.CANCELLED.value
+        try:
+            task = repository.transition(
+                task_id=task.id,
+                expected_version=task.version,
+                to_status=TaskStatus.CANCELLED,
+                event_type="CANCELLATION_COMPLETED",
+                reason="只读分析已在安全检查点停止；未发现 operation journal",
+                checkpoint=cancelled_checkpoint,
+            )
+        except DomainViolation as exc:
+            raise ApplicationError(
+                code="CANCELLATION_TASK_CHANGED",
+                status=409,
+                title="分析取消收敛期间任务发生变化",
+                detail="无法在当前安全检查点确认协作式取消完成",
+            ) from exc
+        self._version = task.version
+        return True
 
 
 class TaskAnalysisService:
@@ -417,7 +521,11 @@ class TaskAnalysisService:
             )
         lifecycle.start()
         try:
-            inventory = scan_source_inventory(resolved_root)
+            inventory = await asyncio.to_thread(
+                scan_source_inventory,
+                resolved_root,
+                cancel_check=lifecycle.check_cancel_requested,
+            )
         except DomainViolation as exc:
             lifecycle.recover_to_retry(reason=f"源目录扫描失败：{exc.code.value}")
             raise ApplicationError(
@@ -426,6 +534,7 @@ class TaskAnalysisService:
                 title="源目录扫描失败",
                 detail=str(exc),
             ) from exc
+        lifecycle.check_cancel_requested()
         inventory_digest = source_inventory_digest(inventory)
         units = identify_task_units(
             tuple(SourceTaskFile(item.relative_path, item.length) for item in inventory)
@@ -447,6 +556,7 @@ class TaskAnalysisService:
                 units=units,
             )
             session.commit()
+        lifecycle.check_cancel_requested()
         try:
             return await self._analysis.analyze(
                 task_id=task_id,
@@ -2359,6 +2469,24 @@ def _task_not_found() -> ApplicationError:
         status=404,
         title="任务不存在",
         detail="未找到指定任务",
+    )
+
+
+def _analysis_cancelled() -> ApplicationError:
+    return ApplicationError(
+        code="ANALYSIS_CANCELLED",
+        status=409,
+        title="分析已取消",
+        detail="取消请求已在只读分析安全检查点确认；未启动任何副作用",
+    )
+
+
+def _analysis_cancellation_evidence_invalid(detail: str) -> ApplicationError:
+    return ApplicationError(
+        code="CANCELLATION_EVIDENCE_INVALID",
+        status=409,
+        title="分析取消证据无效",
+        detail=detail,
     )
 
 

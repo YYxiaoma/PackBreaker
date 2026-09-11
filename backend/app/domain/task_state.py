@@ -31,6 +31,22 @@ class TaskStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class TaskCancellationMode(StrEnum):
+    NO_SIDE_EFFECTS = "NO_SIDE_EFFECTS"
+    COOPERATIVE_ANALYSIS = "COOPERATIVE_ANALYSIS"
+
+
+PRE_SIDE_EFFECT_CANCELLATION_SCHEMA_VERSION = "packbreaker-pre-side-effect-cancellation-v1"
+ACTIVE_ANALYSIS_STATUSES = frozenset(
+    {
+        TaskStatus.ANALYZING,
+        TaskStatus.SEARCHING,
+        TaskStatus.MATCHING,
+        TaskStatus.VERIFYING,
+    }
+)
+
+
 TERMINAL_STATUSES = frozenset({TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED})
 
 _ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {

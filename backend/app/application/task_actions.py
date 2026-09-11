@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Any, Literal, Protocol
@@ -16,8 +17,14 @@ from backend.app.application.task_cancellation import (
 )
 from backend.app.application.task_linking import TaskLinkingResult
 from backend.app.domain.errors import DomainViolation, ErrorCode
-from backend.app.domain.task_state import TaskStatus
+from backend.app.domain.task_state import (
+    ACTIVE_ANALYSIS_STATUSES,
+    PRE_SIDE_EFFECT_CANCELLATION_SCHEMA_VERSION,
+    TaskCancellationMode,
+    TaskStatus,
+)
 from backend.app.infrastructure.persistence.repositories import (
+    OperationJournalRepository,
     TaskActionReceiptCreate,
     TaskActionReceiptRepository,
     TaskRepository,
@@ -28,6 +35,25 @@ from backend.app.infrastructure.persistence.task_analysis_repositories import (
 
 TASK_ACTION_SCHEMA_VERSION = "packbreaker-task-action-v1"
 _ACTION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_PRE_SIDE_EFFECT_CANCELLABLE_STATUSES = frozenset(
+    {
+        TaskStatus.PENDING,
+        TaskStatus.PREFLIGHT,
+        TaskStatus.AWAITING_CONFIRMATION,
+        TaskStatus.PAUSED,
+        TaskStatus.RETRY,
+    }
+)
+_SIDE_EFFECT_CANCELLATION_STATUSES = frozenset(
+    {
+        TaskStatus.LINKING,
+        TaskStatus.ADDING,
+        TaskStatus.CLIENT_VERIFYING,
+        TaskStatus.SEEDING,
+        TaskStatus.CANCELLING,
+        TaskStatus.ROLLING_BACK,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +81,7 @@ class TaskMutationActionResult:
     task_id: str
     status: TaskStatus
     task_version: int
-    execution_plan_id: str
+    execution_plan_id: str | None
     operation_replayed: bool
     receipt_id: str
     idempotency_replayed: bool
@@ -151,6 +177,7 @@ class TaskActionService:
         *,
         actor: TaskActionActor,
         idempotency_key: str | None,
+        fault_hook: Callable[[str], None] | None = None,
     ) -> TaskMutationActionResult:
         key_digest = _idempotency_key_digest(idempotency_key)
         request_digest = _request_digest(
@@ -175,23 +202,31 @@ class TaskActionService:
             if completed is not None:
                 return completed
             try:
-                cancelled = await self._cancellation.execute(
-                    TaskCancellationRequest(
-                        task_id=request.task_id,
-                        remove_downloader_task=request.remove_downloader_task,
-                        rollback_created_resources=request.rollback_created_resources,
-                    )
-                )
-                result = TaskMutationActionResult(
-                    action="cancel",
-                    task_id=cancelled.task_id,
-                    status=cancelled.status,
-                    task_version=cancelled.task_version,
-                    execution_plan_id=cancelled.execution_plan_id,
-                    operation_replayed=cancelled.replayed,
+                result = self._cancel_before_side_effects(
+                    request,
                     receipt_id=receipt.id,
                     idempotency_replayed=replayed,
                 )
+                if result is None:
+                    cancelled = await self._cancellation.execute(
+                        TaskCancellationRequest(
+                            task_id=request.task_id,
+                            remove_downloader_task=request.remove_downloader_task,
+                            rollback_created_resources=request.rollback_created_resources,
+                        )
+                    )
+                    result = TaskMutationActionResult(
+                        action="cancel",
+                        task_id=cancelled.task_id,
+                        status=cancelled.status,
+                        task_version=cancelled.task_version,
+                        execution_plan_id=cancelled.execution_plan_id,
+                        operation_replayed=cancelled.replayed,
+                        receipt_id=receipt.id,
+                        idempotency_replayed=replayed,
+                    )
+                if fault_hook is not None:
+                    fault_hook("after_cancellation_applied")
                 self._finalize_success(receipt.id, result)
                 return result
             except ApplicationError as exc:
@@ -201,6 +236,283 @@ class TaskActionService:
                 error = _domain_application_error(exc)
                 self._finalize_failure(receipt.id, error)
                 raise error from exc
+
+    def _cancel_before_side_effects(
+        self,
+        request: CancelTaskAction,
+        *,
+        receipt_id: str,
+        idempotency_replayed: bool,
+    ) -> TaskMutationActionResult | None:
+        with self._session_factory() as session:
+            repository = TaskRepository(session)
+            task = repository.get(request.task_id)
+            if task is None:
+                raise _task_not_found()
+            try:
+                status = TaskStatus(task.status)
+            except ValueError as exc:
+                raise _cancellation_state_invalid("任务包含未知状态") from exc
+
+            if status is TaskStatus.CANCELLED:
+                recovered = self._load_pre_side_effect_cancelled(
+                    task,
+                    request,
+                    receipt_id=receipt_id,
+                    idempotency_replayed=idempotency_replayed,
+                )
+                if recovered is not None:
+                    return recovered
+                return None
+            if status is TaskStatus.CANCELLING:
+                cooperative = self._load_cooperative_analysis_cancelling(
+                    task,
+                    request,
+                    receipt_id=receipt_id,
+                    idempotency_replayed=idempotency_replayed,
+                )
+                if cooperative is not None:
+                    return cooperative
+            if status in _SIDE_EFFECT_CANCELLATION_STATUSES:
+                return None
+            if status not in _PRE_SIDE_EFFECT_CANCELLABLE_STATUSES | ACTIVE_ANALYSIS_STATUSES:
+                raise _cancellation_state_invalid(
+                    "当前任务已经结束，或不属于可证明零副作用的取消状态"
+                )
+            if request.remove_downloader_task or request.rollback_created_resources:
+                raise ApplicationError(
+                    code="CANCELLATION_OPTIONS_NOT_APPLICABLE",
+                    status=409,
+                    title="零副作用取消不接受资源回收选项",
+                    detail=(
+                        "任务尚未进入 LINKING；remove_downloader_task 与 "
+                        "rollback_created_resources 必须同时为 false"
+                    ),
+                )
+            if OperationJournalRepository(session).list_for_task(task.id):
+                raise ApplicationError(
+                    code="CANCELLATION_EVIDENCE_CONFLICT",
+                    status=409,
+                    title="任务已有副作用日志，不能按零副作用取消",
+                    detail="发现 operation journal；必须使用已进入副作用阶段的安全取消/回滚链对账",
+                )
+
+            requested_from_status = status
+            if status in ACTIVE_ANALYSIS_STATUSES:
+                cooperative_checkpoint = _pre_side_effect_cancellation_checkpoint(
+                    requested_from_status,
+                    stage=TaskStatus.CANCELLING,
+                    mode=TaskCancellationMode.COOPERATIVE_ANALYSIS,
+                    analysis_version=task.version,
+                )
+                try:
+                    task = repository.transition(
+                        task_id=task.id,
+                        expected_version=task.version,
+                        to_status=TaskStatus.CANCELLING,
+                        event_type="CANCELLATION_STARTED",
+                        reason="取消请求已登记；等待只读分析在下一个安全检查点停止",
+                        checkpoint=cooperative_checkpoint,
+                    )
+                except DomainViolation as exc:
+                    raise ApplicationError(
+                        code="CANCELLATION_TASK_CHANGED",
+                        status=409,
+                        title="取消期间任务状态已经变化",
+                        detail="任务版本或状态发生并发变化，请重新读取后决定取消方式",
+                    ) from exc
+                session.commit()
+                return TaskMutationActionResult(
+                    action="cancel",
+                    task_id=task.id,
+                    status=TaskStatus.CANCELLING,
+                    task_version=task.version,
+                    execution_plan_id=None,
+                    operation_replayed=False,
+                    receipt_id=receipt_id,
+                    idempotency_replayed=idempotency_replayed,
+                )
+
+            cancelling_checkpoint = _pre_side_effect_cancellation_checkpoint(
+                requested_from_status,
+                stage=TaskStatus.CANCELLING,
+                mode=TaskCancellationMode.NO_SIDE_EFFECTS,
+            )
+            try:
+                task = repository.transition(
+                    task_id=task.id,
+                    expected_version=task.version,
+                    to_status=TaskStatus.CANCELLING,
+                    event_type="CANCELLATION_STARTED",
+                    reason="用户请求取消尚未进入副作用阶段的任务",
+                    checkpoint=cancelling_checkpoint,
+                )
+                task = repository.transition(
+                    task_id=task.id,
+                    expected_version=task.version,
+                    to_status=TaskStatus.CANCELLED,
+                    event_type="CANCELLATION_COMPLETED",
+                    reason="未发现 operation journal；任务已在副作用开始前安全取消",
+                    checkpoint=_pre_side_effect_cancellation_checkpoint(
+                        requested_from_status,
+                        stage=TaskStatus.CANCELLED,
+                        mode=TaskCancellationMode.NO_SIDE_EFFECTS,
+                    ),
+                )
+            except DomainViolation as exc:
+                raise ApplicationError(
+                    code="CANCELLATION_TASK_CHANGED",
+                    status=409,
+                    title="取消期间任务状态已经变化",
+                    detail="任务版本或状态发生并发变化，请重新读取后决定取消方式",
+                ) from exc
+            session.commit()
+            return TaskMutationActionResult(
+                action="cancel",
+                task_id=task.id,
+                status=TaskStatus.CANCELLED,
+                task_version=task.version,
+                execution_plan_id=None,
+                operation_replayed=False,
+                receipt_id=receipt_id,
+                idempotency_replayed=idempotency_replayed,
+            )
+
+    def _load_pre_side_effect_cancelled(
+        self,
+        task: Any,
+        request: CancelTaskAction,
+        *,
+        receipt_id: str,
+        idempotency_replayed: bool,
+    ) -> TaskMutationActionResult | None:
+        checkpoint = task.checkpoint
+        if checkpoint.get("schema_version") != PRE_SIDE_EFFECT_CANCELLATION_SCHEMA_VERSION:
+            return None
+        mode = checkpoint.get("mode")
+        if checkpoint.get("stage") != TaskStatus.CANCELLED.value or mode not in {
+            TaskCancellationMode.NO_SIDE_EFFECTS.value,
+            TaskCancellationMode.COOPERATIVE_ANALYSIS.value,
+        }:
+            raise ApplicationError(
+                code="CANCELLATION_EVIDENCE_INVALID",
+                status=409,
+                title="已取消任务的零副作用证据无效",
+                detail="CANCELLED checkpoint 不能证明该任务在副作用开始前完成取消",
+            )
+        if (
+            checkpoint.get("remove_downloader_task") is not False
+            or checkpoint.get("rollback_created_resources") is not False
+        ):
+            raise ApplicationError(
+                code="CANCELLATION_EVIDENCE_INVALID",
+                status=409,
+                title="已取消任务的零副作用证据无效",
+                detail="副作用开始前取消 checkpoint 必须明确冻结 remove=false、rollback=false",
+            )
+        requested_from = checkpoint.get("requested_from_status")
+        if mode == TaskCancellationMode.NO_SIDE_EFFECTS.value and requested_from not in {
+            status.value for status in _PRE_SIDE_EFFECT_CANCELLABLE_STATUSES
+        }:
+            raise ApplicationError(
+                code="CANCELLATION_EVIDENCE_INVALID",
+                status=409,
+                title="已取消任务的零副作用证据无效",
+                detail="NO_SIDE_EFFECTS checkpoint 缺少有效的原稳定任务状态绑定",
+            )
+        if mode == TaskCancellationMode.COOPERATIVE_ANALYSIS.value:
+            analysis_version = checkpoint.get("analysis_version")
+            if (
+                requested_from not in {status.value for status in ACTIVE_ANALYSIS_STATUSES}
+                or not isinstance(analysis_version, int)
+                or isinstance(analysis_version, bool)
+                or analysis_version < 1
+            ):
+                raise ApplicationError(
+                    code="CANCELLATION_EVIDENCE_INVALID",
+                    status=409,
+                    title="已取消任务的协作式分析证据无效",
+                    detail="COOPERATIVE_ANALYSIS checkpoint 缺少有效的原分析 stage/version 绑定",
+                )
+        if request.remove_downloader_task or request.rollback_created_resources:
+            raise ApplicationError(
+                code="CANCELLATION_OPTION_CONFLICT",
+                status=409,
+                title="取消重放选项与已完成请求不一致",
+                detail="零副作用取消固定使用 remove=false、rollback=false",
+            )
+        return TaskMutationActionResult(
+            action="cancel",
+            task_id=task.id,
+            status=TaskStatus.CANCELLED,
+            task_version=task.version,
+            execution_plan_id=None,
+            operation_replayed=True,
+            receipt_id=receipt_id,
+            idempotency_replayed=idempotency_replayed,
+        )
+
+    def _load_cooperative_analysis_cancelling(
+        self,
+        task: Any,
+        request: CancelTaskAction,
+        *,
+        receipt_id: str,
+        idempotency_replayed: bool,
+    ) -> TaskMutationActionResult | None:
+        checkpoint = task.checkpoint
+        if checkpoint.get("schema_version") != PRE_SIDE_EFFECT_CANCELLATION_SCHEMA_VERSION:
+            return None
+        if checkpoint.get("mode") != TaskCancellationMode.COOPERATIVE_ANALYSIS.value:
+            return None
+        if checkpoint.get("stage") != TaskStatus.CANCELLING.value:
+            raise ApplicationError(
+                code="CANCELLATION_EVIDENCE_INVALID",
+                status=409,
+                title="分析取消证据无效",
+                detail="协作式分析取消 checkpoint 的 stage 与任务状态不一致",
+            )
+        if (
+            checkpoint.get("remove_downloader_task") is not False
+            or checkpoint.get("rollback_created_resources") is not False
+        ):
+            raise ApplicationError(
+                code="CANCELLATION_EVIDENCE_INVALID",
+                status=409,
+                title="分析取消证据无效",
+                detail="协作式分析取消 checkpoint 必须明确冻结 remove=false、rollback=false",
+            )
+        if request.remove_downloader_task or request.rollback_created_resources:
+            raise ApplicationError(
+                code="CANCELLATION_OPTION_CONFLICT",
+                status=409,
+                title="取消重放选项与已登记请求不一致",
+                detail="协作式分析取消固定使用 remove=false、rollback=false",
+            )
+        requested_from = checkpoint.get("requested_from_status")
+        analysis_version = checkpoint.get("analysis_version")
+        if (
+            requested_from not in {status.value for status in ACTIVE_ANALYSIS_STATUSES}
+            or not isinstance(analysis_version, int)
+            or isinstance(analysis_version, bool)
+            or analysis_version < 1
+        ):
+            raise ApplicationError(
+                code="CANCELLATION_EVIDENCE_INVALID",
+                status=409,
+                title="分析取消证据无效",
+                detail="协作式分析取消缺少有效的原分析 stage/version 绑定",
+            )
+        return TaskMutationActionResult(
+            action="cancel",
+            task_id=task.id,
+            status=TaskStatus.CANCELLING,
+            task_version=task.version,
+            execution_plan_id=None,
+            operation_replayed=True,
+            receipt_id=receipt_id,
+            idempotency_replayed=idempotency_replayed,
+        )
 
     def _load_execution_unit(self, task_id: str, plan_id: str) -> str:
         with self._session_factory() as session:
@@ -389,7 +701,7 @@ def _result_from_payload(receipt_id: str, payload: dict[str, Any]) -> TaskMutati
         not isinstance(task_id, str)
         or not isinstance(task_version, int)
         or isinstance(task_version, bool)
-        or not isinstance(execution_plan_id, str)
+        or (execution_plan_id is not None and not isinstance(execution_plan_id, str))
         or not isinstance(status, str)
         or not isinstance(operation_replayed, bool)
     ):
@@ -478,6 +790,35 @@ def _domain_application_error(exc: DomainViolation) -> ApplicationError:
         status=409,
         title="任务动作安全检查失败",
         detail=str(exc),
+    )
+
+
+def _pre_side_effect_cancellation_checkpoint(
+    requested_from_status: TaskStatus,
+    *,
+    stage: TaskStatus,
+    mode: TaskCancellationMode,
+    analysis_version: int | None = None,
+) -> dict[str, Any]:
+    checkpoint: dict[str, Any] = {
+        "schema_version": PRE_SIDE_EFFECT_CANCELLATION_SCHEMA_VERSION,
+        "stage": stage.value,
+        "mode": mode.value,
+        "requested_from_status": requested_from_status.value,
+        "remove_downloader_task": False,
+        "rollback_created_resources": False,
+    }
+    if analysis_version is not None:
+        checkpoint["analysis_version"] = analysis_version
+    return checkpoint
+
+
+def _cancellation_state_invalid(detail: str) -> ApplicationError:
+    return ApplicationError(
+        code="CANCELLATION_STATE_INVALID",
+        status=409,
+        title="当前任务状态不允许该取消方式",
+        detail=detail,
     )
 
 

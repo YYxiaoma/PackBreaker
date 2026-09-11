@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import os
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +38,7 @@ class V1FileMapping:
 
 
 V2FileMapping = V1FileMapping
+_CANCEL_CHECK_PIECE_INTERVAL = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +55,7 @@ def verify_v1_pieces(
     mappings: tuple[V1FileMapping, ...],
     *,
     read_chunk_bytes: int = 1024 * 1024,
+    cancel_check: Callable[[], None] | None = None,
 ) -> V1VerificationResult:
     """只读验证 v1 逻辑字节流；不会创建或修改任何文件。"""
 
@@ -60,6 +63,7 @@ def verify_v1_pieces(
         raise DomainViolation(ErrorCode.TORRENT_META_INVALID, "候选不包含 v1 piece 元数据")
     if read_chunk_bytes <= 0:
         raise ValueError("read_chunk_bytes 必须大于 0")
+    _check_cancel(cancel_check)
 
     mapping_by_path = _mapping_index(mappings)
     evidence: list[FileMappingEvidence] = []
@@ -67,7 +71,9 @@ def verify_v1_pieces(
     blocked = False
     unavailable = False
 
-    for torrent_file in meta.files:
+    for file_index, torrent_file in enumerate(meta.files):
+        if file_index % 128 == 0:
+            _check_cancel(cancel_check)
         if torrent_file.padding:
             evidence.append(
                 FileMappingEvidence(
@@ -149,7 +155,8 @@ def verify_v1_pieces(
             )
         )
 
-    pieces = _verify_stream(meta, tuple(spans), read_chunk_bytes)
+    pieces = _verify_stream(meta, tuple(spans), read_chunk_bytes, cancel_check)
+    _check_cancel(cancel_check)
     _recheck_snapshots(tuple(spans))
 
     if blocked:
@@ -166,6 +173,7 @@ def verify_v2_files(
     mappings: tuple[V2FileMapping, ...],
     *,
     read_chunk_bytes: int = 1024 * 1024,
+    cancel_check: Callable[[], None] | None = None,
 ) -> V2VerificationResult:
     """按 BEP 52 对每个 v2 文件独立执行只读 Merkle 验证。"""
 
@@ -173,6 +181,7 @@ def verify_v2_files(
         raise DomainViolation(ErrorCode.TORRENT_META_INVALID, "候选不包含 v2 Merkle 元数据")
     if read_chunk_bytes <= 0:
         raise ValueError("read_chunk_bytes 必须大于 0")
+    _check_cancel(cancel_check)
 
     mapping_by_path = _mapping_index(mappings)
     layer_by_root = {layer.pieces_root: layer.hashes for layer in meta.v2_piece_layers}
@@ -182,7 +191,9 @@ def verify_v2_files(
     blocked = False
     unavailable = False
 
-    for torrent_file in meta.files:
+    for file_index, torrent_file in enumerate(meta.files):
+        if file_index % 128 == 0:
+            _check_cancel(cancel_check)
         if torrent_file.zero_length:
             mapping_evidence.append(
                 FileMappingEvidence(
@@ -217,6 +228,7 @@ def verify_v2_files(
                 expected_root=expected_root,
                 expected_layer=layer_by_root.get(expected_root),
                 read_chunk_bytes=read_chunk_bytes,
+                cancel_check=cancel_check,
             )
             file_evidence.append(result)
             if result.status is not PieceStatus.VERIFIED:
@@ -263,11 +275,13 @@ def verify_v2_files(
             expected_layer=layer_by_root.get(expected_root),
             read_chunk_bytes=read_chunk_bytes,
             expected_snapshot=snapshot,
+            cancel_check=cancel_check,
         )
         file_evidence.append(result)
         if result.status is not PieceStatus.VERIFIED:
             unavailable = True
 
+    _check_cancel(cancel_check)
     _recheck_path_snapshots(tuple(snapshots))
     if blocked:
         level = VerificationLevel.BLOCKED
@@ -283,13 +297,25 @@ def verify_hybrid(
     mappings: tuple[V1FileMapping, ...],
     *,
     read_chunk_bytes: int = 1024 * 1024,
+    cancel_check: Callable[[], None] | None = None,
 ) -> HybridVerificationResult:
     """hybrid 必须同时满足 v1 逻辑流和 v2 文件 Merkle 证据。"""
 
     if meta.torrent_kind is not TorrentKind.HYBRID:
         raise DomainViolation(ErrorCode.TORRENT_META_INVALID, "候选不是 hybrid torrent")
-    v1 = verify_v1_pieces(meta, mappings, read_chunk_bytes=read_chunk_bytes)
-    v2 = verify_v2_files(meta, mappings, read_chunk_bytes=read_chunk_bytes)
+    v1 = verify_v1_pieces(
+        meta,
+        mappings,
+        read_chunk_bytes=read_chunk_bytes,
+        cancel_check=cancel_check,
+    )
+    _check_cancel(cancel_check)
+    v2 = verify_v2_files(
+        meta,
+        mappings,
+        read_chunk_bytes=read_chunk_bytes,
+        cancel_check=cancel_check,
+    )
     _assert_same_mapping_snapshots(v1.mappings, v2.mappings)
 
     if VerificationLevel.BLOCKED in {v1.level, v2.level}:
@@ -333,6 +359,7 @@ def _verify_stream(
     meta: TorrentMeta,
     spans: tuple[_ReadableSpan, ...],
     read_chunk_bytes: int,
+    cancel_check: Callable[[], None] | None,
 ) -> tuple[PieceEvidence, ...]:
     total_length = sum(span.length for span in spans)
     expected_piece_count = (
@@ -345,6 +372,8 @@ def _verify_stream(
     span_index = 0
     span_offset = 0
     for piece_index, expected_hash in enumerate(meta.v1_piece_hashes):
+        if piece_index % _CANCEL_CHECK_PIECE_INTERVAL == 0:
+            _check_cancel(cancel_check)
         remaining = min(meta.piece_length, total_length - piece_index * meta.piece_length)
         digest = hashlib.sha1()
         available = True
@@ -460,6 +489,7 @@ def _verify_v2_file_bytes(
     expected_layer: tuple[bytes, ...] | None,
     read_chunk_bytes: int,
     expected_snapshot: FileSnapshot | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> V2FileEvidence:
     piece_count = (file_length + piece_length - 1) // piece_length
     if piece_count > 1:
@@ -487,6 +517,7 @@ def _verify_v2_file_bytes(
         piece_length=piece_length,
         read_chunk_bytes=read_chunk_bytes,
         expected_snapshot=expected_snapshot,
+        cancel_check=cancel_check,
     )
     piece_statuses: list[PieceEvidence] = []
     if piece_count > 1:
@@ -522,6 +553,7 @@ def _compute_v2_piece_hashes(
     piece_length: int,
     read_chunk_bytes: int,
     expected_snapshot: FileSnapshot | None,
+    cancel_check: Callable[[], None] | None,
 ) -> tuple[bytes, ...]:
     blocks_per_piece = 1 << piece_layer_height(piece_length)
     fd: int | None = None
@@ -542,6 +574,8 @@ def _compute_v2_piece_hashes(
     remaining = file_length
     try:
         while remaining > 0:
+            if len(pieces) % _CANCEL_CHECK_PIECE_INTERVAL == 0:
+                _check_cancel(cancel_check)
             bytes_in_piece = min(piece_length, remaining)
             block_hashes: list[bytes] = []
             piece_remaining = bytes_in_piece
@@ -597,3 +631,8 @@ def _assert_fd_snapshot(fd: int, expected: FileSnapshot) -> None:
     )
     if observed != expected:
         raise DomainViolation(ErrorCode.SOURCE_CHANGED, "打开的源文件与验证快照不一致")
+
+
+def _check_cancel(cancel_check: Callable[[], None] | None) -> None:
+    if cancel_check is not None:
+        cancel_check()

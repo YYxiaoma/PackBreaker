@@ -149,7 +149,7 @@ class TaskMutationActionResponse(BaseModel):
     task_id: str
     status: TaskStatus
     task_version: int
-    execution_plan_id: str
+    execution_plan_id: str | None
     operation_replayed: bool
     idempotency_replayed: bool
     receipt_id: str

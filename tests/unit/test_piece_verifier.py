@@ -186,3 +186,28 @@ def test_source_change_after_read_is_detected(
             (V1FileMapping("media.bin", FileMappingState.MAPPED, media),),
         )
     assert caught.value.code is ErrorCode.SOURCE_CHANGED
+
+
+def test_v1_verification_checks_cooperative_cancel_between_piece_batches(tmp_path: Path) -> None:
+    media = tmp_path / "media.bin"
+    content = b"a" * 65
+    media.write_bytes(content)
+    meta = _meta((_file("media.bin", len(content), 0),), content, piece_length=1)
+    calls = 0
+
+    class Cancelled(RuntimeError):
+        pass
+
+    def cancel_check() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise Cancelled("synthetic cooperative cancel")
+
+    with pytest.raises(Cancelled, match="synthetic cooperative cancel"):
+        verify_v1_pieces(
+            meta,
+            (V1FileMapping("media.bin", FileMappingState.MAPPED, media),),
+            cancel_check=cancel_check,
+        )
+    assert calls == 4

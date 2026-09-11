@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import unicodedata
+from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
 
@@ -13,12 +14,16 @@ from backend.app.domain.verification import FileSnapshot
 
 
 def scan_source_inventory(
-    root: Path, *, max_files: int = 100_000
+    root: Path,
+    *,
+    max_files: int = 100_000,
+    cancel_check: Callable[[], None] | None = None,
 ) -> tuple[SourceFileCandidate, ...]:
     """只读扫描源根；不跟随符号链接，也不读取媒体内容。"""
 
     if max_files <= 0:
         raise ValueError("max_files 必须大于 0")
+    _check_cancel(cancel_check)
     root_stat = _lstat(root)
     if not stat.S_ISDIR(root_stat.st_mode):
         raise DomainViolation(
@@ -28,12 +33,16 @@ def scan_source_inventory(
     candidates: list[SourceFileCandidate] = []
     pending = [root]
     while pending:
+        _check_cancel(cancel_check)
         directory = pending.pop()
         try:
             entries = tuple(os.scandir(directory))
         except OSError as exc:
             raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "无法读取源目录") from exc
-        for entry in sorted(entries, key=lambda item: item.name):
+        _check_cancel(cancel_check)
+        for index, entry in enumerate(sorted(entries, key=lambda item: item.name)):
+            if index % 128 == 0:
+                _check_cancel(cancel_check)
             try:
                 item_stat = entry.stat(follow_symlinks=False)
             except OSError as exc:
@@ -57,6 +66,7 @@ def scan_source_inventory(
                     snapshot=_snapshot(item_stat),
                 )
             )
+    _check_cancel(cancel_check)
     return tuple(sorted(candidates, key=lambda item: (item.relative_path, item.source_path)))
 
 
@@ -114,3 +124,8 @@ def _normalized_relative_path(path: Path, root: Path) -> str:
     if not segments or any(not part or part in {".", ".."} for part in segments):
         raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "源相对路径无效")
     return "/".join(segments)
+
+
+def _check_cancel(cancel_check: Callable[[], None] | None) -> None:
+    if cancel_check is not None:
+        cancel_check()

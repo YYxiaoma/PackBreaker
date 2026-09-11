@@ -1224,7 +1224,7 @@ export interface components {
        */
       action: 'execute' | 'cancel';
       /** Execution Plan Id */
-      execution_plan_id: string;
+      execution_plan_id: string | null;
       /** Idempotency Replayed */
       idempotency_replayed: boolean;
       /** Operation Replayed */

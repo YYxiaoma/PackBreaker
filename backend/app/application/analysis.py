@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -62,6 +64,8 @@ class AnalysisSiteProvider(Protocol):
 
 
 class AnalysisLifecycle(Protocol):
+    def check_cancel_requested(self) -> None: ...
+
     def enter_searching(self) -> int: ...
 
     def enter_matching(self) -> int: ...
@@ -94,6 +98,8 @@ class AnalysisService:
         source_inventory: tuple[SourceFileCandidate, ...] | None = None,
         lifecycle: AnalysisLifecycle | None = None,
     ) -> PreflightSnapshot:
+        if lifecycle is not None:
+            lifecycle.check_cancel_requested()
         task_version = self._task_version(task_id, unit.normalized_unit_key)
         inventory = source_inventory or scan_source_inventory(source_root)
         inventory_digest = source_inventory_digest(inventory)
@@ -105,12 +111,18 @@ class AnalysisService:
                 title="没有可用站点",
                 detail="至少需要启用一个已通过连接测试的站点才能执行分析",
             )
+        if lifecycle is not None:
+            lifecycle.check_cancel_requested()
 
         queries = build_search_queries(unit, max_queries=self._policy.max_queries_per_site)
         planned_query_signatures = tuple(search_query_signature(query) for query in queries)
         if lifecycle is not None:
             task_version = lifecycle.enter_searching()
-        candidates, site_evidence = await self._search_sites(bindings, queries)
+        candidates, site_evidence = await self._search_sites(
+            bindings,
+            queries,
+            lifecycle=lifecycle,
+        )
         if lifecycle is not None:
             task_version = lifecycle.enter_matching()
         ranked = rank_candidates(
@@ -129,6 +141,7 @@ class AnalysisService:
         }
 
         if lifecycle is not None:
+            lifecycle.check_cancel_requested()
             task_version = lifecycle.enter_verifying()
         evidence: list[CandidatePreflightEvidence] = []
         binding_by_site = {binding.site_id: binding for binding in bindings}
@@ -149,6 +162,8 @@ class AnalysisService:
                     )
                 )
                 continue
+            if lifecycle is not None:
+                lifecycle.check_cancel_requested()
             evidence.append(
                 await self._verify_candidate(
                     binding,
@@ -156,10 +171,17 @@ class AnalysisService:
                     unit,
                     inventory,
                     fallback_score=score_by_key[ranked_item.candidate_id],
+                    lifecycle=lifecycle,
                 )
             )
 
-        final_inventory = scan_source_inventory(source_root)
+        final_inventory = await asyncio.to_thread(
+            scan_source_inventory,
+            source_root,
+            cancel_check=lifecycle.check_cancel_requested if lifecycle is not None else None,
+        )
+        if lifecycle is not None:
+            lifecycle.check_cancel_requested()
         if source_inventory_digest(final_inventory) != inventory_digest:
             raise ApplicationError(
                 code="ANALYSIS_SOURCE_CHANGED",
@@ -222,10 +244,14 @@ class AnalysisService:
         self,
         bindings: tuple[EnabledSiteAdapter, ...],
         queries: tuple[SearchQuery, ...],
+        *,
+        lifecycle: AnalysisLifecycle | None = None,
     ) -> tuple[dict[tuple[str, str], CandidateMeta], tuple[SiteAnalysisEvidence, ...]]:
         candidates: dict[tuple[str, str], CandidateMeta] = {}
         sites: list[SiteAnalysisEvidence] = []
         for binding in bindings:
+            if lifecycle is not None:
+                lifecycle.check_cancel_requested()
             executed: list[str] = []
             errors: list[str] = []
             try:
@@ -241,10 +267,14 @@ class AnalysisService:
                     )
                 )
                 continue
+            if lifecycle is not None:
+                lifecycle.check_cancel_requested()
             query_limit = self._policy.max_queries_per_site
             if capabilities.min_request_interval_seconds > 0:
                 query_limit = 1
             for query in queries[:query_limit]:
+                if lifecycle is not None:
+                    lifecycle.check_cancel_requested()
                 signature = search_query_signature(query)
                 executed.append(signature)
                 try:
@@ -252,6 +282,8 @@ class AnalysisService:
                 except SiteAdapterError as exc:
                     errors.append(exc.code)
                     continue
+                if lifecycle is not None:
+                    lifecycle.check_cancel_requested()
                 if page.site_id != binding.site_id:
                     errors.append("SITE_IDENTITY_MISMATCH")
                     continue
@@ -279,11 +311,16 @@ class AnalysisService:
         inventory: tuple[SourceFileCandidate, ...],
         *,
         fallback_score: CandidateScore,
+        lifecycle: AnalysisLifecycle | None = None,
     ) -> CandidatePreflightEvidence:
         detailed = candidate
         current_score = fallback_score
         try:
+            if lifecycle is not None:
+                lifecycle.check_cancel_requested()
             details = await binding.adapter.fetch_details(candidate.torrent_id)
+            if lifecycle is not None:
+                lifecycle.check_cancel_requested()
             if details.site_id != binding.site_id or details.torrent_id != candidate.torrent_id:
                 raise SiteAdapterError("SITE_IDENTITY_MISMATCH", "站点详情身份与搜索候选不一致")
             detailed = details.candidate
@@ -291,11 +328,20 @@ class AnalysisService:
             if current_score.rejected:
                 return _unverified_evidence(detailed, current_score, selected=True)
             payload = await binding.adapter.fetch_torrent(candidate.torrent_id)
+            if lifecycle is not None:
+                lifecycle.check_cancel_requested()
             if payload.site_id != binding.site_id or payload.torrent_id != candidate.torrent_id:
                 raise SiteAdapterError("SITE_IDENTITY_MISMATCH", "torrent payload 身份与候选不一致")
             meta = parse_torrent(payload.content)
             mappings = auto_map_files(meta, inventory)
-            level = verify_torrent_mappings(meta, mappings)
+            level = await asyncio.to_thread(
+                verify_torrent_mappings,
+                meta,
+                mappings,
+                cancel_check=lifecycle.check_cancel_requested if lifecycle is not None else None,
+            )
+            if lifecycle is not None:
+                lifecycle.check_cancel_requested()
             return CandidatePreflightEvidence(
                 site_id=detailed.site_id,
                 torrent_id=detailed.torrent_id,
@@ -344,6 +390,8 @@ class AnalysisService:
 def verify_torrent_mappings(
     meta: TorrentMeta,
     mappings: tuple[AutoMappingDecision, ...],
+    *,
+    cancel_check: Callable[[], None] | None = None,
 ) -> VerificationLevel:
     piece_mappings = tuple(
         V1FileMapping(
@@ -354,10 +402,10 @@ def verify_torrent_mappings(
         for mapping in mappings
     )
     if meta.torrent_kind is TorrentKind.V1:
-        return verify_v1_pieces(meta, piece_mappings).level
+        return verify_v1_pieces(meta, piece_mappings, cancel_check=cancel_check).level
     if meta.torrent_kind is TorrentKind.V2:
-        return verify_v2_files(meta, piece_mappings).level
-    return verify_hybrid(meta, piece_mappings).level
+        return verify_v2_files(meta, piece_mappings, cancel_check=cancel_check).level
+    return verify_hybrid(meta, piece_mappings, cancel_check=cancel_check).level
 
 
 def _candidate_key(candidate: CandidateMeta) -> str:

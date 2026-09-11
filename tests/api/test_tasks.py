@@ -886,6 +886,67 @@ class _FakePublicTaskActions:
         )
 
 
+def test_public_cancel_pending_task_is_db_only_and_idempotent(tmp_path: Path) -> None:
+    client, app, _settings = _authenticated_client(tmp_path)
+    task_id = _create_task(app, "public-pre-side-effect-cancel")
+    try:
+        missing_key = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers=_csrf(client),
+            json={
+                "action": "cancel",
+                "remove_downloader_task": False,
+                "rollback_created_resources": False,
+            },
+        )
+        assert missing_key.status_code == 428
+        assert missing_key.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+        first = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers={**_csrf(client), "Idempotency-Key": "cancel-pending"},
+            json={
+                "action": "cancel",
+                "remove_downloader_task": False,
+                "rollback_created_resources": False,
+            },
+        )
+        replayed = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers={**_csrf(client), "Idempotency-Key": "cancel-pending"},
+            json={
+                "action": "cancel",
+                "remove_downloader_task": False,
+                "rollback_created_resources": False,
+            },
+        )
+
+        assert first.status_code == replayed.status_code == 200
+        assert first.json()["status"] == "CANCELLED"
+        assert first.json()["execution_plan_id"] is None
+        assert first.json()["idempotency_replayed"] is False
+        assert replayed.json()["receipt_id"] == first.json()["receipt_id"]
+        assert replayed.json()["idempotency_replayed"] is True
+        with app.state.runtime.session_factory() as session:
+            task = TaskRepository(session).get(task_id)
+            assert task is not None and task.status == TaskStatus.CANCELLED.value
+            assert OperationJournalRepository(session).list_for_task(task_id) == []
+            events = list(
+                session.scalars(
+                    select(TaskEvent)
+                    .where(TaskEvent.task_id == task_id)
+                    .order_by(TaskEvent.created_at, TaskEvent.id)
+                )
+            )
+            assert [item.event_type for item in events[-3:]] == [
+                "TASK_CANCEL_REQUESTED",
+                "CANCELLATION_STARTED",
+                "CANCELLATION_COMPLETED",
+            ]
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_public_execute_cancel_actions_enforce_csrf_idempotency_and_explicit_options(
     tmp_path: Path,
 ) -> None:

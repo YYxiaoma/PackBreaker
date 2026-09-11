@@ -2,7 +2,26 @@ import type { TaskStatus } from './api/tasks';
 
 export type TaskMutationKind = 'execute' | 'cancel' | 'reconcile';
 
-const CANCELLABLE_STATUSES = new Set<TaskStatus>([
+const PRE_SIDE_EFFECT_CANCELLABLE_STATUSES = new Set<TaskStatus>([
+  'PENDING',
+  'ANALYZING',
+  'SEARCHING',
+  'MATCHING',
+  'VERIFYING',
+  'PREFLIGHT',
+  'AWAITING_CONFIRMATION',
+  'PAUSED',
+  'RETRY',
+]);
+
+const COOPERATIVE_ANALYSIS_CANCELLABLE_STATUSES = new Set<TaskStatus>([
+  'ANALYZING',
+  'SEARCHING',
+  'MATCHING',
+  'VERIFYING',
+]);
+
+const SIDE_EFFECT_CANCELLABLE_STATUSES = new Set<TaskStatus>([
   'LINKING',
   'ADDING',
   'CLIENT_VERIFYING',
@@ -12,7 +31,19 @@ const CANCELLABLE_STATUSES = new Set<TaskStatus>([
 const CANCELLATION_PROGRESS_STATUSES = new Set<TaskStatus>(['CANCELLING', 'ROLLING_BACK']);
 
 export function canStartTaskCancellation(status: TaskStatus): boolean {
-  return CANCELLABLE_STATUSES.has(status);
+  return canCancelBeforeSideEffects(status) || cancellationRequiresResourceScope(status);
+}
+
+export function canCancelBeforeSideEffects(status: TaskStatus): boolean {
+  return PRE_SIDE_EFFECT_CANCELLABLE_STATUSES.has(status);
+}
+
+export function cancellationIsCooperativeAnalysis(status: TaskStatus): boolean {
+  return COOPERATIVE_ANALYSIS_CANCELLABLE_STATUSES.has(status);
+}
+
+export function cancellationRequiresResourceScope(status: TaskStatus): boolean {
+  return SIDE_EFFECT_CANCELLABLE_STATUSES.has(status);
 }
 
 export function cancellationIsInProgress(status: TaskStatus): boolean {

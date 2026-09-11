@@ -1,21 +1,42 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canCancelBeforeSideEffects,
+  cancellationIsCooperativeAnalysis,
   cancellationIsInProgress,
   cancellationOptionsAreConsistent,
+  cancellationRequiresResourceScope,
   canStartTaskCancellation,
   createTaskActionIdempotencyKey,
   formatByteUpperBound,
 } from './taskActionSafety';
 
 describe('公开任务动作 UI 安全门', () => {
-  it('只允许副作用阶段发起新的取消请求', () => {
+  it('稳定零副作用、协作式分析与副作用阶段使用不同取消边界', () => {
+    expect(canStartTaskCancellation('PENDING')).toBe(true);
+    expect(canStartTaskCancellation('PREFLIGHT')).toBe(true);
+    expect(canStartTaskCancellation('AWAITING_CONFIRMATION')).toBe(true);
+    expect(canStartTaskCancellation('PAUSED')).toBe(true);
+    expect(canStartTaskCancellation('RETRY')).toBe(true);
     expect(canStartTaskCancellation('LINKING')).toBe(true);
     expect(canStartTaskCancellation('ADDING')).toBe(true);
     expect(canStartTaskCancellation('CLIENT_VERIFYING')).toBe(true);
     expect(canStartTaskCancellation('SEEDING')).toBe(true);
-    expect(canStartTaskCancellation('AWAITING_CONFIRMATION')).toBe(false);
+    expect(canStartTaskCancellation('ANALYZING')).toBe(true);
+    expect(canStartTaskCancellation('SEARCHING')).toBe(true);
+    expect(canStartTaskCancellation('MATCHING')).toBe(true);
+    expect(canStartTaskCancellation('VERIFYING')).toBe(true);
     expect(canStartTaskCancellation('DONE')).toBe(false);
+    expect(canCancelBeforeSideEffects('PENDING')).toBe(true);
+    expect(canCancelBeforeSideEffects('ANALYZING')).toBe(true);
+    expect(canCancelBeforeSideEffects('AWAITING_CONFIRMATION')).toBe(true);
+    expect(canCancelBeforeSideEffects('LINKING')).toBe(false);
+    expect(cancellationIsCooperativeAnalysis('ANALYZING')).toBe(true);
+    expect(cancellationIsCooperativeAnalysis('VERIFYING')).toBe(true);
+    expect(cancellationIsCooperativeAnalysis('PREFLIGHT')).toBe(false);
+    expect(cancellationRequiresResourceScope('LINKING')).toBe(true);
+    expect(cancellationRequiresResourceScope('SEEDING')).toBe(true);
+    expect(cancellationRequiresResourceScope('PREFLIGHT')).toBe(false);
     expect(cancellationIsInProgress('CANCELLING')).toBe(true);
     expect(cancellationIsInProgress('ROLLING_BACK')).toBe(true);
   });

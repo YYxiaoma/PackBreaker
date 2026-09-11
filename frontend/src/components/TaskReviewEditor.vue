@@ -27,8 +27,11 @@ import {
 } from '../api/tasks';
 import type { PreflightReviewItem } from '../preflightReviews';
 import {
+  canCancelBeforeSideEffects,
+  cancellationIsCooperativeAnalysis,
   cancellationIsInProgress,
   cancellationOptionsAreConsistent,
+  cancellationRequiresResourceScope,
   canStartTaskCancellation,
   createTaskActionIdempotencyKey,
   formatByteUpperBound,
@@ -63,6 +66,7 @@ const executeIdempotencyKey = ref('');
 const executeReplayPlanId = ref('');
 const executeResultUnknown = ref(false);
 const cancelIdempotencyKey = ref('');
+const cancelResultUnknown = ref(false);
 const removeDownloaderTask = ref(false);
 const rollbackCreatedResources = ref(false);
 const cancellationAcknowledged = ref(false);
@@ -125,19 +129,38 @@ const canReplayExecute = computed(
     !executing.value,
 );
 const canExecute = computed(() => canStartExecute.value || canReplayExecute.value);
+const preSideEffectCancellation = computed(() =>
+  canCancelBeforeSideEffects(props.item.task.status),
+);
+const cooperativeAnalysisCancellation = computed(() =>
+  cancellationIsCooperativeAnalysis(props.item.task.status),
+);
+const cancellationNeedsResourceScope = computed(() =>
+  cancellationRequiresResourceScope(props.item.task.status),
+);
 const canStartCancellation = computed(() => canStartTaskCancellation(props.item.task.status));
 const cancellationInProgress = computed(() => cancellationIsInProgress(props.item.task.status));
-const showCancellationPanel = computed(
-  () => canStartCancellation.value || cancellationInProgress.value,
+const canReplayCancel = computed(
+  () =>
+    cancelResultUnknown.value &&
+    cancelIdempotencyKey.value.length > 0 &&
+    !loading.value &&
+    !cancelling.value,
 );
-const cancellationOptionsConsistent = computed(() =>
-  cancellationOptionsAreConsistent(removeDownloaderTask.value, rollbackCreatedResources.value),
+const showCancellationPanel = computed(
+  () => canStartCancellation.value || cancellationInProgress.value || canReplayCancel.value,
+);
+const cancellationOptionsConsistent = computed(
+  () =>
+    !cancellationNeedsResourceScope.value ||
+    cancellationOptionsAreConsistent(removeDownloaderTask.value, rollbackCreatedResources.value),
 );
 const canCancel = computed(
   () =>
-    canStartCancellation.value &&
-    cancellationOptionsConsistent.value &&
-    cancellationAcknowledged.value &&
+    (canReplayCancel.value ||
+      (canStartCancellation.value &&
+        cancellationOptionsConsistent.value &&
+        (preSideEffectCancellation.value || cancellationAcknowledged.value))) &&
     !loading.value &&
     !cancelling.value,
 );
@@ -161,6 +184,7 @@ watch(approvedCandidateId, (value) => {
 });
 
 watch([removeDownloaderTask, rollbackCreatedResources], () => {
+  if (cancelResultUnknown.value) return;
   cancelIdempotencyKey.value = '';
   cancellationAcknowledged.value = false;
 });
@@ -397,26 +421,52 @@ async function executeExecutionPlan(): Promise<void> {
 
 async function cancelAndRollback(): Promise<void> {
   if (!canCancel.value) return;
+  const replaying = canReplayCancel.value;
+  const preSideEffect = preSideEffectCancellation.value;
   cancelling.value = true;
   try {
-    const downloaderChoice = removeDownloaderTask.value
-      ? '移除当前任务对应的 PackBreaker qBittorrent 任务，固定 deleteFiles=false，不删除磁盘数据'
-      : '保留下载器任务';
-    const resourceChoice = rollbackCreatedResources.value
-      ? '仅回滚 operation journal 明确拥有的 hardlink 与空目录；证据变化时失败关闭'
-      : '保留 PackBreaker 已创建的 hardlink/目录';
-    try {
-      await ElMessageBox.confirm(
-        `${downloaderChoice}；${resourceChoice}。源媒体不在删除范围内，也不会被打开写入。`,
-        '确认取消与回滚范围',
-        {
-          confirmButtonText: '按以上范围取消',
-          cancelButtonText: '返回检查',
-          type: 'warning',
-        },
-      );
-    } catch {
-      return;
+    if (!replaying) {
+      if (preSideEffect) {
+        removeDownloaderTask.value = false;
+        rollbackCreatedResources.value = false;
+        try {
+          await ElMessageBox.confirm(
+            cooperativeAnalysisCancellation.value
+              ? '当前只读分析会先登记 CANCELLING，再由原分析流在下一个安全检查点自行停止并确认 CANCELLED。不会创建或删除文件、不会调用 qBittorrent，也不会修改源媒体。'
+              : '当前任务尚未进入 LINKING。取消只会把任务状态安全收敛到 CANCELLED；不会创建或删除文件、不会调用 qBittorrent，也不会修改源媒体。',
+            cooperativeAnalysisCancellation.value ? '确认停止只读分析' : '确认取消未执行任务',
+            {
+              confirmButtonText: cooperativeAnalysisCancellation.value
+                ? '请求停止只读分析'
+                : '取消未执行任务',
+              cancelButtonText: '返回检查',
+              type: 'warning',
+            },
+          );
+        } catch {
+          return;
+        }
+      } else {
+        const downloaderChoice = removeDownloaderTask.value
+          ? '移除当前任务对应的 PackBreaker qBittorrent 任务，固定 deleteFiles=false，不删除磁盘数据'
+          : '保留下载器任务';
+        const resourceChoice = rollbackCreatedResources.value
+          ? '仅回滚 operation journal 明确拥有的 hardlink 与空目录；证据变化时失败关闭'
+          : '保留 PackBreaker 已创建的 hardlink/目录';
+        try {
+          await ElMessageBox.confirm(
+            `${downloaderChoice}；${resourceChoice}。源媒体不在删除范围内，也不会被打开写入。`,
+            '确认取消与回滚范围',
+            {
+              confirmButtonText: '按以上范围取消',
+              cancelButtonText: '返回检查',
+              type: 'warning',
+            },
+          );
+        } catch {
+          return;
+        }
+      }
     }
     if (!cancelIdempotencyKey.value) {
       cancelIdempotencyKey.value = createTaskActionIdempotencyKey('cancel', props.item.task.id);
@@ -429,12 +479,20 @@ async function cancelAndRollback(): Promise<void> {
       },
       cancelIdempotencyKey.value,
     );
+    cancelResultUnknown.value = false;
     lastMutation.value = result;
     ElMessage.success(
-      `取消动作已完成：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+      `${result.status === 'CANCELLING' ? '取消请求已登记' : '取消动作已完成'}：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
     );
     emit('saved');
   } catch (error) {
+    if (isUnknownMutationResult(error) && cancelIdempotencyKey.value) {
+      cancelResultUnknown.value = true;
+      ElMessage.warning('取消响应结果未知；只能使用同一选项与同一 Idempotency-Key 重试确认结果');
+    } else {
+      cancelIdempotencyKey.value = '';
+      cancelResultUnknown.value = false;
+    }
     showError(error);
   } finally {
     cancelling.value = false;
@@ -465,6 +523,7 @@ function clearExecuteReplayState(): void {
 function resetActionState(): void {
   clearExecuteReplayState();
   cancelIdempotencyKey.value = '';
+  cancelResultUnknown.value = false;
   removeDownloaderTask.value = false;
   rollbackCreatedResources.value = false;
   cancellationAcknowledged.value = false;
@@ -788,14 +847,32 @@ function showError(error: unknown): void {
     <div v-if="showCancellationPanel" class="execution-gate-card cancellation-card">
       <div class="review-editor-heading">
         <div>
-          <h3>取消 / 回滚</h3>
-          <small
+          <h3>{{ preSideEffectCancellation ? '取消任务' : '取消 / 回滚' }}</h3>
+          <small v-if="cooperativeAnalysisCancellation"
+            >只读分析运行中；取消只登记请求，由原分析流在安全检查点自行停止</small
+          >
+          <small v-else-if="preSideEffectCancellation"
+            >尚未进入 LINKING；取消只更新任务状态，不创建或回收文件/下载器资源</small
+          >
+          <small v-else
             >取消选项会被后端冻结到 ROLLING_BACK checkpoint；文件回滚只处理 operation journal
             明确拥有的资源</small
           >
         </div>
-        <el-tag :type="cancellationInProgress ? 'warning' : 'danger'">
-          {{ cancellationInProgress ? item.task.status : 'SIDE EFFECTS ACTIVE' }}
+        <el-tag
+          :type="preSideEffectCancellation ? 'info' : cancellationInProgress ? 'warning' : 'danger'"
+        >
+          {{
+            preSideEffectCancellation
+              ? cooperativeAnalysisCancellation
+                ? 'COOPERATIVE STOP'
+                : 'NO SIDE EFFECTS'
+              : cancellationInProgress
+                ? item.task.status
+                : cancelResultUnknown
+                  ? 'RESULT UNKNOWN'
+                  : 'SIDE EFFECTS ACTIVE'
+          }}
         </el-tag>
       </div>
 
@@ -807,6 +884,49 @@ function showError(error: unknown): void {
         :closable="false"
         show-icon
       />
+      <template v-else-if="cancelResultUnknown">
+        <el-alert
+          title="取消响应结果未知"
+          description="任务状态可能已经变化。此处只允许复用第一次请求的相同 Idempotency-Key 与相同取消选项确认结果，不会重新授权另一种取消范围。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <div class="mutation-action-buttons">
+          <el-button type="warning" :loading="cancelling" @click="cancelAndRollback">
+            重试确认取消结果
+          </el-button>
+        </div>
+      </template>
+      <template v-else-if="preSideEffectCancellation">
+        <el-alert
+          :title="
+            cooperativeAnalysisCancellation ? '只读分析将协作停止' : '当前任务尚未进入副作用阶段'
+          "
+          :description="
+            cooperativeAnalysisCancellation
+              ? '服务端会再次确认任务处于 ANALYZING / SEARCHING / MATCHING / VERIFYING 且没有 operation journal；请求先记录 CANCELLING，随后由原分析流在安全检查点确认 CANCELLED。'
+              : '服务端会再次确认任务处于 PENDING / PREFLIGHT / AWAITING_CONFIRMATION / PAUSED / RETRY，且没有任何 operation journal；通过后只记录 CANCELLING → CANCELLED，不访问 qBittorrent、不创建或删除文件。'
+          "
+          type="info"
+          :closable="false"
+          show-icon
+        />
+        <div class="mutation-action-buttons">
+          <small v-if="cooperativeAnalysisCancellation"
+            >任务状态：{{ item.task.status }}。不会从外部线程抢改终态；原分析流负责停止。</small
+          >
+          <small v-else>任务状态：{{ item.task.status }}。未启动任何副作用。</small>
+          <el-button
+            type="danger"
+            :disabled="!canCancel"
+            :loading="cancelling"
+            @click="cancelAndRollback"
+          >
+            {{ cooperativeAnalysisCancellation ? '请求停止只读分析' : '取消未执行任务' }}
+          </el-button>
+        </div>
+      </template>
       <template v-else>
         <el-alert
           title="取消不会删除源媒体"
@@ -817,13 +937,13 @@ function showError(error: unknown): void {
         />
         <div class="cancellation-options">
           <label class="cancellation-option">
-            <el-checkbox v-model="removeDownloaderTask">
+            <el-checkbox v-model="removeDownloaderTask" :disabled="cancelResultUnknown">
               移除 PackBreaker 创建的 qBittorrent 任务
             </el-checkbox>
             <small>固定 deleteFiles=false；只移除客户端任务记录，不删除磁盘数据。</small>
           </label>
           <label class="cancellation-option">
-            <el-checkbox v-model="rollbackCreatedResources">
+            <el-checkbox v-model="rollbackCreatedResources" :disabled="cancelResultUnknown">
               回滚 PackBreaker 创建的 hardlink 与空目录
             </el-checkbox>
             <small

@@ -1,16 +1,22 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, RefreshCw, Search } from '@lucide/vue';
 
 import { ApiProblem } from '../api/client';
 import {
+  cancelTask,
   createTask,
   listTasks,
   type TaskCreateInput,
   type TaskRecord,
   type TaskStatus,
 } from '../api/tasks';
+import {
+  canCancelBeforeSideEffects,
+  cancellationIsCooperativeAnalysis,
+  createTaskActionIdempotencyKey,
+} from '../taskActionSafety';
 import TaskAnalysisPanel from './TaskAnalysisPanel.vue';
 import TaskEventTimeline from './TaskEventTimeline.vue';
 import TaskOperationCenter from './TaskOperationCenter.vue';
@@ -21,6 +27,10 @@ const createVisible = ref(false);
 const detailVisible = ref(false);
 const active = ref<TaskRecord | null>(null);
 const operationRefreshKey = ref(0);
+const preCancelling = ref(false);
+const preCancelTaskId = ref('');
+const preCancelIdempotencyKey = ref('');
+const preCancelResultUnknown = ref(false);
 const query = ref('');
 const status = ref<TaskStatus | ''>('');
 const creating = ref(false);
@@ -48,6 +58,17 @@ const filtered = computed(() => {
       .includes(needle);
   });
 });
+const canPreCancelActive = computed(
+  () =>
+    active.value !== null &&
+    (canCancelBeforeSideEffects(active.value.status) ||
+      (preCancelResultUnknown.value &&
+        preCancelTaskId.value === active.value.id &&
+        preCancelIdempotencyKey.value.length > 0)),
+);
+const activeCancellationIsCooperative = computed(
+  () => active.value !== null && cancellationIsCooperativeAnalysis(active.value.status),
+);
 
 onMounted(() => void refresh());
 
@@ -97,6 +118,7 @@ async function submitCreate(): Promise<void> {
 }
 
 function open(task: TaskRecord): void {
+  if (active.value?.id !== task.id) clearPreCancelState();
   active.value = task;
   detailVisible.value = true;
 }
@@ -104,6 +126,71 @@ function open(task: TaskRecord): void {
 async function handleTaskEventChanged(): Promise<void> {
   operationRefreshKey.value += 1;
   await refresh();
+}
+
+async function cancelBeforeSideEffects(): Promise<void> {
+  const task = active.value;
+  if (!task || !canPreCancelActive.value || preCancelling.value) return;
+  const replaying =
+    preCancelResultUnknown.value &&
+    preCancelTaskId.value === task.id &&
+    preCancelIdempotencyKey.value.length > 0;
+  const cooperativeAnalysis = cancellationIsCooperativeAnalysis(task.status);
+  preCancelling.value = true;
+  try {
+    if (!replaying) {
+      try {
+        await ElMessageBox.confirm(
+          cooperativeAnalysis
+            ? '服务端会先登记 CANCELLING；正在运行的只读分析会在下一个安全检查点自行停止并确认 CANCELLED。不会访问 qBittorrent，也不会创建、删除或写入媒体文件。'
+            : '服务端会再次确认该任务尚未进入 LINKING 且没有 operation journal。通过后只更新任务状态到 CANCELLED；不会访问 qBittorrent，不会创建、删除或写入任何媒体文件。',
+          cooperativeAnalysis ? '确认停止只读分析' : '确认取消未执行任务',
+          {
+            confirmButtonText: cooperativeAnalysis ? '请求停止只读分析' : '取消未执行任务',
+            cancelButtonText: '返回',
+            type: 'warning',
+          },
+        );
+      } catch {
+        return;
+      }
+      preCancelTaskId.value = task.id;
+      preCancelIdempotencyKey.value = createTaskActionIdempotencyKey('cancel', task.id);
+    }
+    const result = await cancelTask(
+      task.id,
+      { remove_downloader_task: false, rollback_created_resources: false },
+      preCancelIdempotencyKey.value,
+    );
+    clearPreCancelState();
+    await refresh();
+    ElMessage.success(
+      `${result.status === 'CANCELLING' ? '取消请求已登记' : '取消结果已确认'}：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+    );
+  } catch (error) {
+    if (isUnknownMutationResult(error) && preCancelIdempotencyKey.value) {
+      preCancelResultUnknown.value = true;
+      ElMessage.warning('取消响应结果未知；只能使用同一 Idempotency-Key 重试确认结果');
+    } else {
+      clearPreCancelState();
+    }
+    showError(error);
+  } finally {
+    preCancelling.value = false;
+  }
+}
+
+function clearPreCancelState(): void {
+  preCancelTaskId.value = '';
+  preCancelIdempotencyKey.value = '';
+  preCancelResultUnknown.value = false;
+}
+
+function isUnknownMutationResult(error: unknown): boolean {
+  return (
+    error instanceof ApiProblem &&
+    (error.code === 'API_UNAVAILABLE' || error.status === 408 || (error.status ?? 0) >= 500)
+  );
 }
 
 function showError(error: unknown): void {
@@ -255,6 +342,44 @@ const statusOptions: TaskStatus[] = [
             active.normalized_unit_key
           }}</el-descriptions-item>
         </el-descriptions>
+        <el-alert
+          v-if="canPreCancelActive"
+          :title="
+            preCancelResultUnknown
+              ? '取消结果未知'
+              : activeCancellationIsCooperative
+                ? '可协作停止只读分析'
+                : '可在副作用开始前安全取消'
+          "
+          :description="
+            preCancelResultUnknown
+              ? '任务状态可能已经变化；只能复用第一次请求的同一 Idempotency-Key 确认结果。'
+              : activeCancellationIsCooperative
+                ? 'ANALYZING / SEARCHING / MATCHING / VERIFYING 会先登记 CANCELLING，由原分析流在安全检查点停止；服务端仍要求没有任何 operation journal。'
+                : 'PENDING / PREFLIGHT / AWAITING_CONFIRMATION / PAUSED / RETRY 会直接安全取消；服务端仍要求没有任何 operation journal。'
+          "
+          type="warning"
+          :closable="false"
+          show-icon
+          class="pre-cancel-alert"
+        >
+          <template #default>
+            <el-button
+              size="small"
+              type="danger"
+              :loading="preCancelling"
+              @click="cancelBeforeSideEffects"
+            >
+              {{
+                preCancelResultUnknown
+                  ? '重试确认取消结果'
+                  : activeCancellationIsCooperative
+                    ? '请求停止只读分析'
+                    : '取消未执行任务'
+              }}
+            </el-button>
+          </template>
+        </el-alert>
         <TaskAnalysisPanel :suggested-task-id="active.id" />
         <TaskOperationCenter :task-id="active.id" :refresh-key="operationRefreshKey" />
         <TaskEventTimeline
@@ -306,6 +431,9 @@ const statusOptions: TaskStatus[] = [
   font-size: 10px;
 }
 .real-task-summary {
+  margin-bottom: 18px;
+}
+.pre-cancel-alert {
   margin-bottom: 18px;
 }
 @media (max-width: 800px) {
