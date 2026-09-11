@@ -1,13 +1,17 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from backend.app.api.dependencies import CSRF_COOKIE
+from backend.app.application.task_actions import TaskMutationActionResult
 from backend.app.config import AppSettings
+from backend.app.domain.task_state import TaskStatus
 from backend.app.infrastructure.persistence.models import ApiToken
 from backend.app.infrastructure.security import token_digest
 from backend.app.main import create_app
@@ -90,6 +94,7 @@ def test_api_token_scope_is_enforced_on_system_status(tmp_path: Path) -> None:
         )
         assert response.status_code == 200
         assert response.json()["authenticated_via"] == "api_token"
+        assert response.json()["worker"]["running"] is True
 
         response = client.get(
             "/api/v1/system/status",
@@ -97,6 +102,59 @@ def test_api_token_scope_is_enforced_on_system_status(tmp_path: Path) -> None:
         )
         assert response.status_code == 403
         assert response.json()["code"] == "API_TOKEN_SCOPE_FORBIDDEN"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_tasks_write_api_token_can_execute_without_csrf_but_tasks_read_cannot(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        allowed = _create_token(client, scopes=["tasks:write"], name="task-writer")
+        denied = _create_token(client, scopes=["tasks:read"], name="task-reader")
+        execute = AsyncMock(
+            return_value=TaskMutationActionResult(
+                action="execute",
+                task_id="task-token",
+                status=TaskStatus.ADDING,
+                task_version=3,
+                execution_plan_id="plan-token",
+                operation_replayed=False,
+                receipt_id="receipt-token",
+                idempotency_replayed=False,
+            )
+        )
+        app.state.task_action_service = SimpleNamespace(execute=execute, cancel=AsyncMock())
+        payload = {"action": "execute", "execution_plan_id": "plan-token"}
+
+        accepted = client.post(
+            "/api/v1/tasks/task-token/actions",
+            headers={
+                "Authorization": f"Bearer {allowed['token']}",
+                "Idempotency-Key": "token-execute",
+            },
+            json=payload,
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "ADDING"
+        assert execute.await_count == 1
+        assert execute.await_args is not None
+        actor = execute.await_args.kwargs["actor"]
+        assert actor.kind == "api_token"
+        assert actor.subject_id == allowed["id"]
+
+        rejected = client.post(
+            "/api/v1/tasks/task-token/actions",
+            headers={
+                "Authorization": f"Bearer {denied['token']}",
+                "Idempotency-Key": "token-execute-denied",
+            },
+            json=payload,
+        )
+        assert rejected.status_code == 403
+        assert rejected.json()["code"] == "API_TOKEN_SCOPE_FORBIDDEN"
+        assert execute.await_count == 1
     finally:
         client.__exit__(None, None, None)
 

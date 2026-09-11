@@ -1,16 +1,23 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, Field
 
 from backend.app.api.dependencies import (
     AccessPrincipal,
     require_admin_csrf_or_scope,
     require_admin_or_scope,
+    task_action_service,
     task_analysis_service,
 )
 from backend.app.application.errors import ApplicationError
+from backend.app.application.task_actions import (
+    CancelTaskAction,
+    ExecuteTaskAction,
+    TaskActionActor,
+    TaskMutationActionResult,
+)
 from backend.app.application.tasks import (
     ExecutionGateView,
     ExecutionPlanView,
@@ -59,9 +66,37 @@ class TaskCreateResponse(BaseModel):
     created: bool
 
 
-class TaskActionRequest(BaseModel):
+class AnalyzeTaskActionRequest(BaseModel):
     action: Literal["analyze"]
     source_root: str = Field(min_length=1, max_length=4096)
+
+
+class ExecuteTaskActionRequest(BaseModel):
+    action: Literal["execute"]
+    execution_plan_id: str = Field(min_length=1, max_length=36)
+
+
+class CancelTaskActionRequest(BaseModel):
+    action: Literal["cancel"]
+    remove_downloader_task: bool
+    rollback_created_resources: bool
+
+
+TaskActionRequest = Annotated[
+    AnalyzeTaskActionRequest | ExecuteTaskActionRequest | CancelTaskActionRequest,
+    Field(discriminator="action"),
+]
+
+
+class TaskMutationActionResponse(BaseModel):
+    action: Literal["execute", "cancel"]
+    task_id: str
+    status: TaskStatus
+    task_version: int
+    execution_plan_id: str
+    operation_replayed: bool
+    idempotency_replayed: bool
+    receipt_id: str
 
 
 class TaskUnitResponse(BaseModel):
@@ -304,19 +339,46 @@ async def get_task_preflight_current(
     )
 
 
-@router.post("/tasks/{task_id}/actions", response_model=PreflightResponse)
+@router.post(
+    "/tasks/{task_id}/actions",
+    response_model=PreflightResponse | TaskMutationActionResponse,
+)
 async def task_action(
     task_id: str,
     request: Request,
     payload: TaskActionRequest,
-    _principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
-) -> PreflightResponse:
-    service = task_analysis_service(request)
-    await service.analyze(
-        task_id,
-        source_root=payload.source_root,
-    )
-    return _preflight_view_response(service.latest_preflight(task_id))
+    principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> PreflightResponse | TaskMutationActionResponse:
+    if isinstance(payload, AnalyzeTaskActionRequest):
+        service = task_analysis_service(request)
+        await service.analyze(
+            task_id,
+            source_root=payload.source_root,
+        )
+        return _preflight_view_response(service.latest_preflight(task_id))
+
+    actor = TaskActionActor(principal.kind, principal.subject_id)
+    actions = task_action_service(request)
+    if isinstance(payload, ExecuteTaskActionRequest):
+        result = await actions.execute(
+            ExecuteTaskAction(task_id=task_id, execution_plan_id=payload.execution_plan_id),
+            actor=actor,
+            idempotency_key=idempotency_key,
+        )
+    elif isinstance(payload, CancelTaskActionRequest):
+        result = await actions.cancel(
+            CancelTaskAction(
+                task_id=task_id,
+                remove_downloader_task=payload.remove_downloader_task,
+                rollback_created_resources=payload.rollback_created_resources,
+            ),
+            actor=actor,
+            idempotency_key=idempotency_key,
+        )
+    else:
+        raise AssertionError("未覆盖的任务动作")
+    return _task_mutation_action_response(result)
 
 
 @router.get("/task-units/{unit_id}/decision", response_model=TaskReviewResponse)
@@ -458,6 +520,19 @@ def _task_response(item: TaskView) -> TaskResponse:
         version=item.version,
         created_at=item.created_at,
         updated_at=item.updated_at,
+    )
+
+
+def _task_mutation_action_response(item: TaskMutationActionResult) -> TaskMutationActionResponse:
+    return TaskMutationActionResponse(
+        action=item.action,
+        task_id=item.task_id,
+        status=item.status,
+        task_version=item.task_version,
+        execution_plan_id=item.execution_plan_id,
+        operation_replayed=item.operation_replayed,
+        idempotency_replayed=item.idempotency_replayed,
+        receipt_id=item.receipt_id,
     )
 
 

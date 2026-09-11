@@ -16,10 +16,17 @@ from backend.app.infrastructure.persistence.database import (
     create_session_factory,
     create_sqlite_engine,
 )
-from backend.app.infrastructure.persistence.models import OperationJournal, TaskEvent, UnpackTask
+from backend.app.infrastructure.persistence.models import (
+    OperationJournal,
+    TaskActionReceipt,
+    TaskEvent,
+    UnpackTask,
+)
 from backend.app.infrastructure.persistence.repositories import (
     OperationIntent,
     OperationJournalRepository,
+    TaskActionReceiptCreate,
+    TaskActionReceiptRepository,
     TaskCreate,
     TaskRepository,
 )
@@ -217,8 +224,69 @@ def test_operation_intent_replay_is_noop_but_changed_payload_conflicts(
     )
     with pytest.raises(DomainViolation) as exc_info:
         repository.record_intent(changed)
-
     assert exc_info.value.code is ErrorCode.IDEMPOTENCY_CONFLICT
+
+
+def test_task_action_receipt_replay_conflict_and_finalize(db_session: Session) -> None:
+    task, _ = TaskRepository(db_session).create_or_get(_task_request("action-receipt"))
+    db_session.commit()
+    repository = TaskActionReceiptRepository(db_session)
+    request = TaskActionReceiptCreate(
+        task_id=task.id,
+        actor_kind="api_token",
+        actor_id="actor-1",
+        idempotency_key_digest="a" * 64,
+        action="cancel",
+        request_digest="b" * 64,
+    )
+
+    results = [repository.record_pending(request) for _ in range(10)]
+    db_session.commit()
+
+    assert sum(1 for _, created in results if created) == 1
+    assert len({receipt.id for receipt, _ in results}) == 1
+    assert db_session.scalar(select(func.count()).select_from(TaskActionReceipt)) == 1
+    receipt = results[0][0]
+    assert receipt.state == "PENDING"
+
+    with pytest.raises(DomainViolation) as exc_info:
+        repository.record_pending(
+            TaskActionReceiptCreate(
+                task_id=task.id,
+                actor_kind="api_token",
+                actor_id="actor-1",
+                idempotency_key_digest="a" * 64,
+                action="cancel",
+                request_digest="c" * 64,
+            )
+        )
+    assert exc_info.value.code is ErrorCode.IDEMPOTENCY_CONFLICT
+    db_session.rollback()
+
+    finalized = repository.finalize_success(receipt.id, {"status": "CANCELLED"})
+    db_session.commit()
+    assert finalized.state == "SUCCEEDED"
+    assert finalized.response_payload == {"status": "CANCELLED"}
+
+
+def test_task_action_audit_event_does_not_change_task_version(db_session: Session) -> None:
+    repository = TaskRepository(db_session)
+    task, _ = repository.create_or_get(_task_request("action-audit"))
+    db_session.commit()
+    version = task.version
+
+    repository.append_event(
+        task_id=task.id,
+        event_type="TASK_CANCEL_REQUESTED",
+        reason="api_token 已提交 cancel 动作请求，幂等 receipt 已持久化",
+    )
+    db_session.commit()
+
+    db_session.refresh(task)
+    assert task.version == version
+    latest_event = repository.latest_event(task.id)
+    assert latest_event is not None
+    assert latest_event.event_type == "TASK_CANCEL_REQUESTED"
 
 
 def test_operation_journal_transition_uses_status_cas_and_requires_applied_snapshot(

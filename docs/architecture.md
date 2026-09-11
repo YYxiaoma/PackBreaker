@@ -99,7 +99,7 @@ sequenceDiagram
 3. 保存外部资源身份、设备/inode 快照和结果。
 4. 崩溃恢复时先查询真实状态，再决定补记、继续、回滚或转人工。
 
-系统不得假定“数据库状态等于外部真实状态”。当前启动恢复已覆盖 `LINKING`、`ADDING`、`CLIENT_VERIFYING`、`SEEDING` 与 `ROLLING_BACK`：按最久未更新优先有界扫描，每个任务只通过既有 stage coordinator 查询/兑现 journal 与真实文件系统/qB 状态；同一 stage 一次 tick 后仍未变化即停止本轮，不在应用启动期间长轮询。取消/回滚同样只依据冻结 checkpoint 与 operation journal 所有权恢复：qB 任务移除固定保留数据，文件系统只逆序撤销 PackBreaker 明确登记且快照仍匹配的 hardlink/空目录。可归类的单任务安全错误只记录稳定错误码并继续扫描，程序级异常仍使启动失败但必须释放进程锁。
+系统不得假定“数据库状态等于外部真实状态”。当前启动恢复已覆盖 `LINKING`、`ADDING`、`CLIENT_VERIFYING`、`SEEDING` 与 `ROLLING_BACK`：按最久未更新优先有界扫描，每个任务只通过既有 stage coordinator 查询/兑现 journal 与真实文件系统/qB 状态；同一 stage 一次 tick 后仍未变化即停止本轮，不在应用启动期间长轮询。启动完成后由单实例 `ActiveTaskDriver` 周期、串行地复用同一 reconciliation，因此活动任务可持续推进而不复制状态机逻辑；tick 防重入，异常只记录脱敏类型并允许后续 tick，shutdown 取消造成的不确定外部结果继续由 journal 恢复。取消/回滚同样只依据冻结 checkpoint 与 operation journal 所有权恢复：qB 任务移除固定保留数据，文件系统只逆序撤销 PackBreaker 明确登记且快照仍匹配的 hardlink/空目录。可归类的单任务安全错误只记录稳定错误码并继续扫描，程序级启动恢复异常仍使启动失败但必须释放进程锁。
 
 ## 7. 可观测性
 

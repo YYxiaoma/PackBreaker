@@ -1,6 +1,27 @@
 {
   "components": {
     "schemas": {
+      "AnalyzeTaskActionRequest": {
+        "properties": {
+          "action": {
+            "const": "analyze",
+            "title": "Action",
+            "type": "string"
+          },
+          "source_root": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Source Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "source_root"
+        ],
+        "title": "AnalyzeTaskActionRequest",
+        "type": "object"
+      },
       "ApiScope": {
         "enum": [
           "tasks:read",
@@ -187,6 +208,30 @@
           "permissions"
         ],
         "title": "AuthStatusResponse",
+        "type": "object"
+      },
+      "CancelTaskActionRequest": {
+        "properties": {
+          "action": {
+            "const": "cancel",
+            "title": "Action",
+            "type": "string"
+          },
+          "remove_downloader_task": {
+            "title": "Remove Downloader Task",
+            "type": "boolean"
+          },
+          "rollback_created_resources": {
+            "title": "Rollback Created Resources",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "remove_downloader_task",
+          "rollback_created_resources"
+        ],
+        "title": "CancelTaskActionRequest",
         "type": "object"
       },
       "DownloaderActionRequest": {
@@ -395,6 +440,27 @@
           }
         },
         "title": "DownloaderPatchRequest",
+        "type": "object"
+      },
+      "ExecuteTaskActionRequest": {
+        "properties": {
+          "action": {
+            "const": "execute",
+            "title": "Action",
+            "type": "string"
+          },
+          "execution_plan_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Execution Plan Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "execution_plan_id"
+        ],
+        "title": "ExecuteTaskActionRequest",
         "type": "object"
       },
       "ExecutionGateResponse": {
@@ -1277,27 +1343,6 @@
         "title": "SiteViewResponse",
         "type": "object"
       },
-      "TaskActionRequest": {
-        "properties": {
-          "action": {
-            "const": "analyze",
-            "title": "Action",
-            "type": "string"
-          },
-          "source_root": {
-            "maxLength": 4096,
-            "minLength": 1,
-            "title": "Source Root",
-            "type": "string"
-          }
-        },
-        "required": [
-          "action",
-          "source_root"
-        ],
-        "title": "TaskActionRequest",
-        "type": "object"
-      },
       "TaskCandidateListResponse": {
         "properties": {
           "items": {
@@ -1482,6 +1527,57 @@
           "items"
         ],
         "title": "TaskListResponse",
+        "type": "object"
+      },
+      "TaskMutationActionResponse": {
+        "properties": {
+          "action": {
+            "enum": [
+              "execute",
+              "cancel"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "execution_plan_id": {
+            "title": "Execution Plan Id",
+            "type": "string"
+          },
+          "idempotency_replayed": {
+            "title": "Idempotency Replayed",
+            "type": "boolean"
+          },
+          "operation_replayed": {
+            "title": "Operation Replayed",
+            "type": "boolean"
+          },
+          "receipt_id": {
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_version": {
+            "title": "Task Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "task_id",
+          "status",
+          "task_version",
+          "execution_plan_id",
+          "operation_replayed",
+          "idempotency_replayed",
+          "receipt_id"
+        ],
+        "title": "TaskMutationActionResponse",
         "type": "object"
       },
       "TaskResponse": {
@@ -5061,6 +5157,22 @@
           },
           {
             "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
             "name": "Authorization",
             "required": false,
             "schema": {
@@ -5128,7 +5240,26 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TaskActionRequest"
+                "discriminator": {
+                  "mapping": {
+                    "analyze": "#/components/schemas/AnalyzeTaskActionRequest",
+                    "cancel": "#/components/schemas/CancelTaskActionRequest",
+                    "execute": "#/components/schemas/ExecuteTaskActionRequest"
+                  },
+                  "propertyName": "action"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AnalyzeTaskActionRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ExecuteTaskActionRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CancelTaskActionRequest"
+                  }
+                ],
+                "title": "Payload"
               }
             }
           },
@@ -5139,7 +5270,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PreflightResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PreflightResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskMutationActionResponse"
+                    }
+                  ],
+                  "title": "Response Task Action Api V1 Tasks  Task Id  Actions Post"
                 }
               }
             },

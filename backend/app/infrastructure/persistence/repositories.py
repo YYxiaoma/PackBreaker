@@ -19,6 +19,7 @@ from backend.app.domain.task_state import (
 from backend.app.domain.verification import DownloaderKind, VerificationLevel
 from backend.app.infrastructure.persistence.models import (
     OperationJournal,
+    TaskActionReceipt,
     TaskEvent,
     UnpackTask,
     new_uuid,
@@ -43,6 +44,16 @@ class OperationIntent:
     target: dict[str, Any]
     intent: dict[str, Any]
     before_snapshot: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskActionReceiptCreate:
+    task_id: str
+    actor_kind: str
+    actor_id: str
+    idempotency_key_digest: str
+    action: str
+    request_digest: str
 
 
 class TaskRepository:
@@ -95,6 +106,23 @@ class TaskRepository:
                 .limit(limit)
             )
         )
+
+    def append_event(self, *, task_id: str, event_type: str, reason: str) -> TaskEvent:
+        task = self.get(task_id)
+        if task is None:
+            raise DomainViolation(ErrorCode.TASK_NOT_FOUND, "任务不存在")
+        event = TaskEvent(
+            id=new_uuid(),
+            task_id=task.id,
+            from_status=task.status,
+            to_status=task.status,
+            event_type=event_type,
+            reason=reason,
+            created_at=utc_now(),
+        )
+        self._session.add(event)
+        self._session.flush()
+        return event
 
     def create_or_get(self, request: TaskCreate) -> tuple[UnpackTask, bool]:
         key = task_idempotency_key(
@@ -455,4 +483,118 @@ class OperationJournalRepository:
             raise DomainViolation(
                 ErrorCode.IDEMPOTENCY_CONFLICT,
                 "相同操作幂等键对应了不同的执行意图",
+            )
+
+
+class TaskActionReceiptRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get_by_actor_key(
+        self,
+        *,
+        actor_kind: str,
+        actor_id: str,
+        idempotency_key_digest: str,
+    ) -> TaskActionReceipt | None:
+        return self._session.scalar(
+            select(TaskActionReceipt).where(
+                TaskActionReceipt.actor_kind == actor_kind,
+                TaskActionReceipt.actor_id == actor_id,
+                TaskActionReceipt.idempotency_key_digest == idempotency_key_digest,
+            )
+        )
+
+    def record_pending(self, request: TaskActionReceiptCreate) -> tuple[TaskActionReceipt, bool]:
+        existing = self.get_by_actor_key(
+            actor_kind=request.actor_kind,
+            actor_id=request.actor_id,
+            idempotency_key_digest=request.idempotency_key_digest,
+        )
+        if existing is not None:
+            self._ensure_same_request(existing, request)
+            return existing, False
+
+        now = utc_now()
+        receipt = TaskActionReceipt(
+            id=new_uuid(),
+            task_id=request.task_id,
+            actor_kind=request.actor_kind,
+            actor_id=request.actor_id,
+            idempotency_key_digest=request.idempotency_key_digest,
+            action=request.action,
+            request_digest=request.request_digest,
+            state="PENDING",
+            response_payload=None,
+            error_payload=None,
+            created_at=now,
+            updated_at=now,
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(receipt)
+                self._session.flush()
+        except IntegrityError:
+            concurrent = self.get_by_actor_key(
+                actor_kind=request.actor_kind,
+                actor_id=request.actor_id,
+                idempotency_key_digest=request.idempotency_key_digest,
+            )
+            if concurrent is None:
+                raise
+            self._ensure_same_request(concurrent, request)
+            return concurrent, False
+        return receipt, True
+
+    def finalize_success(self, receipt_id: str, payload: dict[str, Any]) -> TaskActionReceipt:
+        return self._finalize(receipt_id, state="SUCCEEDED", response_payload=payload)
+
+    def finalize_failure(self, receipt_id: str, payload: dict[str, Any]) -> TaskActionReceipt:
+        return self._finalize(receipt_id, state="FAILED", error_payload=payload)
+
+    def _finalize(
+        self,
+        receipt_id: str,
+        *,
+        state: str,
+        response_payload: dict[str, Any] | None = None,
+        error_payload: dict[str, Any] | None = None,
+    ) -> TaskActionReceipt:
+        receipt = self._session.get(TaskActionReceipt, receipt_id)
+        if receipt is None:
+            raise DomainViolation(ErrorCode.TASK_NOT_FOUND, "task action receipt 不存在")
+        if receipt.state == state:
+            return receipt
+        if receipt.state != "PENDING":
+            raise DomainViolation(ErrorCode.TASK_VERSION_CONFLICT, "task action receipt 已完成")
+        updated_id = self._session.scalar(
+            update(TaskActionReceipt)
+            .where(TaskActionReceipt.id == receipt_id, TaskActionReceipt.state == "PENDING")
+            .values(
+                state=state,
+                response_payload=deepcopy(response_payload),
+                error_payload=deepcopy(error_payload),
+                updated_at=utc_now(),
+            )
+            .returning(TaskActionReceipt.id)
+        )
+        if updated_id is None:
+            raise DomainViolation(ErrorCode.TASK_VERSION_CONFLICT, "task action receipt 已完成")
+        self._session.expire(receipt)
+        self._session.refresh(receipt)
+        return receipt
+
+    @staticmethod
+    def _ensure_same_request(
+        existing: TaskActionReceipt,
+        request: TaskActionReceiptCreate,
+    ) -> None:
+        if (
+            existing.task_id != request.task_id
+            or existing.action != request.action
+            or existing.request_digest != request.request_digest
+        ):
+            raise DomainViolation(
+                ErrorCode.IDEMPOTENCY_CONFLICT,
+                "相同 API 幂等键对应了不同的任务动作请求",
             )

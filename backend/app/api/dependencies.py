@@ -8,6 +8,7 @@ from backend.app.application.auth import AuthIdentity, AuthService
 from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.sites import SiteService
+from backend.app.application.task_actions import TaskActionService
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.domain.auth import ApiScope
 
@@ -40,6 +41,10 @@ def site_service(request: Request) -> SiteService:
 
 def task_analysis_service(request: Request) -> TaskAnalysisService:
     return cast(TaskAnalysisService, request.app.state.task_analysis_service)
+
+
+def task_action_service(request: Request) -> TaskActionService:
+    return cast(TaskActionService, request.app.state.task_action_service)
 
 
 def client_source(request: Request) -> str:

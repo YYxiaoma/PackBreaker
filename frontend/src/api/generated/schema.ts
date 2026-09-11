@@ -552,6 +552,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /** AnalyzeTaskActionRequest */
+    AnalyzeTaskActionRequest: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: 'analyze';
+      /** Source Root */
+      source_root: string;
+    };
     /**
      * ApiScope
      * @enum {string}
@@ -627,6 +637,18 @@ export interface components {
       /** Permissions */
       permissions: string[];
     };
+    /** CancelTaskActionRequest */
+    CancelTaskActionRequest: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: 'cancel';
+      /** Remove Downloader Task */
+      remove_downloader_task: boolean;
+      /** Rollback Created Resources */
+      rollback_created_resources: boolean;
+    };
     /** DownloaderActionRequest */
     DownloaderActionRequest: {
       /**
@@ -683,6 +705,16 @@ export interface components {
       /** Path Mappings */
       path_mappings?: components['schemas']['PathMappingInput'][] | null;
       type?: components['schemas']['DownloaderKind'] | null;
+    };
+    /** ExecuteTaskActionRequest */
+    ExecuteTaskActionRequest: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: 'execute';
+      /** Execution Plan Id */
+      execution_plan_id: string;
     };
     /** ExecutionGateResponse */
     ExecutionGateResponse: {
@@ -1006,16 +1038,6 @@ export interface components {
       /** Version */
       version: number;
     };
-    /** TaskActionRequest */
-    TaskActionRequest: {
-      /**
-       * Action
-       * @constant
-       */
-      action: 'analyze';
-      /** Source Root */
-      source_root: string;
-    };
     /** TaskCandidateListResponse */
     TaskCandidateListResponse: {
       /** Items */
@@ -1078,6 +1100,27 @@ export interface components {
     TaskListResponse: {
       /** Items */
       items: components['schemas']['TaskResponse'][];
+    };
+    /** TaskMutationActionResponse */
+    TaskMutationActionResponse: {
+      /**
+       * Action
+       * @enum {string}
+       */
+      action: 'execute' | 'cancel';
+      /** Execution Plan Id */
+      execution_plan_id: string;
+      /** Idempotency Replayed */
+      idempotency_replayed: boolean;
+      /** Operation Replayed */
+      operation_replayed: boolean;
+      /** Receipt Id */
+      receipt_id: string;
+      status: components['schemas']['TaskStatus'];
+      /** Task Id */
+      task_id: string;
+      /** Task Version */
+      task_version: number;
     };
     /** TaskResponse */
     TaskResponse: {
@@ -2571,6 +2614,7 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
+        'Idempotency-Key'?: string | null;
         Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
@@ -2584,7 +2628,10 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['TaskActionRequest'];
+        'application/json':
+          | components['schemas']['AnalyzeTaskActionRequest']
+          | components['schemas']['ExecuteTaskActionRequest']
+          | components['schemas']['CancelTaskActionRequest'];
       };
     };
     responses: {
@@ -2594,7 +2641,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          'application/json': components['schemas']['PreflightResponse'];
+          'application/json':
+            | components['schemas']['PreflightResponse']
+            | components['schemas']['TaskMutationActionResponse'];
         };
       };
       /** @description Validation Error */

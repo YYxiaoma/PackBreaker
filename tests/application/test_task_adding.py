@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from collections.abc import Mapping, Sequence
@@ -30,6 +31,7 @@ from backend.app.application.task_cancellation import (
     TaskCancellationRequest,
 )
 from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
+from backend.app.application.task_driver import ActiveTaskDriver
 from backend.app.application.task_recovery import RecoveryOutcome, TaskRecoveryCoordinator
 from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.domain.downloader import (
@@ -1260,6 +1262,50 @@ async def test_startup_recovery_client_check_waits_then_finishes_on_next_tick(
     assert second.items[0].steps == (TaskStatus.CLIENT_VERIFYING, TaskStatus.SEEDING)
     assert adding_fixture.qbit.recheck_calls == 1
     assert adding_fixture.qbit.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_periodic_driver_finishes_client_verification_without_restart(
+    adding_fixture: _AddingFixture,
+) -> None:
+    _set_verification_level(
+        adding_fixture,
+        VerificationLevel.CLIENT_CHECK_REQUIRED,
+        client_check_required=True,
+    )
+    recovery = _recovery_coordinator(adding_fixture)
+    first = await recovery.reconcile_once()
+    assert first.items[0].final_status is TaskStatus.CLIENT_VERIFYING
+
+    actual_hash = next(iter(adding_fixture.qbit.states))
+    adding_fixture.qbit.states[actual_hash] = replace(
+        adding_fixture.qbit.states[actual_hash],
+        state="stoppedUP",
+        progress=1.0,
+    )
+    driver = ActiveTaskDriver(
+        recovery,
+        interval_seconds=0.01,
+        limit=10,
+        max_steps_per_task=4,
+    )
+    driver.start()
+    try:
+        final_status = TaskStatus.CLIENT_VERIFYING
+        for _ in range(100):
+            with adding_fixture.factory() as session:
+                task = session.get(UnpackTask, adding_fixture.task_id)
+                assert task is not None
+                final_status = TaskStatus(task.status)
+            if final_status is TaskStatus.DONE:
+                break
+            await asyncio.sleep(0.005)
+        assert final_status is TaskStatus.DONE
+        assert driver.state.ticks_completed >= 1
+        assert adding_fixture.qbit.recheck_calls == 1
+        assert adding_fixture.qbit.start_calls == 1
+    finally:
+        await driver.stop()
 
 
 @pytest.mark.asyncio

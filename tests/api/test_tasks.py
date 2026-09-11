@@ -12,6 +12,12 @@ from sqlalchemy import func, select
 
 from backend.app.api.dependencies import CSRF_COOKIE
 from backend.app.application.sites import EnabledSiteAdapter
+from backend.app.application.task_actions import (
+    CancelTaskAction,
+    ExecuteTaskAction,
+    TaskActionActor,
+    TaskMutationActionResult,
+)
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.config import AppSettings
 from backend.app.domain.site_adapter import SiteConnectionResult, TorrentDetails, TorrentPayload
@@ -827,6 +833,129 @@ def test_review_cannot_approve_hard_rejected_candidate(tmp_path: Path) -> None:
         assert response.json()["code"] == "REVIEW_CANDIDATE_HARD_REJECTED"
         with app.state.runtime.session_factory() as session:
             assert session.scalar(select(func.count()).select_from(TaskReviewRevisionRecord)) == 0
+    finally:
+        client.__exit__(None, None, None)
+
+
+class _FakePublicTaskActions:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, TaskActionActor, str | None]] = []
+
+    async def execute(
+        self,
+        request: ExecuteTaskAction,
+        *,
+        actor: TaskActionActor,
+        idempotency_key: str | None,
+    ) -> TaskMutationActionResult:
+        self.calls.append(("execute", actor, idempotency_key))
+        return TaskMutationActionResult(
+            action="execute",
+            task_id=request.task_id,
+            status=TaskStatus.ADDING,
+            task_version=7,
+            execution_plan_id=request.execution_plan_id,
+            operation_replayed=False,
+            receipt_id="receipt-execute",
+            idempotency_replayed=False,
+        )
+
+    async def cancel(
+        self,
+        request: CancelTaskAction,
+        *,
+        actor: TaskActionActor,
+        idempotency_key: str | None,
+    ) -> TaskMutationActionResult:
+        self.calls.append(("cancel", actor, idempotency_key))
+        return TaskMutationActionResult(
+            action="cancel",
+            task_id=request.task_id,
+            status=TaskStatus.CANCELLED,
+            task_version=8,
+            execution_plan_id="plan-cancel",
+            operation_replayed=False,
+            receipt_id="receipt-cancel",
+            idempotency_replayed=False,
+        )
+
+
+def test_public_execute_cancel_actions_enforce_csrf_idempotency_and_explicit_options(
+    tmp_path: Path,
+) -> None:
+    client, app, _settings = _authenticated_client(tmp_path)
+    task_id = _create_task(app, "public-actions")
+    try:
+        missing_key = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers=_csrf(client),
+            json={"action": "execute", "execution_plan_id": "plan-1"},
+        )
+        assert missing_key.status_code == 428
+        assert missing_key.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+        invalid_key = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers={**_csrf(client), "Idempotency-Key": "contains space"},
+            json={
+                "action": "cancel",
+                "remove_downloader_task": True,
+                "rollback_created_resources": True,
+            },
+        )
+        assert invalid_key.status_code == 422
+        assert invalid_key.json()["code"] == "IDEMPOTENCY_KEY_INVALID"
+
+        without_csrf = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers={"Idempotency-Key": "execute-1"},
+            json={"action": "execute", "execution_plan_id": "plan-1"},
+        )
+        assert without_csrf.status_code == 403
+
+        missing_cancel_option = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers={**_csrf(client), "Idempotency-Key": "cancel-missing-option"},
+            json={"action": "cancel", "remove_downloader_task": True},
+        )
+        assert missing_cancel_option.status_code == 422
+
+        fake = _FakePublicTaskActions()
+        app.state.task_action_service = fake
+        execute = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers={**_csrf(client), "Idempotency-Key": "execute-2"},
+            json={"action": "execute", "execution_plan_id": "plan-2"},
+        )
+        assert execute.status_code == 200
+        assert execute.json() == {
+            "action": "execute",
+            "task_id": task_id,
+            "status": "ADDING",
+            "task_version": 7,
+            "execution_plan_id": "plan-2",
+            "operation_replayed": False,
+            "idempotency_replayed": False,
+            "receipt_id": "receipt-execute",
+        }
+
+        cancel = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers={**_csrf(client), "Idempotency-Key": "cancel-2"},
+            json={
+                "action": "cancel",
+                "remove_downloader_task": False,
+                "rollback_created_resources": True,
+            },
+        )
+        assert cancel.status_code == 200
+        assert cancel.json()["status"] == "CANCELLED"
+        assert cancel.json()["receipt_id"] == "receipt-cancel"
+        assert "actor_id" not in cancel.json()
+        assert "idempotency_key" not in cancel.json()
+        assert [call[0] for call in fake.calls] == ["execute", "cancel"]
+        assert all(call[1].kind == "admin_session" for call in fake.calls)
+        assert [call[2] for call in fake.calls] == ["execute-2", "cancel-2"]
     finally:
         client.__exit__(None, None, None)
 

@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apiClient } from './client';
 import {
   analyzeTask,
+  cancelTask,
   createTaskUnitExecutionPlan,
   createTask,
+  executeTask,
   getTaskPreflight,
   getTaskPreflightCurrent,
   getTaskUnitDecision,
@@ -92,6 +94,43 @@ describe('任务分析 API', () => {
       action: 'analyze',
       source_root: 'movie/Season.01',
     });
+  });
+
+  it('execute/cancel 使用生成 schema 并显式携带 Idempotency-Key', async () => {
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      data: {
+        action: 'execute',
+        task_id: 'task-1',
+        status: 'ADDING',
+        task_version: 7,
+        execution_plan_id: 'plan-1',
+        operation_replayed: false,
+        idempotency_replayed: false,
+        receipt_id: 'receipt-1',
+      },
+    });
+
+    await executeTask('task-1', 'plan-1', 'execute-key');
+    await cancelTask(
+      'task-1',
+      { remove_downloader_task: true, rollback_created_resources: false },
+      'cancel-key',
+    );
+
+    expect(post.mock.calls[0]).toEqual([
+      '/tasks/task-1/actions',
+      { action: 'execute', execution_plan_id: 'plan-1' },
+      { headers: { 'Idempotency-Key': 'execute-key' } },
+    ]);
+    expect(post.mock.calls[1]).toEqual([
+      '/tasks/task-1/actions',
+      {
+        action: 'cancel',
+        remove_downloader_task: true,
+        rollback_created_resources: false,
+      },
+      { headers: { 'Idempotency-Key': 'cancel-key' } },
+    ]);
   });
 
   it('审核 revision 使用编码后的 unit id 且保留 expected_version', async () => {

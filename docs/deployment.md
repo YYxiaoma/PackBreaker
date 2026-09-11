@@ -50,6 +50,9 @@ v1.0 以单个 `linux/amd64` Docker 镜像发布，单容器内运行 FastAPI、
 | `PACKBREAKER_LOG_LEVEL` | `INFO` | 日志级别 |
 | `PACKBREAKER_TIMEZONE` | `Asia/Shanghai` | 仅影响调度和展示，数据库仍保存 UTC |
 | `PACKBREAKER_TRUSTED_PROXIES` | 空 | 明确列出的反向代理网段 |
+| `PACKBREAKER_TASK_DRIVER_INTERVAL_SECONDS` | `15` | 活动任务周期 tick 间隔，范围 1..3600 秒 |
+| `PACKBREAKER_TASK_DRIVER_LIMIT` | `100` | 每次 tick 最多扫描的活动任务数，范围 1..1000 |
+| `PACKBREAKER_TASK_DRIVER_MAX_STEPS_PER_TASK` | `4` | 单任务每次 tick 最多连续推进的 stage 数，范围 1..16 |
 
 环境变量不得直接承载站点 passkey、下载器密码和通知 Token。首次主密钥使用密码学安全随机源生成 256-bit 随机值，文件权限设为 0600；文件已存在但权限过宽或长度无效时拒绝启动 worker。secret store 使用 AES-256-GCM，认证附加数据绑定 secret ID、类型和密钥版本，数据库只保存认证密文。
 

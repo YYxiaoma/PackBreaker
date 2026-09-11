@@ -29,9 +29,11 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import FilesystemOperationService
 from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
+from backend.app.application.task_actions import TaskActionService
 from backend.app.application.task_adding import TaskAddingCoordinator
 from backend.app.application.task_cancellation import TaskCancellationCoordinator
 from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
+from backend.app.application.task_driver import ActiveTaskDriver
 from backend.app.application.task_linking import TaskLinkingCoordinator
 from backend.app.application.task_recovery import TaskRecoveryCoordinator
 from backend.app.application.task_seeding import TaskSeedingCoordinator
@@ -163,6 +165,11 @@ def create_app(
             filesystem_operations,
         )
         app.state.task_cancellation_coordinator = task_cancellation_coordinator
+        app.state.task_action_service = TaskActionService(
+            resolved_runtime.session_factory,
+            task_linking_coordinator,
+            task_cancellation_coordinator,
+        )
         task_recovery_coordinator = TaskRecoveryCoordinator(
             resolved_runtime.session_factory,
             task_linking_coordinator,
@@ -193,9 +200,18 @@ def create_app(
                 recovery_report.waiting_count,
                 recovery_report.truncated,
             )
+        task_driver = ActiveTaskDriver(
+            task_recovery_coordinator,
+            interval_seconds=resolved_settings.task_driver_interval_seconds,
+            limit=resolved_settings.task_driver_limit,
+            max_steps_per_task=resolved_settings.task_driver_max_steps_per_task,
+        )
+        app.state.task_driver = task_driver
+        task_driver.start()
         try:
             yield
         finally:
+            await task_driver.stop()
             resolved_runtime.stop()
 
     app = FastAPI(

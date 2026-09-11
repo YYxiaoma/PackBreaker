@@ -30,7 +30,7 @@ def test_runtime_migrates_database_and_becomes_ready(tmp_path: Path) -> None:
         assert report.migrations == "ok"
         assert report.secrets == "ok"
         assert report.worker_slot == "ok"
-        assert report.current_revision == report.expected_revision == "0012_execution_plan"
+        assert report.current_revision == report.expected_revision == "0013_task_action_receipt"
         assert runtime.engine is not None
         assert {"unpack_task", "task_event", "operation_journal"}.issubset(
             set(inspect(runtime.engine).get_table_names())
@@ -68,6 +68,7 @@ def test_ready_endpoint_is_healthy_inside_lifespan(tmp_path: Path) -> None:
     with TestClient(app) as client:
         response = client.get("/api/v1/health/ready")
         recovery_report = app.state.task_recovery_report
+        assert app.state.task_driver.running is True
 
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
@@ -80,6 +81,7 @@ def test_ready_endpoint_is_healthy_inside_lifespan(tmp_path: Path) -> None:
     assert recovery_report.scanned_count == 0
     assert recovery_report.blocked_count == 0
     assert recovery_report.truncated is False
+    assert app.state.task_driver.running is False
     assert not app.state.runtime.started
 
 

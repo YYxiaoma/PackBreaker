@@ -58,6 +58,7 @@ erDiagram
 | --- | --- | --- |
 | `task_event` | task_id、from_status、to_status、event_type、reason、created_at | 追加写，不更新历史事件 |
 | `operation_journal` | task_id、idempotency_key、operation_type、target、intent、status、before_snapshot、after_snapshot | idempotency_key 唯一；成功动作必须可对账 |
+| `task_action_receipt` | task_id、actor_kind/id、idempotency_key_digest、action、request_digest、state、response/error payload | 同一 actor + 幂等键唯一；只保存键摘要；PENDING 可在未知结果后安全重放既有 coordinator |
 | `repair_job` | task_id、mode、affected_files、affected_pieces、status、result | 写入修复前必须保存硬链接隔离证据 |
 | `history_job` | roots、include_types、excludes、cursor、status、statistics | 游标持久化，支持暂停和断点恢复 |
 | `webhook_receipt` | key_id、nonce、timestamp、idempotency_key、body_digest、status | nonce 与幂等键在有效窗口内唯一 |

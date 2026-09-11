@@ -5,7 +5,10 @@ export type TaskUnit = components['schemas']['TaskUnitResponse'];
 export type TaskCandidate = components['schemas']['TaskCandidateResponse'];
 export type Preflight = components['schemas']['PreflightResponse'];
 export type PreflightCurrent = components['schemas']['PreflightCurrentResponse'];
-export type TaskActionInput = components['schemas']['TaskActionRequest'];
+export type AnalyzeTaskActionInput = components['schemas']['AnalyzeTaskActionRequest'];
+export type ExecuteTaskActionInput = components['schemas']['ExecuteTaskActionRequest'];
+export type CancelTaskActionInput = components['schemas']['CancelTaskActionRequest'];
+export type TaskMutationAction = components['schemas']['TaskMutationActionResponse'];
 export type TaskRecord = components['schemas']['TaskResponse'];
 export type TaskStatus = components['schemas']['TaskStatus'];
 export type TaskCreateInput = components['schemas']['TaskCreateRequest'];
@@ -98,9 +101,58 @@ export async function getTaskPreflightCurrent(taskId: string): Promise<Preflight
 }
 
 export async function analyzeTask(taskId: string, sourceRoot: string): Promise<Preflight> {
-  const payload: TaskActionInput = { action: 'analyze', source_root: sourceRoot };
+  const payload: AnalyzeTaskActionInput = { action: 'analyze', source_root: sourceRoot };
   try {
     const response = await apiClient.post<Preflight>(`${taskPath(taskId)}/actions`, payload);
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+function actionHeaders(idempotencyKey: string): { 'Idempotency-Key': string } {
+  const normalized = idempotencyKey.trim();
+  if (!normalized) throw new Error('Idempotency-Key 不能为空');
+  return { 'Idempotency-Key': normalized };
+}
+
+export async function executeTask(
+  taskId: string,
+  executionPlanId: string,
+  idempotencyKey: string,
+): Promise<TaskMutationAction> {
+  const payload: ExecuteTaskActionInput = {
+    action: 'execute',
+    execution_plan_id: executionPlanId,
+  };
+  try {
+    const response = await apiClient.post<TaskMutationAction>(
+      `${taskPath(taskId)}/actions`,
+      payload,
+      {
+        headers: actionHeaders(idempotencyKey),
+      },
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function cancelTask(
+  taskId: string,
+  options: Pick<CancelTaskActionInput, 'remove_downloader_task' | 'rollback_created_resources'>,
+  idempotencyKey: string,
+): Promise<TaskMutationAction> {
+  const payload: CancelTaskActionInput = { action: 'cancel', ...options };
+  try {
+    const response = await apiClient.post<TaskMutationAction>(
+      `${taskPath(taskId)}/actions`,
+      payload,
+      {
+        headers: actionHeaders(idempotencyKey),
+      },
+    );
     return response.data;
   } catch (error) {
     throw toApiProblem(error);
