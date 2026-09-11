@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -79,6 +80,57 @@ def _install_qb_probe(app: FastAPI) -> None:
         if request.url.path.endswith("/app/webapiVersion"):
             return httpx2.Response(200, text="2.15.1")
         return httpx2.Response(404)
+
+    app.state.downloader_service._adapter_factory = DownloaderAdapterFactory(  # noqa: SLF001
+        transport=httpx2.MockTransport(handler)
+    )
+
+
+def _create_transmission(client: TestClient, *, data_root: Path) -> dict[str, object]:
+    source_root = data_root / "tr-source"
+    source_root.mkdir(parents=True, exist_ok=True)
+    response = client.post(
+        "/api/v1/downloaders",
+        headers=_csrf(client),
+        json={
+            "name": "目标 Transmission",
+            "type": "TRANSMISSION",
+            "base_url": "http://tr.invalid:9091/",
+            "credential": {"username": "rpc", "password": "synthetic-password"},
+            "path_mappings": [
+                {"remote_prefix": "/downloads", "container_prefix": str(source_root)}
+            ],
+        },
+    )
+    assert response.status_code == 201
+    return cast(dict[str, object], response.json())
+
+
+def _install_transmission_probe(app: FastAPI) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.headers.get("X-Transmission-Session-Id") != "synthetic-session":
+            return httpx2.Response(
+                409,
+                headers={
+                    "X-Transmission-Session-Id": "synthetic-session",
+                    "X-Transmission-Rpc-Version": "6.0.0",
+                },
+            )
+        payload = json.loads(request.content.decode())
+        assert payload == {
+            "jsonrpc": "2.0",
+            "method": "session_get",
+            "params": {"fields": ["version", "rpc_version_semver"]},
+            "id": 1,
+        }
+        return httpx2.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "result": {"version": "4.1.3", "rpc_version_semver": "6.0.0"},
+                "id": 1,
+            },
+        )
 
     app.state.downloader_service._adapter_factory = DownloaderAdapterFactory(  # noqa: SLF001
         transport=httpx2.MockTransport(handler)
@@ -260,6 +312,64 @@ def test_connection_path_diagnostics_and_enable_gate(tmp_path: Path) -> None:
         assert changed.status_code == 200
         assert changed.json()["enabled"] is False
         assert changed.json()["connection_status"] == "UNTESTED"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_transmission_probe_and_write_binding_freeze_safe_capabilities(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        created = _create_transmission(client, data_root=app.state.settings.data_dir)
+        downloader_id = cast(str, created["id"])
+        _install_transmission_probe(app)
+
+        tested = client.post(
+            f"/api/v1/downloaders/{downloader_id}/test",
+            headers=_csrf(client),
+        )
+        assert tested.status_code == 200
+        assert tested.json()["capabilities"] == {
+            "client": "Transmission",
+            "version": "4.1.3",
+            "api_version": "6.0.0",
+            "supports_skip_checking": False,
+            "supports_force_recheck": True,
+            "supports_verify_progress": True,
+            "read_only_probe": True,
+        }
+
+        source_file = app.state.settings.data_dir / "tr-source" / "movie.mkv"
+        source_file.write_bytes(b"synthetic-media-bytes")
+        target_dir = app.state.settings.data_dir / "tr-target"
+        target_dir.mkdir()
+        diagnosed = client.post(
+            f"/api/v1/downloaders/{downloader_id}/path-diagnostics",
+            headers=_csrf(client),
+            json={
+                "probes": [
+                    {
+                        "remote_path": "/downloads/movie.mkv",
+                        "target_directory": str(target_dir),
+                    }
+                ]
+            },
+        )
+        assert diagnosed.status_code == 200
+        assert diagnosed.json()["status"] == "ok"
+
+        enabled = client.post(
+            f"/api/v1/downloaders/{downloader_id}/actions",
+            headers={**_csrf(client), "If-Match": '"1"'},
+            json={"action": "enable"},
+        )
+        assert enabled.status_code == 200
+
+        binding = app.state.downloader_service.transmission_write_binding(downloader_id)
+        assert binding.downloader_id == downloader_id
+        assert binding.downloader_version == 2
+        assert binding.capabilities["supports_skip_checking"] is False
+        assert binding.capabilities["supports_force_recheck"] is True
+        assert binding.remote_save_path(app.state.settings.data_dir / "tr-source") == "/downloads"
     finally:
         client.__exit__(None, None, None)
 

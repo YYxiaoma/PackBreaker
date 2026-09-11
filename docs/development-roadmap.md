@@ -118,6 +118,8 @@ qBittorrent 写侧现已落地 5.2.3/WebAPI 2.15.1 内部主链切片：executio
 - 实现三种 99% 修复模式、跨文件 piece 分析、硬链接写入隔离和缺失小文件补齐。
 - 实现清理/对账报告与人工修复清单。
 
+当前实现进度：Transmission 4.1.3 的 JSON-RPC 2.0 写侧前置层已落地，包含 session-id 握手、暂停添加、重复 torrent 显式识别、状态读取、强制校验、启动/停止，以及保留本地数据的任务移除；下载器连接探测会冻结 `rpc_version_semver` 与校验能力，并可生成受安全门约束的 Transmission write binding。该切片尚未接入 operation journal、TaskAdding/CLIENT_VERIFYING/SEEDING 状态机，因此生产任务执行链仍只允许 qBittorrent，不能把这些 RPC 原语视为 Transmission 端到端已完成。
+
 ### 退出条件
 
 - qB/TR 各完成真实端到端任务。

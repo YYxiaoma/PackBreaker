@@ -1,4 +1,5 @@
 import json
+from base64 import b64encode
 
 import httpx2
 import pytest
@@ -10,6 +11,7 @@ from backend.app.infrastructure.adapters.downloaders import (
     QbittorrentAdapter,
     QbittorrentAddRequest,
     TransmissionAdapter,
+    TransmissionAddRequest,
 )
 
 
@@ -85,13 +87,18 @@ async def test_transmission_probe_performs_session_id_handshake() -> None:
             )
         assert request.headers["X-Transmission-Session-Id"] == "synthetic-session"
         body = json.loads(request.content.decode())
-        assert body["method"] == "session-get"
+        assert body == {
+            "jsonrpc": "2.0",
+            "method": "session_get",
+            "params": {"fields": ["version", "rpc_version_semver"]},
+            "id": 1,
+        }
         return httpx2.Response(
             200,
             json={
-                "result": "success",
-                "arguments": {"version": "4.1.0", "rpc-version-semver": "6.0.0"},
-                "tag": 1,
+                "jsonrpc": "2.0",
+                "result": {"version": "4.1.3", "rpc_version_semver": "6.0.0"},
+                "id": 1,
             },
         )
 
@@ -105,11 +112,160 @@ async def test_transmission_probe_performs_session_id_handshake() -> None:
 
     assert len(requests) == 2
     assert result.capabilities.client == "Transmission"
-    assert result.capabilities.version == "4.1.0"
+    assert result.capabilities.version == "4.1.3"
     assert result.capabilities.api_version == "6.0.0"
     assert result.capabilities.supports_skip_checking is False
-    assert result.capabilities.supports_force_recheck is False
-    assert result.capabilities.supports_verify_progress is False
+    assert result.capabilities.supports_force_recheck is True
+    assert result.capabilities.supports_verify_progress is True
+
+
+@pytest.mark.asyncio
+async def test_transmission_413_write_primitives_are_paused_and_keep_local_data() -> None:
+    torrent_hash = "a" * 40
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.headers.get("X-Transmission-Session-Id") != "synthetic-session":
+            return httpx2.Response(
+                409,
+                headers={
+                    "X-Transmission-Session-Id": "synthetic-session",
+                    "X-Transmission-Rpc-Version": "6.0.0",
+                },
+            )
+        body = json.loads(request.content.decode())
+        assert body["jsonrpc"] == "2.0"
+        assert body["id"] == 1
+        payloads.append(body)
+        method = body["method"]
+        if method == "torrent_add":
+            params = body["params"]
+            assert params == {
+                "metainfo": b64encode(b"synthetic-torrent-payload").decode("ascii"),
+                "download_dir": "/downloads/seed",
+                "paused": True,
+                "labels": ["packbreaker-test"],
+            }
+            result: dict[str, object] = {
+                "torrent_added": {"id": 7, "name": "Synthetic", "hash_string": torrent_hash}
+            }
+        elif method == "torrent_get":
+            assert body["params"] == {
+                "ids": [torrent_hash],
+                "fields": [
+                    "hash_string",
+                    "download_dir",
+                    "status",
+                    "labels",
+                    "percent_done",
+                    "recheck_progress",
+                ],
+            }
+            result = {
+                "torrents": [
+                    {
+                        "hash_string": torrent_hash,
+                        "download_dir": "/downloads/seed/",
+                        "status": 0,
+                        "labels": ["packbreaker-test", "media"],
+                        "percent_done": 1.0,
+                        "recheck_progress": 0.0,
+                    }
+                ]
+            }
+        else:
+            result = {}
+        return httpx2.Response(
+            200,
+            json={"jsonrpc": "2.0", "result": result, "id": 1},
+        )
+
+    adapter = TransmissionAdapter(
+        "http://tr.invalid:9091/transmission/rpc",
+        DownloaderCredential(username="rpc", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    added = await adapter.add_torrent(
+        TransmissionAddRequest(
+            torrent_content=b"synthetic-torrent-payload",
+            save_path="/downloads/seed",
+            labels=("packbreaker-test",),
+        )
+    )
+    states = await adapter.get_torrents((torrent_hash,))
+    await adapter.verify_torrent(torrent_hash)
+    await adapter.start_torrent(torrent_hash)
+    await adapter.stop_torrent(torrent_hash)
+    await adapter.remove_torrent_keep_files(torrent_hash)
+
+    assert added.torrent_hash == torrent_hash
+    assert added.duplicate is False
+    assert states[0].download_dir == "/downloads/seed"
+    assert states[0].stopped is True
+    assert states[0].verification_complete is True
+    assert states[0].labels == ("packbreaker-test", "media")
+    assert [item["method"] for item in payloads] == [
+        "torrent_add",
+        "torrent_get",
+        "torrent_verify",
+        "torrent_start",
+        "torrent_stop",
+        "torrent_remove",
+    ]
+    remove = payloads[-1]
+    assert remove["params"] == {"ids": [torrent_hash], "delete_local_data": False}
+
+
+@pytest.mark.asyncio
+async def test_transmission_duplicate_is_reported_without_implicit_ownership() -> None:
+    torrent_hash = "b" * 40
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.headers.get("X-Transmission-Session-Id") != "synthetic-session":
+            return httpx2.Response(
+                409,
+                headers={"X-Transmission-Session-Id": "synthetic-session"},
+            )
+        return httpx2.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "result": {
+                    "torrent_duplicate": {
+                        "id": 8,
+                        "name": "Already there",
+                        "hash_string": torrent_hash,
+                    }
+                },
+                "id": 1,
+            },
+        )
+
+    adapter = TransmissionAdapter(
+        "http://tr.invalid:9091/transmission/rpc",
+        None,
+        transport=httpx2.MockTransport(handler),
+    )
+
+    result = await adapter.add_torrent(
+        TransmissionAddRequest(
+            torrent_content=b"synthetic-torrent-payload",
+            save_path="/downloads/seed",
+        )
+    )
+
+    assert result.torrent_hash == torrent_hash
+    assert result.duplicate is True
+
+
+def test_transmission_add_request_cannot_start_immediately() -> None:
+    with pytest.raises(ValueError, match="暂停状态"):
+        TransmissionAddRequest(
+            torrent_content=b"synthetic-torrent-payload",
+            save_path="/downloads/seed",
+            paused=False,
+        )
 
 
 @pytest.mark.asyncio

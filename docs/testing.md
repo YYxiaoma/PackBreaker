@@ -60,14 +60,15 @@
 - 只有所有声明 piece 通过才能得到 FULL_VERIFIED。
 - 抽样通过、大小相同、名称相同、Info-hash 证据缓存过期都不能单独触发 skip checking。
 - 任一 missing/ambiguous 范围、协议不支持或源快照变化均阻止 FULL_VERIFIED。
-- Transmission 请求永远不携带跳过校验语义。
+- Transmission 请求永远不携带跳过校验语义；添加必须显式 `paused=true`，校验只能通过独立 `torrent_verify` 动作触发。
+- Transmission 4.1.x 使用 JSON-RPC 2.0 snake_case 协议；测试覆盖 409 session-id 重试、`torrent_add` 重复结果、`torrent_get` 状态/进度解析，以及 stop/verify/start 动作。
 
 ### 5.3 路径与清理
 
 - 恶意 torrent 路径不能越过目标根目录或利用符号链接逃逸。
 - 目标冲突不覆盖、不截断、不重命名用户文件。
 - 回滚只删除 operation journal 登记且 after snapshot 仍一致的资源。
-- `remove_torrent` 的底层下载器调用必须断言为“不删除数据”，并确认公共适配器不存在删除数据参数。
+- `remove_torrent` 的底层下载器调用必须断言为“不删除数据”；qB 固定 `deleteFiles=false`，Transmission 固定 `delete_local_data=false`，公共适配器不得暴露可切换为删除数据的参数。
 
 ### 5.4 Preflight 当前性与不可变性
 

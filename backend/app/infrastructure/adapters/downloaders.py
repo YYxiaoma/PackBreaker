@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from base64 import b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -24,6 +25,9 @@ _CHECKING_STATES = frozenset({"checkingDL", "checkingUP"})
 _STOPPED_UPLOAD_STATES = frozenset({"stoppedUP", "pausedUP"})
 _STOPPED_DOWNLOAD_STATES = frozenset({"stoppedDL", "pausedDL"})
 _SEEDING_STATES = frozenset({"uploading", "stalledUP", "queuedUP", "forcedUP"})
+_TRANSMISSION_STOPPED = 0
+_TRANSMISSION_CHECKING_STATES = frozenset({1, 2})
+_TRANSMISSION_SEEDING_STATES = frozenset({5, 6})
 
 
 class DownloaderAdapterError(RuntimeError):
@@ -128,6 +132,93 @@ class QbittorrentWriteAdapter(Protocol):
     async def remove_torrent_keep_files(self, torrent_hash: str) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class TransmissionAddRequest:
+    torrent_content: bytes
+    save_path: str
+    labels: tuple[str, ...] = ()
+    paused: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.torrent_content or len(self.torrent_content) > _MAX_TORRENT_UPLOAD_BYTES:
+            raise ValueError("Transmission torrent payload 长度无效")
+        object.__setattr__(self, "save_path", normalize_remote_path(self.save_path))
+        if not self.paused:
+            raise ValueError("PackBreaker 安全添加必须以暂停状态创建 Transmission 任务")
+        labels = tuple(dict.fromkeys(item.strip() for item in self.labels if item.strip()))
+        if any(len(item) > 128 or "\x00" in item for item in labels):
+            raise ValueError("Transmission label 格式无效")
+        object.__setattr__(self, "labels", labels)
+
+
+@dataclass(frozen=True, slots=True)
+class TransmissionAddResult:
+    torrent_hash: str
+    duplicate: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TransmissionTorrentState:
+    torrent_hash: str
+    download_dir: str
+    status: int
+    labels: tuple[str, ...]
+    percent_done: float
+    recheck_progress: float
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.status, bool)
+            or not isinstance(self.status, int)
+            or not 0 <= self.status <= 6
+        ):
+            raise ValueError("Transmission status 必须位于 0..6")
+        for field_name in ("percent_done", "recheck_progress"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"Transmission {field_name} 必须是 0..1 数值")
+            normalized = float(value)
+            if not 0.0 <= normalized <= 1.0:
+                raise ValueError(f"Transmission {field_name} 必须位于 0..1")
+            object.__setattr__(self, field_name, normalized)
+
+    @property
+    def stopped(self) -> bool:
+        return self.status == _TRANSMISSION_STOPPED
+
+    @property
+    def checking(self) -> bool:
+        return self.status in _TRANSMISSION_CHECKING_STATES
+
+    @property
+    def verification_complete(self) -> bool:
+        return self.stopped and self.percent_done == 1.0
+
+    @property
+    def verification_incomplete(self) -> bool:
+        return self.stopped and self.percent_done < 1.0
+
+    @property
+    def seeding(self) -> bool:
+        return self.status in _TRANSMISSION_SEEDING_STATES and self.percent_done == 1.0
+
+
+class TransmissionWriteAdapter(Protocol):
+    async def add_torrent(self, request: TransmissionAddRequest) -> TransmissionAddResult: ...
+
+    async def get_torrents(
+        self, torrent_hashes: tuple[str, ...]
+    ) -> tuple[TransmissionTorrentState, ...]: ...
+
+    async def stop_torrent(self, torrent_hash: str) -> None: ...
+
+    async def start_torrent(self, torrent_hash: str) -> None: ...
+
+    async def verify_torrent(self, torrent_hash: str) -> None: ...
+
+    async def remove_torrent_keep_files(self, torrent_hash: str) -> None: ...
+
+
 class DownloaderAdapterFactory:
     def __init__(self, *, transport: httpx2.AsyncBaseTransport | None = None) -> None:
         self._transport = transport
@@ -150,6 +241,14 @@ class DownloaderAdapterFactory:
         credential: DownloaderCredential | None,
     ) -> QbittorrentAdapter:
         return QbittorrentAdapter(base_url, credential, transport=self._transport)
+
+    def create_transmission(
+        self,
+        *,
+        base_url: str,
+        credential: DownloaderCredential | None,
+    ) -> TransmissionAdapter:
+        return TransmissionAdapter(base_url, credential, transport=self._transport)
 
 
 class QbittorrentAdapter:
@@ -444,9 +543,7 @@ def _normalize_torrent_hash(value: str) -> str:
     if len(normalized) not in {40, 64} or any(
         char not in "0123456789abcdef" for char in normalized
     ):
-        raise DownloaderAdapterError(
-            "DOWNLOADER_INVALID_RESPONSE", "qBittorrent torrent hash 格式无效"
-        )
+        raise DownloaderAdapterError("DOWNLOADER_INVALID_RESPONSE", "下载器 torrent hash 格式无效")
     return normalized
 
 
@@ -482,13 +579,164 @@ class TransmissionAdapter:
         self._transport = transport
 
     async def test_connection(self) -> ConnectionTestResult:
+        result, rpc_header = await self._rpc(
+            "session_get",
+            {"fields": ["version", "rpc_version_semver"]},
+        )
+        version = result.get("version")
+        if not isinstance(version, str) or not version or len(version) > 128:
+            raise DownloaderAdapterError("DOWNLOADER_INVALID_RESPONSE", "Transmission 版本响应无效")
+        rpc_version = result.get("rpc_version_semver")
+        if rpc_version is None:
+            rpc_version = rpc_header
+        if rpc_version is not None and not isinstance(rpc_version, str):
+            rpc_version = str(rpc_version)
+        return ConnectionTestResult(
+            DownloaderCapabilities(
+                client="Transmission",
+                version=version,
+                api_version=rpc_version,
+                supports_skip_checking=False,
+                supports_force_recheck=True,
+                supports_verify_progress=True,
+            )
+        )
+
+    async def add_torrent(self, request: TransmissionAddRequest) -> TransmissionAddResult:
+        result, _ = await self._rpc(
+            "torrent_add",
+            {
+                "metainfo": b64encode(request.torrent_content).decode("ascii"),
+                "download_dir": request.save_path,
+                "paused": True,
+                "labels": list(request.labels),
+            },
+        )
+        added = result.get("torrent_added")
+        duplicate = result.get("torrent_duplicate")
+        if (added is None) == (duplicate is None):
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE",
+                "Transmission 添加响应缺少唯一 torrent 结果",
+            )
+        item = added if added is not None else duplicate
+        if not isinstance(item, dict):
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission 添加响应格式无效"
+            )
+        torrent_hash = item.get("hash_string")
+        if not isinstance(torrent_hash, str):
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission 添加响应 torrent hash 无效"
+            )
+        return TransmissionAddResult(
+            torrent_hash=_normalize_torrent_hash(torrent_hash),
+            duplicate=duplicate is not None,
+        )
+
+    async def get_torrents(
+        self, torrent_hashes: tuple[str, ...]
+    ) -> tuple[TransmissionTorrentState, ...]:
+        normalized = tuple(dict.fromkeys(_normalize_torrent_hash(item) for item in torrent_hashes))
+        if not normalized:
+            raise ValueError("至少需要一个 Transmission torrent hash")
+        result, _ = await self._rpc(
+            "torrent_get",
+            {
+                "ids": list(normalized),
+                "fields": [
+                    "hash_string",
+                    "download_dir",
+                    "status",
+                    "labels",
+                    "percent_done",
+                    "recheck_progress",
+                ],
+            },
+        )
+        raw_torrents = result.get("torrents")
+        if not isinstance(raw_torrents, list):
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 状态响应格式无效"
+            )
+        states: list[TransmissionTorrentState] = []
+        for raw in raw_torrents:
+            if not isinstance(raw, dict):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 状态项格式无效"
+                )
+            torrent_hash = raw.get("hash_string")
+            download_dir = raw.get("download_dir")
+            status = raw.get("status")
+            labels = raw.get("labels")
+            percent_done = raw.get("percent_done")
+            recheck_progress = raw.get("recheck_progress")
+            if (
+                not isinstance(torrent_hash, str)
+                or not isinstance(download_dir, str)
+                or isinstance(status, bool)
+                or not isinstance(status, int)
+                or not isinstance(labels, list)
+                or not all(isinstance(item, str) for item in labels)
+                or isinstance(percent_done, bool)
+                or not isinstance(percent_done, (int, float))
+                or isinstance(recheck_progress, bool)
+                or not isinstance(recheck_progress, (int, float))
+            ):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 状态字段无效"
+                )
+            try:
+                state = TransmissionTorrentState(
+                    torrent_hash=_normalize_torrent_hash(torrent_hash),
+                    download_dir=normalize_remote_path(download_dir),
+                    status=status,
+                    labels=tuple(item.strip() for item in labels if item.strip()),
+                    percent_done=float(percent_done),
+                    recheck_progress=float(recheck_progress),
+                )
+            except (ValueError, TypeError) as exc:
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 状态字段无效"
+                ) from exc
+            states.append(state)
+        return tuple(states)
+
+    async def stop_torrent(self, torrent_hash: str) -> None:
+        await self._torrent_action("torrent_stop", torrent_hash)
+
+    async def start_torrent(self, torrent_hash: str) -> None:
+        await self._torrent_action("torrent_start", torrent_hash)
+
+    async def verify_torrent(self, torrent_hash: str) -> None:
+        await self._torrent_action("torrent_verify", torrent_hash)
+
+    async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
+        await self._rpc(
+            "torrent_remove",
+            {"ids": [_normalize_torrent_hash(torrent_hash)], "delete_local_data": False},
+        )
+
+    async def _torrent_action(self, method: str, torrent_hash: str) -> None:
+        await self._rpc(method, {"ids": [_normalize_torrent_hash(torrent_hash)]})
+
+    async def _rpc(
+        self,
+        method: str,
+        params: dict[str, object],
+    ) -> tuple[dict[str, object], str | None]:
         auth: httpx2.Auth | None = None
         if self._credential is not None and self._credential.username:
             auth = httpx2.BasicAuth(
                 self._credential.username,
                 self._credential.password or "",
             )
-        payload = {"method": "session-get", "tag": 1}
+        payload: dict[str, object] = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": 1,
+        }
         try:
             async with httpx2.AsyncClient(
                 auth=auth,
@@ -510,32 +758,32 @@ class TransmissionAdapter:
                         json=payload,
                         headers={"X-Transmission-Session-Id": session_id},
                     )
+                    rpc_header = response.headers.get("X-Transmission-Rpc-Version") or rpc_header
                 if response.status_code in {401, 403}:
                     raise DownloaderAdapterError("DOWNLOADER_AUTH_FAILED", "Transmission 认证失败")
                 if response.status_code != 200:
                     raise DownloaderAdapterError(
                         "DOWNLOADER_CONNECTION_FAILED", "Transmission RPC 返回异常状态"
                     )
-                body = cast(dict[str, object], response.json())
-                if body.get("result") != "success":
-                    raise DownloaderAdapterError(
-                        "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC 返回失败结果"
-                    )
-                arguments = body.get("arguments")
-                if not isinstance(arguments, dict):
+                body = response.json()
+                if not isinstance(body, dict):
                     raise DownloaderAdapterError(
                         "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC 响应格式无效"
                     )
-                version = arguments.get("version")
-                if not isinstance(version, str) or not version or len(version) > 128:
+                if body.get("jsonrpc") != "2.0" or body.get("id") != 1:
                     raise DownloaderAdapterError(
-                        "DOWNLOADER_INVALID_RESPONSE", "Transmission 版本响应无效"
+                        "DOWNLOADER_INVALID_RESPONSE", "Transmission JSON-RPC 响应标识无效"
                     )
-                rpc_version = arguments.get("rpc-version-semver")
-                if rpc_version is None:
-                    rpc_version = rpc_header
-                if rpc_version is not None and not isinstance(rpc_version, str):
-                    rpc_version = str(rpc_version)
+                if "error" in body:
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_WRITE_FAILED", "Transmission RPC 返回失败结果"
+                    )
+                result = body.get("result")
+                if not isinstance(result, dict):
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC result 格式无效"
+                    )
+                return cast(dict[str, object], result), rpc_header
         except DownloaderAdapterError:
             raise
         except (httpx2.TimeoutException, httpx2.NetworkError) as exc:
@@ -546,11 +794,3 @@ class TransmissionAdapter:
             raise DownloaderAdapterError(
                 "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC 响应无法解析"
             ) from exc
-        return ConnectionTestResult(
-            DownloaderCapabilities(
-                client="Transmission",
-                version=version,
-                api_version=rpc_version,
-                supports_skip_checking=False,
-            )
-        )
