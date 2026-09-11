@@ -36,8 +36,10 @@ from backend.app.application.task_recovery import RecoveryOutcome, TaskRecoveryC
 from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.application.transmission_operations import (
     TRANSMISSION_ADD_OPERATION,
+    TRANSMISSION_START_OPERATION,
     TRANSMISSION_VERIFY_OPERATION,
     TransmissionAddOperationService,
+    TransmissionStartOperationService,
     TransmissionVerifyOperationService,
 )
 from backend.app.domain.downloader import (
@@ -51,6 +53,7 @@ from backend.app.domain.execution_plan import (
     ExecutionPlanActionKind,
     ExecutionPlanSnapshot,
 )
+from backend.app.domain.operation import OperationStatus
 from backend.app.domain.site_adapter import SiteConnectionResult, TorrentDetails, TorrentPayload
 from backend.app.domain.site_search import (
     SearchPage,
@@ -218,6 +221,8 @@ class _FakeTransmission:
         self.states: dict[str, TransmissionTorrentState] = {}
         self.add_calls = 0
         self.verify_calls = 0
+        self.start_calls = 0
+        self.raise_after_start_apply_once = False
 
     async def add_torrent(self, request: TransmissionAddRequest) -> TransmissionAddResult:
         self.add_calls += 1
@@ -245,7 +250,11 @@ class _FakeTransmission:
         self.states[torrent_hash] = replace(self.states[torrent_hash], status=0)
 
     async def start_torrent(self, torrent_hash: str) -> None:
-        raise AssertionError("本切片不能启动 Transmission 做种")
+        self.start_calls += 1
+        self.states[torrent_hash] = replace(self.states[torrent_hash], status=5)
+        if self.raise_after_start_apply_once:
+            self.raise_after_start_apply_once = False
+            raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "synthetic start response lost")
 
     async def verify_torrent(self, torrent_hash: str) -> None:
         self.verify_calls += 1
@@ -591,7 +600,7 @@ async def test_client_check_required_transitions_to_client_verifying_without_ski
 
 
 @pytest.mark.asyncio
-async def test_transmission_full_verified_still_verifies_and_parks_before_start(
+async def test_transmission_full_verified_verifies_then_recovery_starts_seeding_to_done(
     adding_fixture: _AddingFixture,
 ) -> None:
     current_binding = adding_fixture.downloader_provider.binding
@@ -694,6 +703,14 @@ async def test_transmission_full_verified_still_verifies_and_parks_before_start(
         assert verify_journal is not None
         assert verify_journal.operation_type == TRANSMISSION_VERIFY_OPERATION
 
+    seeder = TaskSeedingCoordinator(
+        adding_fixture.factory,
+        adding_fixture.downloader_provider,
+        QbittorrentStartOperationService(adding_fixture.factory),
+        TransmissionStartOperationService(adding_fixture.factory),
+        data_root=adding_fixture.data_root,
+    )
+
     class _NeverLinking:
         def execute(self, unit_id: str, *, execution_plan_id: str) -> object:
             raise AssertionError(f"unexpected linking recovery: {unit_id}/{execution_plan_id}")
@@ -706,19 +723,36 @@ async def test_transmission_full_verified_still_verifies_and_parks_before_start(
             self.calls += 1
             raise AssertionError(f"unexpected async recovery: {unit_id}/{execution_plan_id}")
 
-    seeding = _NeverAsync()
     recovery = TaskRecoveryCoordinator(
         adding_fixture.factory,
         _NeverLinking(),
         _NeverAsync(),
         _NeverAsync(),
-        seeding,
+        seeder,
     )
     recovery_result = await recovery.reconcile_task(adding_fixture.task_id)
 
-    assert recovery_result.outcome is RecoveryOutcome.WAITING
-    assert recovery_result.final_status is TaskStatus.SEEDING
-    assert seeding.calls == 0
+    assert recovery_result.outcome is RecoveryOutcome.COMPLETED
+    assert recovery_result.final_status is TaskStatus.DONE
+    assert transmission.start_calls == 1
+    assert transmission.states[added.torrent_hash].status == 5
+    replayed = await seeder.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert replayed.status is TaskStatus.DONE
+    assert replayed.replayed is True
+    assert transmission.start_calls == 1
+    with adding_fixture.factory() as session:
+        journals = list(
+            session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
+        )
+        assert [item.operation_type for item in journals] == [
+            TRANSMISSION_ADD_OPERATION,
+            TRANSMISSION_VERIFY_OPERATION,
+            TRANSMISSION_START_OPERATION,
+        ]
+        assert all(item.status == OperationStatus.APPLIED.value for item in journals)
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,8 @@
 - 任一 missing/ambiguous 范围、协议不支持或源快照变化均阻止 FULL_VERIFIED。
 - Transmission 请求永远不携带跳过校验语义；添加必须显式 `paused=true`，校验只能通过独立 `torrent_verify` 动作触发。
 - Transmission 4.1.x 使用 JSON-RPC 2.0 snake_case 协议；测试覆盖 409 session-id 重试、`torrent_add` 重复结果、`torrent_get` 状态/进度解析，以及 stop/verify/start 动作。
+- Transmission 做种启动必须绑定同一 execution plan 的 APPLIED `TRANSMISSION_ADD` 与 `TRANSMISSION_VERIFY` journal；启动前重新确认 hash、save path、ownership label、停止状态与 `percent_done=1`，错误/缺失校验证据必须在 `torrent_start` 前失败关闭。
+- `TRANSMISSION_START` 覆盖十路并发幂等、响应丢失恢复和真实状态二次确认；status 5 queued-seed 与 status 6 seeding 在 `percent_done=1` 时都视为有效做种态，其他状态不得把任务推进 `DONE`。
 - Transmission execution plan 即使面对 `FULL_VERIFIED` 也必须要求 force verify + verify progress 能力；ADDING 固定进入 `CLIENT_VERIFYING`，不得因已有 piece 证据直接跳到做种。
 - `TRANSMISSION_ADD` 与 `TRANSMISSION_VERIFY` 必须各自先提交 operation journal intent；相同 candidate/downloader 10 路并发只允许一个远端 add/verify 动作，响应丢失不得盲目重发。
 - Transmission 已存在或返回 duplicate 的 torrent 不能仅凭 info-hash 认领；恢复必须同时证明 PackBreaker ownership label、hash 与 save path。verify 未知结果只有 checking 或相对 before snapshot 的可证明变化才能收敛为 APPLIED。
@@ -91,6 +93,7 @@
 - 创建目录、创建临时链接、原子重命名之后。
 - 下载器添加请求发送前、响应丢失后。
 - 客户端校验开始后、状态回写前。
+- 下载器做种启动后、START journal 或任务 DONE 状态回写前。
 - 硬链接隔离副本完成后、替换前后。
 - 回滚每个动作前后。
 

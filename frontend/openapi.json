@@ -1008,6 +1008,7 @@
           "QBITTORRENT_REMOVE",
           "TRANSMISSION_ADD",
           "TRANSMISSION_VERIFY",
+          "TRANSMISSION_START",
           "OTHER"
         ],
         "title": "OperationKind",

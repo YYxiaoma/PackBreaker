@@ -31,6 +31,8 @@ TRANSMISSION_ADD_OPERATION = "TRANSMISSION_ADD"
 TRANSMISSION_ADD_SCHEMA_VERSION = "packbreaker-transmission-add-v1"
 TRANSMISSION_VERIFY_OPERATION = "TRANSMISSION_VERIFY"
 TRANSMISSION_VERIFY_SCHEMA_VERSION = "packbreaker-transmission-verify-v1"
+TRANSMISSION_START_OPERATION = "TRANSMISSION_START"
+TRANSMISSION_START_SCHEMA_VERSION = "packbreaker-transmission-start-v1"
 
 _OPERATION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
@@ -90,6 +92,33 @@ class TransmissionVerifyOperationResult:
     recovered_after_unknown_result: bool
 
 
+@dataclass(frozen=True, slots=True)
+class TransmissionStartOperationRequest:
+    task_id: str
+    candidate_key: str
+    downloader_id: str
+    downloader_version: int
+    execution_plan_id: str
+    add_journal_id: str
+    verification_journal_id: str
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+
+
+@dataclass(frozen=True, slots=True)
+class TransmissionStartOperationResult:
+    journal_id: str
+    torrent_hash: str
+    save_path: str
+    state: str
+    progress: float
+    ownership_tag: str
+    seeding: bool
+    replayed: bool
+    recovered_after_unknown_result: bool
+
+
 class TransmissionWriteBindingPort(Protocol):
     @property
     def downloader_id(self) -> str: ...
@@ -130,6 +159,15 @@ class _PreparedAdd:
 @dataclass(frozen=True, slots=True)
 class _PreparedVerify:
     request: TransmissionVerifyOperationRequest
+    operation_key: str
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedStart:
+    request: TransmissionStartOperationRequest
     operation_key: str
     torrent_hash: str
     remote_save_path: str
@@ -598,6 +636,253 @@ class TransmissionVerifyOperationService:
             session.commit()
 
 
+class TransmissionStartOperationService:
+    """以独立 journal 包围 torrent_start；只有已校验且归属明确的任务才能启动。"""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    async def execute(
+        self,
+        request: TransmissionStartOperationRequest,
+        binding: TransmissionWriteBindingPort,
+    ) -> TransmissionStartOperationResult:
+        _assert_binding(request.downloader_id, request.downloader_version, binding)
+        prepared = _prepare_start(request)
+        self._assert_authorization_journals(prepared)
+        async with _operation_lock(prepared.operation_key):
+            return await self._execute_prepared(prepared, binding)
+
+    async def _execute_prepared(
+        self,
+        prepared: _PreparedStart,
+        binding: TransmissionWriteBindingPort,
+    ) -> TransmissionStartOperationResult:
+        adapter = binding.adapter
+        existing = self._load_by_key(prepared.operation_key)
+        replayed = False
+        recovered = False
+        if existing is not None:
+            _assert_same_start_intent(existing, prepared)
+            if existing.status is OperationStatus.APPLIED:
+                state = await self._owned_state(adapter, prepared, reconcile_journal_id=existing.id)
+                if not state.seeding:
+                    self._mark_reconcile(existing.id)
+                    raise _state_mismatch("已确认启动的 Transmission torrent 已离开完整做种状态")
+                return _start_result(
+                    existing,
+                    state,
+                    prepared,
+                    replayed=True,
+                    recovered=False,
+                )
+            if existing.status is not OperationStatus.INTENT_RECORDED:
+                raise _journal_not_executable(existing)
+
+            state = await self._owned_state(adapter, prepared, reconcile_journal_id=existing.id)
+            if state.seeding:
+                applied = self._transition(
+                    existing.id,
+                    OperationStatus.INTENT_RECORDED,
+                    OperationStatus.APPLIED,
+                    after_snapshot=_state_snapshot(state, prepared.ownership_tag),
+                )
+                return _start_result(
+                    applied,
+                    state,
+                    prepared,
+                    replayed=True,
+                    recovered=True,
+                )
+            if not state.verification_complete:
+                self._mark_reconcile(existing.id)
+                raise _state_mismatch(
+                    "start intent 存在时 Transmission torrent 已不再处于停止且完整的可启动状态"
+                )
+            journal = existing
+            replayed = True
+            recovered = True
+        else:
+            before = await self._owned_state(adapter, prepared, reconcile_journal_id=None)
+            if before.seeding:
+                raise ApplicationError(
+                    code="DOWNLOADER_START_PREEXISTING",
+                    status=409,
+                    title="Transmission torrent 已在做种",
+                    detail="start intent 建立前 torrent 已被外部启动，PackBreaker 不会认领",
+                )
+            if not before.verification_complete:
+                raise ApplicationError(
+                    code="DOWNLOADER_START_STATE_INVALID",
+                    status=409,
+                    title="Transmission 状态不允许开始做种",
+                    detail="只有停止且 percent_done=1 的已校验 PackBreaker torrent 才允许 start",
+                )
+            journal = self._record_intent(prepared, before)
+
+        try:
+            await adapter.start_torrent(prepared.torrent_hash)
+        except DownloaderAdapterError as exc:
+            raise _adapter_application_error(exc, "Transmission start 结果未知") from exc
+
+        after = await self._owned_state(adapter, prepared, reconcile_journal_id=journal.id)
+        if not after.seeding:
+            if after.verification_complete:
+                raise ApplicationError(
+                    code="DOWNLOADER_START_NOT_CONFIRMED",
+                    status=409,
+                    title="Transmission start 尚未确认",
+                    detail=(
+                        "torrent_start 已发送但任务仍处于停止且完整状态；"
+                        "后续 tick 会先查询真实状态再安全重试"
+                    ),
+                )
+            self._mark_reconcile(journal.id)
+            raise _state_mismatch("start 后 Transmission torrent 未进入可解释的完整做种状态")
+
+        applied = self._transition(
+            journal.id,
+            OperationStatus.INTENT_RECORDED,
+            OperationStatus.APPLIED,
+            after_snapshot=_state_snapshot(after, prepared.ownership_tag),
+        )
+        return _start_result(
+            applied,
+            after,
+            prepared,
+            replayed=replayed,
+            recovered=recovered,
+        )
+
+    async def _owned_state(
+        self,
+        adapter: TransmissionWriteAdapter,
+        prepared: _PreparedStart,
+        *,
+        reconcile_journal_id: str | None,
+    ) -> TransmissionTorrentState:
+        try:
+            observed = await adapter.get_torrents((prepared.torrent_hash,))
+        except DownloaderAdapterError as exc:
+            raise _adapter_application_error(exc, "无法确认 Transmission start 状态") from exc
+        matching = tuple(
+            state
+            for state in observed
+            if state.torrent_hash == prepared.torrent_hash
+            and state.download_dir == prepared.remote_save_path
+            and prepared.ownership_tag in state.labels
+        )
+        if len(observed) != 1 or len(matching) != 1:
+            if reconcile_journal_id is not None:
+                self._mark_reconcile(reconcile_journal_id)
+            raise _state_mismatch(
+                "start torrent 的 hash、save path、ownership label 或存在性不匹配"
+            )
+        return matching[0]
+
+    def _assert_authorization_journals(self, prepared: _PreparedStart) -> None:
+        request = prepared.request
+        with self._session_factory() as session:
+            repository = OperationJournalRepository(session)
+            add_journal = repository.get(request.add_journal_id)
+            verify_journal = repository.get(request.verification_journal_id)
+            add_valid = (
+                add_journal is not None
+                and add_journal.task_id == request.task_id
+                and add_journal.operation_type == TRANSMISSION_ADD_OPERATION
+                and OperationStatus(add_journal.status) is OperationStatus.APPLIED
+                and add_journal.intent.get("execution_plan_id") == request.execution_plan_id
+                and add_journal.target.get("downloader_id") == request.downloader_id
+                and add_journal.after_snapshot is not None
+                and add_journal.after_snapshot.get("torrent_hash") == prepared.torrent_hash
+                and add_journal.after_snapshot.get("save_path") == prepared.remote_save_path
+                and add_journal.after_snapshot.get("ownership_tag") == prepared.ownership_tag
+            )
+            verify_valid = (
+                verify_journal is not None
+                and verify_journal.task_id == request.task_id
+                and verify_journal.operation_type == TRANSMISSION_VERIFY_OPERATION
+                and OperationStatus(verify_journal.status) is OperationStatus.APPLIED
+                and verify_journal.intent.get("execution_plan_id") == request.execution_plan_id
+                and verify_journal.target.get("downloader_id") == request.downloader_id
+                and verify_journal.target.get("torrent_hash") == prepared.torrent_hash
+                and verify_journal.intent.get("add_journal_id") == request.add_journal_id
+                and verify_journal.intent.get("torrent_hash") == prepared.torrent_hash
+                and verify_journal.intent.get("remote_save_path") == prepared.remote_save_path
+                and verify_journal.intent.get("ownership_tag") == prepared.ownership_tag
+            )
+            if not add_valid or not verify_valid:
+                raise ApplicationError(
+                    code="DOWNLOADER_START_AUTHORIZATION_INVALID",
+                    status=409,
+                    title="Transmission 做种启动证据无效",
+                    detail=(
+                        "torrent_start 必须绑定同一 execution plan 的 APPLIED add 与 verify journal"
+                    ),
+                )
+
+    def _record_intent(
+        self,
+        prepared: _PreparedStart,
+        before: TransmissionTorrentState,
+    ) -> _JournalView:
+        request = prepared.request
+        intent = OperationIntent(
+            task_id=request.task_id,
+            idempotency_key=prepared.operation_key,
+            operation_type=TRANSMISSION_START_OPERATION,
+            target={
+                "downloader_id": request.downloader_id,
+                "torrent_hash": prepared.torrent_hash,
+            },
+            intent=_start_intent_payload(prepared),
+            before_snapshot=_state_snapshot(before, prepared.ownership_tag),
+        )
+        with self._session_factory() as session:
+            journal, _ = OperationJournalRepository(session).record_intent(intent)
+            session.commit()
+            return _journal_view(journal)
+
+    def _load_by_key(self, key: str) -> _JournalView | None:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).get_by_idempotency_key(key)
+            return None if journal is None else _journal_view(journal)
+
+    def _transition(
+        self,
+        journal_id: str,
+        expected_status: OperationStatus,
+        to_status: OperationStatus,
+        *,
+        after_snapshot: dict[str, Any] | None = None,
+    ) -> _JournalView:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).transition_status(
+                journal_id=journal_id,
+                expected_status=expected_status,
+                to_status=to_status,
+                after_snapshot=after_snapshot,
+            )
+            session.commit()
+            return _journal_view(journal)
+
+    def _mark_reconcile(self, journal_id: str) -> None:
+        with self._session_factory() as session:
+            repository = OperationJournalRepository(session)
+            journal = repository.get(journal_id)
+            if journal is None:
+                return
+            current = OperationStatus(journal.status)
+            if current not in {OperationStatus.INTENT_RECORDED, OperationStatus.APPLIED}:
+                return
+            repository.transition_status(
+                journal_id=journal_id,
+                expected_status=current,
+                to_status=OperationStatus.RECONCILE_REQUIRED,
+            )
+            session.commit()
+
+
 def _assert_binding(
     downloader_id: str,
     downloader_version: int,
@@ -686,6 +971,45 @@ def _prepare_verify(request: TransmissionVerifyOperationRequest) -> _PreparedVer
     )
 
 
+def _prepare_start(request: TransmissionStartOperationRequest) -> _PreparedStart:
+    if request.downloader_version < 1:
+        raise ValueError("downloader version 必须大于等于 1")
+    _validate_candidate_key(request.candidate_key)
+    torrent_hash = _normalize_hash(request.torrent_hash)
+    add_journal_id = request.add_journal_id.strip()
+    verification_journal_id = request.verification_journal_id.strip()
+    execution_plan_id = request.execution_plan_id.strip()
+    if not add_journal_id or not verification_journal_id or not execution_plan_id:
+        raise ValueError("start 必须绑定 add、verify journal 与 execution plan")
+    ownership_tag = request.ownership_tag.strip()
+    if not ownership_tag or len(ownership_tag) > 128 or "\x00" in ownership_tag:
+        raise ValueError("ownership label 格式无效")
+    remote_save_path = normalize_remote_path(request.remote_save_path)
+    normalized_request = TransmissionStartOperationRequest(
+        task_id=request.task_id,
+        candidate_key=request.candidate_key,
+        downloader_id=request.downloader_id,
+        downloader_version=request.downloader_version,
+        execution_plan_id=execution_plan_id,
+        add_journal_id=add_journal_id,
+        verification_journal_id=verification_journal_id,
+        torrent_hash=torrent_hash,
+        remote_save_path=remote_save_path,
+        ownership_tag=ownership_tag,
+    )
+    return _PreparedStart(
+        request=normalized_request,
+        operation_key=downloader_operation_key(
+            candidate_key=request.candidate_key,
+            operation_type=TRANSMISSION_START_OPERATION,
+            downloader_id=request.downloader_id,
+        ),
+        torrent_hash=torrent_hash,
+        remote_save_path=remote_save_path,
+        ownership_tag=ownership_tag,
+    )
+
+
 def _add_intent_payload(prepared: _PreparedAdd) -> dict[str, Any]:
     request = prepared.request
     return {
@@ -710,6 +1034,20 @@ def _verify_intent_payload(prepared: _PreparedVerify) -> dict[str, Any]:
         "downloader_version": request.downloader_version,
         "execution_plan_id": request.execution_plan_id,
         "add_journal_id": request.add_journal_id,
+        "torrent_hash": prepared.torrent_hash,
+        "remote_save_path": prepared.remote_save_path,
+        "ownership_tag": prepared.ownership_tag,
+    }
+
+
+def _start_intent_payload(prepared: _PreparedStart) -> dict[str, Any]:
+    request = prepared.request
+    return {
+        "schema_version": TRANSMISSION_START_SCHEMA_VERSION,
+        "downloader_version": request.downloader_version,
+        "execution_plan_id": request.execution_plan_id,
+        "add_journal_id": request.add_journal_id,
+        "verification_journal_id": request.verification_journal_id,
         "torrent_hash": prepared.torrent_hash,
         "remote_save_path": prepared.remote_save_path,
         "ownership_tag": prepared.ownership_tag,
@@ -753,6 +1091,25 @@ def _assert_same_verify_intent(journal: _JournalView, prepared: _PreparedVerify)
             status=409,
             title="Transmission verify 幂等键冲突",
             detail="同一 candidate/downloader 对应了不同的 verify 意图",
+        )
+
+
+def _assert_same_start_intent(journal: _JournalView, prepared: _PreparedStart) -> None:
+    if (
+        journal.task_id != prepared.request.task_id
+        or journal.operation_type != TRANSMISSION_START_OPERATION
+        or journal.target
+        != {
+            "downloader_id": prepared.request.downloader_id,
+            "torrent_hash": prepared.torrent_hash,
+        }
+        or journal.intent != _start_intent_payload(prepared)
+    ):
+        raise ApplicationError(
+            code="DOWNLOADER_START_IDEMPOTENCY_CONFLICT",
+            status=409,
+            title="Transmission start 幂等键冲突",
+            detail="同一 candidate/downloader 对应了不同的 start 意图",
         )
 
 
@@ -822,6 +1179,27 @@ def _add_result(
         state=str(state.status),
         ownership_tag=prepared.ownership_tag,
         skip_checking=False,
+        replayed=replayed,
+        recovered_after_unknown_result=recovered,
+    )
+
+
+def _start_result(
+    journal: _JournalView,
+    state: TransmissionTorrentState,
+    prepared: _PreparedStart,
+    *,
+    replayed: bool,
+    recovered: bool,
+) -> TransmissionStartOperationResult:
+    return TransmissionStartOperationResult(
+        journal_id=journal.id,
+        torrent_hash=state.torrent_hash,
+        save_path=state.download_dir,
+        state=str(state.status),
+        progress=state.percent_done,
+        ownership_tag=prepared.ownership_tag,
+        seeding=state.seeding,
         replayed=replayed,
         recovered_after_unknown_result=recovered,
     )

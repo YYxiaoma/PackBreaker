@@ -1045,6 +1045,7 @@ export interface components {
       | 'QBITTORRENT_REMOVE'
       | 'TRANSMISSION_ADD'
       | 'TRANSMISSION_VERIFY'
+      | 'TRANSMISSION_START'
       | 'OTHER';
     /**
      * OperationStatus

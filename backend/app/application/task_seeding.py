@@ -15,19 +15,26 @@ from backend.app.application.downloader_operations import (
     QbittorrentStartOperationResult,
     QbittorrentStartOperationService,
 )
-from backend.app.application.downloaders import QbittorrentWriteBinding
+from backend.app.application.downloaders import QbittorrentWriteBinding, TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
 from backend.app.application.task_adding import (
     CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION,
     POST_ADD_CHECKPOINT_SCHEMA_VERSION,
     SEEDING_CHECKPOINT_SCHEMA_VERSION,
 )
+from backend.app.application.transmission_operations import (
+    TRANSMISSION_ADD_OPERATION,
+    TRANSMISSION_VERIFY_OPERATION,
+    TransmissionStartOperationRequest,
+    TransmissionStartOperationResult,
+    TransmissionStartOperationService,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.execution_plan import EXECUTION_PLAN_SCHEMA_VERSION
 from backend.app.domain.idempotency import candidate_execution_key
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_state import TaskStatus
-from backend.app.domain.verification import VerificationLevel
+from backend.app.domain.verification import DownloaderKind, VerificationLevel
 from backend.app.infrastructure.persistence.models import OperationJournal, TaskExecutionPlanRecord
 from backend.app.infrastructure.persistence.repositories import (
     OperationJournalRepository,
@@ -44,8 +51,10 @@ from backend.app.infrastructure.source_inventory import (
 )
 
 
-class QbittorrentBindingProvider(Protocol):
-    def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBinding: ...
+class DownloaderBindingProvider(Protocol):
+    def write_binding(
+        self, downloader_id: str
+    ) -> QbittorrentWriteBinding | TransmissionWriteBinding: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,27 +89,30 @@ class _AuthorizedSeeding:
     target_downloader_version: int
     target_downloader_binding_digest: str
     target_remote_save_path: str
-    qbit_add_journal_id: str
+    add_journal_id: str
     verification_journal_id: str | None
+    downloader_kind: DownloaderKind
     torrent_hash: str
     ownership_tag: str
     checkpoint: dict[str, object]
 
 
 class TaskSeedingCoordinator:
-    """将已获准做种的 qB torrent 安全启动，并在真实上行状态确认后完成任务。"""
+    """将已获准做种的 torrent 安全启动，并在真实做种状态确认后完成任务。"""
 
     def __init__(
         self,
         session_factory: sessionmaker[Session],
-        downloader_service: QbittorrentBindingProvider,
+        downloader_service: DownloaderBindingProvider,
         start_operations: QbittorrentStartOperationService,
+        transmission_start_operations: TransmissionStartOperationService | None = None,
         *,
         data_root: Path,
     ) -> None:
         self._session_factory = session_factory
         self._downloader_service = downloader_service
         self._start_operations = start_operations
+        self._transmission_start_operations = transmission_start_operations
         self._data_root = data_root
         self._filesystem = SafeFilesystemGateway(data_root)
 
@@ -124,23 +136,57 @@ class TaskSeedingCoordinator:
             remote_torrent_id=authorized.candidate_torrent_id,
             target_downloader_id=authorized.target_downloader_id,
         )
-        result = await self._start_operations.execute(
-            QbittorrentStartOperationRequest(
-                task_id=authorized.task_id,
-                candidate_key=candidate_key,
-                downloader_id=authorized.target_downloader_id,
-                downloader_version=authorized.target_downloader_version,
-                execution_plan_id=authorized.plan_id,
-                qbit_add_journal_id=authorized.qbit_add_journal_id,
-                verification_journal_id=authorized.verification_journal_id,
-                torrent_hash=authorized.torrent_hash,
-                remote_save_path=authorized.target_remote_save_path,
-                ownership_tag=authorized.ownership_tag,
-            ),
-            binding,
-        )
+        if authorized.downloader_kind is DownloaderKind.QBITTORRENT:
+            if not isinstance(binding, QbittorrentWriteBinding):
+                raise _seeding_binding_changed("目标下载器类型与 SEEDING checkpoint 不一致")
+            result: (
+                QbittorrentStartOperationResult | TransmissionStartOperationResult
+            ) = await self._start_operations.execute(
+                QbittorrentStartOperationRequest(
+                    task_id=authorized.task_id,
+                    candidate_key=candidate_key,
+                    downloader_id=authorized.target_downloader_id,
+                    downloader_version=authorized.target_downloader_version,
+                    execution_plan_id=authorized.plan_id,
+                    qbit_add_journal_id=authorized.add_journal_id,
+                    verification_journal_id=authorized.verification_journal_id,
+                    torrent_hash=authorized.torrent_hash,
+                    remote_save_path=authorized.target_remote_save_path,
+                    ownership_tag=authorized.ownership_tag,
+                ),
+                binding,
+            )
+            fault_stage = "after_start_applied"
+        else:
+            if not isinstance(binding, TransmissionWriteBinding):
+                raise _seeding_binding_changed("目标下载器类型与 SEEDING checkpoint 不一致")
+            if self._transmission_start_operations is None:
+                raise ApplicationError(
+                    code="SEEDING_DOWNLOADER_UNSUPPORTED",
+                    status=409,
+                    title="Transmission 做种启动服务未注册",
+                    detail="当前运行时尚未注册 journal-backed Transmission start 服务",
+                )
+            if authorized.verification_journal_id is None:
+                raise _seeding_evidence_invalid("Transmission SEEDING 必须绑定 verify journal")
+            result = await self._transmission_start_operations.execute(
+                TransmissionStartOperationRequest(
+                    task_id=authorized.task_id,
+                    candidate_key=candidate_key,
+                    downloader_id=authorized.target_downloader_id,
+                    downloader_version=authorized.target_downloader_version,
+                    execution_plan_id=authorized.plan_id,
+                    add_journal_id=authorized.add_journal_id,
+                    verification_journal_id=authorized.verification_journal_id,
+                    torrent_hash=authorized.torrent_hash,
+                    remote_save_path=authorized.target_remote_save_path,
+                    ownership_tag=authorized.ownership_tag,
+                ),
+                binding,
+            )
+            fault_stage = "after_transmission_start_applied"
         if fault_hook is not None:
-            fault_hook("after_start_applied")
+            fault_hook(fault_stage)
         return self._complete_task(authorized, result)
 
     def _load_authorized(self, unit_id: str, plan_id: str) -> _AuthorizedSeeding:
@@ -167,14 +213,16 @@ class TaskSeedingCoordinator:
             candidate = TaskCandidateRepository(session).get(plan.candidate_id)
             if candidate is None or candidate.task_id != plan.task_id:
                 raise _seeding_plan_not_current()
-            add_journal = OperationJournalRepository(session).get(
-                _required_text(checkpoint, "qbit_journal_id")
-            )
-            self._assert_add_journal(plan, checkpoint, add_journal)
+            downloader_kind = _checkpoint_downloader_kind(checkpoint)
+            add_journal_id = _required_add_journal_id(checkpoint)
+            add_journal = OperationJournalRepository(session).get(add_journal_id)
+            self._assert_add_journal(plan, checkpoint, add_journal, downloader_kind)
             verification_journal_id = self._verification_journal_id(
                 plan,
                 checkpoint,
                 session,
+                downloader_kind,
+                add_journal_id,
             )
 
             return _AuthorizedSeeding(
@@ -198,8 +246,9 @@ class TaskSeedingCoordinator:
                     checkpoint, "target_downloader_binding_digest"
                 ),
                 target_remote_save_path=_required_text(checkpoint, "target_remote_save_path"),
-                qbit_add_journal_id=_required_text(checkpoint, "qbit_journal_id"),
+                add_journal_id=add_journal_id,
                 verification_journal_id=verification_journal_id,
+                downloader_kind=downloader_kind,
                 torrent_hash=_required_text(checkpoint, "torrent_hash").lower(),
                 ownership_tag=_required_text(checkpoint, "ownership_tag"),
                 checkpoint=checkpoint,
@@ -211,6 +260,7 @@ class TaskSeedingCoordinator:
         checkpoint: dict[str, object],
     ) -> None:
         schema = checkpoint.get("schema_version")
+        downloader_kind = _checkpoint_downloader_kind(checkpoint)
         if schema not in {
             POST_ADD_CHECKPOINT_SCHEMA_VERSION,
             CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION,
@@ -232,7 +282,8 @@ class TaskSeedingCoordinator:
 
         if schema == POST_ADD_CHECKPOINT_SCHEMA_VERSION:
             if (
-                checkpoint.get("stage") != "POST_ADD"
+                downloader_kind is not DownloaderKind.QBITTORRENT
+                or checkpoint.get("stage") != "POST_ADD"
                 or _required_bool(checkpoint, "skip_checking") is not True
                 or checkpoint.get("verification_level") != VerificationLevel.FULL_VERIFIED.value
             ):
@@ -252,11 +303,17 @@ class TaskSeedingCoordinator:
         plan: TaskExecutionPlanRecord,
         checkpoint: dict[str, object],
         journal: OperationJournal | None,
+        downloader_kind: DownloaderKind,
     ) -> None:
+        expected_operation = (
+            QBITTORRENT_ADD_OPERATION
+            if downloader_kind is DownloaderKind.QBITTORRENT
+            else TRANSMISSION_ADD_OPERATION
+        )
         if (
             journal is None
             or journal.task_id != plan.task_id
-            or journal.operation_type != QBITTORRENT_ADD_OPERATION
+            or journal.operation_type != expected_operation
             or OperationStatus(journal.status) is not OperationStatus.APPLIED
             or journal.intent.get("execution_plan_id") != plan.id
             or journal.target.get("downloader_id") != checkpoint.get("target_downloader_id")
@@ -265,47 +322,56 @@ class TaskSeedingCoordinator:
             or journal.after_snapshot.get("save_path") != checkpoint.get("remote_save_path")
             or journal.after_snapshot.get("ownership_tag") != checkpoint.get("ownership_tag")
         ):
-            raise _seeding_evidence_invalid("qBittorrent add journal 无法证明当前 torrent 归属")
+            raise _seeding_evidence_invalid("下载器 add journal 无法证明当前 torrent 归属")
 
     def _verification_journal_id(
         self,
         plan: TaskExecutionPlanRecord,
         checkpoint: dict[str, object],
         session: Session,
+        downloader_kind: DownloaderKind,
+        add_journal_id: str,
     ) -> str | None:
         if checkpoint.get("schema_version") == POST_ADD_CHECKPOINT_SCHEMA_VERSION:
             return None
-        journal_id = _required_text(checkpoint, "recheck_journal_id")
+        journal_id = _required_verification_journal_id(checkpoint)
         journal = OperationJournalRepository(session).get(journal_id)
+        expected_operation = (
+            QBITTORRENT_RECHECK_OPERATION
+            if downloader_kind is DownloaderKind.QBITTORRENT
+            else TRANSMISSION_VERIFY_OPERATION
+        )
+        add_reference_key = (
+            "qbit_add_journal_id"
+            if downloader_kind is DownloaderKind.QBITTORRENT
+            else "add_journal_id"
+        )
         if (
             journal is None
             or journal.task_id != plan.task_id
-            or journal.operation_type != QBITTORRENT_RECHECK_OPERATION
+            or journal.operation_type != expected_operation
             or OperationStatus(journal.status) is not OperationStatus.APPLIED
             or journal.intent.get("execution_plan_id") != plan.id
-            or journal.intent.get("qbit_add_journal_id") != checkpoint.get("qbit_journal_id")
+            or journal.intent.get(add_reference_key) != add_journal_id
             or journal.intent.get("torrent_hash") != checkpoint.get("torrent_hash")
             or journal.intent.get("remote_save_path") != checkpoint.get("remote_save_path")
             or journal.intent.get("ownership_tag") != checkpoint.get("ownership_tag")
         ):
-            raise _seeding_evidence_invalid("qBittorrent recheck journal 无法证明完整客户端校验链")
+            raise _seeding_evidence_invalid("客户端校验 journal 无法证明完整校验链")
         return journal_id
 
-    def _load_target_binding(self, authorized: _AuthorizedSeeding) -> QbittorrentWriteBinding:
+    def _load_target_binding(
+        self, authorized: _AuthorizedSeeding
+    ) -> QbittorrentWriteBinding | TransmissionWriteBinding:
         try:
             self._filesystem.assert_directory(
                 relative_path=authorized.target_root,
                 expected_device=authorized.target_device,
             )
-            binding = self._downloader_service.qbittorrent_write_binding(
-                authorized.target_downloader_id
-            )
+            binding = self._downloader_service.write_binding(authorized.target_downloader_id)
         except (ApplicationError, DomainViolation) as exc:
-            raise ApplicationError(
-                code="SEEDING_BINDING_CHANGED",
-                status=409,
-                title="SEEDING 目标环境已变化",
-                detail="target root 或目标 qBittorrent 已不能证明与 execution plan 一致",
+            raise _seeding_binding_changed(
+                "target root 或目标下载器已不能证明与 execution plan 一致"
             ) from exc
         normalized_target = self._filesystem.normalize_relative_path(
             authorized.target_root,
@@ -319,22 +385,24 @@ class TaskSeedingCoordinator:
         try:
             remote_save_path = binding.remote_save_path(target_path)
         except DomainViolation as exc:
-            raise ApplicationError(
-                code="SEEDING_BINDING_CHANGED",
-                status=409,
-                title="SEEDING 路径映射已变化",
-                detail="target root 已无法唯一反向映射到计划中的 qBittorrent save path",
+            raise _seeding_binding_changed(
+                "target root 已无法唯一反向映射到计划中的下载器 save path"
             ) from exc
         if (
-            binding.downloader_version != authorized.target_downloader_version
+            (
+                authorized.downloader_kind is DownloaderKind.QBITTORRENT
+                and not isinstance(binding, QbittorrentWriteBinding)
+            )
+            or (
+                authorized.downloader_kind is DownloaderKind.TRANSMISSION
+                and not isinstance(binding, TransmissionWriteBinding)
+            )
+            or binding.downloader_version != authorized.target_downloader_version
             or binding.binding_digest != authorized.target_downloader_binding_digest
             or remote_save_path != authorized.target_remote_save_path
         ):
-            raise ApplicationError(
-                code="SEEDING_BINDING_CHANGED",
-                status=409,
-                title="SEEDING qBittorrent 配置已变化",
-                detail="下载器 version、binding digest 或 save path 与 execution plan 不一致",
+            raise _seeding_binding_changed(
+                "下载器类型、version、binding digest 或 save path 与 execution plan 不一致"
             )
         return binding
 
@@ -362,16 +430,16 @@ class TaskSeedingCoordinator:
                 code="SEEDING_SOURCE_CHANGED",
                 status=409,
                 title="SEEDING 源目录已变化",
-                detail="开始做种前 source inventory 已变化，禁止启动 qBittorrent torrent",
+                detail="开始做种前 source inventory 已变化，禁止启动下载器 torrent",
             )
 
     def _complete_task(
         self,
         authorized: _AuthorizedSeeding,
-        result: QbittorrentStartOperationResult,
+        result: QbittorrentStartOperationResult | TransmissionStartOperationResult,
     ) -> TaskSeedingResult:
         if not result.seeding or result.progress != 1.0:
-            raise _seeding_evidence_invalid("qBittorrent start 未证明 torrent 已进入完整上行状态")
+            raise _seeding_evidence_invalid("下载器 start 未证明 torrent 已进入完整做种状态")
         checkpoint = deepcopy(authorized.checkpoint)
         checkpoint.update(
             {
@@ -397,8 +465,16 @@ class TaskSeedingCoordinator:
                     task_id=task.id,
                     expected_version=task.version,
                     to_status=TaskStatus.DONE,
-                    event_type="QBITTORRENT_SEEDING_CONFIRMED",
-                    reason="qBittorrent 已确认 progress=1 且进入上行做种状态，任务完成",
+                    event_type=(
+                        "QBITTORRENT_SEEDING_CONFIRMED"
+                        if authorized.downloader_kind is DownloaderKind.QBITTORRENT
+                        else "TRANSMISSION_SEEDING_CONFIRMED"
+                    ),
+                    reason=(
+                        "qBittorrent 已确认 progress=1 且进入上行做种状态，任务完成"
+                        if authorized.downloader_kind is DownloaderKind.QBITTORRENT
+                        else "Transmission 已确认 percent_done=1 且进入做种状态，任务完成"
+                    ),
                     checkpoint=checkpoint,
                 )
             except DomainViolation as exc:
@@ -455,6 +531,39 @@ class TaskSeedingCoordinator:
             replayed=True,
             recovered_after_unknown_result=False,
         )
+
+
+def _required_add_journal_id(payload: dict[str, object]) -> str:
+    value = payload.get("add_journal_id")
+    if value is None:
+        return _required_text(payload, "qbit_journal_id")
+    if not isinstance(value, str) or not value:
+        raise _seeding_evidence_invalid("SEEDING 证据缺少有效 add_journal_id")
+    return value
+
+
+def _required_verification_journal_id(payload: dict[str, object]) -> str:
+    value = payload.get("verification_journal_id")
+    if value is None:
+        return _required_text(payload, "recheck_journal_id")
+    if not isinstance(value, str) or not value:
+        raise _seeding_evidence_invalid("SEEDING 证据缺少有效 verification_journal_id")
+    return value
+
+
+def _checkpoint_downloader_kind(checkpoint: dict[str, object]) -> DownloaderKind:
+    value = checkpoint.get("downloader_kind")
+    if value is None:
+        return DownloaderKind.QBITTORRENT
+    if not isinstance(value, str):
+        raise _seeding_evidence_invalid("SEEDING downloader_kind 无效")
+    try:
+        kind = DownloaderKind(value)
+    except ValueError as exc:
+        raise _seeding_evidence_invalid("SEEDING downloader_kind 无效") from exc
+    if kind not in {DownloaderKind.QBITTORRENT, DownloaderKind.TRANSMISSION}:
+        raise _seeding_evidence_invalid("SEEDING downloader_kind 不受支持")
+    return kind
 
 
 def _required_text(payload: dict[str, object], key: str) -> str:
@@ -524,10 +633,19 @@ def _seeding_evidence_invalid(detail: str) -> ApplicationError:
     )
 
 
+def _seeding_binding_changed(detail: str) -> ApplicationError:
+    return ApplicationError(
+        code="SEEDING_BINDING_CHANGED",
+        status=409,
+        title="SEEDING 目标环境已变化",
+        detail=detail,
+    )
+
+
 def _seeding_task_changed() -> ApplicationError:
     return ApplicationError(
         code="SEEDING_TASK_CHANGED",
         status=409,
         title="SEEDING 任务状态已经变化",
-        detail="qBittorrent start 已确认，但原 task version 无法安全推进，需要重新读取对账",
+        detail="下载器 start 已确认，但原 task version 无法安全推进，需要重新读取对账",
     )

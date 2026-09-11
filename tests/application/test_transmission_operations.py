@@ -15,10 +15,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.errors import ApplicationError
 from backend.app.application.transmission_operations import (
     TRANSMISSION_ADD_OPERATION,
+    TRANSMISSION_START_OPERATION,
     TRANSMISSION_VERIFY_OPERATION,
     TransmissionAddOperationRequest,
     TransmissionAddOperationService,
+    TransmissionStartOperationRequest,
+    TransmissionStartOperationService,
     TransmissionVerifyOperationRequest,
+    TransmissionVerifyOperationResult,
     TransmissionVerifyOperationService,
 )
 from backend.app.domain.operation import OperationStatus
@@ -47,10 +51,15 @@ class _FakeTransmission:
         self.states: dict[str, TransmissionTorrentState] = {}
         self.add_calls = 0
         self.verify_calls = 0
+        self.start_calls = 0
         self.stop_calls = 0
         self.raise_after_add_apply_once = False
         self.raise_after_verify_apply_once = False
+        self.raise_after_start_apply_once = False
         self.delay_add = False
+        self.delay_start = False
+        self.apply_on_start = True
+        self.start_status = 5
 
     async def add_torrent(self, request: TransmissionAddRequest) -> TransmissionAddResult:
         self.add_calls += 1
@@ -84,7 +93,17 @@ class _FakeTransmission:
         self.states[torrent_hash] = replace(self.states[torrent_hash], status=0)
 
     async def start_torrent(self, torrent_hash: str) -> None:
-        self.states[torrent_hash] = replace(self.states[torrent_hash], status=6)
+        self.start_calls += 1
+        if self.delay_start:
+            await asyncio.sleep(0.01)
+        if self.apply_on_start:
+            self.states[torrent_hash] = replace(
+                self.states[torrent_hash],
+                status=self.start_status,
+            )
+        if self.raise_after_start_apply_once:
+            self.raise_after_start_apply_once = False
+            raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "synthetic start response lost")
 
     async def verify_torrent(self, torrent_hash: str) -> None:
         self.verify_calls += 1
@@ -181,6 +200,59 @@ def _add_request(task_id: str, torrent: bytes) -> TransmissionAddOperationReques
         torrent_content=torrent,
         remote_save_path="/downloads/target",
     )
+
+
+def _start_request(
+    task_id: str,
+    add_journal_id: str,
+    verify_result: TransmissionVerifyOperationResult,
+) -> TransmissionStartOperationRequest:
+    return TransmissionStartOperationRequest(
+        task_id=task_id,
+        candidate_key="a" * 64,
+        downloader_id="target-tr",
+        downloader_version=4,
+        execution_plan_id="plan-tr",
+        add_journal_id=add_journal_id,
+        verification_journal_id=verify_result.journal_id,
+        torrent_hash=verify_result.torrent_hash,
+        remote_save_path=verify_result.save_path,
+        ownership_tag=verify_result.ownership_tag,
+    )
+
+
+async def _verified_chain(
+    factory: sessionmaker[Session],
+    task_id: str,
+    adapter: _FakeTransmission,
+    binding: _Binding,
+    torrent: bytes,
+) -> tuple[str, TransmissionVerifyOperationResult]:
+    add_result = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    verify_request = TransmissionVerifyOperationRequest(
+        task_id=task_id,
+        candidate_key="a" * 64,
+        downloader_id=binding.downloader_id,
+        downloader_version=binding.downloader_version,
+        execution_plan_id="plan-tr",
+        add_journal_id=add_result.journal_id,
+        torrent_hash=add_result.torrent_hash,
+        remote_save_path=add_result.save_path,
+        ownership_tag=add_result.ownership_tag,
+    )
+    verify_service = TransmissionVerifyOperationService(factory)
+    await verify_service.execute(verify_request, binding)
+    adapter.states[add_result.torrent_hash] = replace(
+        adapter.states[add_result.torrent_hash],
+        status=0,
+        percent_done=1.0,
+        recheck_progress=1.0,
+    )
+    verified = await verify_service.execute(verify_request, binding)
+    assert verified.verification_complete is True
+    return add_result.journal_id, verified
 
 
 @pytest.mark.asyncio
@@ -308,3 +380,73 @@ async def test_transmission_verify_response_loss_recovers_and_completion_is_prov
             TRANSMISSION_VERIFY_OPERATION,
         ]
         assert all(item.status == OperationStatus.APPLIED.value for item in journals)
+
+
+@pytest.mark.asyncio
+async def test_transmission_start_ten_concurrent_replays_start_once_and_accept_queued_seed(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    add_journal_id, verified = await _verified_chain(factory, task_id, adapter, binding, torrent)
+    adapter.delay_start = True
+    service = TransmissionStartOperationService(factory)
+    request = _start_request(task_id, add_journal_id, verified)
+
+    results = await asyncio.gather(*(service.execute(request, binding) for _ in range(10)))
+
+    assert adapter.start_calls == 1
+    assert adapter.states[verified.torrent_hash].status == 5
+    assert all(item.seeding and item.progress == 1.0 for item in results)
+    assert len({item.journal_id for item in results}) == 1
+    assert sum(item.replayed for item in results) == 9
+    with factory() as session:
+        journals = session.scalars(
+            select(OperationJournal).order_by(OperationJournal.created_at)
+        ).all()
+        assert [item.operation_type for item in journals] == [
+            TRANSMISSION_ADD_OPERATION,
+            TRANSMISSION_VERIFY_OPERATION,
+            TRANSMISSION_START_OPERATION,
+        ]
+        assert all(item.status == OperationStatus.APPLIED.value for item in journals)
+
+
+@pytest.mark.asyncio
+async def test_transmission_start_response_loss_recovers_without_second_start(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    add_journal_id, verified = await _verified_chain(factory, task_id, adapter, binding, torrent)
+    service = TransmissionStartOperationService(factory)
+    request = _start_request(task_id, add_journal_id, verified)
+    adapter.raise_after_start_apply_once = True
+
+    with pytest.raises(ApplicationError) as failure:
+        await service.execute(request, binding)
+    assert failure.value.code == "DOWNLOADER_UNAVAILABLE"
+    assert adapter.start_calls == 1
+
+    recovered = await service.execute(request, binding)
+
+    assert recovered.seeding is True
+    assert recovered.replayed is True
+    assert recovered.recovered_after_unknown_result is True
+    assert adapter.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_transmission_start_requires_matching_verify_journal_before_write(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    add_journal_id, verified = await _verified_chain(factory, task_id, adapter, binding, torrent)
+    request = replace(
+        _start_request(task_id, add_journal_id, verified),
+        verification_journal_id=add_journal_id,
+    )
+
+    with pytest.raises(ApplicationError) as failure:
+        await TransmissionStartOperationService(factory).execute(request, binding)
+
+    assert failure.value.code == "DOWNLOADER_START_AUTHORIZATION_INVALID"
+    assert adapter.start_calls == 0
