@@ -86,7 +86,7 @@ class DownloaderAdapter(Protocol):
 
 ### 4.1.1 当前实现边界
 
-M1 已实现下载器配置所需的只读探测切片：qBittorrent 可使用用户名/密码登录或 API Key，并读取应用/WebAPI 版本；Transmission 使用 RPC `session-get` 完成 session-id 握手并读取客户端/RPC 版本。M3 现开始扩展 qBittorrent 写适配器，首个切片固定面向 qBittorrent 5.2.x / WebAPI 2.15.1：支持上传本地 torrent、查询 torrent、`stop`/`start` 与 `recheck`，但尚未由公开任务 API 调用；Transmission 仍保持只读探测，完整写契约留到 M4。
+M1 已实现下载器配置所需的只读探测切片：qBittorrent 可使用用户名/密码登录或 API Key，并读取应用/WebAPI 版本；Transmission 使用 RPC `session-get` 完成 session-id 握手并读取客户端/RPC 版本。M3 qBittorrent 写适配器当前固定面向 qBittorrent 5.2.x / WebAPI 2.15.1：支持暂停上传本地 torrent、按 hash 查询真实 torrent 状态、读取严格 0..1 `progress`、`stop`/`start` 与 `recheck`，并在能力快照中显式声明 `supports_force_recheck`/`supports_verify_progress`。CLIENT_VERIFYING 只在这两项能力均通过探测时允许进入；add、recheck、start 均由 operation journal 包围并在写后重新读取 `torrents/info` 确认真实状态，start 只允许从停止且完整的本系统 torrent 发起，并以完整上行状态作为成功证据。适配器仍未由公开任务执行 API 调用。Transmission 保持只读探测，完整写契约留到 M4。
 
 连接探测在数据库事务之外执行，结果只在配置 version 未变化时写回；错误只返回稳定分类和脱敏描述，不持久化第三方响应正文、请求头或凭证。
 

@@ -893,6 +893,8 @@ def _create_ready_qb_target(app: FastAPI, settings: AppSettings) -> str:
                     "version": "v5.2.3",
                     "api_version": "2.15.1",
                     "supports_skip_checking": True,
+                    "supports_force_recheck": True,
+                    "supports_verify_progress": True,
                     "read_only_probe": True,
                 },
                 connection_status="OK",

@@ -99,7 +99,7 @@ sequenceDiagram
 3. 保存外部资源身份、设备/inode 快照和结果。
 4. 崩溃恢复时先查询真实状态，再决定补记、继续、回滚或转人工。
 
-系统不得假定“数据库状态等于外部真实状态”。启动对账覆盖 `LINKING`、`ADDING`、`CLIENT_VERIFYING`、`ROLLING_BACK` 和状态超时的任务。
+系统不得假定“数据库状态等于外部真实状态”。当前启动恢复已覆盖 `LINKING`、`ADDING`、`CLIENT_VERIFYING`、`SEEDING`：按最久未更新优先有界扫描，每个任务只通过既有 stage coordinator 查询/兑现 journal 与真实文件系统/qB 状态；同一 stage 一次 tick 后仍未变化即停止本轮，不在应用启动期间长轮询。可归类的单任务安全错误只记录稳定错误码并继续扫描，程序级异常仍使启动失败但必须释放进程锁。`ROLLING_BACK` 与状态超时任务留在取消/回滚切片接入。
 
 ## 7. 可观测性
 

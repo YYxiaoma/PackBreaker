@@ -42,6 +42,8 @@ from backend.app.infrastructure.source_inventory import (
 from backend.app.infrastructure.torrent_parser import parse_torrent
 
 POST_ADD_CHECKPOINT_SCHEMA_VERSION = "packbreaker-post-add-checkpoint-v1"
+CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION = "packbreaker-client-verification-checkpoint-v1"
+SEEDING_CHECKPOINT_SCHEMA_VERSION = "packbreaker-seeding-checkpoint-v1"
 
 
 class QbittorrentBindingProvider(Protocol):
@@ -504,16 +506,32 @@ class TaskAddingCoordinator:
                 raise _adding_plan_invalid("任务包含未知状态") from exc
             if status is TaskStatus.ADDING:
                 return None
-            if status not in {TaskStatus.SEEDING, TaskStatus.CLIENT_VERIFYING}:
+            if status not in {
+                TaskStatus.SEEDING,
+                TaskStatus.CLIENT_VERIFYING,
+                TaskStatus.RETRY,
+                TaskStatus.DONE,
+            }:
                 raise _adding_task_state_invalid()
             checkpoint = deepcopy(task.checkpoint)
             task_id = task.id
             task_version = task.version
             plan_record_id = plan.id
             plan_record_digest = plan.plan_digest
+        schema = checkpoint.get("schema_version")
+        stage_matches = (
+            (schema == POST_ADD_CHECKPOINT_SCHEMA_VERSION and checkpoint.get("stage") == "POST_ADD")
+            or (
+                schema == CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION
+                and checkpoint.get("stage") == status.value
+            )
+            or (
+                schema == SEEDING_CHECKPOINT_SCHEMA_VERSION
+                and checkpoint.get("stage") == status.value
+            )
+        )
         if (
-            checkpoint.get("schema_version") != POST_ADD_CHECKPOINT_SCHEMA_VERSION
-            or checkpoint.get("stage") != "POST_ADD"
+            not stage_matches
             or checkpoint.get("execution_plan_id") != plan_record_id
             or checkpoint.get("execution_plan_digest") != plan_record_digest
         ):
@@ -582,7 +600,10 @@ def _adding_task_state_invalid() -> ApplicationError:
         code="ADDING_TASK_STATE_INVALID",
         status=409,
         title="任务状态不允许 qBittorrent 添加",
-        detail="qBittorrent 添加只能从 ADDING 执行，或读取已完成的 CLIENT_VERIFYING/SEEDING 结果",
+        detail=(
+            "qBittorrent 添加只能从 ADDING 执行，或读取已进入 "
+            "CLIENT_VERIFYING/SEEDING/RETRY/DONE 的既有添加结果"
+        ),
     )
 
 

@@ -95,7 +95,7 @@ operation journal 自身必须先通过状态机/CAS 测试：非法跨级转换
 
 文件系统事务链测试必须使用临时数据根，不触碰生产 `/data`：覆盖正常目录+hardlink 创建与十次幂等重放、临时 hardlink 后崩溃并安全续跑、最终 hardlink 落位后但 APPLIED 前崩溃转 `RECONCILE_REQUIRED`、目录创建后但 APPLIED 前崩溃不自动认领、逆序回滚，以及目标被外部替换时 `ROLLBACK_BLOCKED` 且替换文件不被删除。所有场景都复核源 inode/size/mtime 不变，允许 link count 只因预期 hardlink 创建/删除发生变化。
 
-qB 添加事务测试使用 fake/MockTransport，不访问真实下载器：覆盖 WebAPI 2.15.1 JSON 添加响应、multipart 中强制 paused、FULL_VERIFIED/skip-check 双层门、WebAPI 2.16 参数失效保护、5.x `stop/start/recheck` 端点、实际 `torrents/info` 二次确认、十次重放只发一次 add、响应丢失后凭 hash+save path+ownership tag 恢复、HTTP 成功但 torrent 不可见、添加前已存在同 hash 不自动认领、save path 不符进入 `RECONCILE_REQUIRED`，以及 paused 被客户端忽略时先 stop 并重新确认后才能 APPLIED。
+qB 写事务测试使用 fake/MockTransport，不访问真实下载器：覆盖 WebAPI 2.15.1 JSON 添加响应、multipart 中强制 paused、FULL_VERIFIED/skip-check 双层门、WebAPI 2.16 参数失效保护、5.x `stop/start/recheck` 端点、`torrents/info` 的 hash/save path/tag/state/严格 0..1 progress 二次确认、十次顺序与十路并发重放都只发一次 add/recheck、add 响应丢失后凭 hash+save path+ownership tag 恢复、recheck 响应丢失时仅凭 checking 或相对 before snapshot 的可证明变化恢复、状态未变化时转 `RECONCILE_REQUIRED` 而不盲目重发、HTTP 成功但 torrent 不可见、添加前已存在同 hash 不自动认领、save path 不符进入 `RECONCILE_REQUIRED`，以及 paused 被客户端忽略时先 stop 并重新确认后才能 APPLIED。
 
 LINKING 协调器额外覆盖两阶段当前性：调用前 plan provider 必须返回 latest/current/ready；真正推进任务前还要在数据库事务内重新核对 latest plan/gate/review/candidate/preflight/task version。测试必须模拟两次检查之间新增 review revision 并证明零文件副作用；还要模拟 LINKING checkpoint 已提交后 source inventory 改变，证明在首个 operation journal intent/目录/hardlink 前阻断。重复调用已进入 LINKING 的任务只能恢复 checkpoint 精确绑定的同一 plan。
 
@@ -161,6 +161,9 @@ M2 的代码能力、自动化证据与仍依赖真实语料/环境的退出项�
 - LINKING、ADDING、CLIENT_VERIFYING 故障注入后恢复正确。
 - execution plan 必须绑定明确的目标下载器 version/能力摘要/远端 save path；下载器配置、能力或路径映射变化后旧计划必须 stale，不能在 ADDING 时临时换客户端。
 - ADDING 覆盖 qB 响应丢失与“journal 已 APPLIED、task 状态尚未提交”两个崩溃点；重复执行只能收敛到同一个 qB 任务。FULL_VERIFIED 可按能力进入 SEEDING，CLIENT_CHECK_REQUIRED 必须保持 `skip_checking=false` 并进入 CLIENT_VERIFYING。
+- CLIENT_VERIFYING 必须以独立 recheck journal + 单步状态 tick 工作：校验开始后崩溃或响应丢失不得重复 recheck；只有存在 checking/完成变化证据且最终 `progress=1` 才进入 SEEDING，观察过 checking 后以 `<1` 停止则进入 RETRY；外部删除、save path/tag 变化必须失败关闭并要求对账。
+- SEEDING 必须以独立 start journal 驱动：start intent 前再次确认 source inventory、target root、下载器 binding、add journal 与可选 recheck journal；只允许停止且 `progress=1` 的本系统 torrent 启动，实际进入 `uploading`/`stalledUP`/`queuedUP`/`forcedUP` 且 `progress=1` 后才能 `SEEDING → DONE`。连续或 10 路并发触发只允许一个有效 start；start 响应丢失和“journal 已 APPLIED、task 尚未 DONE”必须无重复副作用恢复，外部停止、删除、save path/tag 漂移必须失败关闭或进入对账。
+- 启动恢复必须有界扫描 `LINKING/ADDING/CLIENT_VERIFYING/SEEDING`，按最久未更新优先；同一 stage 未变化时停止本轮，坏 checkpoint/plan 只能阻断对应任务且不能阻断后续任务或 readiness。恢复程序级异常必须让启动失败，同时释放实例锁；limit 截断不得触发未扫描任务的任何副作用。
 - 源文件在所有验收场景中内容与 inode 不变。
 - 数据库、配置导出、日志、通知和诊断包无可用明文凭证。
 - 备份、迁移、升级健康检查和失败回滚演练通过。

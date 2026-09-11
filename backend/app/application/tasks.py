@@ -706,6 +706,7 @@ class TaskAnalysisService:
                             session,
                             target_downloader_id,
                             target_path,
+                            require_client_verification=record.client_check_required,
                         )
                 except ApplicationError:
                     reasons.append("TARGET_DOWNLOADER_CHANGED")
@@ -766,6 +767,7 @@ class TaskAnalysisService:
                 session,
                 target_downloader_id,
                 resolved_target,
+                require_client_verification=gate.client_check_required,
             )
             unit = TaskUnitRepository(session).get(unit_id)
             if unit is None:
@@ -1545,6 +1547,7 @@ class TaskAnalysisService:
                 session,
                 snapshot.target_downloader_id,
                 resolved_target,
+                require_client_verification=snapshot.client_check_required,
             )
         except ApplicationError as exc:
             raise _execution_plan_input_changed() from exc
@@ -1571,6 +1574,8 @@ class TaskAnalysisService:
         session: Session,
         downloader_id: str,
         resolved_target: Path,
+        *,
+        require_client_verification: bool = False,
     ) -> _TargetDownloaderPlanBinding:
         normalized_id = downloader_id.strip()
         if not normalized_id:
@@ -1606,6 +1611,16 @@ class TaskAnalysisService:
                 status=409,
                 title="目标下载器安全门未就绪",
                 detail="目标 qBittorrent 必须已启用且连接、路径映射、凭证均保持有效",
+            )
+        if require_client_verification and (
+            record.capabilities.get("supports_force_recheck") is not True
+            or record.capabilities.get("supports_verify_progress") is not True
+        ):
+            raise ApplicationError(
+                code="EXECUTION_PLAN_TARGET_DOWNLOADER_NOT_READY",
+                status=409,
+                title="目标下载器客户端校验能力未就绪",
+                detail="CLIENT_VERIFYING 计划要求 qBittorrent 明确支持强制 recheck 与校验进度读取",
             )
         try:
             mappings = tuple(

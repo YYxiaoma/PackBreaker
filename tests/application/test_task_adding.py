@@ -4,19 +4,25 @@ import hashlib
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import NoReturn
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.app.application.downloader_operations import QbittorrentAddOperationService
+from backend.app.application.downloader_operations import (
+    QbittorrentAddOperationService,
+    QbittorrentRecheckOperationService,
+    QbittorrentStartOperationService,
+)
 from backend.app.application.downloaders import QbittorrentWriteBinding
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.task_adding import TaskAddingCoordinator
+from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
+from backend.app.application.task_recovery import RecoveryOutcome, TaskRecoveryCoordinator
+from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.domain.downloader import (
     PathMappingRule,
     ProbeStatus,
@@ -114,7 +120,13 @@ class _FakeQbittorrent:
     def __init__(self) -> None:
         self.states: dict[str, QbittorrentTorrentState] = {}
         self.add_calls = 0
+        self.recheck_calls = 0
         self.raise_after_apply_once = False
+        self.raise_after_recheck_apply_once = False
+        self.apply_on_recheck = True
+        self.start_calls = 0
+        self.raise_after_start_apply_once = False
+        self.apply_on_start = True
 
     async def add_torrent(self, request: QbittorrentAddRequest) -> QbittorrentAddResult:
         self.add_calls += 1
@@ -127,6 +139,7 @@ class _FakeQbittorrent:
             content_path=None,
             state="stoppedUP",
             tags=request.tags,
+            progress=1.0,
         )
         if self.raise_after_apply_once:
             self.raise_after_apply_once = False
@@ -142,11 +155,30 @@ class _FakeQbittorrent:
         state = self.states[torrent_hash]
         self.states[torrent_hash] = replace(state, state="stoppedDL")
 
-    async def start_torrent(self, torrent_hash: str) -> NoReturn:
-        raise AssertionError("ADDING 协调器不应启动 qB torrent")
+    async def start_torrent(self, torrent_hash: str) -> None:
+        self.start_calls += 1
+        if self.apply_on_start:
+            self.states[torrent_hash] = replace(
+                self.states[torrent_hash],
+                state="stalledUP",
+            )
+        if self.raise_after_start_apply_once:
+            self.raise_after_start_apply_once = False
+            raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "synthetic start response lost")
 
-    async def recheck_torrent(self, torrent_hash: str) -> NoReturn:
-        raise AssertionError("本切片尚不启动客户端下载器校验")
+    async def recheck_torrent(self, torrent_hash: str) -> None:
+        self.recheck_calls += 1
+        if self.apply_on_recheck:
+            self.states[torrent_hash] = replace(
+                self.states[torrent_hash],
+                state="checkingUP",
+                progress=0.0,
+            )
+        if self.raise_after_recheck_apply_once:
+            self.raise_after_recheck_apply_once = False
+            raise DownloaderAdapterError(
+                "DOWNLOADER_UNAVAILABLE", "synthetic recheck response lost"
+            )
 
 
 @dataclass
@@ -161,6 +193,8 @@ class _FakeDownloaderProvider:
 @dataclass(frozen=True, slots=True)
 class _AddingFixture:
     coordinator: TaskAddingCoordinator
+    verifier: TaskClientVerificationCoordinator
+    seeder: TaskSeedingCoordinator
     factory: sessionmaker[Session]
     data_root: Path
     source_file: Path
@@ -198,6 +232,8 @@ def adding_fixture(tmp_path: Path) -> _AddingFixture:
         "version": "v5.2.3",
         "api_version": "2.15.1",
         "supports_skip_checking": True,
+        "supports_force_recheck": True,
+        "supports_verify_progress": True,
     }
     binding_digest = downloader_execution_binding_digest(
         downloader_id=downloader_id,
@@ -393,8 +429,22 @@ def adding_fixture(tmp_path: Path) -> _AddingFixture:
         QbittorrentAddOperationService(factory),
         data_root=data_root,
     )
+    verifier = TaskClientVerificationCoordinator(
+        factory,
+        downloader_provider,
+        QbittorrentRecheckOperationService(factory),
+        data_root=data_root,
+    )
+    seeder = TaskSeedingCoordinator(
+        factory,
+        downloader_provider,
+        QbittorrentStartOperationService(factory),
+        data_root=data_root,
+    )
     return _AddingFixture(
         coordinator=coordinator,
+        verifier=verifier,
+        seeder=seeder,
         factory=factory,
         data_root=data_root,
         source_file=source_file,
@@ -577,6 +627,733 @@ async def test_crash_after_qb_applied_only_finishes_task_transition_on_replay(
     assert recovered.status is TaskStatus.SEEDING
     assert recovered.replayed is True
     assert adding_fixture.qbit.add_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_client_verifying_tracks_check_progress_then_enters_seeding(
+    adding_fixture: _AddingFixture,
+) -> None:
+    _set_verification_level(
+        adding_fixture,
+        VerificationLevel.CLIENT_CHECK_REQUIRED,
+        client_check_required=True,
+    )
+    added = await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert added.status is TaskStatus.CLIENT_VERIFYING
+
+    first = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert first.status is TaskStatus.CLIENT_VERIFYING
+    assert first.verification_outcome == "CHECKING"
+    assert first.progress == 0.0
+    assert first.checking_observed is True
+    assert adding_fixture.qbit.recheck_calls == 1
+
+    adding_fixture.qbit.states[first.torrent_hash] = replace(
+        adding_fixture.qbit.states[first.torrent_hash],
+        state="checkingUP",
+        progress=0.42,
+    )
+    progress = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert progress.status is TaskStatus.CLIENT_VERIFYING
+    assert progress.progress == 0.42
+    assert adding_fixture.qbit.recheck_calls == 1
+
+    adding_fixture.qbit.states[first.torrent_hash] = replace(
+        adding_fixture.qbit.states[first.torrent_hash],
+        state="stoppedUP",
+        progress=1.0,
+    )
+    verified = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert verified.status is TaskStatus.SEEDING
+    assert verified.verification_outcome == "VERIFIED"
+    assert verified.progress == 1.0
+    assert adding_fixture.qbit.recheck_calls == 1
+
+    add_replay = await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert add_replay.status is TaskStatus.SEEDING
+    assert add_replay.replayed is True
+    assert adding_fixture.qbit.add_calls == 1
+
+    replayed = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert replayed.status is TaskStatus.SEEDING
+    assert replayed.replayed is True
+    assert adding_fixture.qbit.recheck_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_client_verifying_never_accepts_unchanged_precheck_complete_state(
+    adding_fixture: _AddingFixture,
+) -> None:
+    _set_verification_level(
+        adding_fixture,
+        VerificationLevel.CLIENT_CHECK_REQUIRED,
+        client_check_required=True,
+    )
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    adding_fixture.qbit.apply_on_recheck = False
+
+    first = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    repeated = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+
+    assert first.status is TaskStatus.CLIENT_VERIFYING
+    assert repeated.status is TaskStatus.CLIENT_VERIFYING
+    assert repeated.verification_outcome == "AWAITING_CHECK_EVIDENCE"
+    assert repeated.checking_observed is False
+    assert adding_fixture.qbit.recheck_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_client_verifying_recheck_response_loss_recovers_without_second_recheck(
+    adding_fixture: _AddingFixture,
+) -> None:
+    _set_verification_level(
+        adding_fixture,
+        VerificationLevel.CLIENT_CHECK_REQUIRED,
+        client_check_required=True,
+    )
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    adding_fixture.qbit.raise_after_recheck_apply_once = True
+
+    with pytest.raises(ApplicationError) as lost:
+        await adding_fixture.verifier.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
+    assert lost.value.code == "DOWNLOADER_UNAVAILABLE"
+    assert adding_fixture.qbit.recheck_calls == 1
+
+    recovered = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert recovered.status is TaskStatus.CLIENT_VERIFYING
+    assert recovered.recovered_after_unknown_result is True
+    assert recovered.checking_observed is True
+    assert adding_fixture.qbit.recheck_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_client_verifying_crash_after_recheck_applied_recovers_without_second_recheck(
+    adding_fixture: _AddingFixture,
+) -> None:
+    _set_verification_level(
+        adding_fixture,
+        VerificationLevel.CLIENT_CHECK_REQUIRED,
+        client_check_required=True,
+    )
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_recheck_applied":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        await adding_fixture.verifier.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+            fault_hook=crash,
+        )
+    assert adding_fixture.qbit.recheck_calls == 1
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None
+        assert task.status == TaskStatus.CLIENT_VERIFYING.value
+        assert task.checkpoint["schema_version"] == "packbreaker-post-add-checkpoint-v1"
+        journals = list(
+            session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
+        )
+        assert len(journals) == 2
+        assert journals[1].operation_type == "QBITTORRENT_RECHECK"
+        assert journals[1].status == "APPLIED"
+
+    recovered = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert recovered.status is TaskStatus.CLIENT_VERIFYING
+    assert recovered.replayed is True
+    assert adding_fixture.qbit.recheck_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_client_verifying_incomplete_check_transitions_to_retry(
+    adding_fixture: _AddingFixture,
+) -> None:
+    _set_verification_level(
+        adding_fixture,
+        VerificationLevel.CLIENT_CHECK_REQUIRED,
+        client_check_required=True,
+    )
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    checking = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    adding_fixture.qbit.states[checking.torrent_hash] = replace(
+        adding_fixture.qbit.states[checking.torrent_hash],
+        state="stoppedDL",
+        progress=0.75,
+    )
+
+    failed = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert failed.status is TaskStatus.RETRY
+    assert failed.verification_outcome == "INCOMPLETE"
+    assert failed.progress == 0.75
+    assert adding_fixture.qbit.recheck_calls == 1
+
+    add_replay = await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert add_replay.status is TaskStatus.RETRY
+    assert add_replay.replayed is True
+    assert adding_fixture.qbit.add_calls == 1
+
+    replayed = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert replayed.status is TaskStatus.RETRY
+    assert replayed.replayed is True
+
+
+@pytest.mark.asyncio
+async def test_client_verifying_binding_change_blocks_before_recheck(
+    adding_fixture: _AddingFixture,
+) -> None:
+    _set_verification_level(
+        adding_fixture,
+        VerificationLevel.CLIENT_CHECK_REQUIRED,
+        client_check_required=True,
+    )
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    adding_fixture.downloader_provider.binding = replace(
+        adding_fixture.downloader_provider.binding,
+        binding_digest="f" * 64,
+    )
+
+    with pytest.raises(ApplicationError) as failure:
+        await adding_fixture.verifier.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
+
+    assert failure.value.code == "CLIENT_VERIFYING_BINDING_CHANGED"
+    assert adding_fixture.qbit.recheck_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_client_verifying_external_torrent_delete_marks_recheck_for_reconciliation(
+    adding_fixture: _AddingFixture,
+) -> None:
+    _set_verification_level(
+        adding_fixture,
+        VerificationLevel.CLIENT_CHECK_REQUIRED,
+        client_check_required=True,
+    )
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    checking = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    del adding_fixture.qbit.states[checking.torrent_hash]
+
+    with pytest.raises(ApplicationError) as failure:
+        await adding_fixture.verifier.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
+
+    assert failure.value.code == "DOWNLOADER_STATE_MISMATCH"
+    assert adding_fixture.qbit.recheck_calls == 1
+    with adding_fixture.factory() as session:
+        journals = list(
+            session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
+        )
+        assert journals[1].status == "RECONCILE_REQUIRED"
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None and task.status == TaskStatus.CLIENT_VERIFYING.value
+
+
+@pytest.mark.asyncio
+async def test_full_verified_seeding_start_transitions_to_done_and_replays_once(
+    adding_fixture: _AddingFixture,
+) -> None:
+    added = await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert added.status is TaskStatus.SEEDING
+
+    done = await adding_fixture.seeder.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+
+    assert done.status is TaskStatus.DONE
+    assert done.client_state == "stalledUP"
+    assert done.progress == 1.0
+    assert adding_fixture.qbit.start_calls == 1
+    replayed = await adding_fixture.seeder.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert replayed.status is TaskStatus.DONE
+    assert replayed.replayed is True
+    assert replayed.start_journal_id == done.start_journal_id
+    assert adding_fixture.qbit.start_calls == 1
+
+    add_replay = await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert add_replay.status is TaskStatus.DONE
+    assert add_replay.replayed is True
+    assert adding_fixture.qbit.add_calls == 1
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None and task.status == TaskStatus.DONE.value
+        journals = list(
+            session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
+        )
+        assert [item.operation_type for item in journals] == [
+            "QBITTORRENT_ADD",
+            "QBITTORRENT_START",
+        ]
+        assert all(item.status == "APPLIED" for item in journals)
+
+
+@pytest.mark.asyncio
+async def test_client_verified_seeding_start_preserves_recheck_chain_until_done(
+    adding_fixture: _AddingFixture,
+) -> None:
+    _set_verification_level(
+        adding_fixture,
+        VerificationLevel.CLIENT_CHECK_REQUIRED,
+        client_check_required=True,
+    )
+    added = await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert added.status is TaskStatus.CLIENT_VERIFYING
+    checking = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    adding_fixture.qbit.states[checking.torrent_hash] = replace(
+        adding_fixture.qbit.states[checking.torrent_hash],
+        state="stoppedUP",
+        progress=1.0,
+    )
+    verified = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert verified.status is TaskStatus.SEEDING
+
+    done = await adding_fixture.seeder.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+
+    assert done.status is TaskStatus.DONE
+    assert adding_fixture.qbit.recheck_calls == 1
+    assert adding_fixture.qbit.start_calls == 1
+    verifier_replay = await adding_fixture.verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert verifier_replay.status is TaskStatus.DONE
+    assert verifier_replay.replayed is True
+    assert adding_fixture.qbit.recheck_calls == 1
+    with adding_fixture.factory() as session:
+        journals = list(
+            session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
+        )
+        assert [item.operation_type for item in journals] == [
+            "QBITTORRENT_ADD",
+            "QBITTORRENT_RECHECK",
+            "QBITTORRENT_START",
+        ]
+        assert all(item.status == "APPLIED" for item in journals)
+
+
+@pytest.mark.asyncio
+async def test_seeding_start_response_loss_recovers_without_second_start(
+    adding_fixture: _AddingFixture,
+) -> None:
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    adding_fixture.qbit.raise_after_start_apply_once = True
+
+    with pytest.raises(ApplicationError) as lost:
+        await adding_fixture.seeder.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
+    assert lost.value.code == "DOWNLOADER_UNAVAILABLE"
+    assert adding_fixture.qbit.start_calls == 1
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None and task.status == TaskStatus.SEEDING.value
+        journals = list(
+            session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
+        )
+        assert journals[-1].operation_type == "QBITTORRENT_START"
+        assert journals[-1].status == "INTENT_RECORDED"
+
+    recovered = await adding_fixture.seeder.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert recovered.status is TaskStatus.DONE
+    assert recovered.recovered_after_unknown_result is True
+    assert adding_fixture.qbit.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_seeding_crash_after_start_applied_only_finishes_task_on_replay(
+    adding_fixture: _AddingFixture,
+) -> None:
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_start_applied":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        await adding_fixture.seeder.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+            fault_hook=crash,
+        )
+    assert adding_fixture.qbit.start_calls == 1
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None and task.status == TaskStatus.SEEDING.value
+        journals = list(
+            session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
+        )
+        assert journals[-1].operation_type == "QBITTORRENT_START"
+        assert journals[-1].status == "APPLIED"
+
+    recovered = await adding_fixture.seeder.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert recovered.status is TaskStatus.DONE
+    assert recovered.replayed is True
+    assert adding_fixture.qbit.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_seeding_rejects_incomplete_torrent_before_start(
+    adding_fixture: _AddingFixture,
+) -> None:
+    added = await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    adding_fixture.qbit.states[added.torrent_hash] = replace(
+        adding_fixture.qbit.states[added.torrent_hash],
+        state="stoppedDL",
+        progress=0.99,
+    )
+
+    with pytest.raises(ApplicationError) as failure:
+        await adding_fixture.seeder.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
+
+    assert failure.value.code == "DOWNLOADER_START_STATE_INVALID"
+    assert adding_fixture.qbit.start_calls == 0
+    with adding_fixture.factory() as session:
+        assert session.scalar(select(func.count()).select_from(OperationJournal)) == 1
+
+
+@pytest.mark.asyncio
+async def test_seeding_binding_change_blocks_before_start(
+    adding_fixture: _AddingFixture,
+) -> None:
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    adding_fixture.downloader_provider.binding = replace(
+        adding_fixture.downloader_provider.binding,
+        binding_digest="f" * 64,
+    )
+
+    with pytest.raises(ApplicationError) as failure:
+        await adding_fixture.seeder.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
+
+    assert failure.value.code == "SEEDING_BINDING_CHANGED"
+    assert adding_fixture.qbit.start_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_seeding_source_change_blocks_before_start_intent(
+    adding_fixture: _AddingFixture,
+) -> None:
+    await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    (adding_fixture.source_file.parent / "late-change.nfo").write_text("changed")
+
+    with pytest.raises(ApplicationError) as failure:
+        await adding_fixture.seeder.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
+
+    assert failure.value.code == "SEEDING_SOURCE_CHANGED"
+    assert adding_fixture.qbit.start_calls == 0
+    with adding_fixture.factory() as session:
+        assert session.scalar(select(func.count()).select_from(OperationJournal)) == 1
+
+
+def _recovery_coordinator(fixture: _AddingFixture) -> TaskRecoveryCoordinator:
+    class _LinkingMustNotRun:
+        def execute(self, unit_id: str, *, execution_plan_id: str) -> object:
+            raise AssertionError("ADDING 起始夹具不应回退到 LINKING")
+
+    return TaskRecoveryCoordinator(
+        fixture.factory,
+        _LinkingMustNotRun(),
+        fixture.coordinator,
+        fixture.verifier,
+        fixture.seeder,
+    )
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_full_verified_converges_adding_to_done(
+    adding_fixture: _AddingFixture,
+) -> None:
+    report = await _recovery_coordinator(adding_fixture).reconcile_once()
+
+    assert report.scanned_count == 1
+    assert report.completed_count == 1
+    assert report.waiting_count == 0
+    assert report.blocked_count == 0
+    assert report.truncated is False
+    item = report.items[0]
+    assert item.initial_status is TaskStatus.ADDING
+    assert item.final_status is TaskStatus.DONE
+    assert item.outcome is RecoveryOutcome.COMPLETED
+    assert item.steps == (TaskStatus.ADDING, TaskStatus.SEEDING)
+    assert adding_fixture.qbit.add_calls == 1
+    assert adding_fixture.qbit.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_client_check_waits_then_finishes_on_next_tick(
+    adding_fixture: _AddingFixture,
+) -> None:
+    _set_verification_level(
+        adding_fixture,
+        VerificationLevel.CLIENT_CHECK_REQUIRED,
+        client_check_required=True,
+    )
+    recovery = _recovery_coordinator(adding_fixture)
+
+    first = await recovery.reconcile_once()
+    assert first.items[0].initial_status is TaskStatus.ADDING
+    assert first.items[0].final_status is TaskStatus.CLIENT_VERIFYING
+    assert first.items[0].outcome is RecoveryOutcome.WAITING
+    assert first.items[0].steps == (TaskStatus.ADDING, TaskStatus.CLIENT_VERIFYING)
+    assert adding_fixture.qbit.add_calls == 1
+    assert adding_fixture.qbit.recheck_calls == 1
+    assert adding_fixture.qbit.start_calls == 0
+
+    actual_hash = next(iter(adding_fixture.qbit.states))
+    adding_fixture.qbit.states[actual_hash] = replace(
+        adding_fixture.qbit.states[actual_hash],
+        state="stoppedUP",
+        progress=1.0,
+    )
+
+    second = await recovery.reconcile_once()
+    assert second.items[0].initial_status is TaskStatus.CLIENT_VERIFYING
+    assert second.items[0].final_status is TaskStatus.DONE
+    assert second.items[0].outcome is RecoveryOutcome.COMPLETED
+    assert second.items[0].steps == (TaskStatus.CLIENT_VERIFYING, TaskStatus.SEEDING)
+    assert adding_fixture.qbit.recheck_calls == 1
+    assert adding_fixture.qbit.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_bad_plan_digest_is_blocked_without_side_effect(
+    adding_fixture: _AddingFixture,
+) -> None:
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None
+        task.checkpoint = {**task.checkpoint, "execution_plan_digest": "f" * 64}
+        session.commit()
+
+    report = await _recovery_coordinator(adding_fixture).reconcile_once()
+
+    assert report.blocked_count == 1
+    assert report.items[0].outcome is RecoveryOutcome.BLOCKED
+    assert report.items[0].error_code == "RECOVERY_PLAN_MISMATCH"
+    assert report.items[0].final_status is TaskStatus.ADDING
+    assert adding_fixture.qbit.add_calls == 0
+    assert adding_fixture.qbit.recheck_calls == 0
+    assert adding_fixture.qbit.start_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_step_limit_is_bounded(adding_fixture: _AddingFixture) -> None:
+    item = await _recovery_coordinator(adding_fixture).reconcile_task(
+        adding_fixture.task_id,
+        max_steps=1,
+    )
+
+    assert item.initial_status is TaskStatus.ADDING
+    assert item.final_status is TaskStatus.SEEDING
+    assert item.outcome is RecoveryOutcome.WAITING
+    assert item.steps == (TaskStatus.ADDING,)
+    assert adding_fixture.qbit.add_calls == 1
+    assert adding_fixture.qbit.start_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_blocked_task_does_not_prevent_later_task(
+    adding_fixture: _AddingFixture,
+) -> None:
+    blocked_task_id = new_uuid()
+    with adding_fixture.factory() as session:
+        old = utc_now() - timedelta(days=1)
+        session.add(
+            UnpackTask(
+                id=blocked_task_id,
+                type="PACKAGE_UNPACK",
+                source_downloader_id="source-downloader",
+                source_hash="blocked-source",
+                normalized_unit_key="blocked-unit",
+                idempotency_key="f" * 64,
+                status=TaskStatus.ADDING.value,
+                trace_id=new_uuid(),
+                checkpoint={
+                    "execution_plan_id": "missing-plan",
+                    "execution_plan_digest": "e" * 64,
+                },
+                error_code=None,
+                version=1,
+                created_at=old,
+                updated_at=old,
+            )
+        )
+        session.commit()
+
+    report = await _recovery_coordinator(adding_fixture).reconcile_once()
+
+    assert report.scanned_count == 2
+    assert report.blocked_count == 1
+    assert report.completed_count == 1
+    assert report.items[0].task_id == blocked_task_id
+    assert report.items[0].outcome is RecoveryOutcome.BLOCKED
+    assert report.items[0].error_code == "RECOVERY_PLAN_MISMATCH"
+    assert report.items[1].task_id == adding_fixture.task_id
+    assert report.items[1].outcome is RecoveryOutcome.COMPLETED
+    assert adding_fixture.qbit.add_calls == 1
+    assert adding_fixture.qbit.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_limit_reports_truncation_without_touching_later_task(
+    adding_fixture: _AddingFixture,
+) -> None:
+    blocked_task_id = new_uuid()
+    with adding_fixture.factory() as session:
+        old = utc_now() - timedelta(days=1)
+        session.add(
+            UnpackTask(
+                id=blocked_task_id,
+                type="PACKAGE_UNPACK",
+                source_downloader_id="source-downloader",
+                source_hash="blocked-source",
+                normalized_unit_key="blocked-unit",
+                idempotency_key="e" * 64,
+                status=TaskStatus.ADDING.value,
+                trace_id=new_uuid(),
+                checkpoint={
+                    "execution_plan_id": "missing-plan",
+                    "execution_plan_digest": "d" * 64,
+                },
+                error_code=None,
+                version=1,
+                created_at=old,
+                updated_at=old,
+            )
+        )
+        session.commit()
+
+    report = await _recovery_coordinator(adding_fixture).reconcile_once(limit=1)
+
+    assert report.scanned_count == 1
+    assert report.truncated is True
+    assert report.items[0].task_id == blocked_task_id
+    assert report.items[0].outcome is RecoveryOutcome.BLOCKED
+    assert adding_fixture.qbit.add_calls == 0
+    assert adding_fixture.qbit.start_calls == 0
 
 
 def _set_verification_level(

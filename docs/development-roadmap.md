@@ -93,13 +93,13 @@ flowchart LR
 
 任务执行协调器现已把这条文件系统事务链接到持久化 execution plan：首次执行必须重新读取 latest/current/ready plan，并在同一数据库提交点再次核对 task、latest gate、latest review、candidate、preflight 与 source inventory 绑定，然后以 task version CAS 将 `AWAITING_CONFIRMATION` 推进到 `LINKING`，同时写入 plan/gate 与目标下载器绑定检查点。全部目录/hardlink journal 动作完成后再以 task version CAS 推进到 `ADDING`，把文件 journal ID、target downloader ID/version/binding digest 与远端 save path 一并固化；若状态提交后响应丢失，重复 LINKING 只读取 ADDING checkpoint，不再创建资源。
 
-qBittorrent 写侧现已落地 5.2.3/WebAPI 2.15.1 内部主链切片：execution plan v2 显式冻结 target downloader ID/version、非秘密能力与路径映射 digest、以及 target root 对应的 qB save path；下载器变化会使计划失效。`QbittorrentAddOperationService` 使用 operation journal + ownership tag 处理暂停添加、重复调用与响应丢失；`TaskAddingCoordinator` 在每次 qB 写入前再次核对 latest plan/gate/review/candidate、source inventory、target root device、目标 qB binding 与重新获取的 torrent metainfo。FULL_VERIFIED 且目标能力允许时才启用 skip-check 并进入 `SEEDING`；其余可执行计划进入 `CLIENT_VERIFYING`。qB journal 已 APPLIED 但任务状态提交前崩溃时，重放只完成状态 CAS，不会二次添加。该主链仍无公开执行 HTTP 入口；CLIENT_VERIFYING 的实际 recheck/progress 与取消/回滚/启动对账仍待后续切片。
+qBittorrent 写侧现已落地 5.2.3/WebAPI 2.15.1 内部主链切片：execution plan v2 显式冻结 target downloader ID/version、非秘密能力与路径映射 digest、以及 target root 对应的 qB save path；需要客户端校验的计划还要求能力快照明确支持 force recheck 与 verify progress。`QbittorrentAddOperationService` 使用 operation journal + ownership tag 处理暂停添加、重复调用与响应丢失；`TaskAddingCoordinator` 在每次 qB 写入前再次核对 latest plan/gate/review/candidate、source inventory、target root device、目标 qB binding 与重新获取的 torrent metainfo。FULL_VERIFIED 且目标能力允许时才启用 skip-check 并进入 `SEEDING`；其余可执行计划进入 `CLIENT_VERIFYING`。`QbittorrentRecheckOperationService` 以独立 journal 包围强制 recheck，响应丢失时只在真实 checking/状态变化能证明命令已执行时恢复，否则转 `RECONCILE_REQUIRED`，绝不盲目重复 recheck；add/recheck 同时按 operation key 串行，10 路并发也只允许一个外部写动作。`TaskClientVerificationCoordinator` 以单步 tick 查询真实 `torrents/info`，保存 checking/progress 恢复证据；只有观察过 checking 或相对 recheck 前快照存在可证明完成变化，并最终处于 stopped-upload + progress=1，才进入 `SEEDING`；观察过 checking 后以 stopped-download + progress<1 结束则进入 `RETRY`。`QbittorrentStartOperationService` 再以独立 journal 包围 start，只允许 PackBreaker 所有、save path/tag 匹配、停止且 progress=1 的 torrent 启动；响应丢失后优先按真实上行状态恢复，仍停止且完整时才允许安全重试，同一 operation key 的并发调用只会产生一个外部 start。`TaskSeedingCoordinator` 在 start intent 前再次复核 source inventory、target root 与目标 qB binding，并仅在 `uploading`/`stalledUP`/`queuedUP`/`forcedUP` 且 progress=1 的实际上行状态确认后将 `SEEDING → DONE`。`TaskRecoveryCoordinator` 已接入 FastAPI lifespan，在持有单实例锁后按最久未更新优先有界扫描 `LINKING/ADDING/CLIENT_VERIFYING/SEEDING`，每个任务最多推进固定 stage 数并复用原 coordinator 的幂等恢复语义；CLIENT_VERIFYING 若一次 tick 后仍在 checking 则停止本轮，单任务安全阻断不会拖垮 readiness，未分类程序异常会终止启动并先释放 runtime 锁。该主链仍无公开执行 HTTP 入口；取消/回滚、周期性活动任务驱动与最终公开执行入口仍待后续切片。
 
 ### 退出条件
 
 - qB 使用合成与真实语料端到端完成，非 FULL_VERIFIED 从未跳过校验。
 - 相同触发 10 次只生成一套资源和一个 qB 任务。
-- LINKING、ADDING、CLIENT_VERIFYING 故障注入后正确收敛。
+- LINKING、ADDING、CLIENT_VERIFYING、SEEDING 与启动恢复故障注入后正确收敛。
 - 所有测试场景源文件 hash、inode、size、mtime 保持不变。
 
 ## 6. M4：Transmission、站点可靠性与修复

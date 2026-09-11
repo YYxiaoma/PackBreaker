@@ -4,7 +4,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 
+from backend.app.application.task_recovery import TaskRecoveryCoordinator
 from backend.app.config import AppSettings
+from backend.app.domain.task_state import TaskStatus
+from backend.app.infrastructure.persistence.models import UnpackTask, new_uuid, utc_now
 from backend.app.infrastructure.runtime import InstanceLockUnavailable, RuntimeManager
 from backend.app.main import create_app
 
@@ -64,6 +67,7 @@ def test_ready_endpoint_is_healthy_inside_lifespan(tmp_path: Path) -> None:
 
     with TestClient(app) as client:
         response = client.get("/api/v1/health/ready")
+        recovery_report = app.state.task_recovery_report
 
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
@@ -73,4 +77,68 @@ def test_ready_endpoint_is_healthy_inside_lifespan(tmp_path: Path) -> None:
         "secrets": "ok",
         "worker_slot": "ok",
     }
+    assert recovery_report.scanned_count == 0
+    assert recovery_report.blocked_count == 0
+    assert recovery_report.truncated is False
     assert not app.state.runtime.started
+
+
+def test_startup_recovery_blocked_task_does_not_fail_readiness(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    runtime = RuntimeManager(settings)
+    runtime.start()
+    try:
+        now = utc_now()
+        with runtime.session_factory() as session:
+            session.add(
+                UnpackTask(
+                    id=new_uuid(),
+                    type="PACKAGE_UNPACK",
+                    source_downloader_id="source-downloader",
+                    source_hash="blocked-source",
+                    normalized_unit_key="blocked-unit",
+                    idempotency_key="b" * 64,
+                    status=TaskStatus.ADDING.value,
+                    trace_id=new_uuid(),
+                    checkpoint={
+                        "execution_plan_id": "missing-plan",
+                        "execution_plan_digest": "c" * 64,
+                    },
+                    error_code=None,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.commit()
+    finally:
+        runtime.stop()
+
+    app = create_app(settings=settings)
+    with TestClient(app) as client:
+        response = client.get("/api/v1/health/ready")
+        report = app.state.task_recovery_report
+
+    assert response.status_code == 200
+    assert report.scanned_count == 1
+    assert report.blocked_count == 1
+    assert report.items[0].error_code == "RECOVERY_PLAN_MISMATCH"
+
+
+def test_startup_recovery_unexpected_error_releases_runtime_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+
+    async def fail_recovery(self: TaskRecoveryCoordinator) -> object:
+        raise RuntimeError("synthetic recovery bug")
+
+    monkeypatch.setattr(TaskRecoveryCoordinator, "reconcile_once", fail_recovery)
+    app = create_app(settings=settings)
+    with pytest.raises(RuntimeError, match="synthetic recovery bug"), TestClient(app):
+        pass
+
+    probe = RuntimeManager(settings)
+    probe.start()
+    probe.stop()

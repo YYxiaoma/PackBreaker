@@ -18,14 +18,21 @@ from backend.app.api.system import router as system_router
 from backend.app.api.tasks import router as task_router
 from backend.app.application.auth import AuthService
 from backend.app.application.automation_access import ApiTokenService
-from backend.app.application.downloader_operations import QbittorrentAddOperationService
+from backend.app.application.downloader_operations import (
+    QbittorrentAddOperationService,
+    QbittorrentRecheckOperationService,
+    QbittorrentStartOperationService,
+)
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import FilesystemOperationService
 from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
 from backend.app.application.task_adding import TaskAddingCoordinator
+from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
 from backend.app.application.task_linking import TaskLinkingCoordinator
+from backend.app.application.task_recovery import TaskRecoveryCoordinator
+from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.config import AppSettings
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
@@ -33,6 +40,7 @@ from backend.app.infrastructure.runtime import RuntimeManager
 from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 
 _request_logger = logging.getLogger("packbreaker.http")
+_recovery_logger = logging.getLogger("packbreaker.recovery")
 
 
 def _trace_id(value: str | None) -> UUID:
@@ -96,6 +104,12 @@ def create_app(
         app.state.downloader_service = downloader_service
         qbit_operations = QbittorrentAddOperationService(resolved_runtime.session_factory)
         app.state.qbittorrent_add_operation_service = qbit_operations
+        qbit_recheck_operations = QbittorrentRecheckOperationService(
+            resolved_runtime.session_factory
+        )
+        app.state.qbittorrent_recheck_operation_service = qbit_recheck_operations
+        qbit_start_operations = QbittorrentStartOperationService(resolved_runtime.session_factory)
+        app.state.qbittorrent_start_operation_service = qbit_start_operations
         site_service = SiteService(resolved_runtime.session_factory, secret_store)
         app.state.site_service = site_service
         task_analysis_service = TaskAnalysisService(
@@ -109,19 +123,64 @@ def create_app(
             SafeFilesystemGateway(resolved_settings.data_dir),
         )
         app.state.filesystem_operation_service = filesystem_operations
-        app.state.task_linking_coordinator = TaskLinkingCoordinator(
+        task_linking_coordinator = TaskLinkingCoordinator(
             resolved_runtime.session_factory,
             task_analysis_service,
             filesystem_operations,
             data_root=resolved_settings.data_dir,
         )
-        app.state.task_adding_coordinator = TaskAddingCoordinator(
+        app.state.task_linking_coordinator = task_linking_coordinator
+        task_adding_coordinator = TaskAddingCoordinator(
             resolved_runtime.session_factory,
             site_service,
             downloader_service,
             qbit_operations,
             data_root=resolved_settings.data_dir,
         )
+        app.state.task_adding_coordinator = task_adding_coordinator
+        task_client_verification_coordinator = TaskClientVerificationCoordinator(
+            resolved_runtime.session_factory,
+            downloader_service,
+            qbit_recheck_operations,
+            data_root=resolved_settings.data_dir,
+        )
+        app.state.task_client_verification_coordinator = task_client_verification_coordinator
+        task_seeding_coordinator = TaskSeedingCoordinator(
+            resolved_runtime.session_factory,
+            downloader_service,
+            qbit_start_operations,
+            data_root=resolved_settings.data_dir,
+        )
+        app.state.task_seeding_coordinator = task_seeding_coordinator
+        task_recovery_coordinator = TaskRecoveryCoordinator(
+            resolved_runtime.session_factory,
+            task_linking_coordinator,
+            task_adding_coordinator,
+            task_client_verification_coordinator,
+            task_seeding_coordinator,
+        )
+        app.state.task_recovery_coordinator = task_recovery_coordinator
+        try:
+            recovery_report = await task_recovery_coordinator.reconcile_once()
+        except BaseException:
+            resolved_runtime.stop()
+            raise
+        app.state.task_recovery_report = recovery_report
+        if recovery_report.blocked_count:
+            _recovery_logger.warning(
+                "startup recovery blocked tasks=%s scanned=%s truncated=%s",
+                recovery_report.blocked_count,
+                recovery_report.scanned_count,
+                recovery_report.truncated,
+            )
+        elif recovery_report.scanned_count:
+            _recovery_logger.info(
+                "startup recovery scanned=%s completed=%s waiting=%s truncated=%s",
+                recovery_report.scanned_count,
+                recovery_report.completed_count,
+                recovery_report.waiting_count,
+                recovery_report.truncated,
+            )
         try:
             yield
         finally:

@@ -44,6 +44,8 @@ async def test_qbittorrent_probe_logs_in_and_reads_versions() -> None:
     assert result.capabilities.version == "v5.2.1"
     assert result.capabilities.api_version == "2.15.1"
     assert result.capabilities.supports_skip_checking is True
+    assert result.capabilities.supports_force_recheck is True
+    assert result.capabilities.supports_verify_progress is True
 
 
 @pytest.mark.asyncio
@@ -106,6 +108,8 @@ async def test_transmission_probe_performs_session_id_handshake() -> None:
     assert result.capabilities.version == "4.1.0"
     assert result.capabilities.api_version == "6.0.0"
     assert result.capabilities.supports_skip_checking is False
+    assert result.capabilities.supports_force_recheck is False
+    assert result.capabilities.supports_verify_progress is False
 
 
 @pytest.mark.asyncio
@@ -166,6 +170,7 @@ async def test_qbittorrent_5215_add_uses_paused_multipart_and_reads_actual_state
                         "content_path": "/downloads/seed/movie.mkv",
                         "state": "stoppedUP",
                         "tags": "packbreaker-test,media",
+                        "progress": 1.0,
                     }
                 ],
             )
@@ -190,8 +195,42 @@ async def test_qbittorrent_5215_add_uses_paused_multipart_and_reads_actual_state
     assert result.added_torrent_ids == (torrent_hash,)
     assert states[0].save_path == "/downloads/seed"
     assert states[0].stopped is True
+    assert states[0].progress == 1.0
+    assert states[0].verification_complete is True
     assert states[0].tags == ("packbreaker-test", "media")
     assert seen_paths.count("/api/v2/torrents/add") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress", [None, -0.01, 1.01, True, "1.0"])
+async def test_qbittorrent_info_rejects_invalid_progress(progress: object) -> None:
+    torrent_hash = "c" * 40
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path.endswith("/torrents/info")
+        return httpx2.Response(
+            200,
+            json=[
+                {
+                    "hash": torrent_hash,
+                    "save_path": "/downloads/seed",
+                    "content_path": None,
+                    "state": "checkingUP",
+                    "tags": "packbreaker-test",
+                    "progress": progress,
+                }
+            ],
+        )
+
+    adapter = QbittorrentAdapter(
+        "http://qb.invalid",
+        DownloaderCredential(api_key="qbt_synthetic_key"),
+        transport=httpx2.MockTransport(handler),
+    )
+    with pytest.raises(DownloaderAdapterError) as failure:
+        await adapter.get_torrents((torrent_hash,))
+
+    assert failure.value.code == "DOWNLOADER_INVALID_RESPONSE"
 
 
 @pytest.mark.asyncio

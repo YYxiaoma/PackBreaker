@@ -20,6 +20,10 @@ _MAX_TORRENT_UPLOAD_BYTES = 20 * 1024 * 1024
 _QBITTORRENT_JSON_ADD_API_MIN = (2, 14, 0)
 _QBITTORRENT_SKIP_CHECKING_REMOVED = (2, 16, 0)
 _STOPPED_STATES = frozenset({"stoppedDL", "stoppedUP", "pausedDL", "pausedUP"})
+_CHECKING_STATES = frozenset({"checkingDL", "checkingUP"})
+_STOPPED_UPLOAD_STATES = frozenset({"stoppedUP", "pausedUP"})
+_STOPPED_DOWNLOAD_STATES = frozenset({"stoppedDL", "pausedDL"})
+_SEEDING_STATES = frozenset({"uploading", "stalledUP", "queuedUP", "forcedUP"})
 
 
 class DownloaderAdapterError(RuntimeError):
@@ -77,10 +81,35 @@ class QbittorrentTorrentState:
     content_path: str | None
     state: str
     tags: tuple[str, ...]
+    progress: float
+
+    def __post_init__(self) -> None:
+        if isinstance(self.progress, bool) or not isinstance(self.progress, (int, float)):
+            raise ValueError("qBittorrent progress 必须是 0..1 数值")
+        normalized = float(self.progress)
+        if not 0.0 <= normalized <= 1.0:
+            raise ValueError("qBittorrent progress 必须位于 0..1")
+        object.__setattr__(self, "progress", normalized)
 
     @property
     def stopped(self) -> bool:
         return self.state in _STOPPED_STATES
+
+    @property
+    def checking(self) -> bool:
+        return self.state in _CHECKING_STATES
+
+    @property
+    def verification_complete(self) -> bool:
+        return self.state in _STOPPED_UPLOAD_STATES and self.progress == 1.0
+
+    @property
+    def verification_incomplete(self) -> bool:
+        return self.state in _STOPPED_DOWNLOAD_STATES and self.progress < 1.0
+
+    @property
+    def seeding(self) -> bool:
+        return self.state in _SEEDING_STATES and self.progress == 1.0
 
 
 class QbittorrentWriteAdapter(Protocol):
@@ -148,6 +177,8 @@ class QbittorrentAdapter:
                 version=version,
                 api_version=webapi_version,
                 supports_skip_checking=(parsed_webapi_version < _QBITTORRENT_SKIP_CHECKING_REMOVED),
+                supports_force_recheck=True,
+                supports_verify_progress=True,
             )
         )
 
@@ -241,12 +272,16 @@ class QbittorrentAdapter:
                 state = raw.get("state")
                 content_path = raw.get("content_path")
                 tags = raw.get("tags", "")
+                progress = raw.get("progress")
                 if (
                     not isinstance(torrent_hash, str)
                     or not isinstance(save_path, str)
                     or not isinstance(state, str)
                     or (content_path is not None and not isinstance(content_path, str))
                     or not isinstance(tags, str)
+                    or isinstance(progress, bool)
+                    or not isinstance(progress, (int, float))
+                    or not 0.0 <= float(progress) <= 1.0
                 ):
                     raise DownloaderAdapterError(
                         "DOWNLOADER_INVALID_RESPONSE", "qBittorrent torrent 状态字段无效"
@@ -264,6 +299,7 @@ class QbittorrentAdapter:
                         content_path=content_path,
                         state=state,
                         tags=tuple(tag.strip() for tag in tags.split(",") if tag.strip()),
+                        progress=float(progress),
                     )
                 )
             return tuple(states)

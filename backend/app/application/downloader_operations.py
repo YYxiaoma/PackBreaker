@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Protocol
+from weakref import WeakValueDictionary
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -28,6 +30,11 @@ from backend.app.infrastructure.torrent_parser import parse_torrent
 
 QBITTORRENT_ADD_OPERATION = "QBITTORRENT_ADD"
 QBITTORRENT_OPERATION_SCHEMA_VERSION = "packbreaker-qbittorrent-operation-v1"
+QBITTORRENT_RECHECK_OPERATION = "QBITTORRENT_RECHECK"
+QBITTORRENT_RECHECK_SCHEMA_VERSION = "packbreaker-qbittorrent-recheck-v1"
+QBITTORRENT_START_OPERATION = "QBITTORRENT_START"
+QBITTORRENT_START_SCHEMA_VERSION = "packbreaker-qbittorrent-start-v1"
+_OPERATION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +62,63 @@ class QbittorrentAddOperationResult:
     state: str
     ownership_tag: str
     skip_checking: bool
+    replayed: bool
+    recovered_after_unknown_result: bool
+
+
+@dataclass(frozen=True, slots=True)
+class QbittorrentRecheckOperationRequest:
+    task_id: str
+    candidate_key: str
+    downloader_id: str
+    downloader_version: int
+    execution_plan_id: str
+    qbit_add_journal_id: str
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+
+
+@dataclass(frozen=True, slots=True)
+class QbittorrentRecheckOperationResult:
+    journal_id: str
+    torrent_hash: str
+    save_path: str
+    state: str
+    progress: float
+    ownership_tag: str
+    checking: bool
+    verification_complete: bool
+    verification_incomplete: bool
+    checking_observed: bool
+    completion_proven: bool
+    replayed: bool
+    recovered_after_unknown_result: bool
+
+
+@dataclass(frozen=True, slots=True)
+class QbittorrentStartOperationRequest:
+    task_id: str
+    candidate_key: str
+    downloader_id: str
+    downloader_version: int
+    execution_plan_id: str
+    qbit_add_journal_id: str
+    verification_journal_id: str | None
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+
+
+@dataclass(frozen=True, slots=True)
+class QbittorrentStartOperationResult:
+    journal_id: str
+    torrent_hash: str
+    save_path: str
+    state: str
+    progress: float
+    ownership_tag: str
+    seeding: bool
     replayed: bool
     recovered_after_unknown_result: bool
 
@@ -114,8 +178,17 @@ class QbittorrentAddOperationService:
                 title="qBittorrent 跳过校验被阻断",
                 detail="当前下载器能力快照未声明支持 skip_checking",
             )
-        adapter = binding.adapter
         prepared = self._prepare(request)
+        async with _operation_lock(prepared.operation_key):
+            return await self._execute_prepared(prepared, binding)
+
+    async def _execute_prepared(
+        self,
+        prepared: _PreparedAdd,
+        binding: QbittorrentWriteBindingPort,
+    ) -> QbittorrentAddOperationResult:
+        request = prepared.request
+        adapter = binding.adapter
         existing = self._load_by_key(prepared.operation_key)
         if existing is not None:
             self._assert_same_intent(existing, prepared)
@@ -435,6 +508,409 @@ class QbittorrentAddOperationService:
         )
 
 
+class QbittorrentRecheckOperationService:
+    """以独立 journal 包围强制 recheck；未知结果绝不盲目重复发起昂贵校验。"""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    async def execute(
+        self,
+        request: QbittorrentRecheckOperationRequest,
+        binding: QbittorrentWriteBindingPort,
+    ) -> QbittorrentRecheckOperationResult:
+        if (
+            binding.downloader_id != request.downloader_id
+            or binding.downloader_version != request.downloader_version
+        ):
+            raise ApplicationError(
+                code="DOWNLOADER_CONFIG_CHANGED",
+                status=409,
+                title="qBittorrent 配置已经变化",
+                detail="recheck intent 必须绑定同一个下载器 ID 与配置版本",
+            )
+        if (
+            binding.capabilities.get("supports_force_recheck") is not True
+            or binding.capabilities.get("supports_verify_progress") is not True
+        ):
+            raise ApplicationError(
+                code="DOWNLOADER_RECHECK_UNSUPPORTED",
+                status=409,
+                title="qBittorrent 客户端校验能力不可用",
+                detail="强制 recheck 与校验进度能力必须同时经过探测确认",
+            )
+
+        prepared = _prepare_recheck(request)
+        async with _operation_lock(prepared.operation_key):
+            return await self._execute_prepared(prepared, binding)
+
+    async def _execute_prepared(
+        self,
+        prepared: _PreparedRecheck,
+        binding: QbittorrentWriteBindingPort,
+    ) -> QbittorrentRecheckOperationResult:
+        adapter = binding.adapter
+        existing = self._load_by_key(prepared.operation_key)
+        if existing is not None:
+            _assert_same_recheck_intent(existing, prepared)
+            if existing.status is OperationStatus.APPLIED:
+                state = await self._owned_state(adapter, prepared, reconcile_journal_id=existing.id)
+                return _recheck_result(
+                    existing,
+                    state,
+                    prepared,
+                    replayed=True,
+                    recovered=False,
+                )
+            if existing.status is not OperationStatus.INTENT_RECORDED:
+                raise _journal_not_executable(existing)
+
+            state = await self._owned_state(adapter, prepared, reconcile_journal_id=existing.id)
+            if _recheck_unknown_result_proves_applied(existing, state):
+                applied = self._transition(
+                    existing.id,
+                    OperationStatus.INTENT_RECORDED,
+                    OperationStatus.APPLIED,
+                    after_snapshot=_state_snapshot(state, prepared.ownership_tag),
+                )
+                return _recheck_result(
+                    applied,
+                    state,
+                    prepared,
+                    replayed=True,
+                    recovered=True,
+                )
+            self._mark_reconcile(existing.id)
+            raise ApplicationError(
+                code="DOWNLOADER_RECHECK_RESULT_UNKNOWN",
+                status=409,
+                title="qBittorrent recheck 结果无法判定",
+                detail="recheck 响应丢失且当前状态不能证明命令已执行，禁止自动重复发起校验",
+            )
+
+        before = await self._owned_state(adapter, prepared, reconcile_journal_id=None)
+        if not before.stopped:
+            raise ApplicationError(
+                code="DOWNLOADER_RECHECK_STATE_INVALID",
+                status=409,
+                title="qBittorrent 状态不允许启动 recheck",
+                detail="新的强制校验只能从 PackBreaker 所有且处于停止状态的 torrent 发起",
+            )
+        journal = self._record_intent(prepared, before)
+        try:
+            await adapter.recheck_torrent(prepared.torrent_hash)
+        except DownloaderAdapterError as exc:
+            raise _adapter_application_error(exc, "qBittorrent recheck 结果未知") from exc
+
+        after = await self._owned_state(adapter, prepared, reconcile_journal_id=journal.id)
+        applied = self._transition(
+            journal.id,
+            OperationStatus.INTENT_RECORDED,
+            OperationStatus.APPLIED,
+            after_snapshot=_state_snapshot(after, prepared.ownership_tag),
+        )
+        return _recheck_result(applied, after, prepared, replayed=False, recovered=False)
+
+    async def _owned_state(
+        self,
+        adapter: QbittorrentWriteAdapter,
+        prepared: _PreparedRecheck,
+        *,
+        reconcile_journal_id: str | None,
+    ) -> QbittorrentTorrentState:
+        try:
+            observed = await adapter.get_torrents((prepared.torrent_hash,))
+        except DownloaderAdapterError as exc:
+            raise _adapter_application_error(exc, "无法确认 qBittorrent recheck 状态") from exc
+        matching = tuple(
+            state
+            for state in observed
+            if state.torrent_hash == prepared.torrent_hash
+            and state.save_path == prepared.remote_save_path
+            and prepared.ownership_tag in state.tags
+        )
+        if len(observed) != 1 or len(matching) != 1:
+            if reconcile_journal_id is not None:
+                self._mark_reconcile(reconcile_journal_id)
+            raise _state_mismatch(
+                "recheck torrent 的 hash、save path、ownership tag 或存在性不匹配"
+            )
+        return matching[0]
+
+    def _record_intent(
+        self,
+        prepared: _PreparedRecheck,
+        before: QbittorrentTorrentState,
+    ) -> _JournalView:
+        request = prepared.request
+        intent = OperationIntent(
+            task_id=request.task_id,
+            idempotency_key=prepared.operation_key,
+            operation_type=QBITTORRENT_RECHECK_OPERATION,
+            target={
+                "downloader_id": request.downloader_id,
+                "torrent_hash": prepared.torrent_hash,
+            },
+            intent=_recheck_intent_payload(prepared),
+            before_snapshot=_state_snapshot(before, prepared.ownership_tag),
+        )
+        with self._session_factory() as session:
+            journal, _ = OperationJournalRepository(session).record_intent(intent)
+            session.commit()
+            return _journal_view(journal)
+
+    def _load_by_key(self, key: str) -> _JournalView | None:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).get_by_idempotency_key(key)
+            return None if journal is None else _journal_view(journal)
+
+    def _transition(
+        self,
+        journal_id: str,
+        expected_status: OperationStatus,
+        to_status: OperationStatus,
+        *,
+        after_snapshot: dict[str, Any] | None = None,
+    ) -> _JournalView:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).transition_status(
+                journal_id=journal_id,
+                expected_status=expected_status,
+                to_status=to_status,
+                after_snapshot=after_snapshot,
+            )
+            session.commit()
+            return _journal_view(journal)
+
+    def _mark_reconcile(self, journal_id: str) -> None:
+        with self._session_factory() as session:
+            repository = OperationJournalRepository(session)
+            journal = repository.get(journal_id)
+            if journal is None:
+                return
+            current = OperationStatus(journal.status)
+            if current not in {OperationStatus.INTENT_RECORDED, OperationStatus.APPLIED}:
+                return
+            repository.transition_status(
+                journal_id=journal_id,
+                expected_status=current,
+                to_status=OperationStatus.RECONCILE_REQUIRED,
+            )
+            session.commit()
+
+
+class QbittorrentStartOperationService:
+    """以 journal 包围 qB start；只有实际进入完整上行状态才确认 APPLIED。"""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    async def execute(
+        self,
+        request: QbittorrentStartOperationRequest,
+        binding: QbittorrentWriteBindingPort,
+    ) -> QbittorrentStartOperationResult:
+        if (
+            binding.downloader_id != request.downloader_id
+            or binding.downloader_version != request.downloader_version
+        ):
+            raise ApplicationError(
+                code="DOWNLOADER_CONFIG_CHANGED",
+                status=409,
+                title="qBittorrent 配置已经变化",
+                detail="start intent 必须绑定同一个下载器 ID 与配置版本",
+            )
+        prepared = _prepare_start(request)
+        async with _operation_lock(prepared.operation_key):
+            return await self._execute_prepared(prepared, binding)
+
+    async def _execute_prepared(
+        self,
+        prepared: _PreparedStart,
+        binding: QbittorrentWriteBindingPort,
+    ) -> QbittorrentStartOperationResult:
+        adapter = binding.adapter
+        existing = self._load_by_key(prepared.operation_key)
+        replayed = False
+        recovered = False
+        if existing is not None:
+            _assert_same_start_intent(existing, prepared)
+            if existing.status is OperationStatus.APPLIED:
+                state = await self._owned_state(adapter, prepared, reconcile_journal_id=existing.id)
+                if not state.seeding:
+                    self._mark_reconcile(existing.id)
+                    raise _state_mismatch("已确认启动的 qBittorrent torrent 已离开完整上行状态")
+                return _start_result(
+                    existing,
+                    state,
+                    prepared,
+                    replayed=True,
+                    recovered=False,
+                )
+            if existing.status is not OperationStatus.INTENT_RECORDED:
+                raise _journal_not_executable(existing)
+
+            state = await self._owned_state(adapter, prepared, reconcile_journal_id=existing.id)
+            if state.seeding:
+                applied = self._transition(
+                    existing.id,
+                    OperationStatus.INTENT_RECORDED,
+                    OperationStatus.APPLIED,
+                    after_snapshot=_state_snapshot(state, prepared.ownership_tag),
+                )
+                return _start_result(
+                    applied,
+                    state,
+                    prepared,
+                    replayed=True,
+                    recovered=True,
+                )
+            if not state.verification_complete:
+                self._mark_reconcile(existing.id)
+                raise _state_mismatch(
+                    "start intent 存在时 torrent 已不再处于停止且完整的可启动状态"
+                )
+            journal = existing
+            replayed = True
+            recovered = True
+        else:
+            before = await self._owned_state(adapter, prepared, reconcile_journal_id=None)
+            if before.seeding:
+                raise ApplicationError(
+                    code="DOWNLOADER_START_PREEXISTING",
+                    status=409,
+                    title="qBittorrent torrent 已在做种",
+                    detail="start intent 前 torrent 已被外部启动，PackBreaker 不会认领",
+                )
+            if not before.verification_complete:
+                raise ApplicationError(
+                    code="DOWNLOADER_START_STATE_INVALID",
+                    status=409,
+                    title="qBittorrent 状态不允许开始做种",
+                    detail="只有停止且 progress=1 的 PackBreaker torrent 才允许执行 start",
+                )
+            journal = self._record_intent(prepared, before)
+
+        try:
+            await adapter.start_torrent(prepared.torrent_hash)
+        except DownloaderAdapterError as exc:
+            raise _adapter_application_error(exc, "qBittorrent start 结果未知") from exc
+
+        after = await self._owned_state(adapter, prepared, reconcile_journal_id=journal.id)
+        if not after.seeding:
+            if after.verification_complete:
+                raise ApplicationError(
+                    code="DOWNLOADER_START_NOT_CONFIRMED",
+                    status=409,
+                    title="qBittorrent start 尚未确认",
+                    detail=(
+                        "start 已发送但 torrent 仍处于停止且完整状态；"
+                        "后续 tick 会先查询真实状态再安全重试"
+                    ),
+                )
+            self._mark_reconcile(journal.id)
+            raise _state_mismatch("start 后 torrent 未进入可解释的完整上行状态")
+
+        applied = self._transition(
+            journal.id,
+            OperationStatus.INTENT_RECORDED,
+            OperationStatus.APPLIED,
+            after_snapshot=_state_snapshot(after, prepared.ownership_tag),
+        )
+        return _start_result(
+            applied,
+            after,
+            prepared,
+            replayed=replayed,
+            recovered=recovered,
+        )
+
+    async def _owned_state(
+        self,
+        adapter: QbittorrentWriteAdapter,
+        prepared: _PreparedStart,
+        *,
+        reconcile_journal_id: str | None,
+    ) -> QbittorrentTorrentState:
+        try:
+            observed = await adapter.get_torrents((prepared.torrent_hash,))
+        except DownloaderAdapterError as exc:
+            raise _adapter_application_error(exc, "无法确认 qBittorrent start 状态") from exc
+        matching = tuple(
+            state
+            for state in observed
+            if state.torrent_hash == prepared.torrent_hash
+            and state.save_path == prepared.remote_save_path
+            and prepared.ownership_tag in state.tags
+        )
+        if len(observed) != 1 or len(matching) != 1:
+            if reconcile_journal_id is not None:
+                self._mark_reconcile(reconcile_journal_id)
+            raise _state_mismatch("start torrent 的 hash、save path、ownership tag 或存在性不匹配")
+        return matching[0]
+
+    def _record_intent(
+        self,
+        prepared: _PreparedStart,
+        before: QbittorrentTorrentState,
+    ) -> _JournalView:
+        request = prepared.request
+        intent = OperationIntent(
+            task_id=request.task_id,
+            idempotency_key=prepared.operation_key,
+            operation_type=QBITTORRENT_START_OPERATION,
+            target={
+                "downloader_id": request.downloader_id,
+                "torrent_hash": prepared.torrent_hash,
+            },
+            intent=_start_intent_payload(prepared),
+            before_snapshot=_state_snapshot(before, prepared.ownership_tag),
+        )
+        with self._session_factory() as session:
+            journal, _ = OperationJournalRepository(session).record_intent(intent)
+            session.commit()
+            return _journal_view(journal)
+
+    def _load_by_key(self, key: str) -> _JournalView | None:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).get_by_idempotency_key(key)
+            return None if journal is None else _journal_view(journal)
+
+    def _transition(
+        self,
+        journal_id: str,
+        expected_status: OperationStatus,
+        to_status: OperationStatus,
+        *,
+        after_snapshot: dict[str, Any] | None = None,
+    ) -> _JournalView:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).transition_status(
+                journal_id=journal_id,
+                expected_status=expected_status,
+                to_status=to_status,
+                after_snapshot=after_snapshot,
+            )
+            session.commit()
+            return _journal_view(journal)
+
+    def _mark_reconcile(self, journal_id: str) -> None:
+        with self._session_factory() as session:
+            repository = OperationJournalRepository(session)
+            journal = repository.get(journal_id)
+            if journal is None:
+                return
+            current = OperationStatus(journal.status)
+            if current not in {OperationStatus.INTENT_RECORDED, OperationStatus.APPLIED}:
+                return
+            repository.transition_status(
+                journal_id=journal_id,
+                expected_status=current,
+                to_status=OperationStatus.RECONCILE_REQUIRED,
+            )
+            session.commit()
+
+
 @dataclass(frozen=True, slots=True)
 class _PreparedAdd:
     operation_key: str
@@ -443,6 +919,251 @@ class _PreparedAdd:
     expected_hashes: tuple[str, ...]
     torrent_payload_digest: str
     request: QbittorrentAddOperationRequest
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRecheck:
+    operation_key: str
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+    request: QbittorrentRecheckOperationRequest
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedStart:
+    operation_key: str
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+    request: QbittorrentStartOperationRequest
+
+
+def _prepare_recheck(request: QbittorrentRecheckOperationRequest) -> _PreparedRecheck:
+    if request.downloader_version < 1:
+        raise ValueError("downloader version 必须大于等于 1")
+    if len(request.candidate_key) != 64 or any(
+        character not in "0123456789abcdef" for character in request.candidate_key
+    ):
+        raise ValueError("candidate_key 必须是 64 位十六进制摘要")
+    torrent_hash = request.torrent_hash.strip().lower()
+    if len(torrent_hash) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in torrent_hash
+    ):
+        raise ValueError("torrent_hash 格式无效")
+    if not request.qbit_add_journal_id.strip() or not request.execution_plan_id.strip():
+        raise ValueError("recheck 必须绑定 add journal 与 execution plan")
+    ownership_tag = request.ownership_tag.strip()
+    if not ownership_tag or len(ownership_tag) > 128 or "," in ownership_tag:
+        raise ValueError("ownership tag 格式无效")
+    try:
+        remote_save_path = normalize_remote_path(request.remote_save_path)
+    except DomainViolation as exc:
+        raise ValueError("remote save path 格式无效") from exc
+    return _PreparedRecheck(
+        operation_key=downloader_operation_key(
+            candidate_key=request.candidate_key,
+            operation_type=QBITTORRENT_RECHECK_OPERATION,
+            downloader_id=request.downloader_id,
+        ),
+        torrent_hash=torrent_hash,
+        remote_save_path=remote_save_path,
+        ownership_tag=ownership_tag,
+        request=request,
+    )
+
+
+def _recheck_intent_payload(prepared: _PreparedRecheck) -> dict[str, Any]:
+    request = prepared.request
+    return {
+        "schema_version": QBITTORRENT_RECHECK_SCHEMA_VERSION,
+        "downloader_version": request.downloader_version,
+        "execution_plan_id": request.execution_plan_id,
+        "qbit_add_journal_id": request.qbit_add_journal_id,
+        "torrent_hash": prepared.torrent_hash,
+        "remote_save_path": prepared.remote_save_path,
+        "ownership_tag": prepared.ownership_tag,
+    }
+
+
+def _prepare_start(request: QbittorrentStartOperationRequest) -> _PreparedStart:
+    if request.downloader_version < 1:
+        raise ValueError("downloader version 必须大于等于 1")
+    if len(request.candidate_key) != 64 or any(
+        character not in "0123456789abcdef" for character in request.candidate_key
+    ):
+        raise ValueError("candidate_key 必须是 64 位十六进制摘要")
+    torrent_hash = request.torrent_hash.strip().lower()
+    if len(torrent_hash) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in torrent_hash
+    ):
+        raise ValueError("torrent_hash 格式无效")
+    if not request.qbit_add_journal_id.strip() or not request.execution_plan_id.strip():
+        raise ValueError("start 必须绑定 add journal 与 execution plan")
+    verification_journal_id = request.verification_journal_id
+    if verification_journal_id is not None:
+        verification_journal_id = verification_journal_id.strip()
+        if not verification_journal_id:
+            raise ValueError("verification journal id 不能为空")
+    ownership_tag = request.ownership_tag.strip()
+    if not ownership_tag or len(ownership_tag) > 128 or "," in ownership_tag:
+        raise ValueError("ownership tag 格式无效")
+    try:
+        remote_save_path = normalize_remote_path(request.remote_save_path)
+    except DomainViolation as exc:
+        raise ValueError("remote save path 格式无效") from exc
+    normalized_request = QbittorrentStartOperationRequest(
+        task_id=request.task_id,
+        candidate_key=request.candidate_key,
+        downloader_id=request.downloader_id,
+        downloader_version=request.downloader_version,
+        execution_plan_id=request.execution_plan_id,
+        qbit_add_journal_id=request.qbit_add_journal_id,
+        verification_journal_id=verification_journal_id,
+        torrent_hash=torrent_hash,
+        remote_save_path=remote_save_path,
+        ownership_tag=ownership_tag,
+    )
+    return _PreparedStart(
+        operation_key=downloader_operation_key(
+            candidate_key=request.candidate_key,
+            operation_type=QBITTORRENT_START_OPERATION,
+            downloader_id=request.downloader_id,
+        ),
+        torrent_hash=torrent_hash,
+        remote_save_path=remote_save_path,
+        ownership_tag=ownership_tag,
+        request=normalized_request,
+    )
+
+
+def _start_intent_payload(prepared: _PreparedStart) -> dict[str, Any]:
+    request = prepared.request
+    return {
+        "schema_version": QBITTORRENT_START_SCHEMA_VERSION,
+        "downloader_version": request.downloader_version,
+        "execution_plan_id": request.execution_plan_id,
+        "qbit_add_journal_id": request.qbit_add_journal_id,
+        "verification_journal_id": request.verification_journal_id,
+        "torrent_hash": prepared.torrent_hash,
+        "remote_save_path": prepared.remote_save_path,
+        "ownership_tag": prepared.ownership_tag,
+    }
+
+
+def _assert_same_start_intent(journal: _JournalView, prepared: _PreparedStart) -> None:
+    request = prepared.request
+    if (
+        journal.task_id != request.task_id
+        or journal.operation_type != QBITTORRENT_START_OPERATION
+        or journal.target
+        != {
+            "downloader_id": request.downloader_id,
+            "torrent_hash": prepared.torrent_hash,
+        }
+        or journal.intent != _start_intent_payload(prepared)
+    ):
+        raise ApplicationError(
+            code="DOWNLOADER_START_IDEMPOTENCY_CONFLICT",
+            status=409,
+            title="qBittorrent start 幂等键冲突",
+            detail="同一 candidate/downloader 对应了不同的 start 意图",
+        )
+
+
+def _assert_same_recheck_intent(journal: _JournalView, prepared: _PreparedRecheck) -> None:
+    request = prepared.request
+    if (
+        journal.task_id != request.task_id
+        or journal.operation_type != QBITTORRENT_RECHECK_OPERATION
+        or journal.target
+        != {
+            "downloader_id": request.downloader_id,
+            "torrent_hash": prepared.torrent_hash,
+        }
+        or journal.intent != _recheck_intent_payload(prepared)
+    ):
+        raise ApplicationError(
+            code="DOWNLOADER_RECHECK_IDEMPOTENCY_CONFLICT",
+            status=409,
+            title="qBittorrent recheck 幂等键冲突",
+            detail="同一 candidate/downloader 对应了不同的 recheck 意图",
+        )
+
+
+def _recheck_unknown_result_proves_applied(
+    journal: _JournalView,
+    state: QbittorrentTorrentState,
+) -> bool:
+    if state.checking:
+        return True
+    before = journal.before_snapshot
+    if before is None or not state.verification_complete:
+        return False
+    return before.get("state") != state.state or before.get("progress") != state.progress
+
+
+def _recheck_result(
+    journal: _JournalView,
+    state: QbittorrentTorrentState,
+    prepared: _PreparedRecheck,
+    *,
+    replayed: bool,
+    recovered: bool,
+) -> QbittorrentRecheckOperationResult:
+    checking_observed = state.checking or _snapshot_was_checking(journal.after_snapshot)
+    completion_proven = state.verification_complete and (
+        checking_observed or _state_differs_from_snapshot(state, journal.before_snapshot)
+    )
+    return QbittorrentRecheckOperationResult(
+        journal_id=journal.id,
+        torrent_hash=state.torrent_hash,
+        save_path=state.save_path,
+        state=state.state,
+        progress=state.progress,
+        ownership_tag=prepared.ownership_tag,
+        checking=state.checking,
+        verification_complete=state.verification_complete,
+        verification_incomplete=state.verification_incomplete,
+        checking_observed=checking_observed,
+        completion_proven=completion_proven,
+        replayed=replayed,
+        recovered_after_unknown_result=recovered,
+    )
+
+
+def _start_result(
+    journal: _JournalView,
+    state: QbittorrentTorrentState,
+    prepared: _PreparedStart,
+    *,
+    replayed: bool,
+    recovered: bool,
+) -> QbittorrentStartOperationResult:
+    return QbittorrentStartOperationResult(
+        journal_id=journal.id,
+        torrent_hash=state.torrent_hash,
+        save_path=state.save_path,
+        state=state.state,
+        progress=state.progress,
+        ownership_tag=prepared.ownership_tag,
+        seeding=state.seeding,
+        replayed=replayed,
+        recovered_after_unknown_result=recovered,
+    )
+
+
+def _snapshot_was_checking(snapshot: dict[str, Any] | None) -> bool:
+    return snapshot is not None and snapshot.get("state") in {"checkingDL", "checkingUP"}
+
+
+def _state_differs_from_snapshot(
+    state: QbittorrentTorrentState,
+    snapshot: dict[str, Any] | None,
+) -> bool:
+    return snapshot is not None and (
+        snapshot.get("state") != state.state or snapshot.get("progress") != state.progress
+    )
 
 
 def _intent_payload(prepared: _PreparedAdd) -> dict[str, Any]:
@@ -471,6 +1192,7 @@ def _state_snapshot(state: QbittorrentTorrentState, ownership_tag: str) -> dict[
         "save_path": state.save_path,
         "content_path": state.content_path,
         "state": state.state,
+        "progress": state.progress,
         "ownership_tag": ownership_tag,
         "tags": list(state.tags),
     }
@@ -542,3 +1264,13 @@ def _journal_not_executable(journal: _JournalView) -> ApplicationError:
         title="qBittorrent operation journal 需要人工对账",
         detail=f"当前 journal 状态为 {journal.status.value}，不能自动重复执行",
     )
+
+
+def _operation_lock(operation_key: str) -> asyncio.Lock:
+    """单进程按幂等键串行化外部写动作；崩溃后的跨进程恢复仍由 journal 负责。"""
+
+    lock = _OPERATION_LOCKS.get(operation_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _OPERATION_LOCKS[operation_key] = lock
+    return lock

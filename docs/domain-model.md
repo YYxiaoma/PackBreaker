@@ -106,6 +106,7 @@ stateDiagram-v2
 - 状态转换使用乐观版本号；版本不一致时重新加载，不覆盖其他执行器结果。
 - `RETRY` 保存 next_retry_at、attempt、错误类别；达到上限后进入 `FAILED` 或人工队列。
 - `PAUSED` 不取消正在进行的单个原子文件操作，但完成后不得启动下一步。
+- `SEEDING` 表示 torrent 已满足启动做种的全部安全前置条件或正在确认 start 结果；只有下载器实际返回完整上行状态后才进入 `DONE`。`DONE` 表示 PackBreaker 本次辅种建立流程完成，不表示下载器停止做种。
 - `DONE`、`FAILED`、`CANCELLED` 为终态；重新处理必须创建新 attempt 并关联原任务。
 
 ## 5. 操作日志状态

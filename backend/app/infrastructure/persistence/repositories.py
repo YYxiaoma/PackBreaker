@@ -74,6 +74,28 @@ class TaskRepository:
         )
         return list(self._session.scalars(statement))
 
+    def list_for_recovery(
+        self,
+        *,
+        statuses: tuple[TaskStatus, ...],
+        limit: int = 100,
+    ) -> list[UnpackTask]:
+        """按最久未更新优先返回可恢复任务，避免每次启动总是偏向最新任务。"""
+
+        if not statuses:
+            return []
+        if limit <= 0:
+            raise ValueError("limit 必须大于 0")
+        values = tuple(dict.fromkeys(status.value for status in statuses))
+        return list(
+            self._session.scalars(
+                select(UnpackTask)
+                .where(UnpackTask.status.in_(values))
+                .order_by(UnpackTask.updated_at.asc(), UnpackTask.id.asc())
+                .limit(limit)
+            )
+        )
+
     def create_or_get(self, request: TaskCreate) -> tuple[UnpackTask, bool]:
         key = task_idempotency_key(
             task_type=request.task_type,
@@ -183,6 +205,62 @@ class TaskRepository:
             event_type,
             checkpoint=checkpoint,
         )
+
+    def record_checkpoint(
+        self,
+        *,
+        task_id: str,
+        expected_version: int,
+        expected_status: TaskStatus,
+        checkpoint: dict[str, Any],
+        event_type: str,
+        reason: str,
+        occurred_at: datetime | None = None,
+    ) -> UnpackTask:
+        """同状态保存恢复证据；使用 task version CAS，且追加可审计事件。"""
+
+        task = self._require_version(task_id, expected_version)
+        current = TaskStatus(task.status)
+        if current is not expected_status:
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                "任务状态与 checkpoint 保存阶段不一致",
+            )
+        timestamp = occurred_at or utc_now()
+        with self._session.begin_nested():
+            updated_task_id = self._session.scalar(
+                update(UnpackTask)
+                .where(
+                    UnpackTask.id == task.id,
+                    UnpackTask.version == expected_version,
+                    UnpackTask.status == expected_status.value,
+                )
+                .values(
+                    checkpoint=deepcopy(checkpoint),
+                    version=expected_version + 1,
+                    updated_at=timestamp,
+                )
+                .returning(UnpackTask.id)
+            )
+            if updated_task_id is None:
+                raise DomainViolation(
+                    ErrorCode.TASK_VERSION_CONFLICT, "任务版本已变化，请重新读取后恢复"
+                )
+            self._session.add(
+                TaskEvent(
+                    id=new_uuid(),
+                    task_id=task.id,
+                    from_status=expected_status.value,
+                    to_status=expected_status.value,
+                    event_type=event_type,
+                    reason=reason,
+                    created_at=timestamp,
+                )
+            )
+            self._session.flush()
+        self._session.expire(task)
+        self._session.refresh(task)
+        return task
 
     def _require_version(self, task_id: str, expected_version: int) -> UnpackTask:
         task = self.get(task_id)
