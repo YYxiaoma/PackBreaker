@@ -12,6 +12,7 @@ import {
   type TaskStatus,
 } from '../api/tasks';
 import TaskAnalysisPanel from './TaskAnalysisPanel.vue';
+import TaskEventTimeline from './TaskEventTimeline.vue';
 
 const tasks = ref<TaskRecord[]>([]);
 const loading = ref(false);
@@ -49,9 +50,14 @@ const filtered = computed(() => {
 onMounted(() => void refresh());
 
 async function refresh(): Promise<void> {
+  const activeId = active.value?.id ?? null;
   loading.value = true;
   try {
     tasks.value = await listTasks();
+    if (activeId) {
+      active.value = tasks.value.find((task) => task.id === activeId) ?? null;
+      if (!active.value) detailVisible.value = false;
+    }
   } catch (error) {
     showError(error);
   } finally {
@@ -238,6 +244,7 @@ const statusOptions: TaskStatus[] = [
           }}</el-descriptions-item>
         </el-descriptions>
         <TaskAnalysisPanel :suggested-task-id="active.id" />
+        <TaskEventTimeline :task-id="active.id" :live="detailVisible" @changed="refresh" />
       </template>
     </el-drawer>
   </section>

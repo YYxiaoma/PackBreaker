@@ -9,6 +9,7 @@ export type AnalyzeTaskActionInput = components['schemas']['AnalyzeTaskActionReq
 export type ExecuteTaskActionInput = components['schemas']['ExecuteTaskActionRequest'];
 export type CancelTaskActionInput = components['schemas']['CancelTaskActionRequest'];
 export type TaskMutationAction = components['schemas']['TaskMutationActionResponse'];
+export type TaskEvent = components['schemas']['TaskEventResponse'];
 export type TaskRecord = components['schemas']['TaskResponse'];
 export type TaskStatus = components['schemas']['TaskStatus'];
 export type TaskCreateInput = components['schemas']['TaskCreateRequest'];
@@ -51,6 +52,31 @@ export async function getTask(taskId: string): Promise<TaskRecord> {
   } catch (error) {
     throw toApiProblem(error);
   }
+}
+
+export async function listTaskEvents(
+  taskId: string,
+  afterEventId?: string,
+  limit = 100,
+): Promise<TaskEvent[]> {
+  try {
+    const response = await apiClient.get<{ items: TaskEvent[] }>(`${taskPath(taskId)}/events`, {
+      params: {
+        ...(afterEventId ? { after_event_id: afterEventId } : {}),
+        limit,
+      },
+    });
+    return response.data.items;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export function taskEventStreamUrl(taskId: string, afterEventId?: string): string {
+  const params = new URLSearchParams();
+  if (afterEventId) params.set('after_event_id', afterEventId);
+  const query = params.toString();
+  return `/api/v1${taskPath(taskId)}/events/stream${query ? `?${query}` : ''}`;
 }
 
 export async function createTask(payload: TaskCreateInput): Promise<TaskCreateResult> {

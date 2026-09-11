@@ -1,8 +1,12 @@
+import asyncio
+import time
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, Field
+from starlette.responses import StreamingResponse
 
 from backend.app.api.dependencies import (
     AccessPrincipal,
@@ -10,6 +14,7 @@ from backend.app.api.dependencies import (
     require_admin_or_scope,
     task_action_service,
     task_analysis_service,
+    task_event_service,
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.task_actions import (
@@ -18,6 +23,7 @@ from backend.app.application.task_actions import (
     TaskActionActor,
     TaskMutationActionResult,
 )
+from backend.app.application.task_events import TaskEventService, TaskEventView
 from backend.app.application.tasks import (
     ExecutionGateView,
     ExecutionPlanView,
@@ -64,6 +70,20 @@ class TaskListResponse(BaseModel):
 class TaskCreateResponse(BaseModel):
     item: TaskResponse
     created: bool
+
+
+class TaskEventResponse(BaseModel):
+    id: str
+    task_id: str
+    from_status: TaskStatus | None
+    to_status: TaskStatus
+    event_type: str
+    reason: str
+    created_at: datetime
+
+
+class TaskEventListResponse(BaseModel):
+    items: list[TaskEventResponse]
 
 
 class AnalyzeTaskActionRequest(BaseModel):
@@ -289,6 +309,47 @@ async def get_task(
     _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
 ) -> TaskResponse:
     return _task_response(task_analysis_service(request).get_task(task_id))
+
+
+@router.get("/tasks/{task_id}/events", response_model=TaskEventListResponse)
+async def list_task_events(
+    task_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
+    after_event_id: str | None = None,
+    limit: int = 100,
+) -> TaskEventListResponse:
+    items = task_event_service(request).list_events(
+        task_id,
+        after_event_id=after_event_id,
+        limit=limit,
+    )
+    return TaskEventListResponse(items=[_task_event_response(item) for item in items])
+
+
+@router.get(
+    "/tasks/{task_id}/events/stream",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
+async def stream_task_events(
+    task_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
+    after_event_id: str | None = None,
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+) -> StreamingResponse:
+    service = task_event_service(request)
+    cursor = last_event_id or after_event_id
+    initial = service.list_events(task_id, after_event_id=cursor, limit=100)
+    return StreamingResponse(
+        _task_event_stream(request, service, task_id, cursor, initial),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/tasks/{task_id}/units", response_model=TaskUnitListResponse)
@@ -521,6 +582,48 @@ def _task_response(item: TaskView) -> TaskResponse:
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
+
+
+def _task_event_response(item: TaskEventView) -> TaskEventResponse:
+    return TaskEventResponse(
+        id=item.id,
+        task_id=item.task_id,
+        from_status=TaskStatus(item.from_status) if item.from_status is not None else None,
+        to_status=TaskStatus(item.to_status),
+        event_type=item.event_type,
+        reason=item.reason,
+        created_at=item.created_at,
+    )
+
+
+async def _task_event_stream(
+    request: Request,
+    service: TaskEventService,
+    task_id: str,
+    cursor: str | None,
+    initial: tuple[TaskEventView, ...],
+) -> AsyncIterator[str]:
+    deadline = time.monotonic() + 20.0
+    pending = initial
+    while True:
+        if await request.is_disconnected():
+            return
+        if pending:
+            for item in pending:
+                response = _task_event_response(item)
+                yield (
+                    f"id: {response.id}\n"
+                    "event: task-event\n"
+                    "retry: 1000\n"
+                    f"data: {response.model_dump_json()}\n\n"
+                )
+                cursor = item.id
+            return
+        if time.monotonic() >= deadline:
+            yield "retry: 1000\n: keep-alive\n\n"
+            return
+        await asyncio.sleep(0.5)
+        pending = service.list_events(task_id, after_event_id=cursor, limit=100)
 
 
 def _task_mutation_action_response(item: TaskMutationActionResult) -> TaskMutationActionResponse:

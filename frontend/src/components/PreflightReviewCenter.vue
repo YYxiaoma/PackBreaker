@@ -55,6 +55,7 @@ const attentionCount = computed(
 onMounted(() => void refresh());
 
 async function refresh(): Promise<void> {
+  const activeTaskId = active.value?.task.id ?? null;
   loading.value = true;
   loadErrors.value = [];
   try {
@@ -72,11 +73,20 @@ async function refresh(): Promise<void> {
         right.preflight.created_at.localeCompare(left.preflight.created_at) ||
         left.task.id.localeCompare(right.task.id),
     );
+    if (activeTaskId) {
+      active.value = reviews.value.find((item) => item.task.id === activeTaskId) ?? null;
+      if (!active.value) drawerVisible.value = false;
+    }
   } catch (error) {
     showError(error);
   } finally {
     loading.value = false;
   }
+}
+
+async function handleTaskEvent(): Promise<void> {
+  if (!drawerVisible.value || !active.value || loading.value) return;
+  await refresh();
 }
 
 async function loadTaskReview(task: TaskRecord): Promise<PreflightReviewItem | null> {
@@ -144,8 +154,8 @@ function staleReason(reason: string): string {
     </div>
 
     <el-alert
-      title="当前没有启动副作用的执行动作"
-      description="Analyze 已按状态机推进到 PREFLIGHT；提交首个审核 revision 后进入 AWAITING_CONFIRMATION。本页可以生成只读 pre-execution gate 资格证据，但不会进入 LINKING、创建硬链接或调用下载器写接口。"
+      title="执行与取消动作已受安全门保护开放"
+      description="只有 READY + CURRENT 的不可变 execution plan 可进入 LINKING；execute/cancel 都要求持久化幂等 receipt。任务进入副作用阶段后，本页会轮询当前 task version/status，并只按显式范围执行安全取消与回滚。"
       type="info"
       :closable="false"
       show-icon
@@ -266,7 +276,12 @@ function staleReason(reason: string): string {
       :title="active ? `审核证据 ${active.task.id}` : '审核证据'"
     >
       <template v-if="active">
-        <TaskReviewEditor :item="active" @saved="refresh" />
+        <TaskReviewEditor
+          :item="active"
+          :live="drawerVisible"
+          @saved="refresh"
+          @event="handleTaskEvent"
+        />
         <TaskAnalysisPanel :suggested-task-id="active.task.id" />
       </template>
     </el-drawer>

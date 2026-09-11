@@ -960,6 +960,60 @@ def test_public_execute_cancel_actions_enforce_csrf_idempotency_and_explicit_opt
         client.__exit__(None, None, None)
 
 
+def test_task_events_support_history_cursor_and_sse_resume(tmp_path: Path) -> None:
+    client, app, _settings = _authenticated_client(tmp_path)
+    task_id = _create_task(app, "events-primary")
+    other_task_id = _create_task(app, "events-other")
+    try:
+        history = client.get(f"/api/v1/tasks/{task_id}/events")
+        assert history.status_code == 200
+        assert [item["event_type"] for item in history.json()["items"]] == ["TASK_CREATED"]
+        first_event_id = history.json()["items"][0]["id"]
+
+        with app.state.runtime.session_factory() as session:
+            second = TaskRepository(session).append_event(
+                task_id=task_id,
+                event_type="TEST_TIMELINE_EVENT",
+                reason="测试任务时间线增量投递",
+            )
+            other = TaskRepository(session).latest_event(other_task_id)
+            assert other is not None
+            other_event_id = other.id
+            session.commit()
+            second_event_id = second.id
+
+        incremental = client.get(
+            f"/api/v1/tasks/{task_id}/events",
+            params={"after_event_id": first_event_id},
+        )
+        assert incremental.status_code == 200
+        assert [item["id"] for item in incremental.json()["items"]] == [second_event_id]
+        assert incremental.json()["items"][0]["reason"] == "测试任务时间线增量投递"
+
+        wrong_cursor = client.get(
+            f"/api/v1/tasks/{task_id}/events",
+            params={"after_event_id": other_event_id},
+        )
+        assert wrong_cursor.status_code == 409
+        assert wrong_cursor.json()["code"] == "TASK_EVENT_CURSOR_INVALID"
+
+        stream = client.get(
+            f"/api/v1/tasks/{task_id}/events/stream",
+            params={"after_event_id": first_event_id},
+        )
+        assert stream.status_code == 200
+        assert stream.headers["content-type"].startswith("text/event-stream")
+        assert stream.headers["cache-control"] == "no-cache, no-store"
+        assert stream.headers["x-accel-buffering"] == "no"
+        assert f"id: {second_event_id}\n" in stream.text
+        assert "event: task-event\n" in stream.text
+        assert '"event_type":"TEST_TIMELINE_EVENT"' in stream.text
+        assert '"task_id":"' + task_id + '"' in stream.text
+        assert "checkpoint" not in stream.text
+    finally:
+        client.__exit__(None, None, None)
+
+
 def _authenticated_client(tmp_path: Path) -> tuple[TestClient, FastAPI, AppSettings]:
     settings = AppSettings(
         config_dir=(tmp_path / "config").resolve(),

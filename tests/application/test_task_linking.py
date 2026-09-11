@@ -336,6 +336,8 @@ def test_linking_reserves_checkpoint_and_replays_without_new_side_effects(
         )
         journal_count = session.scalar(select(func.count()).select_from(OperationJournal))
         assert events[-1].event_type == "LINKING_COMPLETED"
+        assert "1 个 hardlink" in events[-1].reason
+        assert "1 个目录" in events[-1].reason
         assert journal_count == 2
 
     repeated = linking_fixture.coordinator.execute(

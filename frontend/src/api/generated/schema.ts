@@ -497,6 +497,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/tasks/{task_id}/events': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Task Events */
+    get: operations['list_task_events_api_v1_tasks__task_id__events_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/tasks/{task_id}/events/stream': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Stream Task Events */
+    get: operations['stream_task_events_api_v1_tasks__task_id__events_stream_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/tasks/{task_id}/preflight': {
     parameters: {
       query?: never;
@@ -1095,6 +1129,29 @@ export interface components {
       /** Created */
       created: boolean;
       item: components['schemas']['TaskResponse'];
+    };
+    /** TaskEventListResponse */
+    TaskEventListResponse: {
+      /** Items */
+      items: components['schemas']['TaskEventResponse'][];
+    };
+    /** TaskEventResponse */
+    TaskEventResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Event Type */
+      event_type: string;
+      from_status: components['schemas']['TaskStatus'] | null;
+      /** Id */
+      id: string;
+      /** Reason */
+      reason: string;
+      /** Task Id */
+      task_id: string;
+      to_status: components['schemas']['TaskStatus'];
     };
     /** TaskListResponse */
     TaskListResponse: {
@@ -2679,6 +2736,82 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['TaskCandidateListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_task_events_api_v1_tasks__task_id__events_get: {
+    parameters: {
+      query?: {
+        after_event_id?: string | null;
+        limit?: number;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskEventListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  stream_task_events_api_v1_tasks__task_id__events_stream_get: {
+    parameters: {
+      query?: {
+        after_event_id?: string | null;
+      };
+      header?: {
+        'Last-Event-ID'?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'text/event-stream': unknown;
         };
       };
       /** @description Validation Error */

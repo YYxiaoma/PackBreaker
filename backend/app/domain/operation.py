@@ -52,6 +52,56 @@ class OperationTransition:
     to_status: OperationStatus
 
 
+@dataclass(frozen=True, slots=True)
+class OperationEventSummary:
+    event_type: str
+    reason: str
+
+
+_OPERATION_EVENT_IDENTITIES: dict[str, tuple[str, str]] = {
+    "CREATE_DIRECTORY": ("FILESYSTEM_DIRECTORY", "文件系统目录创建"),
+    "CREATE_HARDLINK": ("FILESYSTEM_HARDLINK", "文件系统硬链接创建"),
+    "QBITTORRENT_ADD": ("QBITTORRENT_ADD", "qBittorrent 添加任务"),
+    "QBITTORRENT_RECHECK": ("QBITTORRENT_RECHECK", "qBittorrent 强制校验"),
+    "QBITTORRENT_START": ("QBITTORRENT_START", "qBittorrent 启动作种"),
+    "QBITTORRENT_REMOVE": ("QBITTORRENT_REMOVE", "qBittorrent 移除任务"),
+}
+
+_OPERATION_STATUS_REASONS: dict[OperationStatus, str] = {
+    OperationStatus.INTENT_RECORDED: (
+        "已记录 operation journal intent，尚不能仅凭该事件断言副作用完成"
+    ),
+    OperationStatus.APPLIED: "已由 operation journal 与完成后证据确认副作用完成",
+    OperationStatus.NOOP: "已确认无需执行副作用并记录为 NOOP",
+    OperationStatus.ROLLBACK_PENDING: "已进入 journal-owned 资源回滚阶段",
+    OperationStatus.ROLLED_BACK: "已确认 journal-owned 资源完成回滚",
+    OperationStatus.RECONCILE_REQUIRED: "当前证据不足以自动确认真实状态，已要求安全对账",
+    OperationStatus.ROLLBACK_BLOCKED: "回滚因所有权、快照或资源状态证据不足而阻断",
+}
+
+
+def operation_event_summary(
+    operation_type: str,
+    status: OperationStatus,
+) -> OperationEventSummary | None:
+    """生成可公开到 TaskEvent 的固定脱敏 operation journal 摘要。"""
+
+    if operation_type in {"CREATE_DIRECTORY", "CREATE_HARDLINK"} and status not in {
+        OperationStatus.RECONCILE_REQUIRED,
+        OperationStatus.ROLLBACK_BLOCKED,
+    }:
+        return None
+
+    event_prefix, label = _OPERATION_EVENT_IDENTITIES.get(
+        operation_type,
+        ("OPERATION", "受控副作用操作"),
+    )
+    return OperationEventSummary(
+        event_type=f"{event_prefix}_{status.value}",
+        reason=f"{label}：{_OPERATION_STATUS_REASONS[status]}",
+    )
+
+
 def transition_operation(
     current: OperationStatus,
     to_status: OperationStatus,

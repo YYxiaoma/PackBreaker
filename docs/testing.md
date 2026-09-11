@@ -166,6 +166,10 @@ M2 的代码能力、自动化证据与仍依赖真实语料/环境的退出项�
 - 启动恢复必须有界扫描 `LINKING/ADDING/CLIENT_VERIFYING/SEEDING/ROLLING_BACK`，按最久未更新优先；同一 stage 未变化时停止本轮，坏 checkpoint/plan 只能阻断对应任务且不能阻断后续任务或 readiness。恢复程序级异常必须让启动失败，同时释放实例锁；limit 截断不得触发未扫描任务的任何副作用。启动后的周期 driver 必须串行复用同一 reconciliation、防止重入；一次 tick 异常不得杀死后续 tick，shutdown 取消正在执行的 tick 后必须依赖 journal 在下次启动恢复。CLIENT_VERIFYING 必须能在不重启应用的情况下由后续周期 tick 收敛。
 - 取消/回滚必须证明 qB 与文件资源都属于当前 task/execution plan：qB remove 必须固定 `deleteFiles=false`，响应丢失后不得盲目重复；若 qB 任务仍存在，文件回滚前必须先移除下载器任务。hardlink 与目录只按 journal ID 逆序撤销，外部替换、非空目录或未决文件 journal 必须阻断自动完成。故障注入覆盖“qB remove 已 APPLIED、task 仍 ROLLING_BACK”，启动恢复不得产生第二次 remove。
 - 公开 `execute`/`cancel` 必须覆盖管理会话 CSRF 与 API Token `tasks:write`，副作用动作缺少 `Idempotency-Key` 返回 428；键明文不得落库，同 actor/key 同请求只调用一次底层 coordinator，同键不同请求返回 `IDEMPOTENCY_CONFLICT`。可安全归类失败应持久化并重放；未分类异常保持 PENDING。还必须覆盖 receipt PENDING 后 task 已被后台推进到后续 stage 的 execute 重放，确认不会重新进入 LINKING 或倒退状态。
+- 浏览器门禁必须覆盖公开动作 UI：execute 首次网络结果未知后冻结原 execution plan ID 与同一 `Idempotency-Key`，即使 SSE 已推进 task 也只能幂等重放原请求；合成 `TaskEvent` SSE 必须实际出现 `QBITTORRENT_SEEDING_CONFIRMED` 后观察 DONE。取消 UI 必须阻断 rollback-only，显式勾选 qB remove + journal-owned rollback 后由 `ROLLBACK_COMPLETED` SSE 观察 `ROLLING_BACK → CANCELLED`，全程不得访问真实后端/qB。
+- 前端公开动作控制必须覆盖：只有 `READY + CURRENT + AWAITING_CONFIRMATION` 才可执行；执行确认展示目标下载器、hardlink/目录/CLIENT_FETCH 数量、下载上界和客户端校验要求；未知结果重试复用原幂等键。取消默认不选择资源动作，回滚 journal-owned 文件时必须同时选择移除 qB 任务，`CANCELLING/ROLLING_BACK` 禁止重新提交不同选项。
+- 任务事件接口必须覆盖历史顺序、`after_event_id` 增量、跨 task 游标拒绝、SSE `Last-Event-ID` 续接、no-cache/no-buffering 与脱敏字段边界。前端优先 EventSource，同源会话 cookie 鉴权；SSE 断线才启用事件增量轮询，不允许把 bearer token 放进 URL 查询参数。
+- operation journal → TaskEvent 投影必须与 journal insert/CAS 同事务：幂等 intent 重放不得重复事件；qB 事件不得包含 downloader ID、torrent hash、save path、ownership tag、target/intent/snapshot 原文；未知 operation type 不得回显。大型文件包的 routine directory/hardlink intent/APPLIED/ROLLED_BACK 必须抑制为 LINKING/ROLLBACK 批次计数摘要，仅 `RECONCILE_REQUIRED`/`ROLLBACK_BLOCKED` 逐 journal 暴露固定资源类别。浏览器 SSE 至少观察 qB add/recheck/start/remove 的 APPLIED 摘要。
 - 源文件在所有验收场景中内容与 inode 不变。
 - 数据库、配置导出、日志、通知和诊断包无可用明文凭证。
 - 备份、迁移、升级健康检查和失败回滚演练通过。

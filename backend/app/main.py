@@ -34,6 +34,7 @@ from backend.app.application.task_adding import TaskAddingCoordinator
 from backend.app.application.task_cancellation import TaskCancellationCoordinator
 from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
 from backend.app.application.task_driver import ActiveTaskDriver
+from backend.app.application.task_events import TaskEventService
 from backend.app.application.task_linking import TaskLinkingCoordinator
 from backend.app.application.task_recovery import TaskRecoveryCoordinator
 from backend.app.application.task_seeding import TaskSeedingCoordinator
@@ -124,6 +125,7 @@ def create_app(
             data_root=resolved_settings.data_dir,
         )
         app.state.task_analysis_service = task_analysis_service
+        app.state.task_event_service = TaskEventService(resolved_runtime.session_factory)
         filesystem_operations = FilesystemOperationService(
             resolved_runtime.session_factory,
             SafeFilesystemGateway(resolved_settings.data_dir),

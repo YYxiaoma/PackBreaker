@@ -14,11 +14,13 @@ import {
   getTaskUnitExecutionPlan,
   getTaskUnitReviewVerification,
   listTaskCandidates,
+  listTaskEvents,
   listTasks,
   listTaskUnits,
   reverifyTaskUnitDecision,
   refreshTaskUnitExecutionGate,
   submitTaskUnitDecision,
+  taskEventStreamUrl,
 } from './tasks';
 
 afterEach(() => vi.restoreAllMocks());
@@ -94,6 +96,19 @@ describe('任务分析 API', () => {
       action: 'analyze',
       source_root: 'movie/Season.01',
     });
+  });
+
+  it('任务事件历史与 SSE URL 都绑定编码后的 task id 和 after_event_id', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { items: [] } });
+
+    await listTaskEvents('task/with slash', 'event/with slash', 50);
+
+    expect(get).toHaveBeenCalledWith('/tasks/task%2Fwith%20slash/events', {
+      params: { after_event_id: 'event/with slash', limit: 50 },
+    });
+    expect(taskEventStreamUrl('task/with slash', 'event/with slash')).toBe(
+      '/api/v1/tasks/task%2Fwith%20slash/events/stream?after_event_id=event%2Fwith+slash',
+    );
   });
 
   it('execute/cancel 使用生成 schema 并显式携带 Idempotency-Key', async () => {

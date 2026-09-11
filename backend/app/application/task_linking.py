@@ -333,7 +333,11 @@ class TaskLinkingCoordinator:
                     expected_version=task.version,
                     to_status=TaskStatus.ADDING,
                     event_type="LINKING_COMPLETED",
-                    reason="execution plan 文件系统动作已完成，进入暂停添加阶段",
+                    reason=(
+                        "文件系统 operation journals 已确认完成："
+                        f"{len(hardlink_journal_ids)} 个 hardlink、"
+                        f"{len(directory_journal_ids)} 个目录；进入暂停添加阶段"
+                    ),
                     checkpoint=checkpoint,
                 )
             except DomainViolation as exc:

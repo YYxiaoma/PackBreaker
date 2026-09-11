@@ -69,6 +69,7 @@ from backend.app.infrastructure.persistence.models import (
     OperationJournal,
     PreflightSnapshotRecord,
     TaskCandidateRecord,
+    TaskEvent,
     TaskExecutionGateRecord,
     TaskReviewRevisionRecord,
     TaskUnitRecord,
@@ -1484,6 +1485,19 @@ async def test_cancellation_removes_qb_and_rolls_back_only_journal_owned_files(
         assert hardlink is not None and hardlink.status == "ROLLED_BACK"
         task = session.get(UnpackTask, adding_fixture.task_id)
         assert task is not None and task.status == TaskStatus.CANCELLED.value
+        rollback_event = session.scalar(
+            select(TaskEvent)
+            .where(
+                TaskEvent.task_id == adding_fixture.task_id,
+                TaskEvent.event_type == "ROLLBACK_COMPLETED",
+            )
+            .order_by(TaskEvent.created_at.desc(), TaskEvent.id.desc())
+            .limit(1)
+        )
+        assert rollback_event is not None
+        assert "1 个 hardlink" in rollback_event.reason
+        assert "1 个目录" in rollback_event.reason
+        assert "源媒体不在删除范围" in rollback_event.reason
 
 
 @pytest.mark.asyncio

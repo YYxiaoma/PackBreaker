@@ -468,7 +468,12 @@ class TaskCancellationCoordinator:
                     expected_version=task.version,
                     to_status=TaskStatus.CANCELLED,
                     event_type="ROLLBACK_COMPLETED",
-                    reason="用户请求的下载器移除与 journal-owned 文件回滚已完成",
+                    reason=(
+                        "冻结取消请求已完成；journal-owned 文件回滚确认："
+                        f"{len(rolled_back_hardlink_journal_ids)} 个 hardlink、"
+                        f"{len(rolled_back_directory_journal_ids)} 个目录；"
+                        "源媒体不在删除范围"
+                    ),
                     checkpoint=checkpoint,
                 )
             except DomainViolation as exc:

@@ -214,6 +214,15 @@ def test_operation_intent_replay_is_noop_but_changed_payload_conflicts(
     assert len({journal.id for journal, _ in results}) == 1
     assert first.status == OperationStatus.INTENT_RECORDED.value
     assert db_session.scalar(select(func.count()).select_from(OperationJournal)) == 1
+    operation_events = list(
+        db_session.scalars(
+            select(TaskEvent).where(
+                TaskEvent.task_id == task.id,
+                TaskEvent.event_type.like("FILESYSTEM_%"),
+            )
+        )
+    )
+    assert operation_events == []
 
     changed = OperationIntent(
         task_id=task.id,
@@ -342,6 +351,87 @@ def test_operation_journal_transition_uses_status_cas_and_requires_applied_snaps
     )
     assert pending.status == OperationStatus.ROLLBACK_PENDING.value
     assert pending.after_snapshot == applied.after_snapshot
+    events = list(
+        db_session.scalars(
+            select(TaskEvent)
+            .where(TaskEvent.task_id == task.id)
+            .order_by(TaskEvent.created_at, TaskEvent.id)
+        )
+    )
+    assert [event.event_type for event in events] == ["TASK_CREATED"]
+
+    reconcile = repository.transition_status(
+        journal_id=journal.id,
+        expected_status=OperationStatus.ROLLBACK_PENDING,
+        to_status=OperationStatus.RECONCILE_REQUIRED,
+    )
+    assert reconcile.status == OperationStatus.RECONCILE_REQUIRED.value
+    db_session.commit()
+    events = list(
+        db_session.scalars(
+            select(TaskEvent)
+            .where(TaskEvent.task_id == task.id)
+            .order_by(TaskEvent.created_at, TaskEvent.id)
+        )
+    )
+    assert [event.event_type for event in events] == [
+        "TASK_CREATED",
+        "FILESYSTEM_HARDLINK_RECONCILE_REQUIRED",
+    ]
+    assert events[-1].from_status == TaskStatus.PENDING.value
+    assert events[-1].to_status == TaskStatus.PENDING.value
+
+
+def test_operation_journal_projects_qb_events_without_target_or_snapshot_payload(
+    db_session: Session,
+) -> None:
+    task, _ = TaskRepository(db_session).create_or_get(_task_request("qb-event-projection"))
+    db_session.commit()
+    repository = OperationJournalRepository(db_session)
+    journal, created = repository.record_intent(
+        OperationIntent(
+            task_id=task.id,
+            idempotency_key="e" * 64,
+            operation_type="QBITTORRENT_ADD",
+            target={
+                "downloader_id": "downloader-secret-id",
+                "remote_save_path": "/private/media/secret-title",
+            },
+            intent={"ownership_tag": "private-ownership-tag"},
+            before_snapshot={"torrent_absent": True},
+        )
+    )
+    assert created is True
+    repository.transition_status(
+        journal_id=journal.id,
+        expected_status=OperationStatus.INTENT_RECORDED,
+        to_status=OperationStatus.APPLIED,
+        after_snapshot={
+            "torrent_hash": "private-hash",
+            "save_path": "/private/media/secret-title",
+        },
+    )
+    db_session.commit()
+
+    events = list(
+        db_session.scalars(
+            select(TaskEvent)
+            .where(TaskEvent.task_id == task.id)
+            .order_by(TaskEvent.created_at, TaskEvent.id)
+        )
+    )
+    projected = events[-2:]
+    assert [event.event_type for event in projected] == [
+        "QBITTORRENT_ADD_INTENT_RECORDED",
+        "QBITTORRENT_ADD_APPLIED",
+    ]
+    assert all(event.from_status == TaskStatus.PENDING.value for event in projected)
+    assert all(event.to_status == TaskStatus.PENDING.value for event in projected)
+    public_text = " ".join(f"{event.event_type} {event.reason}" for event in projected)
+    assert "downloader-secret-id" not in public_text
+    assert "/private/media/secret-title" not in public_text
+    assert "private-ownership-tag" not in public_text
+    assert "private-hash" not in public_text
 
 
 def test_operation_journal_lists_only_nonterminal_recovery_work(db_session: Session) -> None:

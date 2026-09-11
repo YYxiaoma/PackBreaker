@@ -3,13 +3,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.idempotency import task_idempotency_key
-from backend.app.domain.operation import OperationStatus, transition_operation
+from backend.app.domain.operation import (
+    OperationStatus,
+    operation_event_summary,
+    transition_operation,
+)
 from backend.app.domain.task_state import (
     TaskStatus,
     TaskTransition,
@@ -73,6 +77,34 @@ class TaskRepository:
             .order_by(TaskEvent.created_at.desc(), TaskEvent.id.desc())
             .limit(1)
         )
+
+    def get_event(self, event_id: str) -> TaskEvent | None:
+        return self._session.get(TaskEvent, event_id)
+
+    def list_events(
+        self,
+        *,
+        task_id: str,
+        after_created_at: datetime | None = None,
+        after_event_id: str | None = None,
+        limit: int = 100,
+    ) -> list[TaskEvent]:
+        statement = select(TaskEvent).where(TaskEvent.task_id == task_id)
+        if after_created_at is not None:
+            if after_event_id is None:
+                statement = statement.where(TaskEvent.created_at > after_created_at)
+            else:
+                statement = statement.where(
+                    or_(
+                        TaskEvent.created_at > after_created_at,
+                        and_(
+                            TaskEvent.created_at == after_created_at,
+                            TaskEvent.id > after_event_id,
+                        ),
+                    )
+                )
+        statement = statement.order_by(TaskEvent.created_at.asc(), TaskEvent.id.asc()).limit(limit)
+        return list(self._session.scalars(statement))
 
     def list_recent(
         self, *, status: TaskStatus | None = None, limit: int = 100
@@ -412,6 +444,12 @@ class OperationJournalRepository:
             with self._session.begin_nested():
                 self._session.add(journal)
                 self._session.flush()
+                self._append_task_event(
+                    task_id=request.task_id,
+                    operation_type=request.operation_type,
+                    status=OperationStatus.INTENT_RECORDED,
+                    occurred_at=now,
+                )
         except IntegrityError:
             concurrent = self.get_by_idempotency_key(request.idempotency_key)
             if concurrent is None:
@@ -467,9 +505,44 @@ class OperationJournalRepository:
                     ErrorCode.TASK_VERSION_CONFLICT,
                     "operation journal 状态已变化，请重新读取后对账",
                 )
+            self._append_task_event(
+                task_id=journal.task_id,
+                operation_type=journal.operation_type,
+                status=to_status,
+                occurred_at=values["updated_at"],
+            )
         self._session.expire(journal)
         self._session.refresh(journal)
         return journal
+
+    def _append_task_event(
+        self,
+        *,
+        task_id: str,
+        operation_type: str,
+        status: OperationStatus,
+        occurred_at: datetime,
+    ) -> None:
+        task_status = self._session.scalar(
+            select(UnpackTask.status).where(UnpackTask.id == task_id).limit(1)
+        )
+        if task_status is None:
+            raise DomainViolation(ErrorCode.TASK_NOT_FOUND, "operation journal 对应任务不存在")
+        summary = operation_event_summary(operation_type, status)
+        if summary is None:
+            return
+        self._session.add(
+            TaskEvent(
+                id=new_uuid(),
+                task_id=task_id,
+                from_status=task_status,
+                to_status=task_status,
+                event_type=summary.event_type,
+                reason=summary.reason,
+                created_at=occurred_at,
+            )
+        )
+        self._session.flush()
 
     @staticmethod
     def _ensure_same_intent(existing: OperationJournal, request: OperationIntent) -> None:

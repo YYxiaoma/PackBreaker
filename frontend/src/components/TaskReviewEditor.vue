@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 
 import { ApiProblem } from '../api/client';
 import { listDownloaders, type Downloader } from '../api/downloaders';
 import {
+  cancelTask,
   createTaskUnitExecutionPlan,
+  executeTask,
   getTaskUnitExecutionGate,
   getTaskUnitExecutionPlan,
   getTaskUnitReviewVerification,
@@ -18,13 +20,25 @@ import {
   type ExecutionPlan,
   type ReviewVerification,
   type TaskCandidate,
+  type TaskEvent,
+  type TaskMutationAction,
   type TaskReview,
   type TaskUnit,
 } from '../api/tasks';
 import type { PreflightReviewItem } from '../preflightReviews';
+import {
+  cancellationIsInProgress,
+  cancellationOptionsAreConsistent,
+  canStartTaskCancellation,
+  createTaskActionIdempotencyKey,
+  formatByteUpperBound,
+} from '../taskActionSafety';
+import TaskEventTimeline from './TaskEventTimeline.vue';
 
-const props = defineProps<{ item: PreflightReviewItem }>();
-const emit = defineEmits<{ saved: [] }>();
+const props = withDefaults(defineProps<{ item: PreflightReviewItem; live?: boolean }>(), {
+  live: true,
+});
+const emit = defineEmits<{ saved: []; event: [event: TaskEvent] }>();
 
 const unit = ref<TaskUnit | null>(null);
 const decision = ref<TaskReview | null>(null);
@@ -42,7 +56,17 @@ const saving = ref(false);
 const reverifying = ref(false);
 const checkingGate = ref(false);
 const planning = ref(false);
+const executing = ref(false);
+const cancelling = ref(false);
 const targetRoot = ref('');
+const executeIdempotencyKey = ref('');
+const executeReplayPlanId = ref('');
+const executeResultUnknown = ref(false);
+const cancelIdempotencyKey = ref('');
+const removeDownloaderTask = ref(false);
+const rollbackCreatedResources = ref(false);
+const cancellationAcknowledged = ref(false);
+const lastMutation = ref<TaskMutationAction | null>(null);
 
 const eligibleCandidates = computed(() => props.item.candidates.filter((item) => !item.rejected));
 const approvedCandidate = computed(
@@ -78,10 +102,52 @@ const canPlan = computed(
     targetRoot.value.trim().length > 0 &&
     !planning.value,
 );
+const selectedTargetDownloader = computed(
+  () =>
+    targetDownloaders.value.find((item) => item.id === executionPlan.value?.target_downloader_id) ??
+    null,
+);
+const canStartExecute = computed(
+  () =>
+    executionPlan.value?.ready === true &&
+    executionPlan.value.current === true &&
+    props.item.task.status === 'AWAITING_CONFIRMATION' &&
+    selectedTargetDownloader.value !== null &&
+    !loading.value &&
+    !executing.value,
+);
+const canReplayExecute = computed(
+  () =>
+    executeResultUnknown.value &&
+    executeReplayPlanId.value.length > 0 &&
+    executeIdempotencyKey.value.length > 0 &&
+    !loading.value &&
+    !executing.value,
+);
+const canExecute = computed(() => canStartExecute.value || canReplayExecute.value);
+const canStartCancellation = computed(() => canStartTaskCancellation(props.item.task.status));
+const cancellationInProgress = computed(() => cancellationIsInProgress(props.item.task.status));
+const showCancellationPanel = computed(
+  () => canStartCancellation.value || cancellationInProgress.value,
+);
+const cancellationOptionsConsistent = computed(() =>
+  cancellationOptionsAreConsistent(removeDownloaderTask.value, rollbackCreatedResources.value),
+);
+const canCancel = computed(
+  () =>
+    canStartCancellation.value &&
+    cancellationOptionsConsistent.value &&
+    cancellationAcknowledged.value &&
+    !loading.value &&
+    !cancelling.value,
+);
 
 watch(
-  () => props.item.task.id,
-  () => void load(),
+  () => [props.item.task.id, props.item.task.version] as const,
+  (current, previous) => {
+    if (!previous || current[0] !== previous[0]) resetActionState();
+    void load();
+  },
   { immediate: true },
 );
 
@@ -92,6 +158,11 @@ watch(approvedCandidateId, (value) => {
   for (const key of Object.keys(manualSources)) {
     if (!ambiguousTorrentPaths.value.includes(key)) delete manualSources[key];
   }
+});
+
+watch([removeDownloaderTask, rollbackCreatedResources], () => {
+  cancelIdempotencyKey.value = '';
+  cancellationAcknowledged.value = false;
 });
 
 async function load(): Promise<void> {
@@ -232,6 +303,7 @@ async function createExecutionPlan(): Promise<void> {
       targetRoot.value.trim(),
       targetDownloaderId.value,
     );
+    clearExecuteReplayState();
     ElMessage.success(
       executionPlan.value.ready
         ? '无副作用执行计划已生成；尚未启动任何文件或下载器操作'
@@ -241,6 +313,131 @@ async function createExecutionPlan(): Promise<void> {
     showError(error);
   } finally {
     planning.value = false;
+  }
+}
+
+async function executeExecutionPlan(): Promise<void> {
+  if (!unit.value || executing.value) return;
+  const replaying = canReplayExecute.value;
+  executing.value = true;
+  try {
+    if (replaying) {
+      const result = await executeTask(
+        props.item.task.id,
+        executeReplayPlanId.value,
+        executeIdempotencyKey.value,
+      );
+      executeResultUnknown.value = false;
+      lastMutation.value = result;
+      ElMessage.success(
+        `执行结果已确认：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+      );
+      emit('saved');
+      return;
+    }
+    if (!executionPlan.value) return;
+    const latest = await getTaskUnitExecutionPlan(unit.value.id);
+    executionPlan.value = latest;
+    targetRoot.value = latest.target_root;
+    targetDownloaderId.value = latest.target_downloader_id ?? '';
+    if (!latest.ready || !latest.current || props.item.task.status !== 'AWAITING_CONFIRMATION') {
+      ElMessage.warning('当前 execution plan 已不满足 READY + CURRENT + AWAITING_CONFIRMATION');
+      return;
+    }
+    const downloader = targetDownloaders.value.find(
+      (item) => item.id === latest.target_downloader_id,
+    );
+    if (!downloader) {
+      ElMessage.warning('计划绑定的目标 qBittorrent 当前不再满足启用/连接/路径安全门');
+      return;
+    }
+    const verificationNote = latest.client_check_required
+      ? '添加后必须执行完整 qBittorrent 客户端校验，不允许跳过。'
+      : '仅 FULL_VERIFIED 且目标客户端能力仍允许时才可能跳过客户端校验。';
+    try {
+      await ElMessageBox.confirm(
+        `将执行不可变计划 ${latest.plan_digest.slice(0, 20)}…。目标：${downloader.name} v${downloader.version}；${latest.hardlink_count} 个 hardlink、${latest.create_directory_count} 个目录、${latest.client_fetch_count} 个客户端补齐，预计客户端下载上界 ${formatByteUpperBound(latest.estimated_download_bytes_upper_bound)}。${verificationNote} 源文件保持只读；真实副作用由 operation journal 驱动并可恢复。`,
+        '确认执行当前计划',
+        {
+          confirmButtonText: '执行当前计划',
+          cancelButtonText: '返回检查',
+          type: 'warning',
+        },
+      );
+    } catch {
+      return;
+    }
+    if (!executeIdempotencyKey.value) {
+      executeIdempotencyKey.value = createTaskActionIdempotencyKey('execute', props.item.task.id);
+    }
+    executeReplayPlanId.value = latest.id;
+    const result = await executeTask(props.item.task.id, latest.id, executeIdempotencyKey.value);
+    executeResultUnknown.value = false;
+    lastMutation.value = result;
+    ElMessage.success(
+      `执行动作已受理：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+    );
+    emit('saved');
+  } catch (error) {
+    if (
+      isUnknownMutationResult(error) &&
+      executeIdempotencyKey.value &&
+      executeReplayPlanId.value
+    ) {
+      executeResultUnknown.value = true;
+      ElMessage.warning(
+        '执行响应结果未知；只能使用已冻结的 plan 与同一 Idempotency-Key 重试确认结果',
+      );
+    }
+    showError(error);
+  } finally {
+    executing.value = false;
+  }
+}
+
+async function cancelAndRollback(): Promise<void> {
+  if (!canCancel.value) return;
+  cancelling.value = true;
+  try {
+    const downloaderChoice = removeDownloaderTask.value
+      ? '移除当前任务对应的 PackBreaker qBittorrent 任务，固定 deleteFiles=false，不删除磁盘数据'
+      : '保留下载器任务';
+    const resourceChoice = rollbackCreatedResources.value
+      ? '仅回滚 operation journal 明确拥有的 hardlink 与空目录；证据变化时失败关闭'
+      : '保留 PackBreaker 已创建的 hardlink/目录';
+    try {
+      await ElMessageBox.confirm(
+        `${downloaderChoice}；${resourceChoice}。源媒体不在删除范围内，也不会被打开写入。`,
+        '确认取消与回滚范围',
+        {
+          confirmButtonText: '按以上范围取消',
+          cancelButtonText: '返回检查',
+          type: 'warning',
+        },
+      );
+    } catch {
+      return;
+    }
+    if (!cancelIdempotencyKey.value) {
+      cancelIdempotencyKey.value = createTaskActionIdempotencyKey('cancel', props.item.task.id);
+    }
+    const result = await cancelTask(
+      props.item.task.id,
+      {
+        remove_downloader_task: removeDownloaderTask.value,
+        rollback_created_resources: rollbackCreatedResources.value,
+      },
+      cancelIdempotencyKey.value,
+    );
+    lastMutation.value = result;
+    ElMessage.success(
+      `取消动作已完成：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+    );
+    emit('saved');
+  } catch (error) {
+    showError(error);
+  } finally {
+    cancelling.value = false;
   }
 }
 
@@ -257,6 +454,28 @@ function resetForm(): void {
   note.value = '';
   targetRoot.value = '';
   for (const key of Object.keys(manualSources)) delete manualSources[key];
+}
+
+function clearExecuteReplayState(): void {
+  executeIdempotencyKey.value = '';
+  executeReplayPlanId.value = '';
+  executeResultUnknown.value = false;
+}
+
+function resetActionState(): void {
+  clearExecuteReplayState();
+  cancelIdempotencyKey.value = '';
+  removeDownloaderTask.value = false;
+  rollbackCreatedResources.value = false;
+  cancellationAcknowledged.value = false;
+  lastMutation.value = null;
+}
+
+function isUnknownMutationResult(error: unknown): boolean {
+  return (
+    error instanceof ApiProblem &&
+    (error.code === 'API_UNAVAILABLE' || error.status === 408 || (error.status ?? 0) >= 500)
+  );
 }
 
 function ambiguousPaths(candidate: TaskCandidate | null): string[] {
@@ -300,7 +519,7 @@ function showError(error: unknown): void {
         <small v-if="decision">当前 v{{ decision.version }} · {{ decision.actor_kind }}</small>
         <small v-else>尚无人工审核 revision</small>
       </div>
-      <el-tag type="info">execution_allowed = false</el-tag>
+      <el-tag type="info">审核 revision 本身不触发执行</el-tag>
     </div>
 
     <el-alert
@@ -312,8 +531,8 @@ function showError(error: unknown): void {
     />
     <el-alert
       v-else-if="!stateAllowsReview"
-      :title="`任务当前为 ${item.task.status}，尚未进入 PREFLIGHT 审核状态`"
-      description="审核 API 只允许 PREFLIGHT 打开 REVIEW_OPENED bridge，或在 AWAITING_CONFIRMATION 中追加 revision；不会绕过状态机。"
+      :title="`任务当前为 ${item.task.status}，不允许修改审核 revision`"
+      description="审核 API 只允许 PREFLIGHT 打开 REVIEW_OPENED bridge，或在 AWAITING_CONFIRMATION 中追加 revision；已进入副作用链的任务只能观察证据或按 journal 安全取消。"
       type="warning"
       :closable="false"
       show-icon
@@ -451,7 +670,10 @@ function showError(error: unknown): void {
       <div class="review-editor-heading">
         <div>
           <h3>Execution plan preview</h3>
-          <small>只读检查目标树并生成不可变计划；不会创建目录、硬链接或下载器任务</small>
+          <small
+            >生成计划本身无副作用；只有 READY + CURRENT
+            的当前计划才能通过下方显式确认进入真实执行链</small
+          >
         </div>
         <el-button :disabled="!canPlan" :loading="planning" @click="createExecutionPlan">
           生成无副作用计划
@@ -483,8 +705,7 @@ function showError(error: unknown): void {
           <el-tag v-if="executionPlan.client_check_required" type="warning">
             CLIENT CHECK REQUIRED
           </el-tag>
-          <el-tag type="info">execution_allowed = false</el-tag>
-          <el-tag type="info">side_effects_started = false</el-tag>
+          <el-tag type="info">计划生成无副作用</el-tag>
         </div>
         <div class="review-editor-status">
           <span>
@@ -492,7 +713,10 @@ function showError(error: unknown): void {
             {{ executionPlan.client_fetch_count }} 个客户端补齐 ·
             {{ executionPlan.create_directory_count }} 个待创建目录
           </span>
-          <span>预计客户端下载上界 {{ executionPlan.estimated_download_bytes_upper_bound }} B</span>
+          <span>
+            预计客户端下载上界
+            {{ formatByteUpperBound(executionPlan.estimated_download_bytes_upper_bound) }}
+          </span>
           <span v-if="executionPlan.target_remote_save_path">
             qB 保存路径 {{ executionPlan.target_remote_save_path }}
           </span>
@@ -512,9 +736,130 @@ function showError(error: unknown): void {
             <template #default="{ row }">{{ row.source_relative_path ?? '—' }}</template>
           </el-table-column>
         </el-table>
+        <div class="mutation-action-panel">
+          <el-alert
+            title="这是实际执行入口"
+            description="点击后会再次读取 latest execution plan，并由后端重新核对 plan/gate/review/source/目标下载器绑定。通过确认后才可能创建 journal-owned 目录/硬链接并向 qBittorrent 写入；源文件始终只读。"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
+          <el-alert
+            v-if="executeResultUnknown"
+            title="上一次执行请求结果未知"
+            description="已冻结原 execution plan ID 与 Idempotency-Key。这里只允许原请求幂等重放以确认结果，不会重新授权、切换计划或创建第二套资源。"
+            type="error"
+            :closable="false"
+            show-icon
+          />
+          <div class="review-editor-status">
+            <span>验证等级 {{ executionPlan.verification_level }}</span>
+            <span v-if="selectedTargetDownloader">
+              目标 {{ selectedTargetDownloader.name }} · v{{ selectedTargetDownloader.version }}
+            </span>
+            <span v-if="executionPlan.client_check_required" class="gate-blocked">
+              本计划必须完整执行客户端校验，禁止 skip-check。
+            </span>
+            <span v-if="lastMutation">
+              最近动作 {{ lastMutation.action }} → {{ lastMutation.status }} · receipt
+              {{ lastMutation.receipt_id.slice(0, 12) }}…
+            </span>
+          </div>
+          <div class="mutation-action-buttons">
+            <small v-if="executeResultUnknown">
+              当前任务可能已进入后续状态；重试仅查询/收敛第一次请求的持久化 receipt。
+            </small>
+            <small v-else-if="!canExecute">
+              仅 AWAITING_CONFIRMATION 且计划 READY + CURRENT、目标下载器仍通过安全门时可首次执行。
+            </small>
+            <el-button
+              type="warning"
+              :disabled="!canExecute"
+              :loading="executing"
+              @click="executeExecutionPlan"
+            >
+              {{ executeResultUnknown ? '重试确认执行结果' : '确认并执行当前计划' }}
+            </el-button>
+          </div>
+        </div>
       </template>
       <small v-else>尚未生成执行计划。</small>
     </div>
+    <div v-if="showCancellationPanel" class="execution-gate-card cancellation-card">
+      <div class="review-editor-heading">
+        <div>
+          <h3>取消 / 回滚</h3>
+          <small
+            >取消选项会被后端冻结到 ROLLING_BACK checkpoint；文件回滚只处理 operation journal
+            明确拥有的资源</small
+          >
+        </div>
+        <el-tag :type="cancellationInProgress ? 'warning' : 'danger'">
+          {{ cancellationInProgress ? item.task.status : 'SIDE EFFECTS ACTIVE' }}
+        </el-tag>
+      </div>
+
+      <el-alert
+        v-if="cancellationInProgress"
+        title="取消/回滚已经开始"
+        description="当前选项已在服务端冻结。前端不会重新提交另一组 remove/rollback 选项；后台 driver 会按既有 checkpoint 幂等恢复。"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+      <template v-else>
+        <el-alert
+          title="取消不会删除源媒体"
+          description="移除 qBittorrent 任务时固定 deleteFiles=false。回滚仅删除当前 task 的 journal-owned hardlink 与空目录；任何所有权/快照不确定都会失败关闭。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+        <div class="cancellation-options">
+          <label class="cancellation-option">
+            <el-checkbox v-model="removeDownloaderTask">
+              移除 PackBreaker 创建的 qBittorrent 任务
+            </el-checkbox>
+            <small>固定 deleteFiles=false；只移除客户端任务记录，不删除磁盘数据。</small>
+          </label>
+          <label class="cancellation-option">
+            <el-checkbox v-model="rollbackCreatedResources">
+              回滚 PackBreaker 创建的 hardlink 与空目录
+            </el-checkbox>
+            <small
+              >仅按 operation journal ID 逆序回滚；外部替换、非空目录或证据不确定会阻断。</small
+            >
+          </label>
+        </div>
+        <el-alert
+          v-if="!cancellationOptionsConsistent"
+          title="回滚文件前必须同时移除下载器任务"
+          description="目标 qBittorrent 可能仍持有这些路径；为避免客户端与文件系统竞态，前端不允许只回滚链接。"
+          type="error"
+          :closable="false"
+          show-icon
+        />
+        <el-checkbox v-model="cancellationAcknowledged" :disabled="!cancellationOptionsConsistent">
+          我已确认上面的移除/保留范围，并理解未勾选的资源将被保留
+        </el-checkbox>
+        <div class="mutation-action-buttons">
+          <small>任务状态：{{ item.task.status }}。选项变化后必须重新确认影响范围。</small>
+          <el-button
+            type="danger"
+            :disabled="!canCancel"
+            :loading="cancelling"
+            @click="cancelAndRollback"
+          >
+            按已确认范围取消任务
+          </el-button>
+        </div>
+      </template>
+    </div>
+    <TaskEventTimeline
+      :task-id="item.task.id"
+      :live="props.live"
+      @changed="emit('event', $event)"
+    />
   </section>
 </template>
 
@@ -557,6 +902,37 @@ function showError(error: unknown): void {
   border-radius: 6px;
   background: var(--surface);
 }
+.mutation-action-panel,
+.cancellation-options {
+  display: grid;
+  gap: 10px;
+}
+.mutation-action-panel {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.mutation-action-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mutation-action-buttons small,
+.cancellation-option small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.cancellation-option {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.cancellation-card {
+  border-color: color-mix(in srgb, var(--red) 35%, var(--line));
+}
 .gate-tags {
   display: flex;
   flex-wrap: wrap;
@@ -579,6 +955,10 @@ function showError(error: unknown): void {
 @media (max-width: 720px) {
   .review-editor-heading,
   .review-editor-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .mutation-action-buttons {
     align-items: stretch;
     flex-direction: column;
   }
