@@ -194,7 +194,9 @@ def create_app(
         )
         app.state.task_recovery_coordinator = task_recovery_coordinator
         try:
-            recovery_report = await task_recovery_coordinator.reconcile_once()
+            recovery_report = await task_recovery_coordinator.reconcile_once(
+                recover_abandoned_analysis=True
+            )
         except BaseException:
             resolved_runtime.stop()
             raise

@@ -133,7 +133,15 @@ def test_startup_recovery_unexpected_error_releases_runtime_lock(
 ) -> None:
     settings = _settings(tmp_path)
 
-    async def fail_recovery(self: TaskRecoveryCoordinator) -> object:
+    async def fail_recovery(
+        self: TaskRecoveryCoordinator,
+        *,
+        limit: int = 100,
+        max_steps_per_task: int = 4,
+        recover_abandoned_analysis: bool = False,
+    ) -> object:
+        del self, limit, max_steps_per_task
+        assert recover_abandoned_analysis is True
         raise RuntimeError("synthetic recovery bug")
 
     monkeypatch.setattr(TaskRecoveryCoordinator, "reconcile_once", fail_recovery)
