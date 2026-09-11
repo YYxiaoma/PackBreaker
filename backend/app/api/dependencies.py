@@ -7,6 +7,7 @@ from fastapi import Cookie, Header, Request
 from backend.app.application.auth import AuthIdentity, AuthService
 from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.downloaders import DownloaderService
+from backend.app.application.notifications import NotificationService
 from backend.app.application.sites import SiteService
 from backend.app.application.task_actions import TaskActionService
 from backend.app.application.task_events import TaskEventService
@@ -35,6 +36,10 @@ def api_token_service(request: Request) -> ApiTokenService:
 
 def downloader_service(request: Request) -> DownloaderService:
     return cast(DownloaderService, request.app.state.downloader_service)
+
+
+def notification_service(request: Request) -> NotificationService:
+    return cast(NotificationService, request.app.state.notification_service)
 
 
 def site_service(request: Request) -> SiteService:

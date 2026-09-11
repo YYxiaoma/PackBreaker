@@ -164,14 +164,18 @@ operation 对账中心坚持“重新证明而不是强制修改”。文件系�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET/PATCH | `/settings/{namespace}` | 匹配、调度、安全和保留策略 |
-| GET/POST | `/notification-channels` | 通知渠道列表与创建 |
-| POST | `/notification-channels/{id}/test` | 发送脱敏测试消息 |
+| GET/POST | `/notification-channels` | 通知渠道列表与创建；读取永不返回 Telegram token/chat ID 或 Server酱 SendKey |
+| PUT/DELETE | `/notification-channels/{id}` | 更新/删除通知渠道；要求 `config:write`、管理会话 CSRF 与 `If-Match` |
+| POST | `/notification-channels/{id}/test` | 使用已加密凭证向真实 provider 发送固定脱敏测试消息；失败不回显远端响应正文 |
+| POST | `/notification-channels/{id}/actions` | `enable` / `disable`；启用前必须已有凭证且最近真实测试为 `OK` |
 | GET | `/logs` | 按级别、时间、任务、trace_id 查询结构化日志 |
 | POST | `/diagnostics/export` | 生成有有效期的脱敏诊断包 |
 | GET | `/events/stream` | 管理界面使用的 SSE 状态流 |
 | GET | `/updates/check` | 查询可用版本及兼容信息 |
 | POST | `/updates/apply` | 显式确认后启动升级 |
 | GET | `/updates/{update_id}` | 升级、健康检查和回滚进度 |
+
+通知投递采用事务 outbox：高价值 `TaskEvent` 与对应 `notification_outbox` 在同一数据库事务中提交，任务完成/失败/取消、`RECONCILE_REQUIRED` 与 `ROLLBACK_BLOCKED` 才会投影通知。outbox 只保存脱敏标题、正文、严重级别、任务链接和配置版本引用，不保存 Telegram token/chat ID、Server酱 SendKey、operation journal payload 或 checkpoint。独立 `NotificationDriver` 有界扫描 due outbox，失败使用有限指数退避；通知失败、重试耗尽或渠道被停用均不会修改任务结果。相同 `channel + task + event_key` 首次立即发送，聚合窗口内重复只累计计数，窗口结束后发送一条摘要。
 
 ## 6. 核心资源形状
 

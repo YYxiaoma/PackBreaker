@@ -28,6 +28,9 @@ class AppSettings(BaseSettings):
     task_driver_interval_seconds: float = Field(default=15.0, ge=1.0, le=3600.0)
     task_driver_limit: int = Field(default=100, ge=1, le=1000)
     task_driver_max_steps_per_task: int = Field(default=4, ge=1, le=16)
+    notification_driver_interval_seconds: float = Field(default=5.0, ge=1.0, le=3600.0)
+    notification_driver_limit: int = Field(default=50, ge=1, le=500)
+    notification_max_attempts: int = Field(default=5, ge=1, le=20)
 
     @field_validator("config_dir", "data_dir")
     @classmethod

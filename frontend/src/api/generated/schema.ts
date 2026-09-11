@@ -252,6 +252,76 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/notification-channels': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Notification Channels */
+    get: operations['list_notification_channels_api_v1_notification_channels_get'];
+    put?: never;
+    /** Create Notification Channel */
+    post: operations['create_notification_channel_api_v1_notification_channels_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notification-channels/{channel_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Update Notification Channel */
+    put: operations['update_notification_channel_api_v1_notification_channels__channel_id__put'];
+    post?: never;
+    /** Delete Notification Channel */
+    delete: operations['delete_notification_channel_api_v1_notification_channels__channel_id__delete'];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notification-channels/{channel_id}/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Notification Channel Action */
+    post: operations['notification_channel_action_api_v1_notification_channels__channel_id__actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notification-channels/{channel_id}/test': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Test Notification Channel */
+    post: operations['test_notification_channel_api_v1_notification_channels__channel_id__test_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/sites': {
     parameters: {
       query?: never;
@@ -915,6 +985,53 @@ export interface components {
       /** Torrent Path */
       torrent_path: string;
     };
+    /** NotificationChannelActionRequest */
+    NotificationChannelActionRequest: {
+      /**
+       * Action
+       * @enum {string}
+       */
+      action: 'enable' | 'disable';
+    };
+    /** NotificationChannelCreateRequest */
+    NotificationChannelCreateRequest: {
+      /**
+       * Aggregation Window Seconds
+       * @default 300
+       */
+      aggregation_window_seconds: number;
+      /** Name */
+      name: string;
+      serverchan?: components['schemas']['ServerChanCredentialInput'] | null;
+      /** Task Link Base Url */
+      task_link_base_url?: string | null;
+      telegram?: components['schemas']['TelegramCredentialInput'] | null;
+      /**
+       * Type
+       * @enum {string}
+       */
+      type: 'TELEGRAM' | 'SERVERCHAN';
+    };
+    /** NotificationChannelUpdateRequest */
+    NotificationChannelUpdateRequest: {
+      /**
+       * Aggregation Window Seconds
+       * @default 300
+       */
+      aggregation_window_seconds: number;
+      /**
+       * Credential Action
+       * @default KEEP
+       * @enum {string}
+       */
+      credential_action: 'KEEP' | 'SET' | 'CLEAR';
+      /** Name */
+      name: string;
+      serverchan?: components['schemas']['ServerChanCredentialInput'] | null;
+      /** Task Link Base Url */
+      task_link_base_url?: string | null;
+      telegram?: components['schemas']['TelegramCredentialInput'] | null;
+    };
     /**
      * OperationKind
      * @enum {string}
@@ -1018,6 +1135,14 @@ export interface components {
       verification_digest: string;
       /** Verification Level */
       verification_level: string;
+    };
+    /** ServerChanCredentialInput */
+    ServerChanCredentialInput: {
+      /**
+       * Send Key
+       * Format: password
+       */
+      send_key: string;
     };
     /** SetupResponse */
     SetupResponse: {
@@ -1427,6 +1552,19 @@ export interface components {
       source_relative_path: string;
       /** Source Root */
       source_root: string;
+    };
+    /** TelegramCredentialInput */
+    TelegramCredentialInput: {
+      /**
+       * Bot Token
+       * Format: password
+       */
+      bot_token: string;
+      /**
+       * Chat Id
+       * Format: password
+       */
+      chat_id: string;
     };
     /** ValidationError */
     ValidationError: {
@@ -2068,6 +2206,239 @@ export interface operations {
         };
         content: {
           'application/json': unknown;
+        };
+      };
+    };
+  };
+  list_notification_channels_api_v1_notification_channels_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  create_notification_channel_api_v1_notification_channels_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['NotificationChannelCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  update_notification_channel_api_v1_notification_channels__channel_id__put: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        channel_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['NotificationChannelUpdateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  delete_notification_channel_api_v1_notification_channels__channel_id__delete: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        channel_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  notification_channel_action_api_v1_notification_channels__channel_id__actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        channel_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['NotificationChannelActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  test_notification_channel_api_v1_notification_channels__channel_id__test_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        channel_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
         };
       };
     };

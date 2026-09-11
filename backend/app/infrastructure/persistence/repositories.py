@@ -29,6 +29,7 @@ from backend.app.infrastructure.persistence.models import (
     new_uuid,
     utc_now,
 )
+from backend.app.infrastructure.persistence.notification_repositories import persist_task_event
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,9 +153,7 @@ class TaskRepository:
             reason=reason,
             created_at=utc_now(),
         )
-        self._session.add(event)
-        self._session.flush()
-        return event
+        return persist_task_event(self._session, event)
 
     def create_or_get(self, request: TaskCreate) -> tuple[UnpackTask, bool]:
         key = task_idempotency_key(
@@ -195,8 +194,7 @@ class TaskRepository:
             with self._session.begin_nested():
                 self._session.add(task)
                 self._session.flush()
-                self._session.add(event)
-                self._session.flush()
+                persist_task_event(self._session, event)
         except IntegrityError:
             concurrent = self.get_by_idempotency_key(key)
             if concurrent is None:
@@ -306,7 +304,8 @@ class TaskRepository:
                 raise DomainViolation(
                     ErrorCode.TASK_VERSION_CONFLICT, "任务版本已变化，请重新读取后恢复"
                 )
-            self._session.add(
+            persist_task_event(
+                self._session,
                 TaskEvent(
                     id=new_uuid(),
                     task_id=task.id,
@@ -315,9 +314,8 @@ class TaskRepository:
                     event_type=event_type,
                     reason=reason,
                     created_at=timestamp,
-                )
+                ),
             )
-            self._session.flush()
         self._session.expire(task)
         self._session.refresh(task)
         return task
@@ -355,7 +353,8 @@ class TaskRepository:
             )
             if updated_task_id is None:
                 raise DomainViolation(ErrorCode.TASK_VERSION_CONFLICT, "任务版本已变化，请重新加载")
-            self._session.add(
+            persist_task_event(
+                self._session,
                 TaskEvent(
                     id=new_uuid(),
                     task_id=task.id,
@@ -364,9 +363,8 @@ class TaskRepository:
                     event_type=event_type,
                     reason=task_transition.reason,
                     created_at=task_transition.occurred_at,
-                )
+                ),
             )
-            self._session.flush()
         self._session.expire(task)
         self._session.refresh(task)
         return task
@@ -531,7 +529,8 @@ class OperationJournalRepository:
         summary = operation_event_summary(operation_type, status)
         if summary is None:
             return
-        self._session.add(
+        persist_task_event(
+            self._session,
             TaskEvent(
                 id=new_uuid(),
                 task_id=task_id,
@@ -540,9 +539,8 @@ class OperationJournalRepository:
                 event_type=summary.event_type,
                 reason=summary.reason,
                 created_at=occurred_at,
-            )
+            ),
         )
-        self._session.flush()
 
     @staticmethod
     def _ensure_same_intent(existing: OperationJournal, request: OperationIntent) -> None:

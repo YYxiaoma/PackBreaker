@@ -107,6 +107,8 @@ LINKING 协调器额外覆盖两阶段当前性：调用前 plan provider 必须
 
 所有适配器额外执行 secret canary 测试：在凭证中放入唯一标记，断言日志、异常、repr、缓存键、数据库普通字段和 API 响应中不存在该标记。
 
+通知适配器只使用 `httpx` MockTransport 做默认测试：断言 Telegram 固定调用官方 Bot API `sendMessage`、Server酱按 SendKey 类型选择固定官方端点、禁止重定向，远端 401/403/429/5xx/非法 JSON 不回显 token/SendKey/响应正文。TaskEvent 与 outbox 必须同事务回滚；相同任务/事件键重复事件只形成一条滚动 outbox，首次发送后窗口内聚合；发送失败仅推进 outbox RETRY/DEAD，不改变 task 状态。NotificationDriver 需要覆盖重入保护和 shutdown 取消。
+
 ## 8. API 与前端测试
 
 - 首次 setup 只能执行一次；会话过期、注销、登录限速和 CSRF 均有效。
@@ -117,6 +119,7 @@ LINKING 协调器额外覆盖两阶段当前性：调用前 plan provider 必须
 - 人工审核 revision 必须验证 `expected_version` 并只追加；空 revision、stale preflight、跨 snapshot 候选、硬冲突批准和非 AMBIGUOUS/非候选源文件映射全部失败关闭。首个有效审核只能以 `REVIEW_OPENED` 从 `PREFLIGHT` 进入 `AWAITING_CONFIRMATION`，随后 revision 不得继续改变 task version，且该唯一 bridge 后 preflight 仍应 current。
 - 真实任务分析面板只对用户显式输入的后端 task ID 发请求；`PB-*` 演示任务不得自动映射为真实任务。前端 analyze 只提交 `/data` 相对 `source_root`，并正确展示 Unit、Candidate、Preflight current/stale 与稳定错误码。
 - 凭证读取始终脱敏，浏览器 URL、store 和 console 中不出现秘密。
+- 通知渠道 GET 只返回 `credential_configured`；前端编辑默认 `KEEP`，只有显式替换凭证才发送新 secret，关闭/成功/失败后清空凭证输入。创建、更新、删除和启停分别验证 CSRF/scope 与强 `If-Match`。
 - 危险操作显示影响范围，预演过期后不能使用旧确认继续执行。
 - 手动 Analyze 必须按 `ANALYZING → SEARCHING → MATCHING → VERIFYING → PREFLIGHT` 记录状态事件；失败恢复只能在任务 version 仍由本次运行持有时进入 `RETRY`，不得覆盖并发状态变化。
 - 人工映射重验证必须重新校验 preflight/current、source inventory、review revision、torrent 身份和 metainfo digest；重验证结果只追加不可变证据，审核或预演在验证期间变化时不得落库。

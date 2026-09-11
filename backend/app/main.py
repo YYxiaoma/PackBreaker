@@ -13,6 +13,7 @@ from backend.app.api.auth import router as auth_router
 from backend.app.api.automation_access import router as api_token_router
 from backend.app.api.downloaders import router as downloader_router
 from backend.app.api.health import router as health_router
+from backend.app.api.notifications import router as notification_router
 from backend.app.api.sites import router as site_router
 from backend.app.api.system import router as system_router
 from backend.app.api.tasks import router as task_router
@@ -28,6 +29,8 @@ from backend.app.application.downloader_operations import (
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import FilesystemOperationService
+from backend.app.application.notification_driver import NotificationDriver
+from backend.app.application.notifications import NotificationService
 from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
 from backend.app.application.task_actions import TaskActionService
@@ -103,6 +106,8 @@ def create_app(
             resolved_runtime.secret_cipher,
         )
         app.state.secret_store = secret_store
+        notification_service = NotificationService(resolved_runtime.session_factory, secret_store)
+        app.state.notification_service = notification_service
         downloader_service = DownloaderService(
             resolved_runtime.session_factory,
             secret_store,
@@ -224,9 +229,18 @@ def create_app(
         )
         app.state.task_driver = task_driver
         task_driver.start()
+        notification_driver = NotificationDriver(
+            notification_service,
+            interval_seconds=resolved_settings.notification_driver_interval_seconds,
+            limit=resolved_settings.notification_driver_limit,
+            max_attempts=resolved_settings.notification_max_attempts,
+        )
+        app.state.notification_driver = notification_driver
+        notification_driver.start()
         try:
             yield
         finally:
+            await notification_driver.stop()
             await task_driver.stop()
             resolved_runtime.stop()
 
@@ -316,6 +330,7 @@ def create_app(
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(downloader_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(notification_router, prefix="/api/v1")
     app.include_router(site_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
     app.include_router(task_router, prefix="/api/v1")

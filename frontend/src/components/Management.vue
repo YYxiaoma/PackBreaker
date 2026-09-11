@@ -27,6 +27,7 @@ import {
 import type { Task } from '../demo';
 import DownloaderManagement from './DownloaderManagement.vue';
 import ApiTokenManagement from './AutomationAccessManagement.vue';
+import NotificationManagement from './NotificationManagement.vue';
 const props = defineProps<{ page: string; tasks: Task[] }>();
 const emit = defineEmits<{ export: [unknown, string]; open: [Task]; createHistory: [string] }>();
 interface Connection {
@@ -312,7 +313,6 @@ const logs = computed(() =>
   ),
 );
 const settingTab = ref('常规'),
-  notifications = reactive({ telegram: false, server: false, aggregation: 60 }),
   settings = reactive({
     timezone: 'Asia/Shanghai',
     retention: 30,
@@ -712,31 +712,7 @@ async function update() {
       </div>
     </div>
     <div v-else-if="settingTab === '通知'" class="settings-content">
-      <h3>通知渠道</h3>
-      <div class="setting-row" v-for="kind in ['telegram', 'server'] as const" :key="kind">
-        <div>
-          <b>{{ kind === 'telegram' ? 'Telegram' : 'Server酱' }}</b>
-          <p>仅在本页模拟发送结果</p>
-        </div>
-        <el-switch v-model="notifications[kind]" /><el-button
-          :disabled="!notifications[kind]"
-          @click="ElMessage.success('模拟通知成功，未发送真实消息')"
-          >模拟测试</el-button
-        >
-      </div>
-      <el-form label-position="top" class="form-stack"
-        ><el-form-item label="聚合窗口（秒）"
-          ><el-input-number
-            v-model="notifications.aggregation"
-            :min="30"
-            :max="3600" /></el-form-item
-        ><el-form-item label="发送事件"
-          ><el-select v-model="settings.notification"
-            ><el-option value="任务完成与失败" /><el-option
-              value="仅失败与需人工处理" /></el-select></el-form-item></el-form
-      ><el-button type="primary" @click="ElMessage.success('通知偏好已保存在演示会话')"
-        >保存通知设置</el-button
-      >
+      <NotificationManagement />
     </div>
     <div v-else-if="settingTab === '安全与集成'" class="settings-content">
       <el-alert

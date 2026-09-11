@@ -14,6 +14,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from backend.app.domain.notification import (
+    NotificationChannelKind,
+    NotificationDeliveryState,
+    NotificationSeverity,
+)
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.site_config import SiteCredentialKind, SiteKind
 from backend.app.domain.task_state import TaskStatus
@@ -35,6 +40,11 @@ _OPERATION_STATUS_SQL = ", ".join(f"'{status.value}'" for status in OperationSta
 _DOWNLOADER_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in DownloaderKind)
 _SITE_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in SiteKind)
 _SITE_CREDENTIAL_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in SiteCredentialKind)
+_NOTIFICATION_CHANNEL_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in NotificationChannelKind)
+_NOTIFICATION_DELIVERY_STATE_SQL = ", ".join(
+    f"'{state.value}'" for state in NotificationDeliveryState
+)
+_NOTIFICATION_SEVERITY_SQL = ", ".join(f"'{severity.value}'" for severity in NotificationSeverity)
 
 
 class Administrator(Base):
@@ -89,6 +99,36 @@ class SecretRecord(Base):
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     key_version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class NotificationChannel(Base):
+    __tablename__ = "notification_channel"
+    __table_args__ = (
+        CheckConstraint(f"type IN ({_NOTIFICATION_CHANNEL_KIND_SQL})", name="type"),
+        CheckConstraint(
+            "connection_status IN ('UNTESTED', 'OK', 'FAILED')", name="connection_status"
+        ),
+        CheckConstraint(
+            "aggregation_window_seconds BETWEEN 1 AND 86400",
+            name="aggregation_window_seconds",
+        ),
+        Index("ix_notification_channel_type_enabled", "type", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    type: Mapped[str] = mapped_column(String(16), nullable=False)
+    secret_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("secret.id", ondelete="SET NULL"), nullable=True
+    )
+    task_link_base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    aggregation_window_seconds: Mapped[int] = mapped_column(nullable=False, default=300)
+    connection_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
@@ -184,6 +224,52 @@ class TaskEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(String(1024), nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class NotificationOutbox(Base):
+    __tablename__ = "notification_outbox"
+    __table_args__ = (
+        CheckConstraint(f"state IN ({_NOTIFICATION_DELIVERY_STATE_SQL})", name="state"),
+        CheckConstraint(f"severity IN ({_NOTIFICATION_SEVERITY_SQL})", name="severity"),
+        CheckConstraint("pending_count >= 0", name="pending_count"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count"),
+        UniqueConstraint(
+            "channel_id",
+            "task_id",
+            "event_key",
+            name="uq_notification_outbox_channel_task_event_key",
+        ),
+        Index("ix_notification_outbox_due", "state", "next_attempt_at"),
+        Index("ix_notification_outbox_task_updated", "task_id", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    channel_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("notification_channel.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=False
+    )
+    last_event_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_event.id", ondelete="CASCADE"), nullable=False
+    )
+    channel_version: Mapped[int] = mapped_column(nullable=False)
+    event_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    title: Mapped[str] = mapped_column(String(64), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    link: Mapped[str | None] = mapped_column(Text, nullable=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    pending_count: Mapped[int] = mapped_column(nullable=False, default=1)
+    attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
 class PreflightSnapshotRecord(Base):
