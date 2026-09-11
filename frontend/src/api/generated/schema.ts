@@ -531,6 +531,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/tasks/{task_id}/operations': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Task Operations */
+    get: operations['list_task_operations_api_v1_tasks__task_id__operations_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/tasks/{task_id}/operations/{journal_id}/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Task Operation Action */
+    post: operations['task_operation_action_api_v1_tasks__task_id__operations__journal_id__actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/tasks/{task_id}/preflight': {
     parameters: {
       query?: never;
@@ -881,6 +915,30 @@ export interface components {
       /** Torrent Path */
       torrent_path: string;
     };
+    /**
+     * OperationKind
+     * @enum {string}
+     */
+    OperationKind:
+      | 'FILESYSTEM_DIRECTORY'
+      | 'FILESYSTEM_HARDLINK'
+      | 'QBITTORRENT_ADD'
+      | 'QBITTORRENT_RECHECK'
+      | 'QBITTORRENT_START'
+      | 'QBITTORRENT_REMOVE'
+      | 'OTHER';
+    /**
+     * OperationStatus
+     * @enum {string}
+     */
+    OperationStatus:
+      | 'INTENT_RECORDED'
+      | 'APPLIED'
+      | 'NOOP'
+      | 'ROLLBACK_PENDING'
+      | 'ROLLED_BACK'
+      | 'RECONCILE_REQUIRED'
+      | 'ROLLBACK_BLOCKED';
     /** PasswordRequest */
     PasswordRequest: {
       /**
@@ -1178,6 +1236,62 @@ export interface components {
       task_id: string;
       /** Task Version */
       task_version: number;
+    };
+    /** TaskOperationActionRequest */
+    TaskOperationActionRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'reconcile';
+    };
+    /** TaskOperationActionResponse */
+    TaskOperationActionResponse: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'reconcile';
+      /** Idempotency Replayed */
+      idempotency_replayed: boolean;
+      /** Journal Id */
+      journal_id: string;
+      kind: components['schemas']['OperationKind'];
+      /** Operation Replayed */
+      operation_replayed: boolean;
+      /** Receipt Id */
+      receipt_id: string;
+      status: components['schemas']['OperationStatus'];
+      /** Task Id */
+      task_id: string;
+    };
+    /** TaskOperationListResponse */
+    TaskOperationListResponse: {
+      /** Items */
+      items: components['schemas']['TaskOperationResponse'][];
+    };
+    /** TaskOperationResponse */
+    TaskOperationResponse: {
+      /** Attention Required */
+      attention_required: boolean;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Id */
+      id: string;
+      kind: components['schemas']['OperationKind'];
+      /** Reconcile Supported */
+      reconcile_supported: boolean;
+      status: components['schemas']['OperationStatus'];
+      /** Task Id */
+      task_id: string;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
     };
     /** TaskResponse */
     TaskResponse: {
@@ -2812,6 +2926,84 @@ export interface operations {
         };
         content: {
           'text/event-stream': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_task_operations_api_v1_tasks__task_id__operations_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskOperationListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  task_operation_action_api_v1_tasks__task_id__operations__journal_id__actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'Idempotency-Key'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        task_id: string;
+        journal_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskOperationActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskOperationActionResponse'];
         };
       };
       /** @description Validation Error */

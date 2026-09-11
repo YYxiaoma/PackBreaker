@@ -10,6 +10,7 @@ from backend.app.application.downloaders import DownloaderService
 from backend.app.application.sites import SiteService
 from backend.app.application.task_actions import TaskActionService
 from backend.app.application.task_events import TaskEventService
+from backend.app.application.task_operations import TaskOperationService
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.domain.auth import ApiScope
 
@@ -50,6 +51,10 @@ def task_action_service(request: Request) -> TaskActionService:
 
 def task_event_service(request: Request) -> TaskEventService:
     return cast(TaskEventService, request.app.state.task_event_service)
+
+
+def task_operation_service(request: Request) -> TaskOperationService:
+    return cast(TaskOperationService, request.app.state.task_operation_service)
 
 
 def client_source(request: Request) -> str:

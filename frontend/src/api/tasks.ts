@@ -10,6 +10,8 @@ export type ExecuteTaskActionInput = components['schemas']['ExecuteTaskActionReq
 export type CancelTaskActionInput = components['schemas']['CancelTaskActionRequest'];
 export type TaskMutationAction = components['schemas']['TaskMutationActionResponse'];
 export type TaskEvent = components['schemas']['TaskEventResponse'];
+export type TaskOperation = components['schemas']['TaskOperationResponse'];
+export type TaskOperationAction = components['schemas']['TaskOperationActionResponse'];
 export type TaskRecord = components['schemas']['TaskResponse'];
 export type TaskStatus = components['schemas']['TaskStatus'];
 export type TaskCreateInput = components['schemas']['TaskCreateRequest'];
@@ -66,6 +68,17 @@ export async function listTaskEvents(
         limit,
       },
     });
+    return response.data.items;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function listTaskOperations(taskId: string): Promise<TaskOperation[]> {
+  try {
+    const response = await apiClient.get<{ items: TaskOperation[] }>(
+      `${taskPath(taskId)}/operations`,
+    );
     return response.data.items;
   } catch (error) {
     throw toApiProblem(error);
@@ -140,6 +153,25 @@ function actionHeaders(idempotencyKey: string): { 'Idempotency-Key': string } {
   const normalized = idempotencyKey.trim();
   if (!normalized) throw new Error('Idempotency-Key 不能为空');
   return { 'Idempotency-Key': normalized };
+}
+
+export async function reconcileTaskOperation(
+  taskId: string,
+  journalId: string,
+  idempotencyKey: string,
+): Promise<TaskOperationAction> {
+  const normalizedJournalId = journalId.trim();
+  if (!normalizedJournalId) throw new Error('journalId 不能为空');
+  try {
+    const response = await apiClient.post<TaskOperationAction>(
+      `${taskPath(taskId)}/operations/${encodeURIComponent(normalizedJournalId)}/actions`,
+      { action: 'reconcile' },
+      { headers: actionHeaders(idempotencyKey) },
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
 }
 
 export async function executeTask(

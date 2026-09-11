@@ -13,12 +13,14 @@ import {
 } from '../api/tasks';
 import TaskAnalysisPanel from './TaskAnalysisPanel.vue';
 import TaskEventTimeline from './TaskEventTimeline.vue';
+import TaskOperationCenter from './TaskOperationCenter.vue';
 
 const tasks = ref<TaskRecord[]>([]);
 const loading = ref(false);
 const createVisible = ref(false);
 const detailVisible = ref(false);
 const active = ref<TaskRecord | null>(null);
+const operationRefreshKey = ref(0);
 const query = ref('');
 const status = ref<TaskStatus | ''>('');
 const creating = ref(false);
@@ -99,6 +101,11 @@ function open(task: TaskRecord): void {
   detailVisible.value = true;
 }
 
+async function handleTaskEventChanged(): Promise<void> {
+  operationRefreshKey.value += 1;
+  await refresh();
+}
+
 function showError(error: unknown): void {
   if (error instanceof ApiProblem) {
     ElMessage.error(`${error.code}：${error.message}`);
@@ -123,6 +130,11 @@ const statusOptions: TaskStatus[] = [
   'VERIFYING',
   'PREFLIGHT',
   'AWAITING_CONFIRMATION',
+  'LINKING',
+  'ADDING',
+  'CLIENT_VERIFYING',
+  'CANCELLING',
+  'ROLLING_BACK',
   'PAUSED',
   'RETRY',
   'FAILED',
@@ -244,7 +256,12 @@ const statusOptions: TaskStatus[] = [
           }}</el-descriptions-item>
         </el-descriptions>
         <TaskAnalysisPanel :suggested-task-id="active.id" />
-        <TaskEventTimeline :task-id="active.id" :live="detailVisible" @changed="refresh" />
+        <TaskOperationCenter :task-id="active.id" :refresh-key="operationRefreshKey" />
+        <TaskEventTimeline
+          :task-id="active.id"
+          :live="detailVisible"
+          @changed="handleTaskEventChanged"
+        />
       </template>
     </el-drawer>
   </section>

@@ -15,9 +15,11 @@ import {
   getTaskUnitReviewVerification,
   listTaskCandidates,
   listTaskEvents,
+  listTaskOperations,
   listTasks,
   listTaskUnits,
   reverifyTaskUnitDecision,
+  reconcileTaskOperation,
   refreshTaskUnitExecutionGate,
   submitTaskUnitDecision,
   taskEventStreamUrl,
@@ -108,6 +110,32 @@ describe('任务分析 API', () => {
     });
     expect(taskEventStreamUrl('task/with slash', 'event/with slash')).toBe(
       '/api/v1/tasks/task%2Fwith%20slash/events/stream?after_event_id=event%2Fwith+slash',
+    );
+  });
+
+  it('operation 摘要与对账动作使用编码后的 task/journal 且显式携带幂等键', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { items: [] } });
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      data: {
+        action: 'reconcile',
+        task_id: 'task/with slash',
+        journal_id: 'journal/with slash',
+        kind: 'FILESYSTEM_HARDLINK',
+        status: 'APPLIED',
+        operation_replayed: false,
+        idempotency_replayed: false,
+        receipt_id: 'receipt-1',
+      },
+    });
+
+    await listTaskOperations('task/with slash');
+    await reconcileTaskOperation('task/with slash', 'journal/with slash', 'reconcile-key');
+
+    expect(get).toHaveBeenCalledWith('/tasks/task%2Fwith%20slash/operations');
+    expect(post).toHaveBeenCalledWith(
+      '/tasks/task%2Fwith%20slash/operations/journal%2Fwith%20slash/actions',
+      { action: 'reconcile' },
+      { headers: { 'Idempotency-Key': 'reconcile-key' } },
     );
   });
 

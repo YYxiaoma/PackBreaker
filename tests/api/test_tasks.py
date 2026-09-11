@@ -20,6 +20,7 @@ from backend.app.application.task_actions import (
 )
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.config import AppSettings
+from backend.app.domain.operation import OperationStatus
 from backend.app.domain.site_adapter import SiteConnectionResult, TorrentDetails, TorrentPayload
 from backend.app.domain.site_search import (
     SearchPage,
@@ -40,7 +41,12 @@ from backend.app.infrastructure.persistence.models import (
     TaskUnitRecord,
     new_uuid,
 )
-from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
+from backend.app.infrastructure.persistence.repositories import (
+    OperationIntent,
+    OperationJournalRepository,
+    TaskCreate,
+    TaskRepository,
+)
 from backend.app.main import create_app
 
 _PASSWORD = "synthetic correct horse battery staple"
@@ -1010,6 +1016,113 @@ def test_task_events_support_history_cursor_and_sse_resume(tmp_path: Path) -> No
         assert '"event_type":"TEST_TIMELINE_EVENT"' in stream.text
         assert '"task_id":"' + task_id + '"' in stream.text
         assert "checkpoint" not in stream.text
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_task_operation_api_redacts_journal_and_reconciles_idempotently(tmp_path: Path) -> None:
+    client, app, settings = _authenticated_client(tmp_path)
+    task_id = _create_task(app, "operation-center")
+    target_root = settings.data_dir / "target"
+    target_root.mkdir(parents=True, exist_ok=True)
+    target = target_root / "movie.mkv"
+    target.write_bytes(b"synthetic-owned-file")
+    observed = target.stat(follow_symlinks=False)
+
+    with app.state.runtime.session_factory() as session:
+        repository = OperationJournalRepository(session)
+        journal, _ = repository.record_intent(
+            OperationIntent(
+                task_id=task_id,
+                idempotency_key="f" * 64,
+                operation_type="CREATE_HARDLINK",
+                target={"target_root": "target", "relative_path": "movie.mkv"},
+                intent={"source_relative_path": "private/source/movie.mkv"},
+                before_snapshot={"secret": "must-not-leak"},
+            )
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+            after_snapshot={
+                "device": observed.st_dev,
+                "inode": observed.st_ino,
+                "size": observed.st_size,
+                "mtime_ns": observed.st_mtime_ns,
+                "file_type": "regular",
+                "link_count": observed.st_nlink,
+            },
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.APPLIED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+        session.commit()
+        journal_id = journal.id
+
+    try:
+        listing = client.get(f"/api/v1/tasks/{task_id}/operations")
+        assert listing.status_code == 200
+        assert len(listing.json()["items"]) == 1
+        item = listing.json()["items"][0]
+        assert item["id"] == journal_id
+        assert item["kind"] == "FILESYSTEM_HARDLINK"
+        assert item["status"] == "RECONCILE_REQUIRED"
+        assert item["attention_required"] is True
+        assert item["reconcile_supported"] is True
+        assert set(item) == {
+            "id",
+            "task_id",
+            "kind",
+            "status",
+            "attention_required",
+            "reconcile_supported",
+            "created_at",
+            "updated_at",
+        }
+        encoded = listing.text
+        assert '"relative_path"' not in encoded
+        assert "movie.mkv" not in encoded
+        assert "private/source/movie.mkv" not in encoded
+        assert "must-not-leak" not in encoded
+        assert "ffffffffffffffff" not in encoded
+
+        without_csrf = client.post(
+            f"/api/v1/tasks/{task_id}/operations/{journal_id}/actions",
+            headers={"Idempotency-Key": "operation-reconcile"},
+            json={"action": "reconcile"},
+        )
+        assert without_csrf.status_code == 403
+
+        missing_key = client.post(
+            f"/api/v1/tasks/{task_id}/operations/{journal_id}/actions",
+            headers=_csrf(client),
+            json={"action": "reconcile"},
+        )
+        assert missing_key.status_code == 428
+        assert missing_key.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+        first = client.post(
+            f"/api/v1/tasks/{task_id}/operations/{journal_id}/actions",
+            headers={**_csrf(client), "Idempotency-Key": "operation-reconcile"},
+            json={"action": "reconcile"},
+        )
+        assert first.status_code == 200
+        assert first.json()["status"] == "APPLIED"
+        assert first.json()["kind"] == "FILESYSTEM_HARDLINK"
+        assert first.json()["idempotency_replayed"] is False
+        receipt_id = first.json()["receipt_id"]
+
+        replay = client.post(
+            f"/api/v1/tasks/{task_id}/operations/{journal_id}/actions",
+            headers={**_csrf(client), "Idempotency-Key": "operation-reconcile"},
+            json={"action": "reconcile"},
+        )
+        assert replay.status_code == 200
+        assert replay.json()["receipt_id"] == receipt_id
+        assert replay.json()["idempotency_replayed"] is True
     finally:
         client.__exit__(None, None, None)
 

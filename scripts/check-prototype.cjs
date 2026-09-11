@@ -24,14 +24,18 @@ const path = require('node:path');
     const realTasks={
       'task-e2e-execute':{id:'task-e2e-execute',type:'MOVIE',source_downloader_id:'source-qb',source_hash:'source-execute',normalized_unit_key:'movie:execute',status:'AWAITING_CONFIRMATION',version:1,error_code:null,created_at:now(),updated_at:now()},
       'task-e2e-cancel':{id:'task-e2e-cancel',type:'MOVIE',source_downloader_id:'source-qb',source_hash:'source-cancel',normalized_unit_key:'movie:cancel',status:'LINKING',version:2,error_code:null,created_at:now(),updated_at:now()},
+      'task-e2e-reconcile':{id:'task-e2e-reconcile',type:'MOVIE',source_downloader_id:'source-qb',source_hash:'source-reconcile',normalized_unit_key:'movie:reconcile',status:'LINKING',version:2,error_code:null,created_at:now(),updated_at:now()},
     };
     const executeKeys=[];
     const cancelKeys=[];
     const cancelBodies=[];
+    const reconcileKeys=[];
+    let reconcileAttempts=0;
     let executeAttempts=0;
     const taskEvents={
       'task-e2e-execute':[{id:'event-execute-1',task_id:'task-e2e-execute',from_status:'PREFLIGHT',to_status:'AWAITING_CONFIRMATION',event_type:'REVIEW_OPENED',reason:'E2E 初始审核已确认',created_at:now()}],
       'task-e2e-cancel':[{id:'event-cancel-1',task_id:'task-e2e-cancel',from_status:'AWAITING_CONFIRMATION',to_status:'LINKING',event_type:'LINKING_STARTED',reason:'E2E 初始链接阶段',created_at:now()}],
+      'task-e2e-reconcile':[{id:'event-reconcile-1',task_id:'task-e2e-reconcile',from_status:'AWAITING_CONFIRMATION',to_status:'LINKING',event_type:'FILESYSTEM_HARDLINK_RECONCILE_REQUIRED',reason:'文件系统硬链接创建：当前证据不足以自动确认真实状态，已要求安全对账',created_at:now()}],
     };
     const appendTaskEvent=(id,eventType,fromStatus,toStatus,reason)=>{
       const event={id:`event-${id}-${taskEvents[id].length+1}`,task_id:id,from_status:fromStatus,to_status:toStatus,event_type:eventType,reason,created_at:now()};
@@ -56,6 +60,14 @@ const path = require('node:path');
       setTimeout(()=>transitionTask('task-e2e-execute','SEEDING','CLIENT_VERIFICATION_CONFIRMED','E2E 客户端校验完成'),850);
       setTimeout(()=>appendTaskEvent('task-e2e-execute','QBITTORRENT_START_APPLIED','SEEDING','SEEDING','qBittorrent 启动作种：已由 operation journal 与完成后证据确认副作用完成'),1050);
       setTimeout(()=>transitionTask('task-e2e-execute','DONE','QBITTORRENT_SEEDING_CONFIRMED','E2E 做种状态已确认'),1250);
+    };
+    const taskOperations={
+      'task-e2e-execute':[],
+      'task-e2e-cancel':[],
+      'task-e2e-reconcile':[
+        {id:'journal-reconcile-fs',task_id:'task-e2e-reconcile',kind:'FILESYSTEM_HARDLINK',status:'RECONCILE_REQUIRED',attention_required:true,reconcile_supported:true,created_at:now(),updated_at:now()},
+        {id:'journal-reconcile-qb',task_id:'task-e2e-reconcile',kind:'QBITTORRENT_ADD',status:'ROLLBACK_BLOCKED',attention_required:true,reconcile_supported:false,created_at:now(),updated_at:now()},
+      ],
     };
     const taskUnit=id=>({
       id:`unit-${id}`,
@@ -175,7 +187,7 @@ const path = require('node:path');
       const request=route.request();
       const url=new URL(request.url());
       if(url.pathname==='/api/v1/tasks'&&request.method()==='GET')return fulfillJson(route,{items:Object.values(realTasks)});
-      const match=url.pathname.match(/\/api\/v1\/tasks\/(task-e2e-(?:execute|cancel))(?:\/(.+))?$/);
+      const match=url.pathname.match(/\/api\/v1\/tasks\/(task-e2e-(?:execute|cancel|reconcile))(?:\/(.+))?$/);
       if(!match)return route.fallback();
       const id=match[1],tail=match[2]||'';
       if(request.method()==='GET'&&!tail)return fulfillJson(route,realTasks[id]);
@@ -198,6 +210,21 @@ const path = require('node:path');
       if(request.method()==='GET'&&tail==='preflight')return fulfillJson(route,preflight(id));
       if(request.method()==='GET'&&tail==='candidates')return fulfillJson(route,{items:[candidate(id)]});
       if(request.method()==='GET'&&tail==='units')return fulfillJson(route,{items:[taskUnit(id)]});
+      if(request.method()==='GET'&&tail==='operations')return fulfillJson(route,{items:taskOperations[id]});
+      if(request.method()==='POST'&&tail==='operations/journal-reconcile-fs/actions'){
+        const body=request.postDataJSON();
+        const key=request.headers()['idempotency-key'];
+        assert.equal(body.action,'reconcile');
+        assert.ok(key,'operation reconcile 必须携带 Idempotency-Key');
+        reconcileKeys.push(key);reconcileAttempts+=1;
+        if(reconcileAttempts===1){
+          const operation=taskOperations[id].find(item=>item.id==='journal-reconcile-fs');
+          operation.status='APPLIED';operation.attention_required=false;operation.reconcile_supported=false;operation.updated_at=now();
+          appendTaskEvent(id,'OPERATION_RECONCILE_CONFIRMED','LINKING','LINKING','FILESYSTEM_HARDLINK 已通过当前资源与已登记完成快照重新验证；未创建、删除或覆盖文件系统资源');
+          return route.abort('connectionreset');
+        }
+        return fulfillJson(route,{action:'reconcile',task_id:id,journal_id:'journal-reconcile-fs',kind:'FILESYSTEM_HARDLINK',status:'APPLIED',operation_replayed:true,receipt_id:'receipt-reconcile',idempotency_replayed:true});
+      }
       if(request.method()==='POST'&&tail==='actions'){
         const body=request.postDataJSON();
         const key=request.headers()['idempotency-key'];
@@ -268,6 +295,26 @@ const path = require('node:path');
     await page.getByText('QBITTORRENT_REMOVE_APPLIED',{exact:true}).waitFor({timeout:7000});
     await page.getByText('ROLLBACK_COMPLETED',{exact:true}).waitFor({timeout:7000});
     await page.locator('.review-identity').filter({hasText:'task-e2e-cancel'}).getByText(/CANCELLED/).waitFor({timeout:7000});
+    await page.keyboard.press('Escape');
+
+    // 阻断/对账操作中心：响应丢失后即使 SSE 已显示 APPLIED，也只能使用原 journal + 原幂等键确认结果。
+    await page.locator('nav').getByRole('button',{name:'任务中心',exact:false}).click();
+    await page.getByRole('heading',{name:'任务中心',exact:true,level:1}).waitFor();
+    const reconcileRow=page.locator('.el-table__row').filter({hasText:'task-e2e-reconcile'});
+    await reconcileRow.getByRole('button',{name:'分析',exact:true}).click();
+    await page.getByRole('heading',{name:'阻断 / 对账操作中心',exact:true}).waitFor();
+    assert.equal(await page.getByText('/private/reconcile/movie.mkv',{exact:true}).count(),0,'operation 摘要不得暴露路径');
+    await page.getByText('qB 添加',{exact:true}).waitFor();
+    const fsReconcileButton=page.getByRole('button',{name:'重新验证证据',exact:true});
+    assert.equal(await fsReconcileButton.count(),1,'只有支持安全快照重验的 journal 才显示对账按钮');
+    await fsReconcileButton.click();
+    await page.locator('.el-message-box').getByRole('button',{name:'重新验证证据',exact:true}).click();
+    await page.getByText(/API_UNAVAILABLE/).waitFor();
+    await page.getByText('OPERATION_RECONCILE_CONFIRMED',{exact:true}).waitFor({timeout:7000});
+    await page.getByRole('button',{name:'重试确认对账结果',exact:true}).click();
+    await page.getByText(/证据重新验证完成：APPLIED/).waitFor();
+    assert.equal(reconcileKeys.length,2,'响应丢失后的 reconcile 应重试一次');
+    assert.equal(reconcileKeys[0],reconcileKeys[1],'响应丢失后的 reconcile 必须复用相同 Idempotency-Key');
     await page.keyboard.press('Escape');
 
     for(const name of ['总览','预演与确认','历史辅种','站点管理','下载器','规则配置','清理与对账','日志','系统设置','升级中心']){

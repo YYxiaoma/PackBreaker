@@ -1,6 +1,6 @@
 import type { TaskStatus } from './api/tasks';
 
-export type TaskMutationKind = 'execute' | 'cancel';
+export type TaskMutationKind = 'execute' | 'cancel' | 'reconcile';
 
 const CANCELLABLE_STATUSES = new Set<TaskStatus>([
   'LINKING',

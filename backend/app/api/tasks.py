@@ -15,6 +15,7 @@ from backend.app.api.dependencies import (
     task_action_service,
     task_analysis_service,
     task_event_service,
+    task_operation_service,
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.task_actions import (
@@ -24,6 +25,10 @@ from backend.app.application.task_actions import (
     TaskMutationActionResult,
 )
 from backend.app.application.task_events import TaskEventService, TaskEventView
+from backend.app.application.task_operations import (
+    TaskOperationReconcileResult,
+    TaskOperationView,
+)
 from backend.app.application.tasks import (
     ExecutionGateView,
     ExecutionPlanView,
@@ -35,6 +40,7 @@ from backend.app.application.tasks import (
     TaskView,
 )
 from backend.app.domain.auth import ApiScope
+from backend.app.domain.operation import OperationKind, OperationStatus
 from backend.app.domain.review import ManualReviewMapping
 from backend.app.domain.task_state import TaskStatus
 
@@ -84,6 +90,36 @@ class TaskEventResponse(BaseModel):
 
 class TaskEventListResponse(BaseModel):
     items: list[TaskEventResponse]
+
+
+class TaskOperationResponse(BaseModel):
+    id: str
+    task_id: str
+    kind: OperationKind
+    status: OperationStatus
+    attention_required: bool
+    reconcile_supported: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskOperationListResponse(BaseModel):
+    items: list[TaskOperationResponse]
+
+
+class TaskOperationActionRequest(BaseModel):
+    action: Literal["reconcile"]
+
+
+class TaskOperationActionResponse(BaseModel):
+    action: Literal["reconcile"]
+    task_id: str
+    journal_id: str
+    kind: OperationKind
+    status: OperationStatus
+    operation_replayed: bool
+    idempotency_replayed: bool
+    receipt_id: str
 
 
 class AnalyzeTaskActionRequest(BaseModel):
@@ -352,6 +388,39 @@ async def stream_task_events(
     )
 
 
+@router.get("/tasks/{task_id}/operations", response_model=TaskOperationListResponse)
+async def list_task_operations(
+    task_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
+) -> TaskOperationListResponse:
+    items = task_operation_service(request).list_operations(task_id)
+    return TaskOperationListResponse(items=[_task_operation_response(item) for item in items])
+
+
+@router.post(
+    "/tasks/{task_id}/operations/{journal_id}/actions",
+    response_model=TaskOperationActionResponse,
+)
+async def task_operation_action(
+    task_id: str,
+    journal_id: str,
+    request: Request,
+    payload: TaskOperationActionRequest,
+    principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> TaskOperationActionResponse:
+    if payload.action != "reconcile":
+        raise AssertionError("未覆盖的 operation journal 动作")
+    result = await task_operation_service(request).reconcile(
+        task_id=task_id,
+        journal_id=journal_id,
+        actor=TaskActionActor(principal.kind, principal.subject_id),
+        idempotency_key=idempotency_key,
+    )
+    return _task_operation_action_response(result)
+
+
 @router.get("/tasks/{task_id}/units", response_model=TaskUnitListResponse)
 async def list_task_units(
     task_id: str,
@@ -593,6 +662,34 @@ def _task_event_response(item: TaskEventView) -> TaskEventResponse:
         event_type=item.event_type,
         reason=item.reason,
         created_at=item.created_at,
+    )
+
+
+def _task_operation_response(item: TaskOperationView) -> TaskOperationResponse:
+    return TaskOperationResponse(
+        id=item.id,
+        task_id=item.task_id,
+        kind=item.kind,
+        status=item.status,
+        attention_required=item.attention_required,
+        reconcile_supported=item.reconcile_supported,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def _task_operation_action_response(
+    item: TaskOperationReconcileResult,
+) -> TaskOperationActionResponse:
+    return TaskOperationActionResponse(
+        action=item.action,
+        task_id=item.task_id,
+        journal_id=item.journal_id,
+        kind=item.kind,
+        status=item.status,
+        operation_replayed=item.operation_replayed,
+        idempotency_replayed=item.idempotency_replayed,
+        receipt_id=item.receipt_id,
     )
 
 

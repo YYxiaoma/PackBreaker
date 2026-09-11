@@ -10,7 +10,9 @@ from sqlalchemy import select
 
 from backend.app.api.dependencies import CSRF_COOKIE
 from backend.app.application.task_actions import TaskMutationActionResult
+from backend.app.application.task_operations import TaskOperationReconcileResult
 from backend.app.config import AppSettings
+from backend.app.domain.operation import OperationKind, OperationStatus
 from backend.app.domain.task_state import TaskStatus
 from backend.app.infrastructure.persistence.models import ApiToken
 from backend.app.infrastructure.security import token_digest
@@ -155,6 +157,60 @@ def test_tasks_write_api_token_can_execute_without_csrf_but_tasks_read_cannot(
         assert rejected.status_code == 403
         assert rejected.json()["code"] == "API_TOKEN_SCOPE_FORBIDDEN"
         assert execute.await_count == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_tasks_write_api_token_can_reconcile_operation_without_csrf_but_tasks_read_cannot(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        allowed = _create_token(client, scopes=["tasks:write"], name="operation-writer")
+        denied = _create_token(client, scopes=["tasks:read"], name="operation-reader")
+        reconcile = AsyncMock(
+            return_value=TaskOperationReconcileResult(
+                action="reconcile",
+                task_id="task-token",
+                journal_id="journal-token",
+                kind=OperationKind.FILESYSTEM_HARDLINK,
+                status=OperationStatus.APPLIED,
+                operation_replayed=False,
+                receipt_id="receipt-operation-token",
+                idempotency_replayed=False,
+            )
+        )
+        app.state.task_operation_service = SimpleNamespace(reconcile=reconcile)
+        path = "/api/v1/tasks/task-token/operations/journal-token/actions"
+        payload = {"action": "reconcile"}
+
+        accepted = client.post(
+            path,
+            headers={
+                "Authorization": f"Bearer {allowed['token']}",
+                "Idempotency-Key": "token-reconcile",
+            },
+            json=payload,
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "APPLIED"
+        assert reconcile.await_count == 1
+        assert reconcile.await_args is not None
+        actor = reconcile.await_args.kwargs["actor"]
+        assert actor.kind == "api_token"
+        assert actor.subject_id == allowed["id"]
+
+        rejected = client.post(
+            path,
+            headers={
+                "Authorization": f"Bearer {denied['token']}",
+                "Idempotency-Key": "token-reconcile-denied",
+            },
+            json=payload,
+        )
+        assert rejected.status_code == 403
+        assert rejected.json()["code"] == "API_TOKEN_SCOPE_FORBIDDEN"
+        assert reconcile.await_count == 1
     finally:
         client.__exit__(None, None, None)
 

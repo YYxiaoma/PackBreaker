@@ -14,6 +14,16 @@ class OperationStatus(StrEnum):
     ROLLBACK_BLOCKED = "ROLLBACK_BLOCKED"
 
 
+class OperationKind(StrEnum):
+    FILESYSTEM_DIRECTORY = "FILESYSTEM_DIRECTORY"
+    FILESYSTEM_HARDLINK = "FILESYSTEM_HARDLINK"
+    QBITTORRENT_ADD = "QBITTORRENT_ADD"
+    QBITTORRENT_RECHECK = "QBITTORRENT_RECHECK"
+    QBITTORRENT_START = "QBITTORRENT_START"
+    QBITTORRENT_REMOVE = "QBITTORRENT_REMOVE"
+    OTHER = "OTHER"
+
+
 _ALLOWED_TRANSITIONS: dict[OperationStatus, frozenset[OperationStatus]] = {
     OperationStatus.INTENT_RECORDED: frozenset(
         {
@@ -67,6 +77,15 @@ _OPERATION_EVENT_IDENTITIES: dict[str, tuple[str, str]] = {
     "QBITTORRENT_REMOVE": ("QBITTORRENT_REMOVE", "qBittorrent 移除任务"),
 }
 
+_OPERATION_KINDS: dict[str, OperationKind] = {
+    "CREATE_DIRECTORY": OperationKind.FILESYSTEM_DIRECTORY,
+    "CREATE_HARDLINK": OperationKind.FILESYSTEM_HARDLINK,
+    "QBITTORRENT_ADD": OperationKind.QBITTORRENT_ADD,
+    "QBITTORRENT_RECHECK": OperationKind.QBITTORRENT_RECHECK,
+    "QBITTORRENT_START": OperationKind.QBITTORRENT_START,
+    "QBITTORRENT_REMOVE": OperationKind.QBITTORRENT_REMOVE,
+}
+
 _OPERATION_STATUS_REASONS: dict[OperationStatus, str] = {
     OperationStatus.INTENT_RECORDED: (
         "已记录 operation journal intent，尚不能仅凭该事件断言副作用完成"
@@ -100,6 +119,12 @@ def operation_event_summary(
         event_type=f"{event_prefix}_{status.value}",
         reason=f"{label}：{_OPERATION_STATUS_REASONS[status]}",
     )
+
+
+def operation_kind(operation_type: str) -> OperationKind:
+    """把内部 operation type 收敛成可公开的固定类别；未知类型不原样泄露。"""
+
+    return _OPERATION_KINDS.get(operation_type, OperationKind.OTHER)
 
 
 def transition_operation(

@@ -20,6 +20,7 @@ from backend.app.application.auth import AuthService
 from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.downloader_operations import (
     QbittorrentAddOperationService,
+    QbittorrentJournalReconcileService,
     QbittorrentRecheckOperationService,
     QbittorrentRemoveOperationService,
     QbittorrentStartOperationService,
@@ -36,6 +37,7 @@ from backend.app.application.task_client_verification import TaskClientVerificat
 from backend.app.application.task_driver import ActiveTaskDriver
 from backend.app.application.task_events import TaskEventService
 from backend.app.application.task_linking import TaskLinkingCoordinator
+from backend.app.application.task_operations import TaskOperationService
 from backend.app.application.task_recovery import TaskRecoveryCoordinator
 from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.application.tasks import TaskAnalysisService
@@ -117,6 +119,10 @@ def create_app(
         app.state.qbittorrent_start_operation_service = qbit_start_operations
         qbit_remove_operations = QbittorrentRemoveOperationService(resolved_runtime.session_factory)
         app.state.qbittorrent_remove_operation_service = qbit_remove_operations
+        qbit_journal_reconcile = QbittorrentJournalReconcileService(
+            resolved_runtime.session_factory
+        )
+        app.state.qbittorrent_journal_reconcile_service = qbit_journal_reconcile
         site_service = SiteService(resolved_runtime.session_factory, secret_store)
         app.state.site_service = site_service
         task_analysis_service = TaskAnalysisService(
@@ -131,6 +137,12 @@ def create_app(
             SafeFilesystemGateway(resolved_settings.data_dir),
         )
         app.state.filesystem_operation_service = filesystem_operations
+        app.state.task_operation_service = TaskOperationService(
+            resolved_runtime.session_factory,
+            filesystem_operations,
+            downloader_service,
+            qbit_journal_reconcile,
+        )
         task_linking_coordinator = TaskLinkingCoordinator(
             resolved_runtime.session_factory,
             task_analysis_service,

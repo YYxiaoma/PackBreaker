@@ -36,6 +36,13 @@ QBITTORRENT_START_OPERATION = "QBITTORRENT_START"
 QBITTORRENT_START_SCHEMA_VERSION = "packbreaker-qbittorrent-start-v1"
 QBITTORRENT_REMOVE_OPERATION = "QBITTORRENT_REMOVE"
 QBITTORRENT_REMOVE_SCHEMA_VERSION = "packbreaker-qbittorrent-remove-v1"
+QBITTORRENT_RECONCILABLE_OPERATIONS = frozenset(
+    {
+        QBITTORRENT_ADD_OPERATION,
+        QBITTORRENT_RECHECK_OPERATION,
+        QBITTORRENT_START_OPERATION,
+    }
+)
 _OPERATION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
@@ -145,6 +152,14 @@ class QbittorrentRemoveOperationResult:
     removed: bool
     replayed: bool
     recovered_after_unknown_result: bool
+
+
+@dataclass(frozen=True, slots=True)
+class QbittorrentJournalReconcileResult:
+    journal_id: str
+    operation_type: str
+    status: OperationStatus
+    replayed: bool
 
 
 class QbittorrentWriteBindingPort(Protocol):
@@ -1178,6 +1193,116 @@ class QbittorrentRemoveOperationService:
             session.commit()
 
 
+class QbittorrentJournalReconcileService:
+    """只读查询 qB 真实状态，重新证明已有 after snapshot；绝不重发下载器写命令。"""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    async def reconcile(
+        self,
+        journal_id: str,
+        binding: QbittorrentWriteBindingPort,
+        *,
+        allow_applied_replay: bool = False,
+    ) -> QbittorrentJournalReconcileResult:
+        async with _operation_lock(f"journal-reconcile:{journal_id}"):
+            journal = self._load(journal_id)
+            if journal.operation_type not in QBITTORRENT_RECONCILABLE_OPERATIONS:
+                raise ApplicationError(
+                    code="OPERATION_RECONCILE_UNSUPPORTED",
+                    status=409,
+                    title="该 qBittorrent 操作不能自动对账",
+                    detail="仅 ADD、RECHECK、START 的已确认完成快照支持只读重新证明",
+                )
+            if journal.status is OperationStatus.APPLIED:
+                if not allow_applied_replay:
+                    raise _qbit_reconcile_state_invalid()
+                replayed = True
+            elif journal.status is OperationStatus.RECONCILE_REQUIRED:
+                replayed = False
+            else:
+                raise _qbit_reconcile_state_invalid()
+
+            prepared = _prepare_journal_reconcile(journal)
+            if (
+                binding.downloader_id != prepared.downloader_id
+                or binding.downloader_version != prepared.downloader_version
+            ):
+                raise ApplicationError(
+                    code="DOWNLOADER_CONFIG_CHANGED",
+                    status=409,
+                    title="qBittorrent 配置已经变化",
+                    detail="对账只能使用 operation journal 原先绑定的下载器配置版本",
+                )
+
+            state = await self._owned_state(binding.adapter, prepared)
+            if not _qbit_reconcile_postcondition_holds(prepared.operation_type, state):
+                raise _qbit_reconcile_blocked()
+
+            if journal.status is OperationStatus.RECONCILE_REQUIRED:
+                assert journal.after_snapshot is not None
+                journal = self._transition_to_applied(journal, journal.after_snapshot)
+            return QbittorrentJournalReconcileResult(
+                journal_id=journal.id,
+                operation_type=journal.operation_type,
+                status=journal.status,
+                replayed=replayed,
+            )
+
+    async def _owned_state(
+        self,
+        adapter: QbittorrentWriteAdapter,
+        prepared: _PreparedJournalReconcile,
+    ) -> QbittorrentTorrentState:
+        try:
+            observed = await adapter.get_torrents((prepared.torrent_hash,))
+        except DownloaderAdapterError as exc:
+            raise ApplicationError(
+                code="OPERATION_RECONCILE_DOWNLOADER_UNAVAILABLE",
+                status=502,
+                title="无法查询 qBittorrent 当前状态",
+                detail="当前无法取得足够的下载器状态证据，operation journal 保持安全阻断",
+            ) from exc
+        matching = tuple(
+            state
+            for state in observed
+            if state.torrent_hash == prepared.torrent_hash
+            and state.save_path == prepared.remote_save_path
+            and prepared.ownership_tag in state.tags
+        )
+        if len(observed) != 1 or len(matching) != 1:
+            raise _qbit_reconcile_blocked()
+        return matching[0]
+
+    def _load(self, journal_id: str) -> _JournalView:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).get(journal_id)
+            if journal is None:
+                raise ApplicationError(
+                    code="OPERATION_NOT_FOUND",
+                    status=404,
+                    title="operation journal 不存在",
+                    detail="无法对不存在的 qBittorrent operation journal 执行对账",
+                )
+            return _journal_view(journal)
+
+    def _transition_to_applied(
+        self,
+        journal: _JournalView,
+        after_snapshot: dict[str, Any],
+    ) -> _JournalView:
+        with self._session_factory() as session:
+            updated = OperationJournalRepository(session).transition_status(
+                journal_id=journal.id,
+                expected_status=OperationStatus.RECONCILE_REQUIRED,
+                to_status=OperationStatus.APPLIED,
+                after_snapshot=deepcopy(after_snapshot),
+            )
+            session.commit()
+            return _journal_view(updated)
+
+
 @dataclass(frozen=True, slots=True)
 class _PreparedAdd:
     operation_key: str
@@ -1213,6 +1338,102 @@ class _PreparedRemove:
     remote_save_path: str
     ownership_tag: str
     request: QbittorrentRemoveOperationRequest
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedJournalReconcile:
+    operation_type: str
+    downloader_id: str
+    downloader_version: int
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+
+
+def _prepare_journal_reconcile(journal: _JournalView) -> _PreparedJournalReconcile:
+    expected_schema = {
+        QBITTORRENT_ADD_OPERATION: QBITTORRENT_OPERATION_SCHEMA_VERSION,
+        QBITTORRENT_RECHECK_OPERATION: QBITTORRENT_RECHECK_SCHEMA_VERSION,
+        QBITTORRENT_START_OPERATION: QBITTORRENT_START_SCHEMA_VERSION,
+    }.get(journal.operation_type)
+    if expected_schema is None or journal.after_snapshot is None:
+        raise _qbit_reconcile_unprovable()
+
+    downloader_id = journal.target.get("downloader_id")
+    downloader_version = journal.intent.get("downloader_version")
+    torrent_hash = journal.after_snapshot.get("torrent_hash")
+    remote_save_path = journal.intent.get("remote_save_path")
+    ownership_tag = journal.intent.get("ownership_tag")
+    snapshot_save_path = journal.after_snapshot.get("save_path")
+    snapshot_ownership_tag = journal.after_snapshot.get("ownership_tag")
+    snapshot_tags = journal.after_snapshot.get("tags")
+    if (
+        journal.intent.get("schema_version") != expected_schema
+        or not isinstance(downloader_id, str)
+        or not downloader_id
+        or not isinstance(downloader_version, int)
+        or isinstance(downloader_version, bool)
+        or downloader_version < 1
+        or not isinstance(torrent_hash, str)
+        or not isinstance(remote_save_path, str)
+        or not isinstance(ownership_tag, str)
+        or snapshot_save_path != remote_save_path
+        or snapshot_ownership_tag != ownership_tag
+        or not isinstance(snapshot_tags, list)
+        or ownership_tag not in snapshot_tags
+    ):
+        raise _qbit_reconcile_unprovable()
+
+    normalized_hash = torrent_hash.strip().lower()
+    if len(normalized_hash) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in normalized_hash
+    ):
+        raise _qbit_reconcile_unprovable()
+    try:
+        normalized_save_path = normalize_remote_path(remote_save_path)
+    except DomainViolation as exc:
+        raise _qbit_reconcile_unprovable() from exc
+    if normalized_save_path != remote_save_path:
+        raise _qbit_reconcile_unprovable()
+
+    if journal.operation_type == QBITTORRENT_ADD_OPERATION:
+        checked_hashes = (
+            journal.before_snapshot.get("checked_hashes") if journal.before_snapshot else None
+        )
+        if (
+            journal.target.get("remote_save_path") != remote_save_path
+            or not isinstance(checked_hashes, list)
+            or normalized_hash not in checked_hashes
+        ):
+            raise _qbit_reconcile_unprovable()
+    else:
+        if (
+            journal.target.get("torrent_hash") != normalized_hash
+            or journal.intent.get("torrent_hash") != normalized_hash
+        ):
+            raise _qbit_reconcile_unprovable()
+
+    return _PreparedJournalReconcile(
+        operation_type=journal.operation_type,
+        downloader_id=downloader_id,
+        downloader_version=downloader_version,
+        torrent_hash=normalized_hash,
+        remote_save_path=normalized_save_path,
+        ownership_tag=ownership_tag,
+    )
+
+
+def _qbit_reconcile_postcondition_holds(
+    operation_type: str,
+    state: QbittorrentTorrentState,
+) -> bool:
+    if operation_type == QBITTORRENT_ADD_OPERATION:
+        return state.stopped
+    if operation_type == QBITTORRENT_RECHECK_OPERATION:
+        return state.checking or state.verification_complete or state.verification_incomplete
+    if operation_type == QBITTORRENT_START_OPERATION:
+        return state.seeding
+    return False
 
 
 def _prepare_recheck(request: QbittorrentRecheckOperationRequest) -> _PreparedRecheck:
@@ -1642,6 +1863,36 @@ def _journal_not_executable(journal: _JournalView) -> ApplicationError:
         status=409,
         title="qBittorrent operation journal 需要人工对账",
         detail=f"当前 journal 状态为 {journal.status.value}，不能自动重复执行",
+    )
+
+
+def _qbit_reconcile_state_invalid() -> ApplicationError:
+    return ApplicationError(
+        code="OPERATION_RECONCILE_STATE_INVALID",
+        status=409,
+        title="operation journal 当前不需要重新验证",
+        detail="新的 qBittorrent 对账只接受 RECONCILE_REQUIRED；幂等重放只验证已恢复的 APPLIED",
+    )
+
+
+def _qbit_reconcile_unprovable() -> ApplicationError:
+    return ApplicationError(
+        code="OPERATION_RECONCILE_UNPROVABLE",
+        status=409,
+        title="qBittorrent 完成证据不足",
+        detail="operation journal 缺少可安全绑定到当前下载器状态的历史完成快照",
+    )
+
+
+def _qbit_reconcile_blocked() -> ApplicationError:
+    return ApplicationError(
+        code="OPERATION_RECONCILE_BLOCKED",
+        status=409,
+        title="qBittorrent 当前状态不能确认原操作结果",
+        detail=(
+            "当前 torrent 的所有权、保存路径或操作后状态与已登记完成证据不一致；"
+            "journal 保持安全阻断"
+        ),
     )
 
 

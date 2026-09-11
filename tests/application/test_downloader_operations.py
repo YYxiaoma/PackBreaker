@@ -20,6 +20,7 @@ from backend.app.application.downloader_operations import (
     QbittorrentAddOperationRequest,
     QbittorrentAddOperationResult,
     QbittorrentAddOperationService,
+    QbittorrentJournalReconcileService,
     QbittorrentRecheckOperationRequest,
     QbittorrentRecheckOperationService,
     QbittorrentRemoveOperationRequest,
@@ -43,7 +44,11 @@ from backend.app.infrastructure.persistence.database import (
     create_sqlite_engine,
 )
 from backend.app.infrastructure.persistence.models import OperationJournal
-from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
+from backend.app.infrastructure.persistence.repositories import (
+    OperationJournalRepository,
+    TaskCreate,
+    TaskRepository,
+)
 from backend.app.infrastructure.torrent_parser import parse_torrent
 
 
@@ -234,6 +239,16 @@ def _request(task_id: str, *, skip_checking: bool = False) -> QbittorrentAddOper
 def _journals(factory: sessionmaker[Session]) -> list[OperationJournal]:
     with factory() as session:
         return list(session.scalars(select(OperationJournal)))
+
+
+def _mark_reconcile(factory: sessionmaker[Session], journal_id: str) -> None:
+    with factory() as session:
+        OperationJournalRepository(session).transition_status(
+            journal_id=journal_id,
+            expected_status=OperationStatus.APPLIED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+        session.commit()
 
 
 def _recheck_request(
@@ -851,3 +866,132 @@ async def test_remove_rejects_ownership_mismatch_before_external_write(
 
     assert failure.value.code == "DOWNLOADER_STATE_MISMATCH"
     assert adapter.remove_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_qb_journal_reconcile_reproves_add_without_external_write(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    binding = _FakeBinding(adapter)
+    add_result = await add_service.execute(_request(task_id, skip_checking=True), binding)
+    _mark_reconcile(factory, add_result.journal_id)
+    service = QbittorrentJournalReconcileService(factory)
+
+    first = await service.reconcile(add_result.journal_id, binding)
+    replayed = await service.reconcile(
+        add_result.journal_id,
+        binding,
+        allow_applied_replay=True,
+    )
+
+    assert first.status is OperationStatus.APPLIED
+    assert first.replayed is False
+    assert replayed.status is OperationStatus.APPLIED
+    assert replayed.replayed is True
+    assert adapter.add_calls == 1
+    assert adapter.stop_calls == 0
+    assert adapter.recheck_calls == 0
+    assert adapter.start_calls == 0
+    assert adapter.remove_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_qb_reconcile_blocks_ownership_or_save_path_drift_without_write(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    binding = _FakeBinding(adapter)
+    add_result = await add_service.execute(_request(task_id, skip_checking=True), binding)
+    _mark_reconcile(factory, add_result.journal_id)
+    service = QbittorrentJournalReconcileService(factory)
+
+    original = adapter.states[add_result.torrent_hash]
+    adapter.states[add_result.torrent_hash] = replace(original, tags=("external",))
+    with pytest.raises(ApplicationError) as ownership:
+        await service.reconcile(add_result.journal_id, binding)
+    assert ownership.value.code == "OPERATION_RECONCILE_BLOCKED"
+    assert _journals(factory)[0].status == OperationStatus.RECONCILE_REQUIRED.value
+
+    adapter.states[add_result.torrent_hash] = replace(original, save_path="/downloads/external")
+    with pytest.raises(ApplicationError) as save_path:
+        await service.reconcile(add_result.journal_id, binding)
+    assert save_path.value.code == "OPERATION_RECONCILE_BLOCKED"
+    assert _journals(factory)[0].status == OperationStatus.RECONCILE_REQUIRED.value
+
+    assert adapter.add_calls == 1
+    assert adapter.stop_calls == 0
+    assert adapter.recheck_calls == 0
+    assert adapter.start_calls == 0
+    assert adapter.remove_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_qb_start_reconcile_requires_current_owned_seeding_state(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    binding = _FakeBinding(adapter)
+    add_result = await add_service.execute(_request(task_id, skip_checking=True), binding)
+    start_result = await QbittorrentStartOperationService(factory).execute(
+        _start_request(task_id, add_result),
+        binding,
+    )
+    _mark_reconcile(factory, start_result.journal_id)
+    adapter.states[start_result.torrent_hash] = replace(
+        adapter.states[start_result.torrent_hash],
+        state="stoppedUP",
+    )
+    service = QbittorrentJournalReconcileService(factory)
+
+    with pytest.raises(ApplicationError) as blocked:
+        await service.reconcile(start_result.journal_id, binding)
+    assert blocked.value.code == "OPERATION_RECONCILE_BLOCKED"
+    assert _journals(factory)[-1].status == OperationStatus.RECONCILE_REQUIRED.value
+
+    adapter.states[start_result.torrent_hash] = replace(
+        adapter.states[start_result.torrent_hash],
+        state="stalledUP",
+    )
+    recovered = await service.reconcile(start_result.journal_id, binding)
+
+    assert recovered.status is OperationStatus.APPLIED
+    assert adapter.start_calls == 1
+    assert adapter.add_calls == 1
+    assert adapter.remove_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_qb_reconcile_blocks_changed_binding_and_remove_postcondition(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    binding = _FakeBinding(adapter)
+    add_result = await add_service.execute(_request(task_id, skip_checking=True), binding)
+    _mark_reconcile(factory, add_result.journal_id)
+    service = QbittorrentJournalReconcileService(factory)
+
+    with pytest.raises(ApplicationError) as changed:
+        await service.reconcile(
+            add_result.journal_id,
+            _FakeBinding(adapter, downloader_version=8),
+        )
+    assert changed.value.code == "DOWNLOADER_CONFIG_CHANGED"
+    assert _journals(factory)[0].status == OperationStatus.RECONCILE_REQUIRED.value
+
+    restored = await service.reconcile(add_result.journal_id, binding)
+    assert restored.status is OperationStatus.APPLIED
+    remove_result = await QbittorrentRemoveOperationService(factory).execute(
+        _remove_request(task_id, add_result),
+        binding,
+    )
+    _mark_reconcile(factory, remove_result.journal_id)
+
+    with pytest.raises(ApplicationError) as unsupported:
+        await service.reconcile(remove_result.journal_id, binding)
+    assert unsupported.value.code == "OPERATION_RECONCILE_UNSUPPORTED"
+    assert _journals(factory)[-1].status == OperationStatus.RECONCILE_REQUIRED.value

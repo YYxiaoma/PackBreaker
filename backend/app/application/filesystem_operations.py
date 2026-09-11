@@ -49,6 +49,14 @@ class RollbackResult:
 
 
 @dataclass(frozen=True, slots=True)
+class FilesystemReconcileResult:
+    journal_id: str
+    operation_type: str
+    status: OperationStatus
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _JournalView:
     id: str
     task_id: str
@@ -353,6 +361,76 @@ class FilesystemOperationService:
             removed=removed,
             status=rolled_back.status,
         )
+
+    def reconcile_journal(
+        self,
+        journal_id: str,
+        *,
+        allow_applied_replay: bool = False,
+    ) -> FilesystemReconcileResult:
+        """只重新证明已有完成快照；不创建、删除、覆盖任何文件系统资源。"""
+
+        journal = self._load_by_id(journal_id)
+        if journal.operation_type not in {
+            CREATE_DIRECTORY_OPERATION,
+            CREATE_HARDLINK_OPERATION,
+        }:
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                "该 operation journal 不是可重新验证的文件系统操作",
+            )
+
+        if journal.status is OperationStatus.APPLIED:
+            if not allow_applied_replay:
+                raise DomainViolation(
+                    ErrorCode.INVALID_STATE_TRANSITION,
+                    "operation journal 已完成，不接受新的对账请求",
+                )
+            self._assert_reconcile_snapshot(journal)
+            return FilesystemReconcileResult(
+                journal_id=journal.id,
+                operation_type=journal.operation_type,
+                status=OperationStatus.APPLIED,
+                replayed=True,
+            )
+
+        if journal.status is not OperationStatus.RECONCILE_REQUIRED:
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                "只有 RECONCILE_REQUIRED 的文件系统 journal 可以重新验证",
+            )
+
+        snapshot = self._assert_reconcile_snapshot(journal)
+        reconciled = self._transition(
+            journal.id,
+            OperationStatus.RECONCILE_REQUIRED,
+            OperationStatus.APPLIED,
+            after_snapshot=snapshot.to_payload(),
+        )
+        return FilesystemReconcileResult(
+            journal_id=reconciled.id,
+            operation_type=reconciled.operation_type,
+            status=reconciled.status,
+            replayed=False,
+        )
+
+    def _assert_reconcile_snapshot(self, journal: _JournalView) -> FilesystemSnapshot:
+        snapshot = _filesystem_snapshot_from_payload(journal.after_snapshot)
+        target_root = _required_text(journal.target, "target_root")
+        relative_path = _required_text(journal.target, "relative_path")
+        if journal.operation_type == CREATE_HARDLINK_OPERATION:
+            return self._gateway.assert_hardlink_matches(
+                target_root_relative_path=target_root,
+                target_relative_path=relative_path,
+                expected_snapshot=snapshot,
+            )
+        if journal.operation_type == CREATE_DIRECTORY_OPERATION:
+            return self._gateway.assert_directory_matches(
+                target_root_relative_path=target_root,
+                directory_relative_path=relative_path,
+                expected_snapshot=snapshot,
+            )
+        raise AssertionError("未覆盖的文件系统 operation type")
 
     def _assert_applied_directory(self, journal: _JournalView) -> FilesystemSnapshot:
         snapshot = _filesystem_snapshot_from_payload(journal.after_snapshot)
