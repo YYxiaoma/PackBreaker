@@ -998,6 +998,63 @@
         "title": "NotificationChannelUpdateRequest",
         "type": "object"
       },
+      "OperationCleanupCandidateResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "journal_id": {
+            "title": "Journal Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OperationKind"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "reason_code": {
+            "enum": [
+              "NO_SIDE_EFFECT",
+              "ROLLBACK_CONFIRMED"
+            ],
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "recommendation": {
+            "title": "Recommendation",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OperationStatus"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "journal_id",
+          "task_id",
+          "kind",
+          "status",
+          "reason_code",
+          "reason",
+          "recommendation",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "OperationCleanupCandidateResponse",
+        "type": "object"
+      },
       "OperationKind": {
         "enum": [
           "FILESYSTEM_DIRECTORY",
@@ -1014,6 +1071,155 @@
         ],
         "title": "OperationKind",
         "type": "string"
+      },
+      "OperationMaintenanceReportResponse": {
+        "properties": {
+          "cleanup_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/OperationCleanupCandidateResponse"
+            },
+            "title": "Cleanup Candidates",
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "repair_items": {
+            "items": {
+              "$ref": "#/components/schemas/OperationRepairItemResponse"
+            },
+            "title": "Repair Items",
+            "type": "array"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/OperationMaintenanceSummaryResponse"
+          }
+        },
+        "required": [
+          "generated_at",
+          "summary",
+          "repair_items",
+          "cleanup_candidates"
+        ],
+        "title": "OperationMaintenanceReportResponse",
+        "type": "object"
+      },
+      "OperationMaintenanceSummaryResponse": {
+        "properties": {
+          "attention_required": {
+            "title": "Attention Required",
+            "type": "integer"
+          },
+          "manual_only": {
+            "title": "Manual Only",
+            "type": "integer"
+          },
+          "reconcile_supported": {
+            "title": "Reconcile Supported",
+            "type": "integer"
+          },
+          "retention_candidates": {
+            "title": "Retention Candidates",
+            "type": "integer"
+          },
+          "total_journals": {
+            "title": "Total Journals",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "total_journals",
+          "attention_required",
+          "reconcile_supported",
+          "manual_only",
+          "retention_candidates",
+          "truncated"
+        ],
+        "title": "OperationMaintenanceSummaryResponse",
+        "type": "object"
+      },
+      "OperationRepairItemResponse": {
+        "properties": {
+          "action": {
+            "enum": [
+              "RECONCILE",
+              "MANUAL_INSPECTION"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "journal_id": {
+            "title": "Journal Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OperationKind"
+          },
+          "manual_required": {
+            "title": "Manual Required",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "reason_code": {
+            "enum": [
+              "SAFE_RECONCILE_AVAILABLE",
+              "MANUAL_RECONCILE_REQUIRED",
+              "ROLLBACK_BLOCKED"
+            ],
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "recommended_action": {
+            "title": "Recommended Action",
+            "type": "string"
+          },
+          "reconcile_supported": {
+            "title": "Reconcile Supported",
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OperationStatus"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "journal_id",
+          "task_id",
+          "kind",
+          "status",
+          "reason_code",
+          "reason",
+          "recommended_action",
+          "action",
+          "reconcile_supported",
+          "manual_required",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "OperationRepairItemResponse",
+        "type": "object"
       },
       "OperationStatus": {
         "enum": [
@@ -4394,6 +4600,83 @@
         "summary": "Test Notification Channel",
         "tags": [
           "notifications"
+        ]
+      }
+    },
+    "/api/v1/operations/maintenance-report": {
+      "get": {
+        "operationId": "operation_maintenance_report_api_v1_operations_maintenance_report_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationMaintenanceReportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operation Maintenance Report",
+        "tags": [
+          "tasks"
         ]
       }
     },

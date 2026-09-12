@@ -183,6 +183,17 @@ const path = require('node:path');
       enabled:true,version:7,last_test_at:now(),last_path_diagnostic_at:now(),created_at:now(),updated_at:now(),
     };
     await page.route('**/api/v1/downloaders',route=>fulfillJson(route,{items:[e2eDownloader]}));
+    await page.route('**/api/v1/operations/maintenance-report**',route=>fulfillJson(route,{
+      generated_at:now(),
+      summary:{total_journals:5,attention_required:2,reconcile_supported:1,manual_only:1,retention_candidates:1,truncated:false},
+      repair_items:[
+        {journal_id:'journal-maintenance-reconcile',task_id:'task-e2e-reconcile',kind:'FILESYSTEM_HARDLINK',status:'RECONCILE_REQUIRED',reason_code:'SAFE_RECONCILE_AVAILABLE',reason:'journal 已要求重新验证，且存在只读取当前资源状态的安全对账器。',recommended_action:'优先执行只读 reconcile；若重新证明失败，继续保留现场并转人工检查。',action:'RECONCILE',reconcile_supported:true,manual_required:false,created_at:now(),updated_at:now()},
+        {journal_id:'journal-maintenance-manual',task_id:'task-e2e-cancel',kind:'OTHER',status:'RECONCILE_REQUIRED',reason_code:'MANUAL_RECONCILE_REQUIRED',reason:'缺少可安全自动证明的完成证据，或该操作类型没有自动对账器。',recommended_action:'人工核对外部资源与历史记录；不要根据当前资源存在或缺失反推历史副作用。',action:'MANUAL_INSPECTION',reconcile_supported:false,manual_required:true,created_at:now(),updated_at:now()},
+      ],
+      cleanup_candidates:[
+        {journal_id:'journal-maintenance-noop',task_id:'task-e2e-pre-cancel',kind:'FILESYSTEM_DIRECTORY',status:'NOOP',reason_code:'NO_SIDE_EFFECT',reason:'journal 已确认没有执行外部副作用，因此没有仍由该 journal 创建并需要保留的资源。',recommendation:'仅作为未来保留策略候选；当前 API 不删除 operation journal，达到保留期后仍需专用清理流程再次确认。',created_at:now(),updated_at:now()},
+      ],
+    }));
     await page.route('**/api/v1/task-units/**',async route=>{
       const url=new URL(route.request().url());
       const match=url.pathname.match(/\/api\/v1\/task-units\/unit-(task-e2e-(?:execute|cancel))\/(.+)$/);
@@ -385,10 +396,14 @@ const path = require('node:path');
     await page.getByRole('button',{name:'推进扫描',exact:true}).click();
     await page.getByRole('button',{name:'推进扫描',exact:true}).click();
     await page.locator('nav').getByRole('button',{name:'清理与对账',exact:true}).click();
-    await page.getByRole('button',{name:'运行模拟对账',exact:true}).click();
-    await page.getByText('OP-022 · 目录所有权无法确认').waitFor();
-    await page.getByRole('button',{name:'预览并清理登记资源',exact:true}).click();
-    await page.getByRole('button',{name:'清理登记资源',exact:true}).click();
+    await page.getByRole('heading',{name:'清理 / 对账报告',exact:true}).waitFor();
+    await page.getByText('journal-maintenance-manual',{exact:false}).waitFor();
+    await page.getByText('缺少可安全自动证明的完成证据，或该操作类型没有自动对账器。',{exact:true}).waitFor();
+    await page.getByText('journal-maintenance-noop',{exact:false}).waitFor();
+    await page.getByText('仅候选',{exact:true}).waitFor();
+    assert.equal(await page.getByText('/private/maintenance/secret',{exact:true}).count(),0,'维护报告不得暴露私有路径');
+    assert.equal(await page.locator('main').getByRole('button',{name:/删除|清理登记资源|预览并清理/}).count(),0,'维护报告页不得提供删除/清理执行按钮');
+    await page.getByRole('button',{name:'刷新报告',exact:true}).click();
     await page.locator('nav').getByRole('button',{name:'任务中心',exact:false}).click();
     await page.setViewportSize({width:390,height:844});
     await page.waitForFunction(()=>document.querySelector('.sidebar').getBoundingClientRect().right<=0); await page.locator('.el-message').last().waitFor({state:'hidden'}); await page.screenshot({path:path.join(output,'mobile.png'),fullPage:true});
@@ -406,6 +421,6 @@ const path = require('node:path');
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,`${name} 移动页溢出`);
     }
     assert.deepEqual(errors,[]);
-    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、状态自动刷新、11 页导航、历史扫描、清理确认、390px 移动布局与深色主题。');
+    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、状态自动刷新、11 页导航、历史扫描、清理/对账只读报告、390px 移动布局与深色主题。');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1});

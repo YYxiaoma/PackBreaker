@@ -108,6 +108,8 @@ qB 写事务测试使用 fake/MockTransport，不访问真实下载器：覆盖 
 
 Transmission 写事务测试同样只使用 fake/MockTransport：除 ADD/VERIFY/START 的 ownership label、hash、save path、完整度和响应丢失恢复外，REMOVE 必须把 `delete_local_data=false` 冻结进 intent 与 RPC 参数；活跃 torrent 先 stop，再确认不存在后才 APPLIED。十路并发 remove 只能发送一次远端删除；响应丢失只能凭 torrent 已消失恢复；ownership label 或保存路径漂移必须在远端删除前阻断。任务取消测试必须证明 Transmission remove 先于 journal-owned hardlink 回滚，remove 成功后崩溃并重启不得二次 remove，且旧 qB cancellation v1 checkpoint 仍能安全恢复。Transmission operation journal 对账必须是严格只读：ADD/VERIFY/START 只有在历史 after snapshot、下载器版本、hash、save path、ownership label 与当前状态共同满足各自后置条件时才能从 `RECONCILE_REQUIRED` 恢复为 APPLIED；REMOVE 还必须由历史 before snapshot 证明原 torrent 归属，并以当前 hash 完全不存在作为后置条件。对账期间任何 add/stop/verify/start/remove 写方法被调用都应直接令测试失败，torrent 再出现、所有权/路径漂移、绑定版本变化或缺失 after snapshot 都必须保持安全阻断。
 
+清理/对账报告必须作为独立只读安全面测试：`RECONCILE_REQUIRED` 与 `ROLLBACK_BLOCKED` 计入人工修复清单，只有已存在安全只读对账器且具备 after snapshot 的项目才能标记 `RECONCILE`；`ROLLBACK_BLOCKED` 和无法证明的未知结果必须始终要求人工检查。保留期候选只能来自 `NOOP` / `ROLLED_BACK`，且候选不等于删除授权。API 响应只能包含固定 OperationKind/状态、task/journal ID、时间和固定原因/建议，测试需在 target/intent/before/after snapshot 中注入绝对路径、ownership tag、幂等键等 canary 并断言响应完全不泄露；报告 endpoint 不得提供 journal/resource 删除或强制状态修改方法。
+
 LINKING 协调器额外覆盖两阶段当前性：调用前 plan provider 必须返回 latest/current/ready；真正推进任务前还要在数据库事务内重新核对 latest plan/gate/review/candidate/preflight/task version。测试必须模拟两次检查之间新增 review revision 并证明零文件副作用；还要模拟 LINKING checkpoint 已提交后 source inventory 改变，证明在首个 operation journal intent/目录/hardlink 前阻断。重复调用已进入 LINKING 的任务只能恢复 checkpoint 精确绑定的同一 plan。
 
 ## 7. 适配器测试矩阵

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -666,3 +667,131 @@ async def test_task_operation_service_dispatches_safe_transmission_reconcile(
     assert result.operation_replayed is False
     assert provider.requested == [binding.downloader_id]
     assert adapter.write_calls == 0
+
+
+def test_maintenance_report_is_redacted_and_separates_repair_from_retention_candidates(
+    operation_fixture: _OperationFixture,
+) -> None:
+    secret_marker = "/data/private/do-not-leak-marker"
+    with operation_fixture.factory() as session:
+        repository = OperationJournalRepository(session)
+
+        manual, _ = repository.record_intent(
+            OperationIntent(
+                task_id=operation_fixture.task_id,
+                idempotency_key="1" * 64,
+                operation_type="UNKNOWN_SIDE_EFFECT",
+                target={"path": secret_marker},
+                intent={"ownership_tag": "private-owner", "secret": secret_marker},
+                before_snapshot={"absolute_path": secret_marker},
+            )
+        )
+        repository.transition_status(
+            journal_id=manual.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+
+        blocked, _ = repository.record_intent(
+            OperationIntent(
+                task_id=operation_fixture.task_id,
+                idempotency_key="2" * 64,
+                operation_type="CREATE_DIRECTORY",
+                target={"target_relative_path": secret_marker},
+                intent={"private": secret_marker},
+                before_snapshot={"path": secret_marker},
+            )
+        )
+        repository.transition_status(
+            journal_id=blocked.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+            after_snapshot={"path": secret_marker},
+        )
+        repository.transition_status(
+            journal_id=blocked.id,
+            expected_status=OperationStatus.APPLIED,
+            to_status=OperationStatus.ROLLBACK_PENDING,
+        )
+        repository.transition_status(
+            journal_id=blocked.id,
+            expected_status=OperationStatus.ROLLBACK_PENDING,
+            to_status=OperationStatus.ROLLBACK_BLOCKED,
+        )
+
+        noop, _ = repository.record_intent(
+            OperationIntent(
+                task_id=operation_fixture.task_id,
+                idempotency_key="3" * 64,
+                operation_type="CREATE_DIRECTORY",
+                target={"path": secret_marker},
+                intent={"private": secret_marker},
+            )
+        )
+        repository.transition_status(
+            journal_id=noop.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.NOOP,
+        )
+
+        rolled_back, _ = repository.record_intent(
+            OperationIntent(
+                task_id=operation_fixture.task_id,
+                idempotency_key="4" * 64,
+                operation_type="CREATE_HARDLINK",
+                target={"path": secret_marker},
+                intent={"private": secret_marker},
+            )
+        )
+        repository.transition_status(
+            journal_id=rolled_back.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+            after_snapshot={"path": secret_marker},
+        )
+        repository.transition_status(
+            journal_id=rolled_back.id,
+            expected_status=OperationStatus.APPLIED,
+            to_status=OperationStatus.ROLLBACK_PENDING,
+        )
+        repository.transition_status(
+            journal_id=rolled_back.id,
+            expected_status=OperationStatus.ROLLBACK_PENDING,
+            to_status=OperationStatus.ROLLED_BACK,
+        )
+        session.commit()
+
+    report = operation_fixture.service.maintenance_report(limit=10)
+
+    assert report.summary.total_journals == 5
+    assert report.summary.attention_required == 3
+    assert report.summary.reconcile_supported == 1
+    assert report.summary.manual_only == 2
+    assert report.summary.retention_candidates == 2
+    assert report.summary.truncated is False
+
+    repairs = {item.journal_id: item for item in report.repair_items}
+    assert repairs[operation_fixture.journal_id].action == "RECONCILE"
+    assert repairs[operation_fixture.journal_id].manual_required is False
+    assert repairs[manual.id].reason_code == "MANUAL_RECONCILE_REQUIRED"
+    assert repairs[manual.id].manual_required is True
+    assert repairs[blocked.id].reason_code == "ROLLBACK_BLOCKED"
+    assert repairs[blocked.id].action == "MANUAL_INSPECTION"
+
+    cleanup = {item.journal_id: item for item in report.cleanup_candidates}
+    assert cleanup[noop.id].reason_code == "NO_SIDE_EFFECT"
+    assert cleanup[rolled_back.id].reason_code == "ROLLBACK_CONFIRMED"
+    assert all(
+        "当前 API 不删除 operation journal" in item.recommendation for item in cleanup.values()
+    )
+
+    encoded = json.dumps(asdict(report), ensure_ascii=False, default=str)
+    assert secret_marker not in encoded
+    assert "private-owner" not in encoded
+
+    limited = operation_fixture.service.maintenance_report(limit=1)
+    assert limited.summary.attention_required == 3
+    assert limited.summary.retention_candidates == 2
+    assert limited.summary.truncated is True
+    assert len(limited.repair_items) == 1
+    assert len(limited.cleanup_candidates) == 1

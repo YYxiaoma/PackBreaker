@@ -176,7 +176,7 @@ function kindLabel(kind: string): string {
     />
     <el-alert
       title="自动对账范围严格受限"
-      description="目录/硬链接仅在存在 after snapshot 且当前对象完全匹配时重新确认；qB ADD/RECHECK/START 也只在已有完成快照、下载器配置版本与 hash/save path/ownership tag 仍匹配且当前状态满足对应后置条件时允许只读重验。qB REMOVE、无完成快照的未知结果与 ROLLBACK_BLOCKED 仍只读展示。"
+      description="目录/硬链接仅在存在 after snapshot 且当前对象完全匹配时重新确认；qB ADD/RECHECK/START 与 Transmission ADD/VERIFY/START/REMOVE 也只在历史完成证据、下载器配置版本和当前真实状态共同满足对应后置条件时允许只读重验。qB REMOVE、无完成快照的未知结果与 ROLLBACK_BLOCKED 仍只读展示。"
       type="info"
       :closable="false"
       show-icon

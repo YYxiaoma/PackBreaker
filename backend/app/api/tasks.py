@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
@@ -26,6 +26,9 @@ from backend.app.application.task_actions import (
 )
 from backend.app.application.task_events import TaskEventService, TaskEventView
 from backend.app.application.task_operations import (
+    OperationCleanupCandidateView,
+    OperationMaintenanceReport,
+    OperationRepairItemView,
     TaskOperationReconcileResult,
     TaskOperationView,
 )
@@ -105,6 +108,53 @@ class TaskOperationResponse(BaseModel):
 
 class TaskOperationListResponse(BaseModel):
     items: list[TaskOperationResponse]
+
+
+class OperationMaintenanceSummaryResponse(BaseModel):
+    total_journals: int
+    attention_required: int
+    reconcile_supported: int
+    manual_only: int
+    retention_candidates: int
+    truncated: bool
+
+
+class OperationRepairItemResponse(BaseModel):
+    journal_id: str
+    task_id: str
+    kind: OperationKind
+    status: OperationStatus
+    reason_code: Literal[
+        "SAFE_RECONCILE_AVAILABLE",
+        "MANUAL_RECONCILE_REQUIRED",
+        "ROLLBACK_BLOCKED",
+    ]
+    reason: str
+    recommended_action: str
+    action: Literal["RECONCILE", "MANUAL_INSPECTION"]
+    reconcile_supported: bool
+    manual_required: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class OperationCleanupCandidateResponse(BaseModel):
+    journal_id: str
+    task_id: str
+    kind: OperationKind
+    status: OperationStatus
+    reason_code: Literal["NO_SIDE_EFFECT", "ROLLBACK_CONFIRMED"]
+    reason: str
+    recommendation: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class OperationMaintenanceReportResponse(BaseModel):
+    generated_at: datetime
+    summary: OperationMaintenanceSummaryResponse
+    repair_items: list[OperationRepairItemResponse]
+    cleanup_candidates: list[OperationCleanupCandidateResponse]
 
 
 class TaskOperationActionRequest(BaseModel):
@@ -388,6 +438,16 @@ async def stream_task_events(
     )
 
 
+@router.get("/operations/maintenance-report", response_model=OperationMaintenanceReportResponse)
+async def operation_maintenance_report(
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> OperationMaintenanceReportResponse:
+    report = task_operation_service(request).maintenance_report(limit=limit)
+    return _operation_maintenance_report_response(report)
+
+
 @router.get("/tasks/{task_id}/operations", response_model=TaskOperationListResponse)
 async def list_task_operations(
     task_id: str,
@@ -662,6 +722,59 @@ def _task_event_response(item: TaskEventView) -> TaskEventResponse:
         event_type=item.event_type,
         reason=item.reason,
         created_at=item.created_at,
+    )
+
+
+def _operation_repair_item_response(item: OperationRepairItemView) -> OperationRepairItemResponse:
+    return OperationRepairItemResponse(
+        journal_id=item.journal_id,
+        task_id=item.task_id,
+        kind=item.kind,
+        status=item.status,
+        reason_code=item.reason_code,
+        reason=item.reason,
+        recommended_action=item.recommended_action,
+        action=item.action,
+        reconcile_supported=item.reconcile_supported,
+        manual_required=item.manual_required,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def _operation_cleanup_candidate_response(
+    item: OperationCleanupCandidateView,
+) -> OperationCleanupCandidateResponse:
+    return OperationCleanupCandidateResponse(
+        journal_id=item.journal_id,
+        task_id=item.task_id,
+        kind=item.kind,
+        status=item.status,
+        reason_code=item.reason_code,
+        reason=item.reason,
+        recommendation=item.recommendation,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def _operation_maintenance_report_response(
+    report: OperationMaintenanceReport,
+) -> OperationMaintenanceReportResponse:
+    return OperationMaintenanceReportResponse(
+        generated_at=report.generated_at,
+        summary=OperationMaintenanceSummaryResponse(
+            total_journals=report.summary.total_journals,
+            attention_required=report.summary.attention_required,
+            reconcile_supported=report.summary.reconcile_supported,
+            manual_only=report.summary.manual_only,
+            retention_candidates=report.summary.retention_candidates,
+            truncated=report.summary.truncated,
+        ),
+        repair_items=[_operation_repair_item_response(item) for item in report.repair_items],
+        cleanup_candidates=[
+            _operation_cleanup_candidate_response(item) for item in report.cleanup_candidates
+        ],
     )
 
 

@@ -682,7 +682,7 @@ async function cancel(t: Task) {
         </li>
       </ol>
       <el-alert
-        title="管理员认证、API Token 与下载器配置已接入真实后端；任务、站点搜索、piece 验证、生产硬链接及运维操作仍为演示或待开发能力。"
+        title="管理员认证、API Token、下载器配置与 operation journal 清理/对账报告已接入真实后端；站点搜索、piece 修复及部分日常管理仍包含演示或待开发能力。"
         type="info"
         :closable="false"
       /><template #footer

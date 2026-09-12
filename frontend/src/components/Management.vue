@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Globe,
@@ -22,9 +22,9 @@ import {
   ArrowUpCircle,
   FileText,
   RotateCcw,
-  Trash2,
 } from '@lucide/vue';
 import type { Task } from '../demo';
+import { getOperationMaintenanceReport, type OperationMaintenanceReport } from '../api/tasks';
 import DownloaderManagement from './DownloaderManagement.vue';
 import ApiTokenManagement from './AutomationAccessManagement.vue';
 import NotificationManagement from './NotificationManagement.vue';
@@ -231,20 +231,25 @@ function advanceScan(scan: (typeof scans.value)[number]) {
       : '演示扫描检查点已更新',
   );
 }
-const reconciliation = ref(false),
-  cleaned = ref(false),
-  recovered = ref(false);
-async function cleanup() {
+const maintenanceReport = ref<OperationMaintenanceReport>();
+const maintenanceLoading = ref(false);
+async function refreshMaintenanceReport() {
+  maintenanceLoading.value = true;
   try {
-    await ElMessageBox.confirm(
-      '仅清理 OP-021 登记的 2 个未使用演示硬链接（0 B 数据）。OP-022 所有权未知的目录不在清理范围内，源媒体不在清理范围内。',
-      '确认清理范围',
-      { confirmButtonText: '清理登记资源', cancelButtonText: '取消', type: 'warning' },
-    );
-    cleaned.value = true;
-    ElMessage.success('已模拟清理 2 个登记链接');
-  } catch {}
+    maintenanceReport.value = await getOperationMaintenanceReport(100);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '清理/对账报告读取失败');
+  } finally {
+    maintenanceLoading.value = false;
+  }
 }
+watch(
+  () => props.page,
+  (page) => {
+    if (page === '清理与对账') void refreshMaintenanceReport();
+  },
+  { immediate: true },
+);
 const logLevel = ref(''),
   logQuery = ref(''),
   logTask = ref(''),
@@ -563,72 +568,116 @@ async function update() {
   <div v-else-if="page === '清理与对账'">
     <div class="settings-layout">
       <section class="panel">
-        <h3>启动对账</h3>
+        <h3>清理 / 对账报告</h3>
         <p class="muted">
-          检查 LINKING、ADDING、CLIENT_VERIFYING 等中断阶段，根据登记证据决定恢复或回滚。
+          只读汇总 operation journal
+          的阻断状态和可证明动作；不会删除资源、重放副作用或强制改写状态。
         </p>
         <div class="health-list">
-          <div><Server :size="18" />数据库检查点 <el-tag type="success">演示可读</el-tag></div>
-          <div><HardDrive :size="18" />下载器真实状态 <el-tag type="info">模拟快照</el-tag></div>
           <div>
-            <ShieldCheck :size="18" />资源身份与所有权
-            <el-tag :type="reconciliation ? 'warning' : 'info'">{{
-              reconciliation ? '1 项待人工' : '待对账'
-            }}</el-tag>
+            <Server :size="18" />Operation journal
+            <el-tag type="info">{{ maintenanceReport?.summary.total_journals ?? 0 }} 项</el-tag>
+          </div>
+          <div>
+            <AlertTriangle :size="18" />需要关注
+            <el-tag type="danger"
+              >{{ maintenanceReport?.summary.attention_required ?? 0 }} 项</el-tag
+            >
+          </div>
+          <div>
+            <RefreshCw :size="18" />可只读对账
+            <el-tag type="warning"
+              >{{ maintenanceReport?.summary.reconcile_supported ?? 0 }} 项</el-tag
+            >
+          </div>
+          <div>
+            <ShieldCheck :size="18" />仅人工检查
+            <el-tag>{{ maintenanceReport?.summary.manual_only ?? 0 }} 项</el-tag>
           </div>
         </div>
-        <el-button
-          type="primary"
-          @click="
-            reconciliation = true;
-            ElMessage.success('演示对账完成');
-          "
-          ><RefreshCw :size="15" />运行模拟对账</el-button
-        >
+        <el-button type="primary" :loading="maintenanceLoading" @click="refreshMaintenanceReport">
+          <RefreshCw :size="15" />刷新报告
+        </el-button>
       </section>
       <section class="panel">
-        <h3>安全清理</h3>
-        <p class="muted">预览影响范围后，只清理本系统创建且身份仍匹配的未使用资源。</p>
-        <div class="cleanup-value">{{ cleaned ? 0 : 2 }} <span>个可清理链接</span></div>
-        <p>释放目录项，不删除源媒体数据。</p>
-        <el-button :disabled="!reconciliation || cleaned" type="danger" plain @click="cleanup"
-          ><Trash2 :size="15" />预览并清理登记资源</el-button
-        >
+        <h3>保留期清理候选</h3>
+        <p class="muted">
+          仅 NOOP / ROLLED_BACK journal 会进入候选；这不等于已授权删除，也不代表当前 API
+          会执行清理。
+        </p>
+        <div class="cleanup-value">
+          {{ maintenanceReport?.summary.retention_candidates ?? 0 }} <span>个 journal 候选</span>
+        </div>
+        <el-alert
+          title="当前仅生成报告，不执行删除"
+          description="达到未来保留期后仍需专用清理流程重新核对任务引用与外部资源。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
       </section>
     </div>
-    <section v-if="reconciliation" class="panel section-space">
-      <h3>对账结果 <small class="muted"> · 演示资源</small></h3>
-      <div class="resource-row">
-        <span class="file-icon"><RefreshCw :size="20" /></span>
+
+    <el-alert
+      v-if="maintenanceReport?.summary.truncated"
+      class="section-space"
+      title="报告结果已截断"
+      description="当前只展示最早更新的 100 条修复项和 100 条保留期候选；汇总计数仍为全量。"
+      type="warning"
+      :closable="false"
+      show-icon
+    />
+
+    <section class="panel section-space">
+      <h3>人工修复清单</h3>
+      <el-empty
+        v-if="!maintenanceLoading && !maintenanceReport?.repair_items.length"
+        description="当前没有 RECONCILE_REQUIRED / ROLLBACK_BLOCKED journal"
+      />
+      <div
+        v-for="item in maintenanceReport?.repair_items ?? []"
+        :key="item.journal_id"
+        class="resource-row"
+      >
+        <span class="file-icon" :class="{ warning: item.manual_required }">
+          <AlertTriangle v-if="item.manual_required" :size="20" />
+          <RefreshCw v-else :size="20" />
+        </span>
         <div>
-          <b>OP-020 · 下载器添加结果待确认</b>
+          <b>{{ item.kind }} · {{ item.status }}</b>
+          <p>{{ item.reason }}</p>
+          <small class="muted">任务 {{ item.task_id }} · Journal {{ item.journal_id }}</small>
           <p>
-            {{
-              recovered
-                ? '已模拟查询到相同任务，补记结果；未重复添加'
-                : '检查点 ADDING，查询目标 hash 后决定是否补记'
-            }}
+            <small>{{ item.recommended_action }}</small>
           </p>
         </div>
-        <el-button :disabled="recovered" @click="recovered = true">{{
-          recovered ? '已恢复' : '模拟恢复'
-        }}</el-button>
+        <el-tag :type="item.action === 'RECONCILE' ? 'warning' : 'danger'">
+          {{ item.action === 'RECONCILE' ? '到任务详情只读对账' : '必须人工检查' }}
+        </el-tag>
       </div>
-      <div class="resource-row">
+    </section>
+
+    <section class="panel section-space">
+      <h3>保留期候选明细</h3>
+      <el-empty
+        v-if="!maintenanceLoading && !maintenanceReport?.cleanup_candidates.length"
+        description="当前没有 NOOP / ROLLED_BACK journal 候选"
+      />
+      <div
+        v-for="item in maintenanceReport?.cleanup_candidates ?? []"
+        :key="item.journal_id"
+        class="resource-row"
+      >
         <span class="file-icon success"><Check :size="20" /></span>
         <div>
-          <b>OP-021 · 2 个未使用链接</b>
-          <p>{{ cleaned ? '已模拟清理' : '所有权已登记，设备 / inode 与记录一致' }}</p>
+          <b>{{ item.kind }} · {{ item.status }}</b>
+          <p>{{ item.reason }}</p>
+          <small class="muted">任务 {{ item.task_id }} · Journal {{ item.journal_id }}</small>
+          <p>
+            <small>{{ item.recommendation }}</small>
+          </p>
         </div>
-        <el-tag type="success">{{ cleaned ? '已清理' : '可清理' }}</el-tag>
-      </div>
-      <div class="resource-row">
-        <span class="file-icon warning"><AlertTriangle :size="20" /></span>
-        <div>
-          <b>OP-022 · 目录所有权无法确认</b>
-          <p>/data/seeding/unclaimed · 无法证明由系统创建</p>
-        </div>
-        <el-tag type="danger">禁止删除</el-tag>
+        <el-tag type="success">仅候选</el-tag>
       </div>
     </section>
   </div>

@@ -12,6 +12,8 @@ export type TaskMutationAction = components['schemas']['TaskMutationActionRespon
 export type TaskEvent = components['schemas']['TaskEventResponse'];
 export type TaskOperation = components['schemas']['TaskOperationResponse'];
 export type TaskOperationAction = components['schemas']['TaskOperationActionResponse'];
+export type OperationMaintenanceReport =
+  components['schemas']['OperationMaintenanceReportResponse'];
 export type TaskRecord = components['schemas']['TaskResponse'];
 export type TaskStatus = components['schemas']['TaskStatus'];
 export type TaskCreateInput = components['schemas']['TaskCreateRequest'];
@@ -80,6 +82,23 @@ export async function listTaskOperations(taskId: string): Promise<TaskOperation[
       `${taskPath(taskId)}/operations`,
     );
     return response.data.items;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function getOperationMaintenanceReport(
+  limit = 100,
+): Promise<OperationMaintenanceReport> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+    throw new Error('limit 必须位于 1..500');
+  }
+  try {
+    const response = await apiClient.get<OperationMaintenanceReport>(
+      '/operations/maintenance-report',
+      { params: { limit } },
+    );
+    return response.data;
   } catch (error) {
     throw toApiProblem(error);
   }

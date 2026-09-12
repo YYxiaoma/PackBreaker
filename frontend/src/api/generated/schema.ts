@@ -322,6 +322,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/operations/maintenance-report': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Operation Maintenance Report */
+    get: operations['operation_maintenance_report_api_v1_operations_maintenance_report_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/sites': {
     parameters: {
       query?: never;
@@ -1032,6 +1049,34 @@ export interface components {
       task_link_base_url?: string | null;
       telegram?: components['schemas']['TelegramCredentialInput'] | null;
     };
+    /** OperationCleanupCandidateResponse */
+    OperationCleanupCandidateResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Journal Id */
+      journal_id: string;
+      kind: components['schemas']['OperationKind'];
+      /** Reason */
+      reason: string;
+      /**
+       * Reason Code
+       * @enum {string}
+       */
+      reason_code: 'NO_SIDE_EFFECT' | 'ROLLBACK_CONFIRMED';
+      /** Recommendation */
+      recommendation: string;
+      status: components['schemas']['OperationStatus'];
+      /** Task Id */
+      task_id: string;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
     /**
      * OperationKind
      * @enum {string}
@@ -1048,6 +1093,71 @@ export interface components {
       | 'TRANSMISSION_START'
       | 'TRANSMISSION_REMOVE'
       | 'OTHER';
+    /** OperationMaintenanceReportResponse */
+    OperationMaintenanceReportResponse: {
+      /** Cleanup Candidates */
+      cleanup_candidates: components['schemas']['OperationCleanupCandidateResponse'][];
+      /**
+       * Generated At
+       * Format: date-time
+       */
+      generated_at: string;
+      /** Repair Items */
+      repair_items: components['schemas']['OperationRepairItemResponse'][];
+      summary: components['schemas']['OperationMaintenanceSummaryResponse'];
+    };
+    /** OperationMaintenanceSummaryResponse */
+    OperationMaintenanceSummaryResponse: {
+      /** Attention Required */
+      attention_required: number;
+      /** Manual Only */
+      manual_only: number;
+      /** Reconcile Supported */
+      reconcile_supported: number;
+      /** Retention Candidates */
+      retention_candidates: number;
+      /** Total Journals */
+      total_journals: number;
+      /** Truncated */
+      truncated: boolean;
+    };
+    /** OperationRepairItemResponse */
+    OperationRepairItemResponse: {
+      /**
+       * Action
+       * @enum {string}
+       */
+      action: 'RECONCILE' | 'MANUAL_INSPECTION';
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Journal Id */
+      journal_id: string;
+      kind: components['schemas']['OperationKind'];
+      /** Manual Required */
+      manual_required: boolean;
+      /** Reason */
+      reason: string;
+      /**
+       * Reason Code
+       * @enum {string}
+       */
+      reason_code: 'SAFE_RECONCILE_AVAILABLE' | 'MANUAL_RECONCILE_REQUIRED' | 'ROLLBACK_BLOCKED';
+      /** Recommended Action */
+      recommended_action: string;
+      /** Reconcile Supported */
+      reconcile_supported: boolean;
+      status: components['schemas']['OperationStatus'];
+      /** Task Id */
+      task_id: string;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
     /**
      * OperationStatus
      * @enum {string}
@@ -2434,6 +2544,41 @@ export interface operations {
           'application/json': {
             [key: string]: unknown;
           };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  operation_maintenance_report_api_v1_operations_maintenance_report_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['OperationMaintenanceReportResponse'];
         };
       };
       /** @description Validation Error */

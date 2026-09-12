@@ -1190,6 +1190,147 @@ def test_task_operation_api_redacts_journal_and_reconciles_idempotently(tmp_path
         client.__exit__(None, None, None)
 
 
+def test_operation_maintenance_report_is_read_only_redacted_and_bounded(tmp_path: Path) -> None:
+    client, app, _settings = _authenticated_client(tmp_path)
+    task_id = _create_task(app, "maintenance-report")
+    secret_marker = "/data/private/report-must-not-leak"
+    ownership_marker = "private-maintenance-owner"
+
+    with app.state.runtime.session_factory() as session:
+        repository = OperationJournalRepository(session)
+
+        supported, _ = repository.record_intent(
+            OperationIntent(
+                task_id=task_id,
+                idempotency_key="1" * 64,
+                operation_type="CREATE_DIRECTORY",
+                target={"path": secret_marker},
+                intent={"ownership_tag": ownership_marker},
+                before_snapshot={"path": secret_marker},
+            )
+        )
+        repository.transition_status(
+            journal_id=supported.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+            after_snapshot={"path": secret_marker},
+        )
+        repository.transition_status(
+            journal_id=supported.id,
+            expected_status=OperationStatus.APPLIED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+
+        manual, _ = repository.record_intent(
+            OperationIntent(
+                task_id=task_id,
+                idempotency_key="2" * 64,
+                operation_type="UNKNOWN_SIDE_EFFECT",
+                target={"path": secret_marker},
+                intent={"ownership_tag": ownership_marker},
+            )
+        )
+        repository.transition_status(
+            journal_id=manual.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+
+        blocked, _ = repository.record_intent(
+            OperationIntent(
+                task_id=task_id,
+                idempotency_key="3" * 64,
+                operation_type="CREATE_HARDLINK",
+                target={"path": secret_marker},
+                intent={"ownership_tag": ownership_marker},
+            )
+        )
+        repository.transition_status(
+            journal_id=blocked.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+            after_snapshot={"path": secret_marker},
+        )
+        repository.transition_status(
+            journal_id=blocked.id,
+            expected_status=OperationStatus.APPLIED,
+            to_status=OperationStatus.ROLLBACK_PENDING,
+        )
+        repository.transition_status(
+            journal_id=blocked.id,
+            expected_status=OperationStatus.ROLLBACK_PENDING,
+            to_status=OperationStatus.ROLLBACK_BLOCKED,
+        )
+
+        noop, _ = repository.record_intent(
+            OperationIntent(
+                task_id=task_id,
+                idempotency_key="4" * 64,
+                operation_type="CREATE_DIRECTORY",
+                target={"path": secret_marker},
+                intent={"ownership_tag": ownership_marker},
+            )
+        )
+        repository.transition_status(
+            journal_id=noop.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.NOOP,
+        )
+        session.commit()
+
+    try:
+        response = client.get("/api/v1/operations/maintenance-report?limit=100")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["summary"] == {
+            "total_journals": 4,
+            "attention_required": 3,
+            "reconcile_supported": 1,
+            "manual_only": 2,
+            "retention_candidates": 1,
+            "truncated": False,
+        }
+        assert {item["reason_code"] for item in payload["repair_items"]} == {
+            "SAFE_RECONCILE_AVAILABLE",
+            "MANUAL_RECONCILE_REQUIRED",
+            "ROLLBACK_BLOCKED",
+        }
+        assert payload["cleanup_candidates"][0]["journal_id"] == noop.id
+        assert payload["cleanup_candidates"][0]["reason_code"] == "NO_SIDE_EFFECT"
+
+        allowed_repair_fields = {
+            "journal_id",
+            "task_id",
+            "kind",
+            "status",
+            "reason_code",
+            "reason",
+            "recommended_action",
+            "action",
+            "reconcile_supported",
+            "manual_required",
+            "created_at",
+            "updated_at",
+        }
+        assert all(set(item) == allowed_repair_fields for item in payload["repair_items"])
+        encoded = response.text
+        for forbidden in (
+            secret_marker,
+            ownership_marker,
+            "target",
+            "intent",
+            "before_snapshot",
+            "after_snapshot",
+            "idempotency_key",
+        ):
+            assert forbidden not in encoded
+
+        assert client.get("/api/v1/operations/maintenance-report?limit=0").status_code == 422
+        assert client.get("/api/v1/operations/maintenance-report?limit=501").status_code == 422
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_transmission_plan_binding_is_allowed_and_requires_verify_capabilities(
     tmp_path: Path,
 ) -> None:

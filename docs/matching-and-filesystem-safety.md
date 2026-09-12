@@ -215,6 +215,7 @@ M3 的 `SafeFilesystemGateway` 负责上述动作前的统一只读检查：输�
 - 从下载器移除任务时始终使用 `delete_data=False`；首版 API 不提供删除数据能力。
 - 已完成做种任务默认不自动回滚，除非用户基于最新预演明确确认。
 - 定期清理先生成报告，再执行被确认的安全动作；报告包含无法自动清理的原因。
+- 当前实现的清理/对账报告仅只读：`RECONCILE_REQUIRED` / `ROLLBACK_BLOCKED` 进入修复清单，`NOOP` / `ROLLED_BACK` 仅作为未来保留期候选；报告本身不授权删除 journal 或资源。
 
 ## 12. 错误码与验收
 

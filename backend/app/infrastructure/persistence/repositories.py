@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -396,6 +396,58 @@ class OperationJournalRepository:
         return list(
             self._session.scalars(
                 statement.order_by(OperationJournal.created_at.asc(), OperationJournal.id.asc())
+            )
+        )
+
+    def count_all(self) -> int:
+        return int(self._session.scalar(select(func.count()).select_from(OperationJournal)) or 0)
+
+    def count_by_statuses(self, statuses: tuple[OperationStatus, ...]) -> int:
+        if not statuses:
+            return 0
+        values = tuple(status.value for status in statuses)
+        return int(
+            self._session.scalar(
+                select(func.count())
+                .select_from(OperationJournal)
+                .where(OperationJournal.status.in_(values))
+            )
+            or 0
+        )
+
+    def count_reconcile_supported(self, operation_types: tuple[str, ...]) -> int:
+        if not operation_types:
+            return 0
+        return int(
+            self._session.scalar(
+                select(func.count())
+                .select_from(OperationJournal)
+                .where(
+                    OperationJournal.status == OperationStatus.RECONCILE_REQUIRED.value,
+                    OperationJournal.operation_type.in_(operation_types),
+                    OperationJournal.after_snapshot.is_not(None),
+                )
+            )
+            or 0
+        )
+
+    def list_by_statuses(
+        self,
+        statuses: tuple[OperationStatus, ...],
+        *,
+        limit: int = 100,
+    ) -> list[OperationJournal]:
+        if limit <= 0:
+            raise ValueError("limit 必须大于 0")
+        if not statuses:
+            return []
+        values = tuple(status.value for status in statuses)
+        return list(
+            self._session.scalars(
+                select(OperationJournal)
+                .where(OperationJournal.status.in_(values))
+                .order_by(OperationJournal.updated_at.asc(), OperationJournal.id.asc())
+                .limit(limit)
             )
         )
 

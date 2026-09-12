@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any, Literal, Protocol
 from weakref import WeakValueDictionary
@@ -43,6 +43,11 @@ _FILESYSTEM_RECONCILE_TYPES = frozenset({CREATE_DIRECTORY_OPERATION, CREATE_HARD
 _ATTENTION_STATUSES = frozenset(
     {OperationStatus.RECONCILE_REQUIRED, OperationStatus.ROLLBACK_BLOCKED}
 )
+_RECONCILABLE_OPERATION_TYPES = (
+    _FILESYSTEM_RECONCILE_TYPES
+    | QBITTORRENT_RECONCILABLE_OPERATIONS
+    | TRANSMISSION_RECONCILABLE_OPERATIONS
+)
 _ACTION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
@@ -56,6 +61,62 @@ class TaskOperationView:
     reconcile_supported: bool
     created_at: datetime
     updated_at: datetime
+
+
+OperationRepairAction = Literal["RECONCILE", "MANUAL_INSPECTION"]
+OperationRepairReason = Literal[
+    "SAFE_RECONCILE_AVAILABLE",
+    "MANUAL_RECONCILE_REQUIRED",
+    "ROLLBACK_BLOCKED",
+]
+OperationCleanupReason = Literal["NO_SIDE_EFFECT", "ROLLBACK_CONFIRMED"]
+
+
+@dataclass(frozen=True, slots=True)
+class OperationRepairItemView:
+    journal_id: str
+    task_id: str
+    kind: OperationKind
+    status: OperationStatus
+    reason_code: OperationRepairReason
+    reason: str
+    recommended_action: str
+    action: OperationRepairAction
+    reconcile_supported: bool
+    manual_required: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class OperationCleanupCandidateView:
+    journal_id: str
+    task_id: str
+    kind: OperationKind
+    status: OperationStatus
+    reason_code: OperationCleanupReason
+    reason: str
+    recommendation: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class OperationMaintenanceSummary:
+    total_journals: int
+    attention_required: int
+    reconcile_supported: int
+    manual_only: int
+    retention_candidates: int
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OperationMaintenanceReport:
+    generated_at: datetime
+    summary: OperationMaintenanceSummary
+    repair_items: tuple[OperationRepairItemView, ...]
+    cleanup_candidates: tuple[OperationCleanupCandidateView, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +188,44 @@ class TaskOperationService:
                 raise _task_not_found()
             journals = OperationJournalRepository(session).list_for_task(task_id)
             return tuple(_operation_view(item) for item in reversed(journals))
+
+    def maintenance_report(self, *, limit: int = 100) -> OperationMaintenanceReport:
+        if limit <= 0 or limit > 500:
+            raise ValueError("limit 必须位于 1..500")
+        attention_statuses = (
+            OperationStatus.RECONCILE_REQUIRED,
+            OperationStatus.ROLLBACK_BLOCKED,
+        )
+        retention_statuses = (OperationStatus.NOOP, OperationStatus.ROLLED_BACK)
+        with self._session_factory() as session:
+            repository = OperationJournalRepository(session)
+            total_journals = repository.count_all()
+            attention_required = repository.count_by_statuses(attention_statuses)
+            retention_candidates = repository.count_by_statuses(retention_statuses)
+            reconcile_supported = repository.count_reconcile_supported(
+                tuple(sorted(_RECONCILABLE_OPERATION_TYPES))
+            )
+            repair_journals = repository.list_by_statuses(attention_statuses, limit=limit)
+            cleanup_journals = repository.list_by_statuses(retention_statuses, limit=limit)
+
+        repair_items = tuple(_repair_item(item) for item in repair_journals)
+        cleanup_candidates = tuple(_cleanup_candidate(item) for item in cleanup_journals)
+        return OperationMaintenanceReport(
+            generated_at=datetime.now(UTC),
+            summary=OperationMaintenanceSummary(
+                total_journals=total_journals,
+                attention_required=attention_required,
+                reconcile_supported=reconcile_supported,
+                manual_only=attention_required - reconcile_supported,
+                retention_candidates=retention_candidates,
+                truncated=(
+                    attention_required > len(repair_items)
+                    or retention_candidates > len(cleanup_candidates)
+                ),
+            ),
+            repair_items=repair_items,
+            cleanup_candidates=cleanup_candidates,
+        )
 
     async def reconcile(
         self,
@@ -348,15 +447,76 @@ def _operation_view(journal: OperationJournal) -> TaskOperationView:
         kind=operation_kind(journal.operation_type),
         status=status,
         attention_required=status in _ATTENTION_STATUSES,
-        reconcile_supported=(
-            status is OperationStatus.RECONCILE_REQUIRED
-            and journal.operation_type
-            in (
-                _FILESYSTEM_RECONCILE_TYPES
-                | QBITTORRENT_RECONCILABLE_OPERATIONS
-                | TRANSMISSION_RECONCILABLE_OPERATIONS
-            )
-            and journal.after_snapshot is not None
+        reconcile_supported=_reconcile_supported(journal),
+        created_at=journal.created_at,
+        updated_at=journal.updated_at,
+    )
+
+
+def _reconcile_supported(journal: OperationJournal) -> bool:
+    return (
+        OperationStatus(journal.status) is OperationStatus.RECONCILE_REQUIRED
+        and journal.operation_type in _RECONCILABLE_OPERATION_TYPES
+        and journal.after_snapshot is not None
+    )
+
+
+def _repair_item(journal: OperationJournal) -> OperationRepairItemView:
+    status = OperationStatus(journal.status)
+    supported = _reconcile_supported(journal)
+    if status is OperationStatus.ROLLBACK_BLOCKED:
+        reason_code: OperationRepairReason = "ROLLBACK_BLOCKED"
+        reason = "回滚因所有权、完成快照或当前资源状态证据不足而被安全门阻断。"
+        recommendation = (
+            "保留现场并人工核对资源归属；确认前不要删除资源、重放副作用或强制改写 journal 状态。"
+        )
+        action: OperationRepairAction = "MANUAL_INSPECTION"
+    elif supported:
+        reason_code = "SAFE_RECONCILE_AVAILABLE"
+        reason = "journal 已要求重新验证，且存在只读取当前资源状态的安全对账器。"
+        recommendation = "优先执行只读 reconcile；若重新证明失败，继续保留现场并转人工检查。"
+        action = "RECONCILE"
+    else:
+        reason_code = "MANUAL_RECONCILE_REQUIRED"
+        reason = "缺少可安全自动证明的完成证据，或该操作类型没有自动对账器。"
+        recommendation = "人工核对外部资源与历史记录；不要根据当前资源存在或缺失反推历史副作用。"
+        action = "MANUAL_INSPECTION"
+    return OperationRepairItemView(
+        journal_id=journal.id,
+        task_id=journal.task_id,
+        kind=operation_kind(journal.operation_type),
+        status=status,
+        reason_code=reason_code,
+        reason=reason,
+        recommended_action=recommendation,
+        action=action,
+        reconcile_supported=supported,
+        manual_required=not supported,
+        created_at=journal.created_at,
+        updated_at=journal.updated_at,
+    )
+
+
+def _cleanup_candidate(journal: OperationJournal) -> OperationCleanupCandidateView:
+    status = OperationStatus(journal.status)
+    if status is OperationStatus.NOOP:
+        reason_code: OperationCleanupReason = "NO_SIDE_EFFECT"
+        reason = "journal 已确认没有执行外部副作用，因此没有仍由该 journal 创建并需要保留的资源。"
+    elif status is OperationStatus.ROLLED_BACK:
+        reason_code = "ROLLBACK_CONFIRMED"
+        reason = "journal-owned 副作用已确认完成回滚，资源安全约束不再阻止未来保留期清理。"
+    else:
+        raise ValueError("只有 NOOP 或 ROLLED_BACK journal 可以进入保留期清理候选")
+    return OperationCleanupCandidateView(
+        journal_id=journal.id,
+        task_id=journal.task_id,
+        kind=operation_kind(journal.operation_type),
+        status=status,
+        reason_code=reason_code,
+        reason=reason,
+        recommendation=(
+            "仅作为未来保留策略候选；当前 API 不删除 operation journal，"
+            "达到保留期后仍需专用清理流程再次确认。"
         ),
         created_at=journal.created_at,
         updated_at=journal.updated_at,
