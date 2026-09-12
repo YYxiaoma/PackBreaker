@@ -279,6 +279,9 @@ class TaskActionService:
                 raise _cancellation_state_invalid(
                     "当前任务已经结束，或不属于可证明零副作用的取消状态"
                 )
+            journals = OperationJournalRepository(session).list_for_task(task.id)
+            if status is TaskStatus.RETRY and journals:
+                return None
             if request.remove_downloader_task or request.rollback_created_resources:
                 raise ApplicationError(
                     code="CANCELLATION_OPTIONS_NOT_APPLICABLE",
@@ -289,7 +292,7 @@ class TaskActionService:
                         "rollback_created_resources 必须同时为 false"
                     ),
                 )
-            if OperationJournalRepository(session).list_for_task(task.id):
+            if journals:
                 raise ApplicationError(
                     code="CANCELLATION_EVIDENCE_CONFLICT",
                     status=409,

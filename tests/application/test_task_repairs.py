@@ -15,16 +15,26 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.downloader_operations import (
     QBITTORRENT_ADD_OPERATION,
     QBITTORRENT_RECHECK_OPERATION,
+    QbittorrentRemoveOperationService,
 )
 from backend.app.application.downloaders import QbittorrentWriteBinding
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import (
     CREATE_HARDLINK_OPERATION,
     FILESYSTEM_OPERATION_SCHEMA_VERSION,
+    ISOLATE_REPAIR_TARGET_OPERATION,
+    FilesystemOperationService,
 )
 from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.task_adding import CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION
-from backend.app.application.task_repairs import TaskRepairPlanService
+from backend.app.application.task_cancellation import (
+    TaskCancellationCoordinator,
+    TaskCancellationRequest,
+)
+from backend.app.application.task_repairs import (
+    TaskRepairIsolationCoordinator,
+    TaskRepairPlanService,
+)
 from backend.app.domain.downloader import (
     PathMappingRule,
     ProbeStatus,
@@ -65,6 +75,7 @@ from backend.app.infrastructure.persistence.models import (
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskExecutionPlanRepository,
 )
+from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 from backend.app.infrastructure.source_inventory import (
     scan_source_inventory,
     source_inventory_digest,
@@ -160,6 +171,7 @@ class _RepairFixture:
     hardlink_journal_id: str
     ownership_tag: str
     qbit: _ReadOnlyQbittorrent
+    downloader_provider: _DownloaderProvider
 
 
 @pytest.fixture
@@ -493,10 +505,11 @@ def repair_fixture(tmp_path: Path) -> Iterator[_RepairFixture]:
         session.commit()
         plan_id = plan.id
 
+    downloader_provider = _DownloaderProvider(binding)
     service = TaskRepairPlanService(
         factory,
         _SiteProvider(_FakeSiteAdapter(torrent_content)),
-        _DownloaderProvider(binding),
+        downloader_provider,
         data_root=data_root,
     )
     try:
@@ -514,6 +527,7 @@ def repair_fixture(tmp_path: Path) -> Iterator[_RepairFixture]:
             hardlink_journal_id=hardlink_id,
             ownership_tag=ownership_tag,
             qbit=qbit,
+            downloader_provider=downloader_provider,
         )
     finally:
         engine.dispose()
@@ -586,6 +600,151 @@ async def test_repair_plan_uses_trusted_retry_journals_and_is_read_only(
                 select(OperationJournal).where(OperationJournal.task_id == repair_fixture.task_id)
             )
         } == journal_statuses
+
+
+@pytest.mark.asyncio
+async def test_task_repair_isolation_hands_off_ownership_and_replans_safely(
+    repair_fixture: _RepairFixture,
+) -> None:
+    filesystem = FilesystemOperationService(
+        repair_fixture.factory,
+        SafeFilesystemGateway(repair_fixture.data_root),
+    )
+    coordinator = TaskRepairIsolationCoordinator(repair_fixture.service, filesystem)
+    source_before = repair_fixture.source.stat(follow_symlinks=False)
+    target_before = repair_fixture.target.stat(follow_symlinks=False)
+    assert source_before.st_ino == target_before.st_ino
+
+    first = await coordinator.execute(repair_fixture.unit_id)
+
+    source_after = repair_fixture.source.stat(follow_symlinks=False)
+    target_after = repair_fixture.target.stat(follow_symlinks=False)
+    assert first.isolated_paths == (repair_fixture.source.name,)
+    assert len(first.isolation_journal_ids) == 1
+    assert first.replayed is False
+    assert target_after.st_ino != source_after.st_ino
+    assert target_after.st_nlink == 1
+    assert repair_fixture.target.read_bytes() == repair_fixture.source.read_bytes()
+    assert (
+        source_before.st_ino,
+        source_before.st_size,
+        source_before.st_mtime_ns,
+    ) == (
+        source_after.st_ino,
+        source_after.st_size,
+        source_after.st_mtime_ns,
+    )
+    assert repair_fixture.qbit.write_calls == 0
+
+    replanned = await repair_fixture.service.generate(
+        repair_fixture.unit_id,
+        mode=RepairMode.AUTO_PIECE,
+    )
+    assert replanned.plan.ready is True
+    assert replanned.plan.execution_allowed is False
+    assert replanned.plan.isolation_bytes_required == 0
+    assert replanned.plan.affected_files[0].isolation_required is False
+
+    replay = await coordinator.execute(repair_fixture.unit_id)
+    assert replay.replayed is True
+    assert replay.isolated_paths == ()
+    assert replay.isolation_journal_ids == ()
+    with repair_fixture.factory() as session:
+        isolations = tuple(
+            session.scalars(
+                select(OperationJournal).where(
+                    OperationJournal.task_id == repair_fixture.task_id,
+                    OperationJournal.operation_type == ISOLATE_REPAIR_TARGET_OPERATION,
+                )
+            )
+        )
+        assert len(isolations) == 1
+        assert isolations[0].status == OperationStatus.APPLIED.value
+        hardlink = session.get(OperationJournal, repair_fixture.hardlink_journal_id)
+        assert hardlink is not None
+        assert hardlink.status == OperationStatus.APPLIED.value
+
+
+@pytest.mark.asyncio
+async def test_task_repair_isolation_resumes_owned_inflight_journal(
+    repair_fixture: _RepairFixture,
+) -> None:
+    filesystem = FilesystemOperationService(
+        repair_fixture.factory,
+        SafeFilesystemGateway(repair_fixture.data_root),
+    )
+    coordinator = TaskRepairIsolationCoordinator(repair_fixture.service, filesystem)
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_isolation_temp_owned":
+            raise RuntimeError(checkpoint)
+
+    with pytest.raises(RuntimeError, match="after_isolation_temp_owned"):
+        await coordinator.execute(repair_fixture.unit_id, fault_hook=crash)
+
+    with repair_fixture.factory() as session:
+        isolation = session.scalar(
+            select(OperationJournal).where(
+                OperationJournal.task_id == repair_fixture.task_id,
+                OperationJournal.operation_type == ISOLATE_REPAIR_TARGET_OPERATION,
+            )
+        )
+        assert isolation is not None
+        assert isolation.status == OperationStatus.INTENT_RECORDED.value
+        assert isolation.after_snapshot is not None
+        journal_id = isolation.id
+
+    resumed = await coordinator.execute(repair_fixture.unit_id)
+
+    assert resumed.isolated_paths == (repair_fixture.source.name,)
+    assert resumed.isolation_journal_ids == (journal_id,)
+    assert repair_fixture.target.stat().st_ino != repair_fixture.source.stat().st_ino
+    assert repair_fixture.target.stat().st_nlink == 1
+    with repair_fixture.factory() as session:
+        isolation = session.get(OperationJournal, journal_id)
+        assert isolation is not None
+        assert isolation.status == OperationStatus.APPLIED.value
+        assert (
+            session.query(OperationJournal)
+            .filter(OperationJournal.operation_type == ISOLATE_REPAIR_TARGET_OPERATION)
+            .count()
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_cancellation_blocks_resource_rollback_after_repair_isolation(
+    repair_fixture: _RepairFixture,
+) -> None:
+    filesystem = FilesystemOperationService(
+        repair_fixture.factory,
+        SafeFilesystemGateway(repair_fixture.data_root),
+    )
+    coordinator = TaskRepairIsolationCoordinator(repair_fixture.service, filesystem)
+    await coordinator.execute(repair_fixture.unit_id)
+    cancellation = TaskCancellationCoordinator(
+        repair_fixture.factory,
+        repair_fixture.downloader_provider,
+        QbittorrentRemoveOperationService(repair_fixture.factory),
+        filesystem,
+    )
+
+    with pytest.raises(ApplicationError) as failure:
+        await cancellation.execute(
+            TaskCancellationRequest(
+                task_id=repair_fixture.task_id,
+                remove_downloader_task=True,
+                rollback_created_resources=True,
+            )
+        )
+
+    assert failure.value.code == "CANCELLATION_REPAIR_ISOLATION_RETAIN_REQUIRED"
+    assert repair_fixture.qbit.write_calls == 0
+    assert repair_fixture.target.exists()
+    with repair_fixture.factory() as session:
+        task = session.get(UnpackTask, repair_fixture.task_id)
+        assert task is not None
+        assert task.status == TaskStatus.RETRY.value
 
 
 @pytest.mark.asyncio

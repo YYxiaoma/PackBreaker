@@ -42,7 +42,10 @@ from backend.app.application.task_events import TaskEventService
 from backend.app.application.task_linking import TaskLinkingCoordinator
 from backend.app.application.task_operations import TaskOperationService
 from backend.app.application.task_recovery import TaskRecoveryCoordinator
-from backend.app.application.task_repairs import TaskRepairPlanService
+from backend.app.application.task_repairs import (
+    TaskRepairIsolationCoordinator,
+    TaskRepairPlanService,
+)
 from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.application.transmission_operations import (
@@ -173,18 +176,23 @@ def create_app(
             data_root=resolved_settings.data_dir,
         )
         app.state.task_analysis_service = task_analysis_service
-        app.state.task_repair_plan_service = TaskRepairPlanService(
+        task_repair_plan_service = TaskRepairPlanService(
             resolved_runtime.session_factory,
             site_service,
             downloader_service,
             data_root=resolved_settings.data_dir,
         )
+        app.state.task_repair_plan_service = task_repair_plan_service
         app.state.task_event_service = TaskEventService(resolved_runtime.session_factory)
         filesystem_operations = FilesystemOperationService(
             resolved_runtime.session_factory,
             SafeFilesystemGateway(resolved_settings.data_dir),
         )
         app.state.filesystem_operation_service = filesystem_operations
+        app.state.task_repair_isolation_coordinator = TaskRepairIsolationCoordinator(
+            task_repair_plan_service,
+            filesystem_operations,
+        )
         app.state.task_operation_service = TaskOperationService(
             resolved_runtime.session_factory,
             filesystem_operations,

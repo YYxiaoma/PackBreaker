@@ -583,6 +583,37 @@ async def test_pre_side_effect_cancel_rejects_resource_options_and_existing_jour
 
 
 @pytest.mark.asyncio
+async def test_retry_with_operation_journal_delegates_to_resource_cancellation(
+    action_fixture: ActionFixture,
+) -> None:
+    factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.RETRY)
+    with factory() as session:
+        OperationJournalRepository(session).record_intent(
+            OperationIntent(
+                task_id=task_id,
+                idempotency_key="retry-side-effect-cancel",
+                operation_type="ISOLATE_REPAIR_TARGET",
+                target={"resource": "synthetic"},
+                intent={"synthetic": True},
+            )
+        )
+        session.commit()
+
+    cancellation = _Cancellation()
+    service = TaskActionService(factory, _LinkingMustNotRun(), cancellation)
+    result = await service.cancel(
+        CancelTaskAction(task_id, True, False),
+        actor=TaskActionActor("admin_session", "retry-side-effect-cancel"),
+        idempotency_key="retry-side-effect-cancel",
+    )
+
+    assert cancellation.calls == 1
+    assert result.status is TaskStatus.CANCELLED
+    assert result.execution_plan_id == "plan-1"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "initial_status",
     [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,10 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import (
     CREATE_HARDLINK_OPERATION,
     FILESYSTEM_OPERATION_SCHEMA_VERSION,
+    ISOLATE_REPAIR_TARGET_OPERATION,
+    REPAIR_ISOLATION_SCHEMA_VERSION,
+    FilesystemOperationService,
+    RepairIsolationExecutionRequest,
 )
 from backend.app.application.task_adding import CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION
 from backend.app.application.transmission_operations import (
@@ -88,6 +93,30 @@ class RepairPlanView:
     downloader_kind: DownloaderKind
     evidence_source: str
     plan: RepairPlan
+
+
+@dataclass(frozen=True, slots=True)
+class RepairIsolationTarget:
+    torrent_path: str
+    hardlink_journal_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepairIsolationPreparation:
+    task_id: str
+    task_unit_id: str
+    execution_plan_id: str
+    targets: tuple[RepairIsolationTarget, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TaskRepairIsolationResult:
+    task_id: str
+    task_unit_id: str
+    execution_plan_id: str
+    isolated_paths: tuple[str, ...]
+    isolation_journal_ids: tuple[str, ...]
+    replayed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +214,184 @@ class TaskRepairPlanService:
             evidence_source="CLIENT_VERIFICATION_INCOMPLETE",
             plan=plan,
         )
+
+    async def prepare_isolation(self, unit_id: str) -> RepairIsolationPreparation:
+        """重新生成可信 AUTO_PIECE 计划，只返回当前仍需隔离的 journal-owned hardlink。"""
+
+        authorized = self._load_authorized(unit_id)
+        binding = self._load_binding(authorized)
+        current = await self._owned_downloader_state(authorized, binding)
+        if not current.stopped:
+            raise ApplicationError(
+                code="REPAIR_ISOLATION_DOWNLOADER_NOT_PAUSED",
+                status=409,
+                title="修复隔离前下载器必须保持暂停",
+                detail="恢复或开始 inode 隔离前必须重新由真实下载器状态证明 torrent 已停止写入",
+            )
+        self._assert_source_inventory(authorized)
+
+        pending = self._pending_isolation_target(authorized)
+        if pending is not None:
+            return RepairIsolationPreparation(
+                task_id=authorized.task_id,
+                task_unit_id=authorized.task_unit_id,
+                execution_plan_id=authorized.plan_id,
+                targets=(pending,),
+            )
+
+        view = await self.generate(unit_id, mode=RepairMode.AUTO_PIECE)
+        if not view.plan.ready or view.plan.blocked_reasons:
+            raise ApplicationError(
+                code="REPAIR_ISOLATION_PLAN_NOT_READY",
+                status=409,
+                title="修复隔离计划尚未满足安全门",
+                detail=(
+                    "只有当前可信 repair plan 已通过暂停、空间和文件证据检查时才能执行 inode 隔离"
+                ),
+            )
+
+        required_paths = {
+            item.torrent_path for item in view.plan.affected_files if item.isolation_required
+        }
+        if not required_paths:
+            return RepairIsolationPreparation(
+                task_id=view.task_id,
+                task_unit_id=view.task_unit_id,
+                execution_plan_id=view.execution_plan_id,
+                targets=(),
+            )
+
+        authorized = self._load_authorized(unit_id)
+        if (
+            authorized.task_id != view.task_id
+            or authorized.task_unit_id != view.task_unit_id
+            or authorized.plan_id != view.execution_plan_id
+        ):
+            raise _repair_input_changed()
+        binding = self._load_binding(authorized)
+        current = await self._owned_downloader_state(authorized, binding)
+        if not current.stopped:
+            raise _repair_input_changed()
+        self._assert_source_inventory(authorized)
+
+        hardlinks = self._hardlink_journals(authorized)
+        targets: list[RepairIsolationTarget] = []
+        action_by_path = {item.torrent_path: item for item in authorized.actions}
+        for torrent_path in sorted(required_paths):
+            action = action_by_path.get(torrent_path)
+            journal = hardlinks.get(torrent_path)
+            if (
+                action is None
+                or action.kind is not ExecutionPlanActionKind.HARDLINK
+                or action.source_relative_path is None
+                or journal is None
+            ):
+                raise _repair_ownership_unproven(
+                    "当前 isolation target 缺少 execution plan HARDLINK 与 "
+                    "APPLIED journal 的一一绑定"
+                )
+            source_relative = _join_relative_root(
+                authorized.source_root,
+                action.source_relative_path,
+            )
+            self._assert_hardlink_journal(
+                authorized,
+                action,
+                source_relative,
+                journal,
+                allow_isolation_handoff=False,
+            )
+            targets.append(RepairIsolationTarget(torrent_path, journal.id))
+        return RepairIsolationPreparation(
+            task_id=view.task_id,
+            task_unit_id=view.task_unit_id,
+            execution_plan_id=view.execution_plan_id,
+            targets=tuple(targets),
+        )
+
+    def _pending_isolation_target(
+        self,
+        authorized: _AuthorizedRepair,
+    ) -> RepairIsolationTarget | None:
+        with self._session_factory() as session:
+            journals = tuple(
+                journal
+                for journal in OperationJournalRepository(session).list_for_task(
+                    authorized.task_id,
+                    operation_types=(ISOLATE_REPAIR_TARGET_OPERATION,),
+                )
+                if OperationStatus(journal.status) is OperationStatus.INTENT_RECORDED
+            )
+            if len(journals) > 1:
+                raise _repair_ownership_unproven(
+                    "同一任务存在多个未完成 repair isolation journal，不能自动选择恢复顺序"
+                )
+            if not journals:
+                return None
+            isolation = journals[0]
+            hardlink_id = isolation.intent.get("hardlink_journal_id")
+            if not isinstance(hardlink_id, str) or not hardlink_id:
+                raise _repair_ownership_unproven(
+                    "未完成 repair isolation 缺少 hardlink journal 绑定"
+                )
+            hardlink = OperationJournalRepository(session).get(hardlink_id)
+            if (
+                hardlink is None
+                or hardlink.task_id != authorized.task_id
+                or hardlink.operation_type != CREATE_HARDLINK_OPERATION
+                or OperationStatus(hardlink.status) is not OperationStatus.APPLIED
+                or hardlink.intent.get("schema_version") != FILESYSTEM_OPERATION_SCHEMA_VERSION
+                or hardlink.intent.get("resource_kind") != "hardlink"
+                or isolation.intent.get("schema_version") != REPAIR_ISOLATION_SCHEMA_VERSION
+                or isolation.intent.get("resource_kind") != "repair_isolation"
+                or isolation.target != hardlink.target
+            ):
+                raise _repair_ownership_unproven(
+                    "未完成 repair isolation 与原 hardlink journal 绑定无效"
+                )
+
+            torrent_path = hardlink.target.get("relative_path")
+            if (
+                hardlink.target.get("target_root") != authorized.target_root
+                or not isinstance(torrent_path, str)
+                or not torrent_path
+            ):
+                raise _repair_ownership_unproven(
+                    "未完成 repair isolation 目标不属于当前 execution plan"
+                )
+            action = next(
+                (
+                    item
+                    for item in authorized.actions
+                    if item.torrent_path == torrent_path
+                    and item.kind is ExecutionPlanActionKind.HARDLINK
+                ),
+                None,
+            )
+            if (
+                action is None
+                or action.source_relative_path is None
+                or action.source_snapshot is None
+            ):
+                raise _repair_ownership_unproven(
+                    "未完成 repair isolation 找不到 execution plan HARDLINK 源证据"
+                )
+            source_relative = _join_relative_root(
+                authorized.source_root,
+                action.source_relative_path,
+            )
+            if (
+                hardlink.intent.get("source_relative_path") != source_relative
+                or hardlink.intent.get("source_snapshot")
+                != _file_snapshot_payload(action.source_snapshot)
+                or isolation.intent.get("source_relative_path") != source_relative
+                or isolation.intent.get("source_snapshot")
+                != _file_snapshot_payload(action.source_snapshot)
+            ):
+                raise _repair_ownership_unproven(
+                    "未完成 repair isolation 的 source 证据与 execution plan 不一致"
+                )
+            return RepairIsolationTarget(torrent_path, hardlink.id)
 
     def _load_authorized(self, unit_id: str) -> _AuthorizedRepair:
         with self._session_factory() as session:
@@ -692,7 +899,11 @@ class TaskRepairPlanService:
         action: ExecutionPlanAction,
         source_relative: str,
         journal: OperationJournal,
+        *,
+        allow_isolation_handoff: bool = True,
     ) -> None:
+        if action.source_snapshot is None:
+            raise _repair_ownership_unproven("HARDLINK action 缺少 source snapshot")
         if (
             journal.task_id != authorized.task_id
             or journal.intent.get("schema_version") != FILESYSTEM_OPERATION_SCHEMA_VERSION
@@ -703,6 +914,41 @@ class TaskRepairPlanService:
             or journal.after_snapshot is None
         ):
             raise _repair_ownership_unproven("hardlink journal 与 execution plan 源/目标证据不一致")
+
+        isolation = self._repair_isolation_journal(authorized, journal)
+        if isolation is not None:
+            if not allow_isolation_handoff:
+                raise _repair_ownership_unproven(
+                    "目标 hardlink 已完成 inode 隔离，不应再次进入隔离队列"
+                )
+            if (
+                isolation.target != journal.target
+                or isolation.intent.get("schema_version") != REPAIR_ISOLATION_SCHEMA_VERSION
+                or isolation.intent.get("resource_kind") != "repair_isolation"
+                or isolation.intent.get("hardlink_journal_id") != journal.id
+                or isolation.intent.get("source_relative_path") != source_relative
+                or isolation.intent.get("source_snapshot")
+                != _file_snapshot_payload(action.source_snapshot)
+                or isolation.after_snapshot is None
+            ):
+                raise _repair_ownership_unproven(
+                    "repair isolation journal 无法证明已从原 hardlink 完成 ownership handoff"
+                )
+            expected_isolated = _filesystem_snapshot(isolation.after_snapshot)
+            try:
+                self._filesystem.assert_repair_isolation_matches(
+                    source_relative_path=source_relative,
+                    target_root_relative_path=authorized.target_root,
+                    target_relative_path=action.torrent_path,
+                    expected_source_snapshot=action.source_snapshot,
+                    expected_target_snapshot=expected_isolated,
+                )
+            except DomainViolation as exc:
+                raise _repair_ownership_unproven(
+                    "journal-owned repair isolation 当前快照已变化"
+                ) from exc
+            return
+
         expected = _filesystem_snapshot(journal.after_snapshot)
         try:
             self._filesystem.assert_hardlink_matches(
@@ -712,6 +958,34 @@ class TaskRepairPlanService:
             )
         except DomainViolation as exc:
             raise _repair_ownership_unproven("journal-owned hardlink 当前快照已变化") from exc
+
+    def _repair_isolation_journal(
+        self,
+        authorized: _AuthorizedRepair,
+        hardlink: OperationJournal,
+    ) -> OperationJournal | None:
+        with self._session_factory() as session:
+            matches = tuple(
+                journal
+                for journal in OperationJournalRepository(session).list_for_task(
+                    authorized.task_id,
+                    operation_types=(ISOLATE_REPAIR_TARGET_OPERATION,),
+                )
+                if journal.intent.get("hardlink_journal_id") == hardlink.id
+            )
+            if len(matches) > 1:
+                raise _repair_ownership_unproven(
+                    "同一 hardlink journal 出现多个 repair isolation journal"
+                )
+            if not matches:
+                return None
+            isolation = matches[0]
+            if OperationStatus(isolation.status) is not OperationStatus.APPLIED:
+                raise _repair_ownership_unproven(
+                    "repair isolation journal 尚未 APPLIED，必须先完成安全对账"
+                )
+            session.expunge(isolation)
+            return isolation
 
     def _recheck_hardlink_ownership(self, authorized: _AuthorizedRepair) -> None:
         journals = self._hardlink_journals(authorized)
@@ -727,6 +1001,55 @@ class TaskRepairPlanService:
                 _join_relative_root(authorized.source_root, action.source_relative_path),
                 journal,
             )
+
+
+class TaskRepairIsolationCoordinator:
+    """只执行可信 repair plan 中的 inode 隔离，不触发下载补齐或客户端下载器重校验。"""
+
+    def __init__(
+        self,
+        plan_service: TaskRepairPlanService,
+        filesystem_operations: FilesystemOperationService,
+    ) -> None:
+        self._plan_service = plan_service
+        self._filesystem_operations = filesystem_operations
+
+    async def execute(
+        self,
+        unit_id: str,
+        *,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> TaskRepairIsolationResult:
+        isolated_paths: list[str] = []
+        journal_ids: list[str] = []
+        first_preparation: RepairIsolationPreparation | None = None
+
+        while True:
+            preparation = await self._plan_service.prepare_isolation(unit_id)
+            if first_preparation is None:
+                first_preparation = preparation
+            if not preparation.targets:
+                assert first_preparation is not None
+                return TaskRepairIsolationResult(
+                    task_id=first_preparation.task_id,
+                    task_unit_id=first_preparation.task_unit_id,
+                    execution_plan_id=first_preparation.execution_plan_id,
+                    isolated_paths=tuple(isolated_paths),
+                    isolation_journal_ids=tuple(journal_ids),
+                    replayed=not isolated_paths,
+                )
+
+            target = preparation.targets[0]
+            result = await asyncio.to_thread(
+                self._filesystem_operations.execute_repair_isolation,
+                RepairIsolationExecutionRequest(
+                    task_id=preparation.task_id,
+                    hardlink_journal_id=target.hardlink_journal_id,
+                ),
+                fault_hook=fault_hook,
+            )
+            isolated_paths.append(target.torrent_path)
+            journal_ids.append(result.isolation_journal_id)
 
 
 def _plan_mapping_evidence(

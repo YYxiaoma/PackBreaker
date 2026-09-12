@@ -18,6 +18,7 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import (
     CREATE_DIRECTORY_OPERATION,
     CREATE_HARDLINK_OPERATION,
+    ISOLATE_REPAIR_TARGET_OPERATION,
     FilesystemOperationService,
 )
 from backend.app.application.transmission_operations import (
@@ -50,6 +51,7 @@ _SIDE_EFFECT_STATUSES = frozenset(
         TaskStatus.ADDING,
         TaskStatus.CLIENT_VERIFYING,
         TaskStatus.SEEDING,
+        TaskStatus.RETRY,
         TaskStatus.CANCELLING,
         TaskStatus.ROLLING_BACK,
     }
@@ -281,13 +283,17 @@ class TaskCancellationCoordinator:
             )
             rollback_checkpoint = _rollback_checkpoint(rollback, stage=TaskStatus.ROLLING_BACK)
             try:
-                if status is TaskStatus.SEEDING:
+                if status in {TaskStatus.SEEDING, TaskStatus.RETRY}:
                     task = task_repository.transition(
                         task_id=task.id,
                         expected_version=task.version,
                         to_status=TaskStatus.CANCELLING,
                         event_type="CANCELLATION_STARTED",
-                        reason="用户请求取消已进入做种准备的任务",
+                        reason=(
+                            "用户请求取消已进入做种准备的任务"
+                            if status is TaskStatus.SEEDING
+                            else "用户请求取消已产生副作用证据的 RETRY 任务"
+                        ),
                         checkpoint=rollback_checkpoint,
                     )
                     session.flush()
@@ -367,7 +373,11 @@ class TaskCancellationCoordinator:
         journal_repository = OperationJournalRepository(session)
         file_journals = journal_repository.list_for_task(
             task_id,
-            operation_types=(CREATE_HARDLINK_OPERATION, CREATE_DIRECTORY_OPERATION),
+            operation_types=(
+                CREATE_HARDLINK_OPERATION,
+                CREATE_DIRECTORY_OPERATION,
+                ISOLATE_REPAIR_TARGET_OPERATION,
+            ),
         )
         unresolved_files = tuple(
             journal
@@ -383,6 +393,23 @@ class TaskCancellationCoordinator:
         if unresolved_files:
             raise _cancellation_evidence_invalid(
                 "存在所有权或回滚结果尚未明确的文件系统 journal，必须先完成对账"
+            )
+        applied_isolations = tuple(
+            journal
+            for journal in file_journals
+            if journal.operation_type == ISOLATE_REPAIR_TARGET_OPERATION
+            and OperationStatus(journal.status) is OperationStatus.APPLIED
+        )
+        if rollback_created_resources and applied_isolations:
+            raise ApplicationError(
+                code="CANCELLATION_REPAIR_ISOLATION_RETAIN_REQUIRED",
+                status=409,
+                title="已隔离修复目标不能按 hardlink 回滚",
+                detail=(
+                    "repair isolation 已把原 hardlink 替换为独立 inode；"
+                    "当前切片不自动删除该隔离副本。"
+                    "请取消资源回滚选项以保留目标文件，或等待专用 repair cleanup 能力。"
+                ),
             )
         hardlinks = tuple(
             journal.id

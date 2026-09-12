@@ -208,11 +208,15 @@ M3 的 `SafeFilesystemGateway` 负责上述动作前的统一只读检查：输�
 
 恢复策略不依赖临时文件名猜所有权：若在“创建临时 inode”之后、ownership progress 持久化之前崩溃，重试会因临时文件缺乏 journal 所有权证据而失败关闭并进入 `RECONCILE_REQUIRED`；若 progress 已提交，则可只对匹配 inode 的 journal-owned 临时文件续写；若 atomic replace 已完成但 APPLIED 尚未提交，则只有目标 inode 等于已登记临时 inode、临时路径已消失且目标与 source 字节一致时才补记 APPLIED。外部替换、额外 hardlink 或任一身份漂移都不会被覆盖。
 
-该原语目前只存在于内部文件系统 operation service，**没有 repair execute/write API，也没有被可信 repair-plan GET 调用**。下载器补齐/重校验、任务级 repair executor、隔离后 ownership handoff，以及取消/回滚如何显式认识“原 hardlink 已被隔离副本取代”仍待后续切片实现；因此当前不能把底层隔离原语等同于完整 99% 自动修复链。
+当前又增加了内部 `TaskRepairIsolationCoordinator`，但仍**没有公开 repair execute/write API**。coordinator 每次只从服务端可信 AUTO_PIECE plan 取得一个当前仍需隔离的 HARDLINK，重新证明 downloader owned torrent 仍 stopped、source inventory/current execution plan 未变化，再把原 hardlink journal ID 交给 journal-backed isolation 原语；一项完成后重新生成计划，而不是一次冻结整批 inode 事实。这样多文件修复在每一步之间都会重新经过当前性和空间/ownership 安全门。
+
+ownership handoff 不改写历史 `CREATE_HARDLINK` journal：原 journal 继续保存“最初由 PackBreaker 建立 hardlink”的不可变证据，新的 APPLIED `ISOLATE_REPAIR_TARGET` journal 明确引用该 hardlink journal 并成为当前 target inode 的后继 ownership 证据。repair-plan 再生成时如果发现这种合法 handoff，会用 isolation after snapshot + source 字节一致性证明当前独立 inode，因此该文件不再重复计入 isolation budget；若 isolation 仍是 `INTENT_RECORDED`，coordinator 会优先恢复唯一的 journal-owned in-flight 操作，`RECONCILE_REQUIRED` 则继续失败关闭、不得自动越过。
+
+取消链也显式认识这一交接：`RETRY` 任务只要已有 operation journal 就不再走“零副作用取消”；未决 isolation 会阻断自动取消。若已存在 APPLIED isolation 且用户要求 `rollback_created_resources=true`，当前实现会在下载器 remove 之前返回 `CANCELLATION_REPAIR_ISOLATION_RETAIN_REQUIRED`，因为通用 hardlink rollback 无权删除已变成独立 inode 的隔离副本；选择保留文件时才可继续使用既有下载器移除语义。专用 repair cleanup、客户端下载器补齐/重校验和完整 repair executor 仍待后续，因此当前不能把 task-level isolation coordinator 等同于完整 99% 自动修复链。
 
 任务级可信 repair-plan API 已接到这层只读能力，但仍不开放写入。`GET /task-units/{unit_id}/repair-plan` 只接受 `AUTO_PIECE`、`FILE_ONLY`、`GUIDED` 三种 mode，不接受浏览器提交暂停状态、inode、ownership、hash 或 journal 事实。服务端只对真实客户端下载器校验已经形成 `RETRY + CLIENT_VERIFICATION_INCOMPLETE` checkpoint 的任务继续，并要求该 checkpoint 精确绑定 latest ready execution plan、APPLIED ADD/VERIFY journal、目标下载器 version/binding digest/save path、torrent hash 与 PackBreaker ownership tag/label。
 
-进入 target hash 前还会重新读取当前下载器：同一 owned torrent 必须真实处于 stopped 状态；随后重新获取并核对批准候选的 metainfo digest、source inventory 与 target root device。每个 HARDLINK action 还必须找到同一 task 下匹配 source path/source snapshot/target path 的 APPLIED `CREATE_HARDLINK` journal，并用其 after snapshot 只读证明当前 target 仍是 PackBreaker 登记资源。证明不了 ownership 时不会退化为客户端声明或人工猜测，而是拒绝生成可信计划。只有这些证据成立后才对 target 执行 no-follow 的完整 v1/v2/hybrid piece 读取；hash 完成后再次复核 task/plan/downloader/source inventory 与 hardlink ownership，期间任何漂移均失败关闭。
+进入 target hash 前还会重新读取当前下载器：同一 owned torrent 必须真实处于 stopped 状态；随后重新获取并核对批准候选的 metainfo digest、source inventory 与 target root device。每个 HARDLINK action 必须由同一 task 的 APPLIED `CREATE_HARDLINK` journal 证明原始归属；若该 hardlink 已由合法 APPLIED isolation journal 接管，则改用 isolation after snapshot 证明当前独立 inode，同时继续绑定原 source path/source snapshot。证明不了 ownership handoff 时不会退化为客户端声明或人工猜测，而是拒绝生成可信计划。只有这些证据成立后才对 target 执行 no-follow 的完整 v1/v2/hybrid piece 读取；hash 完成后再次复核 task/plan/downloader/source inventory 与当前 ownership，期间任何漂移均失败关闭。
 
 API 响应只返回相对 torrent path、piece/file 影响范围、是否需要隔离、补齐/空间预算和固定阻断原因；torrent hash、ownership tag、journal ID、device/inode、绝对源路径与 operation payload 都留在服务端。该 GET 不暂停下载器、不修改 task/journal、不调用 add/recheck/start/remove，也仍固定 `execution_allowed=false`。
 
