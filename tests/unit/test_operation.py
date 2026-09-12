@@ -2,8 +2,10 @@ import pytest
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.operation import (
+    OperationKind,
     OperationStatus,
     operation_event_summary,
+    operation_kind,
     transition_operation,
 )
 
@@ -110,6 +112,7 @@ def test_operation_event_summary_never_echoes_unknown_operation_type() -> None:
 def test_routine_filesystem_operation_events_are_suppressed(status: OperationStatus) -> None:
     assert operation_event_summary("CREATE_DIRECTORY", status) is None
     assert operation_event_summary("CREATE_HARDLINK", status) is None
+    assert operation_event_summary("ISOLATE_REPAIR_TARGET", status) is None
 
 
 @pytest.mark.parametrize(
@@ -121,3 +124,17 @@ def test_filesystem_safety_failures_remain_visible(status: OperationStatus) -> N
 
     assert summary is not None
     assert summary.event_type == f"FILESYSTEM_HARDLINK_{status.value}"
+
+
+def test_repair_isolation_uses_fixed_public_kind_and_attention_event() -> None:
+    assert operation_kind("ISOLATE_REPAIR_TARGET") is OperationKind.FILESYSTEM_REPAIR_ISOLATION
+
+    summary = operation_event_summary(
+        "ISOLATE_REPAIR_TARGET",
+        OperationStatus.RECONCILE_REQUIRED,
+    )
+
+    assert summary is not None
+    assert summary.event_type == "FILESYSTEM_REPAIR_ISOLATION_RECONCILE_REQUIRED"
+    assert "修复 inode 隔离" in summary.reason
+    assert "安全对账" in summary.reason

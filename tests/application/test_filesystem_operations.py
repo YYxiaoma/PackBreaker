@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,8 +12,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.filesystem_operations import (
     CREATE_DIRECTORY_OPERATION,
     CREATE_HARDLINK_OPERATION,
+    ISOLATE_REPAIR_TARGET_OPERATION,
     FilesystemOperationService,
     HardlinkExecutionRequest,
+    RepairIsolationExecutionRequest,
 )
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.operation import OperationStatus
@@ -280,3 +283,243 @@ def test_applied_replay_rejects_replaced_source_path(
     assert failure.value.code is ErrorCode.SOURCE_CHANGED
     assert target.stat().st_ino == original_target_inode
     assert target.read_bytes() == b"synthetic-media-content"
+
+
+def test_repair_isolation_creates_independent_inode_and_replays_without_source_write(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    source = _prepare(data_root)
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    target = data_root / "target" / "movie.mkv"
+    source_before = source.stat(follow_symlinks=False)
+    target_before = target.stat(follow_symlinks=False)
+
+    first = service.execute_repair_isolation(
+        RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+    )
+    source_after = source.stat(follow_symlinks=False)
+    target_after = target.stat(follow_symlinks=False)
+
+    assert first.replayed is False
+    assert first.recovered_after_unknown_result is False
+    assert target.read_bytes() == source.read_bytes() == b"synthetic-media-content"
+    assert target_after.st_ino != source_after.st_ino
+    assert target_after.st_nlink == 1
+    assert source_after.st_nlink == source_before.st_nlink - 1
+    assert (source_after.st_ino, source_after.st_size, source_after.st_mtime_ns) == (
+        source_before.st_ino,
+        source_before.st_size,
+        source_before.st_mtime_ns,
+    )
+    assert target_before.st_ino == source_before.st_ino
+
+    replayed = service.execute_repair_isolation(
+        RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+    )
+    assert replayed.isolation_journal_id == first.isolation_journal_id
+    assert replayed.replayed is True
+    assert target.stat().st_ino == target_after.st_ino
+
+    isolation = next(
+        item
+        for item in _journals(factory)
+        if item.operation_type == ISOLATE_REPAIR_TARGET_OPERATION
+    )
+    assert isolation.status == OperationStatus.APPLIED.value
+    assert isolation.after_snapshot is not None
+    assert isolation.after_snapshot["inode"] == target_after.st_ino
+
+
+def test_repair_isolation_concurrency_produces_one_journal_and_one_target_inode(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    source = _prepare(data_root)
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    request = RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(lambda _: service.execute_repair_isolation(request), range(10)))
+
+    assert len({item.isolation_journal_id for item in results}) == 1
+    assert sum(not item.replayed for item in results) == 1
+    isolation_journals = [
+        item
+        for item in _journals(factory)
+        if item.operation_type == ISOLATE_REPAIR_TARGET_OPERATION
+    ]
+    assert len(isolation_journals) == 1
+    assert isolation_journals[0].status == OperationStatus.APPLIED.value
+    target = data_root / "target" / "movie.mkv"
+    assert target.stat().st_ino != source.stat().st_ino
+    assert target.stat().st_nlink == 1
+    assert target.read_bytes() == source.read_bytes()
+
+
+def test_repair_isolation_crash_before_temp_ownership_fails_closed_to_reconcile(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    source = _prepare(data_root)
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    request = RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_isolation_temp_created":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        service.execute_repair_isolation(request, fault_hook=crash)
+
+    isolation = next(
+        item
+        for item in _journals(factory)
+        if item.operation_type == ISOLATE_REPAIR_TARGET_OPERATION
+    )
+    assert isolation.status == OperationStatus.INTENT_RECORDED.value
+    assert isolation.after_snapshot is None
+    temporary = data_root / "target" / str(isolation.intent["temporary_name"])
+    assert temporary.is_file()
+    assert temporary.stat().st_size == 0
+
+    with pytest.raises(DomainViolation) as failure:
+        service.execute_repair_isolation(request)
+    assert failure.value.code is ErrorCode.TARGET_CONFLICT
+    isolation = next(
+        item
+        for item in _journals(factory)
+        if item.operation_type == ISOLATE_REPAIR_TARGET_OPERATION
+    )
+    assert isolation.status == OperationStatus.RECONCILE_REQUIRED.value
+    target = data_root / "target" / "movie.mkv"
+    assert target.stat().st_ino == source.stat().st_ino
+    assert temporary.exists()
+
+
+def test_repair_isolation_crash_after_temp_ownership_resumes_safely(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    source = _prepare(data_root)
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    request = RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_isolation_temp_owned":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        service.execute_repair_isolation(request, fault_hook=crash)
+
+    isolation = next(
+        item
+        for item in _journals(factory)
+        if item.operation_type == ISOLATE_REPAIR_TARGET_OPERATION
+    )
+    assert isolation.status == OperationStatus.INTENT_RECORDED.value
+    assert isolation.after_snapshot is not None
+    assert isolation.after_snapshot["stage"] == "TEMP_OWNED"
+    temporary = data_root / "target" / str(isolation.intent["temporary_name"])
+    assert temporary.is_file()
+
+    resumed = service.execute_repair_isolation(request)
+    assert resumed.replayed is True
+    assert resumed.recovered_after_unknown_result is False
+    assert not temporary.exists()
+    target = data_root / "target" / "movie.mkv"
+    assert target.stat().st_ino != source.stat().st_ino
+    assert target.read_bytes() == source.read_bytes()
+    assert (
+        next(item for item in _journals(factory) if item.id == resumed.isolation_journal_id).status
+        == OperationStatus.APPLIED.value
+    )
+
+
+def test_repair_isolation_crash_after_atomic_replace_recovers_from_owned_inode(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    source = _prepare(data_root)
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    request = RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_isolation_target_replaced":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        service.execute_repair_isolation(request, fault_hook=crash)
+
+    target = data_root / "target" / "movie.mkv"
+    replaced_inode = target.stat().st_ino
+    assert replaced_inode != source.stat().st_ino
+    isolation = next(
+        item
+        for item in _journals(factory)
+        if item.operation_type == ISOLATE_REPAIR_TARGET_OPERATION
+    )
+    assert isolation.status == OperationStatus.INTENT_RECORDED.value
+    assert isolation.after_snapshot is not None
+    assert isolation.after_snapshot["stage"] == "TEMP_OWNED"
+
+    recovered = service.execute_repair_isolation(request)
+    assert recovered.replayed is True
+    assert recovered.recovered_after_unknown_result is True
+    assert target.stat().st_ino == replaced_inode
+    assert target.read_bytes() == source.read_bytes()
+    isolation = next(
+        item for item in _journals(factory) if item.id == recovered.isolation_journal_id
+    )
+    assert isolation.status == OperationStatus.APPLIED.value
+    assert isolation.after_snapshot is not None
+    assert isolation.after_snapshot["inode"] == replaced_inode
+
+
+def test_repair_isolation_external_target_replacement_is_never_overwritten(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    _prepare(data_root)
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    request = RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_isolation_temp_owned":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        service.execute_repair_isolation(request, fault_hook=crash)
+
+    target = data_root / "target" / "movie.mkv"
+    target.unlink()
+    target.write_bytes(b"external-replacement")
+
+    with pytest.raises(DomainViolation):
+        service.execute_repair_isolation(request)
+    assert target.read_bytes() == b"external-replacement"
+    isolation = next(
+        item
+        for item in _journals(factory)
+        if item.operation_type == ISOLATE_REPAIR_TARGET_OPERATION
+    )
+    assert isolation.status == OperationStatus.RECONCILE_REQUIRED.value
+
+
+def test_repair_isolation_operation_is_not_generic_rollback_resource(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    _prepare(data_root)
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    isolated = service.execute_repair_isolation(
+        RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+    )
+
+    with pytest.raises(DomainViolation) as failure:
+        service.rollback_journal(isolated.isolation_journal_id)
+    assert failure.value.code is ErrorCode.INVALID_STATE_TRANSITION
+    isolation = next(
+        item for item in _journals(factory) if item.id == isolated.isolation_journal_id
+    )
+    assert isolation.status == OperationStatus.APPLIED.value

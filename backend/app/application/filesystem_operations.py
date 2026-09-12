@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -15,11 +16,19 @@ from backend.app.infrastructure.persistence.repositories import (
     OperationIntent,
     OperationJournalRepository,
 )
-from backend.app.infrastructure.safe_filesystem import FilesystemSnapshot, SafeFilesystemGateway
+from backend.app.infrastructure.safe_filesystem import (
+    FilesystemSnapshot,
+    RepairIsolationApplyResult,
+    SafeFilesystemGateway,
+)
 
 FILESYSTEM_OPERATION_SCHEMA_VERSION = "packbreaker-filesystem-operation-v1"
+REPAIR_ISOLATION_SCHEMA_VERSION = "packbreaker-repair-isolation-v1"
+REPAIR_ISOLATION_PROGRESS_SCHEMA_VERSION = "packbreaker-repair-isolation-progress-v1"
 CREATE_DIRECTORY_OPERATION = "CREATE_DIRECTORY"
 CREATE_HARDLINK_OPERATION = "CREATE_HARDLINK"
+ISOLATE_REPAIR_TARGET_OPERATION = "ISOLATE_REPAIR_TARGET"
+_FILESYSTEM_OPERATION_LOCKS = tuple(Lock() for _ in range(64))
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +47,20 @@ class HardlinkExecutionResult:
     hardlink_journal_id: str
     target_snapshot: FilesystemSnapshot
     replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RepairIsolationExecutionRequest:
+    task_id: str
+    hardlink_journal_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepairIsolationExecutionResult:
+    isolation_journal_id: str
+    target_snapshot: FilesystemSnapshot
+    replayed: bool
+    recovered_after_unknown_result: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +90,19 @@ class _JournalView:
     status: OperationStatus
     before_snapshot: dict[str, Any] | None
     after_snapshot: dict[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRepairIsolation:
+    operation_key: str
+    task_id: str
+    hardlink_journal_id: str
+    source_relative_path: str
+    target_root_relative_path: str
+    target_relative_path: str
+    expected_source_snapshot: FileSnapshot
+    expected_target_snapshot: FilesystemSnapshot
+    temporary_name: str
 
 
 class FilesystemOperationService:
@@ -307,8 +343,128 @@ class FilesystemOperationService:
             replayed=replayed,
         )
 
+    def execute_repair_isolation(
+        self,
+        request: RepairIsolationExecutionRequest,
+        *,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> RepairIsolationExecutionResult:
+        """把已登记 hardlink 目标复制为独立 inode；本方法不执行任何 piece 修复。"""
+
+        prepared = self._prepare_repair_isolation(request)
+        with _filesystem_operation_lock(prepared.operation_key):
+            existing = self._load_by_key(prepared.operation_key)
+            if existing is not None:
+                self._assert_same_repair_isolation_intent(existing, prepared)
+                if existing.status is OperationStatus.APPLIED:
+                    snapshot = self._gateway.assert_repair_isolation_matches(
+                        source_relative_path=prepared.source_relative_path,
+                        target_root_relative_path=prepared.target_root_relative_path,
+                        target_relative_path=prepared.target_relative_path,
+                        expected_source_snapshot=prepared.expected_source_snapshot,
+                        expected_target_snapshot=_filesystem_snapshot_from_payload(
+                            existing.after_snapshot
+                        ),
+                    )
+                    return RepairIsolationExecutionResult(
+                        isolation_journal_id=existing.id,
+                        target_snapshot=snapshot,
+                        replayed=True,
+                        recovered_after_unknown_result=False,
+                    )
+                if existing.status is not OperationStatus.INTENT_RECORDED:
+                    raise _journal_not_executable(existing)
+                target_parent_snapshot = _target_parent_snapshot_from_before(
+                    existing.before_snapshot
+                )
+                target_before_snapshot = _target_snapshot_from_before(existing.before_snapshot)
+                owned_temporary_snapshot = _repair_isolation_progress_snapshot(
+                    existing.after_snapshot
+                )
+                journal = existing
+                replayed = True
+            else:
+                inspection = self._gateway.inspect_repair_isolation_target(
+                    source_relative_path=prepared.source_relative_path,
+                    target_root_relative_path=prepared.target_root_relative_path,
+                    target_relative_path=prepared.target_relative_path,
+                    expected_source_snapshot=prepared.expected_source_snapshot,
+                    expected_target_snapshot=prepared.expected_target_snapshot,
+                    operation_token=prepared.operation_key,
+                )
+                before_snapshot = {
+                    "target_parent": inspection.target_parent_snapshot.to_payload(),
+                    "target": inspection.target_snapshot.to_payload(),
+                    "temporary_absent": True,
+                }
+                journal, _ = self._record_intent(
+                    OperationIntent(
+                        task_id=prepared.task_id,
+                        idempotency_key=prepared.operation_key,
+                        operation_type=ISOLATE_REPAIR_TARGET_OPERATION,
+                        target={
+                            "target_root": prepared.target_root_relative_path,
+                            "relative_path": prepared.target_relative_path,
+                        },
+                        intent=_repair_isolation_intent_payload(prepared),
+                        before_snapshot=before_snapshot,
+                    )
+                )
+                target_parent_snapshot = inspection.target_parent_snapshot
+                target_before_snapshot = inspection.target_snapshot
+                owned_temporary_snapshot = None
+                replayed = False
+
+            def record_progress(snapshot: FilesystemSnapshot) -> None:
+                self._record_progress(
+                    journal.id,
+                    _repair_isolation_progress_payload(snapshot),
+                )
+
+            try:
+                applied: RepairIsolationApplyResult = self._gateway.isolate_repair_target_atomic(
+                    source_relative_path=prepared.source_relative_path,
+                    target_root_relative_path=prepared.target_root_relative_path,
+                    target_relative_path=prepared.target_relative_path,
+                    expected_source_snapshot=prepared.expected_source_snapshot,
+                    expected_target_snapshot=target_before_snapshot,
+                    expected_target_parent_snapshot=target_parent_snapshot,
+                    operation_token=prepared.operation_key,
+                    owned_temporary_snapshot=owned_temporary_snapshot,
+                    progress_hook=record_progress,
+                    fault_hook=fault_hook,
+                )
+            except DomainViolation:
+                self._transition_if_current(
+                    journal.id,
+                    OperationStatus.INTENT_RECORDED,
+                    OperationStatus.RECONCILE_REQUIRED,
+                )
+                raise
+
+            completed = self._transition(
+                journal.id,
+                OperationStatus.INTENT_RECORDED,
+                OperationStatus.APPLIED,
+                after_snapshot=applied.target_snapshot.to_payload(),
+            )
+            return RepairIsolationExecutionResult(
+                isolation_journal_id=completed.id,
+                target_snapshot=applied.target_snapshot,
+                replayed=replayed,
+                recovered_after_unknown_result=applied.recovered_after_replace,
+            )
+
     def rollback_journal(self, journal_id: str) -> RollbackResult:
         journal = self._load_by_id(journal_id)
+        if journal.operation_type not in {
+            CREATE_DIRECTORY_OPERATION,
+            CREATE_HARDLINK_OPERATION,
+        }:
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                "该 operation journal 不属于允许自动回滚的文件系统资源",
+            )
         if journal.status is OperationStatus.ROLLED_BACK:
             return RollbackResult(journal.id, journal.operation_type, False, journal.status)
         if journal.status is OperationStatus.APPLIED:
@@ -517,6 +673,81 @@ class FilesystemOperationService:
             )
         )
 
+    def _prepare_repair_isolation(
+        self,
+        request: RepairIsolationExecutionRequest,
+    ) -> _PreparedRepairIsolation:
+        hardlink = self._load_by_id(request.hardlink_journal_id)
+        if (
+            hardlink.task_id != request.task_id
+            or hardlink.operation_type != CREATE_HARDLINK_OPERATION
+            or hardlink.status is not OperationStatus.APPLIED
+            or hardlink.intent.get("schema_version") != FILESYSTEM_OPERATION_SCHEMA_VERSION
+            or hardlink.intent.get("resource_kind") != "hardlink"
+        ):
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                "repair isolation 只能由同任务 APPLIED hardlink journal 授权",
+            )
+        target_root = self._gateway.normalize_relative_path(
+            _required_text(hardlink.target, "target_root"),
+            allow_root=True,
+        )
+        target_relative = self._gateway.normalize_relative_path(
+            _required_text(hardlink.target, "relative_path")
+        )
+        source_relative = self._gateway.normalize_relative_path(
+            _required_text(hardlink.intent, "source_relative_path")
+        )
+        source_snapshot = _file_snapshot_from_payload(hardlink.intent.get("source_snapshot"))
+        target_snapshot = _filesystem_snapshot_from_payload(hardlink.after_snapshot)
+        if (
+            source_snapshot.device != target_snapshot.device
+            or source_snapshot.inode != target_snapshot.inode
+            or source_snapshot.size != target_snapshot.size
+            or source_snapshot.mtime_ns != target_snapshot.mtime_ns
+            or target_snapshot.file_type != "regular"
+        ):
+            raise DomainViolation(
+                ErrorCode.SOURCE_NOT_STABLE,
+                "hardlink journal 的 source/target 快照无法证明同一 inode",
+            )
+        operation_key = file_operation_key(
+            candidate_key=hardlink.idempotency_key,
+            operation_type=ISOLATE_REPAIR_TARGET_OPERATION,
+            normalized_target_path=_target_key_path(target_root, target_relative),
+        )
+        return _PreparedRepairIsolation(
+            operation_key=operation_key,
+            task_id=request.task_id,
+            hardlink_journal_id=hardlink.id,
+            source_relative_path=source_relative,
+            target_root_relative_path=target_root,
+            target_relative_path=target_relative,
+            expected_source_snapshot=source_snapshot,
+            expected_target_snapshot=target_snapshot,
+            temporary_name=f".packbreaker-repair-{operation_key}.tmp",
+        )
+
+    def _assert_same_repair_isolation_intent(
+        self,
+        journal: _JournalView,
+        prepared: _PreparedRepairIsolation,
+    ) -> None:
+        self._record_intent(
+            OperationIntent(
+                task_id=prepared.task_id,
+                idempotency_key=journal.idempotency_key,
+                operation_type=ISOLATE_REPAIR_TARGET_OPERATION,
+                target={
+                    "target_root": prepared.target_root_relative_path,
+                    "relative_path": prepared.target_relative_path,
+                },
+                intent=_repair_isolation_intent_payload(prepared),
+                before_snapshot=deepcopy(journal.before_snapshot),
+            )
+        )
+
     def _validate_existing_directory_journals(
         self,
         request: HardlinkExecutionRequest,
@@ -566,6 +797,15 @@ class FilesystemOperationService:
             journal, created = OperationJournalRepository(session).record_intent(request)
             session.commit()
             return _journal_view(journal), created
+
+    def _record_progress(self, journal_id: str, progress_snapshot: dict[str, Any]) -> _JournalView:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).record_intent_progress(
+                journal_id=journal_id,
+                progress_snapshot=progress_snapshot,
+            )
+            session.commit()
+            return _journal_view(journal)
 
     def _transition(
         self,
@@ -624,6 +864,24 @@ def _file_snapshot_payload(snapshot: FileSnapshot) -> dict[str, int | str]:
     }
 
 
+def _file_snapshot_from_payload(payload: object) -> FileSnapshot:
+    if not isinstance(payload, dict):
+        raise DomainViolation(ErrorCode.SOURCE_NOT_STABLE, "operation journal 缺少 source snapshot")
+    try:
+        return FileSnapshot(
+            device=int(payload["device"]),
+            inode=int(payload["inode"]),
+            size=int(payload["size"]),
+            mtime_ns=int(payload["mtime_ns"]),
+            file_type=str(payload.get("file_type", "regular")),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DomainViolation(
+            ErrorCode.SOURCE_NOT_STABLE,
+            "operation journal source snapshot 格式无效",
+        ) from exc
+
+
 def _filesystem_snapshot_from_payload(payload: dict[str, Any] | None) -> FilesystemSnapshot:
     if payload is None:
         raise DomainViolation(ErrorCode.SOURCE_NOT_STABLE, "operation journal 缺少 after snapshot")
@@ -648,6 +906,10 @@ def _parent_snapshot_from_before(payload: dict[str, Any] | None) -> FilesystemSn
 
 def _target_parent_snapshot_from_before(payload: dict[str, Any] | None) -> FilesystemSnapshot:
     return _nested_filesystem_snapshot(payload, "target_parent")
+
+
+def _target_snapshot_from_before(payload: dict[str, Any] | None) -> FilesystemSnapshot:
+    return _nested_filesystem_snapshot(payload, "target")
 
 
 def _nested_filesystem_snapshot(
@@ -680,6 +942,54 @@ def _journal_not_rollbackable(journal: _JournalView) -> DomainViolation:
         ErrorCode.INVALID_STATE_TRANSITION,
         f"operation journal 处于 {journal.status.value}，不能自动回滚",
     )
+
+
+def _repair_isolation_intent_payload(prepared: _PreparedRepairIsolation) -> dict[str, Any]:
+    return {
+        "schema_version": REPAIR_ISOLATION_SCHEMA_VERSION,
+        "resource_kind": "repair_isolation",
+        "hardlink_journal_id": prepared.hardlink_journal_id,
+        "source_relative_path": prepared.source_relative_path,
+        "source_snapshot": _file_snapshot_payload(prepared.expected_source_snapshot),
+        "temporary_name": prepared.temporary_name,
+    }
+
+
+def _repair_isolation_progress_payload(snapshot: FilesystemSnapshot) -> dict[str, Any]:
+    return {
+        "schema_version": REPAIR_ISOLATION_PROGRESS_SCHEMA_VERSION,
+        "stage": "TEMP_OWNED",
+        "temporary": snapshot.to_payload(),
+    }
+
+
+def _repair_isolation_progress_snapshot(
+    payload: dict[str, Any] | None,
+) -> FilesystemSnapshot | None:
+    if payload is None:
+        return None
+    if (
+        payload.get("schema_version") != REPAIR_ISOLATION_PROGRESS_SCHEMA_VERSION
+        or payload.get("stage") != "TEMP_OWNED"
+        or not isinstance(payload.get("temporary"), dict)
+    ):
+        raise DomainViolation(
+            ErrorCode.SOURCE_NOT_STABLE,
+            "repair isolation journal 中间进度证据格式无效",
+        )
+    temporary = payload["temporary"]
+    assert isinstance(temporary, dict)
+    return _filesystem_snapshot_from_payload(temporary)
+
+
+def _filesystem_operation_lock(operation_key: str) -> Lock:
+    try:
+        index = int(operation_key[:8], 16) % len(_FILESYSTEM_OPERATION_LOCKS)
+    except ValueError as exc:
+        raise DomainViolation(
+            ErrorCode.PATH_MAPPING_INVALID, "文件系统 operation key 无效"
+        ) from exc
+    return _FILESYSTEM_OPERATION_LOCKS[index]
 
 
 def _call_fault_hook(hook: Callable[[str], None] | None, checkpoint: str) -> None:

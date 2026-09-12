@@ -200,9 +200,15 @@ M3 的 `SafeFilesystemGateway` 负责上述动作前的统一只读检查：输�
 
 空间不足、源变化、无法暂停或无法隔离时进入人工处理。禁止直接打开硬链接目标写入，也禁止在源文件上做原地 patch。
 
-当前 M4 已实现第一层**只读修复规划**，但尚未开放修复写入：`verify_torrent_evidence()` 可保留 v1/v2/hybrid 的完整 piece/file 验证证据，`build_repair_plan()` 由非 `VERIFIED` piece 推导受影响文件。v1 使用 verifier 已记录的 `covered_files` 精确识别跨文件 piece，并忽略仅由 padding/零长度文件造成的伪跨界；v2 piece 保持单文件作用域。`SafeFilesystemGateway.inspect_repair_target()` 只读取 target device/inode/size/link count 与文件系统可用空间，并重新核对可用的源快照，不创建、替换或打开文件写入。
+当前 M4 已实现第一层**只读修复规划**，并进一步具备尚未对外开放的 journal-backed inode 隔离底层原语。`verify_torrent_evidence()` 可保留 v1/v2/hybrid 的完整 piece/file 验证证据，`build_repair_plan()` 由非 `VERIFIED` piece 推导受影响文件。v1 使用 verifier 已记录的 `covered_files` 精确识别跨文件 piece，并忽略仅由 padding/零长度文件造成的伪跨界；v2 piece 保持单文件作用域。`SafeFilesystemGateway.inspect_repair_target()` 仍是纯只读 target device/inode/size/link count/空间检查；真正隔离则只能由同任务 `APPLIED CREATE_HARDLINK` journal 授权，调用方不能另行提交 source/target 路径或 inode 快照。
 
-自动 piece 计划和文件级计划都要求下载器已经停止写入；目标只要与源 device+inode 相同，或自身 `link_count > 1`，就计入完整文件大小的隔离空间预算。缺失源文件只允许规划为目标侧 `FETCH_FILE`，不会生成源目录写入动作。FILE_ONLY 遇到跨文件 v1 piece 或任一需要 inode 隔离的目标都会失败关闭；空间预算不足同样阻断自动模式。人工引导只输出证据和前置条件，不把“未暂停/空间不足”误报成自动可执行。所有当前 `RepairPlan` 固定 `execution_allowed=false`；后续真正 copy + fsync + atomic replace、下载器补齐/重校验和 operation journal 所有权证明必须另行实现后才能开放执行。
+自动 piece 计划和文件级计划都要求下载器已经停止写入；目标只要与源 device+inode 相同，或自身 `link_count > 1`，就计入完整文件大小的隔离空间预算。缺失源文件只允许规划为目标侧 `FETCH_FILE`，不会生成源目录写入动作。FILE_ONLY 遇到跨文件 v1 piece 或任一需要 inode 隔离的目标都会失败关闭；空间预算不足同样阻断自动模式。人工引导只输出证据和前置条件，不把“未暂停/空间不足”误报成自动可执行。所有当前 `RepairPlan` 仍固定 `execution_allowed=false`。
+
+底层 `ISOLATE_REPAIR_TARGET` 不直接修改 hardlink inode：先记录 isolation intent，再在目标同目录以 `O_EXCL|O_NOFOLLOW` 创建确定性临时 inode；临时 inode 身份必须先写入 journal progress，随后才允许从只读 source fd 复制数据。副本完成后先 `fsync` 临时文件，再用同目录原子 replace 替换目标路径，最后 `fsync` 父目录。最终目标必须为单链接独立 inode、与原 source 不同 inode 且内容逐字节一致，源 inode/size/mtime 始终重新核对且不写入。
+
+恢复策略不依赖临时文件名猜所有权：若在“创建临时 inode”之后、ownership progress 持久化之前崩溃，重试会因临时文件缺乏 journal 所有权证据而失败关闭并进入 `RECONCILE_REQUIRED`；若 progress 已提交，则可只对匹配 inode 的 journal-owned 临时文件续写；若 atomic replace 已完成但 APPLIED 尚未提交，则只有目标 inode 等于已登记临时 inode、临时路径已消失且目标与 source 字节一致时才补记 APPLIED。外部替换、额外 hardlink 或任一身份漂移都不会被覆盖。
+
+该原语目前只存在于内部文件系统 operation service，**没有 repair execute/write API，也没有被可信 repair-plan GET 调用**。下载器补齐/重校验、任务级 repair executor、隔离后 ownership handoff，以及取消/回滚如何显式认识“原 hardlink 已被隔离副本取代”仍待后续切片实现；因此当前不能把底层隔离原语等同于完整 99% 自动修复链。
 
 任务级可信 repair-plan API 已接到这层只读能力，但仍不开放写入。`GET /task-units/{unit_id}/repair-plan` 只接受 `AUTO_PIECE`、`FILE_ONLY`、`GUIDED` 三种 mode，不接受浏览器提交暂停状态、inode、ownership、hash 或 journal 事实。服务端只对真实客户端下载器校验已经形成 `RETRY + CLIENT_VERIFICATION_INCOMPLETE` checkpoint 的任务继续，并要求该 checkpoint 精确绑定 latest ready execution plan、APPLIED ADD/VERIFY journal、目标下载器 version/binding digest/save path、torrent hash 与 PackBreaker ownership tag/label。
 

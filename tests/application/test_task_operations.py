@@ -16,6 +16,7 @@ from backend.app.application.downloader_operations import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import (
+    ISOLATE_REPAIR_TARGET_OPERATION,
     FilesystemOperationService,
     HardlinkExecutionRequest,
 )
@@ -692,6 +693,22 @@ def test_maintenance_report_is_redacted_and_separates_repair_from_retention_cand
             to_status=OperationStatus.RECONCILE_REQUIRED,
         )
 
+        isolation_manual, _ = repository.record_intent(
+            OperationIntent(
+                task_id=operation_fixture.task_id,
+                idempotency_key="5" * 64,
+                operation_type=ISOLATE_REPAIR_TARGET_OPERATION,
+                target={"path": secret_marker},
+                intent={"temporary_name": secret_marker},
+                before_snapshot={"path": secret_marker},
+            )
+        )
+        repository.transition_status(
+            journal_id=isolation_manual.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+
         blocked, _ = repository.record_intent(
             OperationIntent(
                 task_id=operation_fixture.task_id,
@@ -763,10 +780,10 @@ def test_maintenance_report_is_redacted_and_separates_repair_from_retention_cand
 
     report = operation_fixture.service.maintenance_report(limit=10)
 
-    assert report.summary.total_journals == 5
-    assert report.summary.attention_required == 3
+    assert report.summary.total_journals == 6
+    assert report.summary.attention_required == 4
     assert report.summary.reconcile_supported == 1
-    assert report.summary.manual_only == 2
+    assert report.summary.manual_only == 3
     assert report.summary.retention_candidates == 2
     assert report.summary.truncated is False
 
@@ -775,6 +792,10 @@ def test_maintenance_report_is_redacted_and_separates_repair_from_retention_cand
     assert repairs[operation_fixture.journal_id].manual_required is False
     assert repairs[manual.id].reason_code == "MANUAL_RECONCILE_REQUIRED"
     assert repairs[manual.id].manual_required is True
+    assert repairs[isolation_manual.id].kind is OperationKind.FILESYSTEM_REPAIR_ISOLATION
+    assert repairs[isolation_manual.id].reason_code == "MANUAL_RECONCILE_REQUIRED"
+    assert repairs[isolation_manual.id].reconcile_supported is False
+    assert repairs[isolation_manual.id].manual_required is True
     assert repairs[blocked.id].reason_code == "ROLLBACK_BLOCKED"
     assert repairs[blocked.id].action == "MANUAL_INSPECTION"
 
@@ -790,7 +811,7 @@ def test_maintenance_report_is_redacted_and_separates_repair_from_retention_cand
     assert "private-owner" not in encoded
 
     limited = operation_fixture.service.maintenance_report(limit=1)
-    assert limited.summary.attention_required == 3
+    assert limited.summary.attention_required == 4
     assert limited.summary.retention_candidates == 2
     assert limited.summary.truncated is True
     assert len(limited.repair_items) == 1

@@ -508,6 +508,50 @@ class OperationJournalRepository:
             return concurrent, False
         return journal, True
 
+    def record_intent_progress(
+        self,
+        *,
+        journal_id: str,
+        progress_snapshot: dict[str, Any],
+    ) -> OperationJournal:
+        """在 INTENT_RECORDED 阶段保存可恢复的中间所有权证据。
+
+        该入口只用于已经先提交 intent 的多阶段副作用。progress 不代表操作已经
+        APPLIED，也不会生成完成事件；最终 APPLIED 仍必须通过 transition_status
+        写入真正的完成后快照。
+        """
+
+        if not progress_snapshot:
+            raise ValueError("operation journal progress snapshot 不能为空")
+        journal = self.get(journal_id)
+        if journal is None:
+            raise DomainViolation(ErrorCode.TASK_NOT_FOUND, "operation journal 不存在")
+        if OperationStatus(journal.status) is not OperationStatus.INTENT_RECORDED:
+            raise DomainViolation(
+                ErrorCode.TASK_VERSION_CONFLICT,
+                "只有 INTENT_RECORDED journal 可以更新中间进度证据",
+            )
+
+        now = utc_now()
+        with self._session.begin_nested():
+            updated_id = self._session.scalar(
+                update(OperationJournal)
+                .where(
+                    OperationJournal.id == journal_id,
+                    OperationJournal.status == OperationStatus.INTENT_RECORDED.value,
+                )
+                .values(after_snapshot=deepcopy(progress_snapshot), updated_at=now)
+                .returning(OperationJournal.id)
+            )
+            if updated_id is None:
+                raise DomainViolation(
+                    ErrorCode.TASK_VERSION_CONFLICT,
+                    "operation journal 状态已变化，不能更新中间进度证据",
+                )
+        self._session.expire(journal)
+        self._session.refresh(journal)
+        return journal
+
     def transition_status(
         self,
         *,

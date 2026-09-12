@@ -1123,6 +1123,7 @@ export interface components {
     OperationKind:
       | 'FILESYSTEM_DIRECTORY'
       | 'FILESYSTEM_HARDLINK'
+      | 'FILESYSTEM_REPAIR_ISOLATION'
       | 'QBITTORRENT_ADD'
       | 'QBITTORRENT_RECHECK'
       | 'QBITTORRENT_START'

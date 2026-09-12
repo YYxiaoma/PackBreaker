@@ -53,6 +53,23 @@ class DirectoryCreationInspection:
     parent_snapshot: FilesystemSnapshot
 
 
+@dataclass(frozen=True, slots=True)
+class RepairIsolationInspection:
+    source_relative_path: str
+    target_root_relative_path: str
+    target_relative_path: str
+    source_snapshot: FilesystemSnapshot
+    target_snapshot: FilesystemSnapshot
+    target_parent_snapshot: FilesystemSnapshot
+    temporary_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepairIsolationApplyResult:
+    target_snapshot: FilesystemSnapshot
+    recovered_after_replace: bool
+
+
 class SafeFilesystemGateway:
     """M3 文件系统安全边界；所有写操作都要求调用方先持久化 journal intent。"""
 
@@ -170,6 +187,379 @@ class SafeFilesystemGateway:
             source_inode=source_inode,
             available_bytes=available_bytes,
         )
+
+    def inspect_repair_isolation_target(
+        self,
+        *,
+        source_relative_path: str,
+        target_root_relative_path: str,
+        target_relative_path: str,
+        expected_source_snapshot: FileSnapshot,
+        expected_target_snapshot: FilesystemSnapshot,
+        operation_token: str,
+    ) -> RepairIsolationInspection:
+        """只读证明待隔离 target 仍是 journal-owned hardlink，且临时名尚未占用。"""
+
+        source_relative, source_parts = _normalize_relative_path(source_relative_path)
+        target_root_relative, target_root_parts = _normalize_relative_path(
+            target_root_relative_path,
+            allow_root=True,
+        )
+        target_relative, target_parts = _normalize_relative_path(target_relative_path)
+        temporary_name = _repair_isolation_temporary_name(operation_token)
+
+        source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
+        target_parent_fd = _open_directory_chain(
+            self._data_root,
+            target_root_parts + target_parts[:-1],
+        )
+        try:
+            source_snapshot = _stat_at(source_parent_fd, source_parts[-1])
+            if source_snapshot is None or source_snapshot.file_type != "regular":
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID, "repair source 必须是普通文件"
+                )
+            _assert_source_snapshot(source_snapshot, expected_source_snapshot)
+
+            target_snapshot = _stat_at(target_parent_fd, target_parts[-1])
+            if target_snapshot is None or not _same_owned_file(
+                target_snapshot,
+                expected_target_snapshot,
+            ):
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "repair target 与原 hardlink journal after snapshot 不一致",
+                )
+            if not _same_file_identity(target_snapshot, source_snapshot):
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "repair target 已不再与 journal source 共享 inode",
+                )
+            if target_snapshot.link_count < 2:
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "repair hardlink target 的 link count 已无法证明共享 inode",
+                )
+
+            parent_snapshot = _fstat_snapshot(target_parent_fd)
+            if parent_snapshot.device != target_snapshot.device:
+                raise DomainViolation(
+                    ErrorCode.CROSS_DEVICE_LINK,
+                    "repair target 父目录与目标文件不在同一设备",
+                )
+            if _stat_at(target_parent_fd, temporary_name, missing_ok=True) is not None:
+                raise DomainViolation(
+                    ErrorCode.TARGET_CONFLICT,
+                    "repair isolation 临时路径在 intent 前已经存在",
+                )
+            return RepairIsolationInspection(
+                source_relative_path=source_relative,
+                target_root_relative_path=target_root_relative,
+                target_relative_path=target_relative,
+                source_snapshot=source_snapshot,
+                target_snapshot=target_snapshot,
+                target_parent_snapshot=parent_snapshot,
+                temporary_name=temporary_name,
+            )
+        finally:
+            os.close(source_parent_fd)
+            os.close(target_parent_fd)
+
+    def isolate_repair_target_atomic(
+        self,
+        *,
+        source_relative_path: str,
+        target_root_relative_path: str,
+        target_relative_path: str,
+        expected_source_snapshot: FileSnapshot,
+        expected_target_snapshot: FilesystemSnapshot,
+        expected_target_parent_snapshot: FilesystemSnapshot,
+        operation_token: str,
+        owned_temporary_snapshot: FilesystemSnapshot | None,
+        progress_hook: Callable[[FilesystemSnapshot], None],
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> RepairIsolationApplyResult:
+        """复制 journal-owned hardlink 到独立 inode，fsync 后原子替换目标路径。
+
+        临时 inode 必须先通过 progress_hook 持久化身份，之后才允许写入。若在
+        临时文件创建后、progress 持久化前崩溃，后续调用会因缺少所有权证据而
+        失败关闭，不会猜测临时文件归属。
+        """
+
+        _, source_parts = _normalize_relative_path(source_relative_path)
+        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_parts = _normalize_relative_path(target_relative_path)
+        temporary_name = _repair_isolation_temporary_name(operation_token)
+
+        source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
+        target_parent_fd = _open_directory_chain(
+            self._data_root,
+            target_root_parts + target_parts[:-1],
+        )
+        source_fd: int | None = None
+        temporary_fd: int | None = None
+        try:
+            source_fd = _open_regular_file_at(source_parent_fd, source_parts[-1], write=False)
+            source_stat = os.fstat(source_fd)
+            source_snapshot = _snapshot_from_stat(source_stat)
+            _assert_source_snapshot(source_snapshot, expected_source_snapshot)
+
+            target_name = target_parts[-1]
+            target_snapshot = _stat_at(target_parent_fd, target_name)
+            if target_snapshot is None:
+                raise DomainViolation(ErrorCode.SOURCE_CHANGED, "repair target 在隔离期间消失")
+            temporary_snapshot = _stat_at(target_parent_fd, temporary_name, missing_ok=True)
+            if temporary_snapshot is not None and owned_temporary_snapshot is None:
+                raise DomainViolation(
+                    ErrorCode.TARGET_CONFLICT,
+                    "repair isolation 临时文件存在但 journal 尚未持久化所有权证据",
+                )
+
+            observed_parent = _fstat_snapshot(target_parent_fd)
+            if owned_temporary_snapshot is None:
+                _assert_filesystem_snapshot(observed_parent, expected_target_parent_snapshot)
+            elif not _same_owned_directory(observed_parent, expected_target_parent_snapshot):
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "repair isolation 恢复时目标父目录身份已变化",
+                )
+
+            if owned_temporary_snapshot is not None and _same_owned_inode(
+                target_snapshot,
+                owned_temporary_snapshot,
+            ):
+                if temporary_snapshot is not None:
+                    raise DomainViolation(
+                        ErrorCode.TARGET_CONFLICT,
+                        "repair target 已落位但 journal-owned 临时路径仍然存在",
+                    )
+                final_snapshot = self._assert_recovered_isolation_target(
+                    source_fd=source_fd,
+                    source_snapshot=source_snapshot,
+                    target_parent_fd=target_parent_fd,
+                    target_name=target_name,
+                    target_snapshot=target_snapshot,
+                )
+                os.fsync(target_parent_fd)
+                return RepairIsolationApplyResult(final_snapshot, True)
+
+            if not _same_owned_file(
+                target_snapshot, expected_target_snapshot
+            ) or not _same_file_identity(
+                target_snapshot,
+                source_snapshot,
+            ):
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "repair target 在 inode 隔离前已偏离原 hardlink 证据",
+                )
+            if target_snapshot.link_count < 2:
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "repair target 在 inode 隔离前已不再是共享 hardlink",
+                )
+
+            if temporary_snapshot is not None:
+                if owned_temporary_snapshot is None or not _same_owned_inode(
+                    temporary_snapshot,
+                    owned_temporary_snapshot,
+                ):
+                    raise DomainViolation(
+                        ErrorCode.TARGET_CONFLICT,
+                        "repair isolation 临时文件存在但缺少匹配的 journal 所有权证据",
+                    )
+                if temporary_snapshot.link_count != 1:
+                    raise DomainViolation(
+                        ErrorCode.TARGET_CONFLICT,
+                        "journal-owned repair isolation 临时 inode 被额外链接",
+                    )
+                temporary_fd = _open_regular_file_at(
+                    target_parent_fd,
+                    temporary_name,
+                    write=True,
+                )
+                opened_temporary = _snapshot_from_stat(os.fstat(temporary_fd))
+                if not _same_owned_inode(opened_temporary, owned_temporary_snapshot):
+                    raise DomainViolation(
+                        ErrorCode.TARGET_CONFLICT,
+                        "repair isolation 临时 inode 在打开期间发生变化",
+                    )
+            else:
+                temporary_fd = _create_repair_temporary(target_parent_fd, temporary_name)
+                created_temporary = _snapshot_from_stat(os.fstat(temporary_fd))
+                if (
+                    created_temporary.file_type != "regular"
+                    or created_temporary.device != observed_parent.device
+                    or created_temporary.link_count != 1
+                    or _same_owned_inode(created_temporary, source_snapshot)
+                ):
+                    raise DomainViolation(
+                        ErrorCode.PATH_MAPPING_INVALID,
+                        "repair isolation 临时 inode 创建后状态异常",
+                    )
+                _call_fault_hook(fault_hook, "after_isolation_temp_created")
+                progress_hook(created_temporary)
+                owned_temporary_snapshot = created_temporary
+                _call_fault_hook(fault_hook, "after_isolation_temp_owned")
+
+            assert temporary_fd is not None and owned_temporary_snapshot is not None
+            os.ftruncate(temporary_fd, 0)
+            os.lseek(source_fd, 0, os.SEEK_SET)
+            copied = _copy_fd(source_fd, temporary_fd)
+            if copied != expected_source_snapshot.size:
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "repair source 在复制期间长度发生变化",
+                )
+            os.fchmod(temporary_fd, source_stat.st_mode & 0o777)
+            os.fsync(temporary_fd)
+            _call_fault_hook(fault_hook, "after_isolation_copy_fsync")
+
+            current_source_fd_snapshot = _snapshot_from_stat(os.fstat(source_fd))
+            _assert_source_snapshot(current_source_fd_snapshot, expected_source_snapshot)
+            current_source_path = _stat_at(source_parent_fd, source_parts[-1])
+            if current_source_path is None:
+                raise DomainViolation(ErrorCode.SOURCE_CHANGED, "repair source 在隔离落位前消失")
+            _assert_source_snapshot(current_source_path, expected_source_snapshot)
+
+            current_target = _stat_at(target_parent_fd, target_name)
+            if (
+                current_target is None
+                or not _same_owned_file(current_target, expected_target_snapshot)
+                or not _same_file_identity(current_target, current_source_path)
+            ):
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "repair target 在隔离落位前发生变化",
+                )
+            populated_temporary = _snapshot_from_stat(os.fstat(temporary_fd))
+            if (
+                not _same_owned_inode(populated_temporary, owned_temporary_snapshot)
+                or populated_temporary.size != expected_source_snapshot.size
+                or populated_temporary.link_count != 1
+            ):
+                raise DomainViolation(
+                    ErrorCode.TARGET_CONFLICT,
+                    "repair isolation 临时副本无法证明仍由当前 journal 独占",
+                )
+
+            try:
+                os.replace(
+                    temporary_name,
+                    target_name,
+                    src_dir_fd=target_parent_fd,
+                    dst_dir_fd=target_parent_fd,
+                )
+            except OSError as exc:
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "repair isolation 无法原子替换目标路径",
+                ) from exc
+            _call_fault_hook(fault_hook, "after_isolation_target_replaced")
+            os.fsync(target_parent_fd)
+            _call_fault_hook(fault_hook, "after_isolation_parent_fsync")
+
+            final_observed = _stat_at(target_parent_fd, target_name)
+            if (
+                final_observed is None
+                or not _same_owned_inode(final_observed, owned_temporary_snapshot)
+                or final_observed.size != expected_source_snapshot.size
+                or final_observed.link_count != 1
+                or _same_owned_inode(final_observed, current_source_path)
+            ):
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "repair target 原子替换后的 inode 状态异常",
+                )
+            return RepairIsolationApplyResult(final_observed, False)
+        finally:
+            if temporary_fd is not None:
+                os.close(temporary_fd)
+            if source_fd is not None:
+                os.close(source_fd)
+            os.close(source_parent_fd)
+            os.close(target_parent_fd)
+
+    def assert_repair_isolation_matches(
+        self,
+        *,
+        source_relative_path: str,
+        target_root_relative_path: str,
+        target_relative_path: str,
+        expected_source_snapshot: FileSnapshot,
+        expected_target_snapshot: FilesystemSnapshot,
+    ) -> FilesystemSnapshot:
+        """证明已 APPLIED 的隔离结果仍是独立、字节一致且未修改源文件的 inode。"""
+
+        _, source_parts = _normalize_relative_path(source_relative_path)
+        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_parts = _normalize_relative_path(target_relative_path)
+        source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
+        target_parent_fd = _open_directory_chain(
+            self._data_root,
+            target_root_parts + target_parts[:-1],
+        )
+        source_fd: int | None = None
+        target_fd: int | None = None
+        try:
+            source_fd = _open_regular_file_at(source_parent_fd, source_parts[-1], write=False)
+            source_snapshot = _snapshot_from_stat(os.fstat(source_fd))
+            _assert_source_snapshot(source_snapshot, expected_source_snapshot)
+            target_fd = _open_regular_file_at(target_parent_fd, target_parts[-1], write=False)
+            current_target = _snapshot_from_stat(os.fstat(target_fd))
+            if (
+                not _same_owned_file(current_target, expected_target_snapshot)
+                or current_target.link_count != 1
+                or _same_owned_inode(current_target, source_snapshot)
+                or not _fds_equal(source_fd, target_fd, expected_source_snapshot.size)
+            ):
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "已登记 repair isolation 结果与当前 source/target 证据不一致",
+                )
+            return current_target
+        finally:
+            if target_fd is not None:
+                os.close(target_fd)
+            if source_fd is not None:
+                os.close(source_fd)
+            os.close(source_parent_fd)
+            os.close(target_parent_fd)
+
+    def _assert_recovered_isolation_target(
+        self,
+        *,
+        source_fd: int,
+        source_snapshot: FilesystemSnapshot,
+        target_parent_fd: int,
+        target_name: str,
+        target_snapshot: FilesystemSnapshot,
+    ) -> FilesystemSnapshot:
+        if (
+            target_snapshot.file_type != "regular"
+            or target_snapshot.link_count != 1
+            or target_snapshot.size != source_snapshot.size
+            or _same_owned_inode(target_snapshot, source_snapshot)
+        ):
+            raise DomainViolation(
+                ErrorCode.TARGET_CONFLICT,
+                "repair isolation 未完成 journal-owned 独立 inode 后置条件",
+            )
+        target_fd = _open_regular_file_at(target_parent_fd, target_name, write=False)
+        try:
+            opened_target = _snapshot_from_stat(os.fstat(target_fd))
+            if not _same_owned_inode(opened_target, target_snapshot) or not _fds_equal(
+                source_fd,
+                target_fd,
+                source_snapshot.size,
+            ):
+                raise DomainViolation(
+                    ErrorCode.TARGET_CONFLICT,
+                    "repair isolation 响应丢失后无法证明目标副本内容一致",
+                )
+            return opened_target
+        finally:
+            os.close(target_fd)
 
     def inspect_hardlink(
         self,
@@ -727,6 +1117,15 @@ def _same_owned_file(current: FilesystemSnapshot, expected: FilesystemSnapshot) 
     return _same_file_identity(current, expected)
 
 
+def _same_owned_inode(left: FilesystemSnapshot, right: FilesystemSnapshot) -> bool:
+    return (
+        left.file_type == "regular"
+        and right.file_type == "regular"
+        and left.device == right.device
+        and left.inode == right.inode
+    )
+
+
 def _same_owned_directory(current: FilesystemSnapshot, expected: FilesystemSnapshot) -> bool:
     return (
         current.file_type == "directory"
@@ -739,6 +1138,111 @@ def _same_owned_directory(current: FilesystemSnapshot, expected: FilesystemSnaps
 def _call_fault_hook(hook: Callable[[str], None] | None, checkpoint: str) -> None:
     if hook is not None:
         hook(checkpoint)
+
+
+def _repair_isolation_temporary_name(operation_token: str) -> str:
+    if len(operation_token) != 64 or any(
+        character not in "0123456789abcdef" for character in operation_token
+    ):
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "repair isolation 操作 token 无效")
+    return f".packbreaker-repair-{operation_token}.tmp"
+
+
+def _open_regular_file_at(parent_fd: int, name: str, *, write: bool) -> int:
+    flags = (
+        (os.O_RDWR if write else os.O_RDONLY)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "无法安全打开普通文件") from exc
+    try:
+        snapshot = _snapshot_from_stat(os.fstat(fd))
+        if snapshot.file_type != "regular":
+            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "目标必须是普通文件")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _create_repair_temporary(parent_fd: int, name: str) -> int:
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        return os.open(name, flags, 0o600, dir_fd=parent_fd)
+    except FileExistsError as exc:
+        raise DomainViolation(
+            ErrorCode.TARGET_CONFLICT,
+            "repair isolation 临时文件并发出现",
+        ) from exc
+    except OSError as exc:
+        raise DomainViolation(
+            ErrorCode.PATH_MAPPING_INVALID,
+            "无法安全创建 repair isolation 临时文件",
+        ) from exc
+
+
+def _copy_fd(source_fd: int, target_fd: int) -> int:
+    copied = 0
+    while True:
+        try:
+            chunk = os.read(source_fd, 1024 * 1024)
+        except OSError as exc:
+            raise DomainViolation(ErrorCode.SOURCE_CHANGED, "读取 repair source 失败") from exc
+        if not chunk:
+            return copied
+        view = memoryview(chunk)
+        while view:
+            try:
+                written = os.write(target_fd, view)
+            except OSError as exc:
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "写入 journal-owned repair isolation 临时文件失败",
+                ) from exc
+            if written <= 0:
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "journal-owned repair isolation 临时文件写入未前进",
+                )
+            copied += written
+            view = view[written:]
+
+
+def _fds_equal(left_fd: int, right_fd: int, expected_size: int) -> bool:
+    if expected_size < 0:
+        return False
+    offset = 0
+    while offset < expected_size:
+        amount = min(1024 * 1024, expected_size - offset)
+        try:
+            left = os.pread(left_fd, amount, offset)
+            right = os.pread(right_fd, amount, offset)
+        except OSError:
+            return False
+        if left != right or len(left) != amount:
+            return False
+        offset += amount
+    try:
+        return (
+            os.pread(left_fd, 1, expected_size) == b""
+            and os.pread(
+                right_fd,
+                1,
+                expected_size,
+            )
+            == b""
+        )
+    except OSError:
+        return False
 
 
 def _rename_noreplace(

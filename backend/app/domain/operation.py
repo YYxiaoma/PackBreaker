@@ -17,6 +17,7 @@ class OperationStatus(StrEnum):
 class OperationKind(StrEnum):
     FILESYSTEM_DIRECTORY = "FILESYSTEM_DIRECTORY"
     FILESYSTEM_HARDLINK = "FILESYSTEM_HARDLINK"
+    FILESYSTEM_REPAIR_ISOLATION = "FILESYSTEM_REPAIR_ISOLATION"
     QBITTORRENT_ADD = "QBITTORRENT_ADD"
     QBITTORRENT_RECHECK = "QBITTORRENT_RECHECK"
     QBITTORRENT_START = "QBITTORRENT_START"
@@ -75,6 +76,7 @@ class OperationEventSummary:
 _OPERATION_EVENT_IDENTITIES: dict[str, tuple[str, str]] = {
     "CREATE_DIRECTORY": ("FILESYSTEM_DIRECTORY", "文件系统目录创建"),
     "CREATE_HARDLINK": ("FILESYSTEM_HARDLINK", "文件系统硬链接创建"),
+    "ISOLATE_REPAIR_TARGET": ("FILESYSTEM_REPAIR_ISOLATION", "文件系统修复 inode 隔离"),
     "QBITTORRENT_ADD": ("QBITTORRENT_ADD", "qBittorrent 添加任务"),
     "QBITTORRENT_RECHECK": ("QBITTORRENT_RECHECK", "qBittorrent 强制校验"),
     "QBITTORRENT_START": ("QBITTORRENT_START", "qBittorrent 启动作种"),
@@ -88,6 +90,7 @@ _OPERATION_EVENT_IDENTITIES: dict[str, tuple[str, str]] = {
 _OPERATION_KINDS: dict[str, OperationKind] = {
     "CREATE_DIRECTORY": OperationKind.FILESYSTEM_DIRECTORY,
     "CREATE_HARDLINK": OperationKind.FILESYSTEM_HARDLINK,
+    "ISOLATE_REPAIR_TARGET": OperationKind.FILESYSTEM_REPAIR_ISOLATION,
     "QBITTORRENT_ADD": OperationKind.QBITTORRENT_ADD,
     "QBITTORRENT_RECHECK": OperationKind.QBITTORRENT_RECHECK,
     "QBITTORRENT_START": OperationKind.QBITTORRENT_START,
@@ -117,7 +120,11 @@ def operation_event_summary(
 ) -> OperationEventSummary | None:
     """生成可公开到 TaskEvent 的固定脱敏 operation journal 摘要。"""
 
-    if operation_type in {"CREATE_DIRECTORY", "CREATE_HARDLINK"} and status not in {
+    if operation_type in {
+        "CREATE_DIRECTORY",
+        "CREATE_HARDLINK",
+        "ISOLATE_REPAIR_TARGET",
+    } and status not in {
         OperationStatus.RECONCILE_REQUIRED,
         OperationStatus.ROLLBACK_BLOCKED,
     }:
