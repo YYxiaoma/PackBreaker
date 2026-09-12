@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from weakref import WeakValueDictionary
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.downloader_operations import (
     QBITTORRENT_ADD_OPERATION,
     QBITTORRENT_RECHECK_OPERATION,
+    QbittorrentWriteBindingPort,
 )
 from backend.app.application.downloaders import QbittorrentWriteBinding, TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
@@ -23,12 +24,18 @@ from backend.app.application.task_repairs import (
 from backend.app.application.transmission_operations import (
     TRANSMISSION_ADD_OPERATION,
     TRANSMISSION_VERIFY_OPERATION,
+    TransmissionWriteBindingPort,
 )
 from backend.app.domain.downloader import normalize_remote_path
+from backend.app.domain.errors import DomainViolation
 from backend.app.domain.idempotency import downloader_operation_key
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_state import TaskStatus
-from backend.app.infrastructure.adapters.downloaders import DownloaderAdapterError
+from backend.app.infrastructure.adapters.downloaders import (
+    DownloaderAdapterError,
+    QbittorrentWriteAdapter,
+    TransmissionWriteAdapter,
+)
 from backend.app.infrastructure.persistence.repositories import (
     OperationIntent,
     OperationJournalRepository,
@@ -40,6 +47,14 @@ QBITTORRENT_REPAIR_STOP_OPERATION = "QBITTORRENT_REPAIR_STOP"
 TRANSMISSION_REPAIR_START_OPERATION = "TRANSMISSION_REPAIR_START"
 TRANSMISSION_REPAIR_STOP_OPERATION = "TRANSMISSION_REPAIR_STOP"
 REPAIR_DOWNLOADER_OPERATION_SCHEMA_VERSION = "packbreaker-repair-downloader-operation-v1"
+REPAIR_DOWNLOADER_RECONCILABLE_OPERATIONS = frozenset(
+    {
+        QBITTORRENT_REPAIR_START_OPERATION,
+        QBITTORRENT_REPAIR_STOP_OPERATION,
+        TRANSMISSION_REPAIR_START_OPERATION,
+        TRANSMISSION_REPAIR_STOP_OPERATION,
+    }
+)
 
 _OPERATION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
@@ -87,6 +102,25 @@ class RepairDownloadOperationResult:
     active: bool
     replayed: bool
     recovered_after_unknown_result: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RepairDownloadJournalReconcileResult:
+    journal_id: str
+    operation_type: str
+    status: OperationStatus
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedJournalReconcile:
+    operation_type: str
+    downloader_id: str
+    downloader_version: int
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+    recorded_progress: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +208,116 @@ class RepairDownloadOperationService:
         self._assert_stop_authorization(prepared)
         async with _operation_lock(prepared.operation_key):
             return await self._execute_stop(prepared, binding)
+
+    async def reconcile_qbittorrent(
+        self,
+        journal_id: str,
+        binding: QbittorrentWriteBindingPort,
+        *,
+        allow_applied_replay: bool = False,
+    ) -> RepairDownloadJournalReconcileResult:
+        return await self._reconcile_journal(
+            journal_id,
+            binding,
+            expected_types=frozenset(
+                {QBITTORRENT_REPAIR_START_OPERATION, QBITTORRENT_REPAIR_STOP_OPERATION}
+            ),
+            allow_applied_replay=allow_applied_replay,
+        )
+
+    async def reconcile_transmission(
+        self,
+        journal_id: str,
+        binding: TransmissionWriteBindingPort,
+        *,
+        allow_applied_replay: bool = False,
+    ) -> RepairDownloadJournalReconcileResult:
+        return await self._reconcile_journal(
+            journal_id,
+            binding,
+            expected_types=frozenset(
+                {TRANSMISSION_REPAIR_START_OPERATION, TRANSMISSION_REPAIR_STOP_OPERATION}
+            ),
+            allow_applied_replay=allow_applied_replay,
+        )
+
+    async def _reconcile_journal(
+        self,
+        journal_id: str,
+        binding: QbittorrentWriteBindingPort | TransmissionWriteBindingPort,
+        *,
+        expected_types: frozenset[str],
+        allow_applied_replay: bool,
+    ) -> RepairDownloadJournalReconcileResult:
+        async with _operation_lock(f"repair-journal-reconcile:{journal_id}"):
+            journal = self._load_by_id(journal_id)
+            if journal.operation_type not in expected_types:
+                raise ApplicationError(
+                    code="OPERATION_RECONCILE_UNSUPPORTED",
+                    status=409,
+                    title="该 repair downloader 操作不能由当前下载器类型对账",
+                    detail=(
+                        "repair start/stop 只能使用原 operation 类型对应的下载器执行只读重新证明"
+                    ),
+                )
+            if journal.after_snapshot is None:
+                raise ApplicationError(
+                    code="OPERATION_RECONCILE_UNPROVABLE",
+                    status=409,
+                    title="repair operation 缺少完成后快照",
+                    detail="未知 repair start/stop 结果不能根据当前状态反推历史副作用",
+                )
+            if journal.status is OperationStatus.APPLIED:
+                if not allow_applied_replay:
+                    raise _reconcile_state_invalid()
+                replayed = True
+            elif journal.status is OperationStatus.RECONCILE_REQUIRED:
+                replayed = False
+            else:
+                raise _reconcile_state_invalid()
+
+            prepared = _prepare_journal_reconcile(journal)
+            if (
+                binding.downloader_id != prepared.downloader_id
+                or binding.downloader_version != prepared.downloader_version
+            ):
+                raise ApplicationError(
+                    code="DOWNLOADER_CONFIG_CHANGED",
+                    status=409,
+                    title="repair operation 下载器配置已经变化",
+                    detail="只允许使用 journal 原先绑定的 downloader ID/version 重新证明",
+                )
+            if prepared.operation_type.startswith("QBITTORRENT_"):
+                state = await _reconcile_qbit_owned_state(
+                    cast(QbittorrentWriteAdapter, binding.adapter),
+                    prepared,
+                )
+            else:
+                state = await _reconcile_transmission_owned_state(
+                    cast(TransmissionWriteAdapter, binding.adapter),
+                    prepared,
+                )
+            if not _reconcile_postcondition_holds(prepared, state):
+                raise ApplicationError(
+                    code="OPERATION_RECONCILE_BLOCKED",
+                    status=409,
+                    title="repair operation 当前状态不能重新证明",
+                    detail="owned torrent 当前状态与已登记 repair after snapshot 不再兼容",
+                )
+            if journal.status is OperationStatus.RECONCILE_REQUIRED:
+                assert journal.after_snapshot is not None
+                journal = self._transition(
+                    journal.id,
+                    OperationStatus.RECONCILE_REQUIRED,
+                    OperationStatus.APPLIED,
+                    after_snapshot=journal.after_snapshot,
+                )
+            return RepairDownloadJournalReconcileResult(
+                journal_id=journal.id,
+                operation_type=journal.operation_type,
+                status=journal.status,
+                replayed=replayed,
+            )
 
     async def _execute_start(
         self,
@@ -447,6 +591,18 @@ class RepairDownloadOperationService:
             journal = OperationJournalRepository(session).get_by_idempotency_key(key)
             return None if journal is None else _journal_view(journal)
 
+    def _load_by_id(self, journal_id: str) -> _JournalView:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).get(journal_id)
+            if journal is None:
+                raise ApplicationError(
+                    code="OPERATION_NOT_FOUND",
+                    status=404,
+                    title="repair operation journal 不存在",
+                    detail="无法对不存在的 repair downloader journal 执行对账",
+                )
+            return _journal_view(journal)
+
     def _transition(
         self,
         journal_id: str,
@@ -533,6 +689,144 @@ async def _owned_state(
         state_transmission.checking,
         not state_transmission.stopped and not state_transmission.checking,
     )
+
+
+async def _reconcile_qbit_owned_state(
+    adapter: QbittorrentWriteAdapter,
+    prepared: _PreparedJournalReconcile,
+) -> _ObservedState:
+    try:
+        observed = await adapter.get_torrents((prepared.torrent_hash,))
+    except DownloaderAdapterError as exc:
+        raise _adapter_error(exc, "无法读取 qBittorrent repair operation 当前状态") from exc
+    matching = tuple(
+        state
+        for state in observed
+        if state.torrent_hash == prepared.torrent_hash
+        and state.save_path == prepared.remote_save_path
+        and prepared.ownership_tag in state.tags
+    )
+    if len(observed) != 1 or len(matching) != 1:
+        raise _state_mismatch("qBittorrent repair journal 的 owned torrent 当前证据不匹配")
+    state = matching[0]
+    return _ObservedState(
+        state.torrent_hash,
+        state.save_path,
+        state.state,
+        state.progress,
+        state.stopped,
+        state.checking,
+        not state.stopped and not state.checking,
+    )
+
+
+async def _reconcile_transmission_owned_state(
+    adapter: TransmissionWriteAdapter,
+    prepared: _PreparedJournalReconcile,
+) -> _ObservedState:
+    try:
+        observed = await adapter.get_torrents((prepared.torrent_hash,))
+    except DownloaderAdapterError as exc:
+        raise _adapter_error(exc, "无法读取 Transmission repair operation 当前状态") from exc
+    matching = tuple(
+        state
+        for state in observed
+        if state.torrent_hash == prepared.torrent_hash
+        and state.download_dir == prepared.remote_save_path
+        and prepared.ownership_tag in state.labels
+    )
+    if len(observed) != 1 or len(matching) != 1:
+        raise _state_mismatch("Transmission repair journal 的 owned torrent 当前证据不匹配")
+    state = matching[0]
+    return _ObservedState(
+        state.torrent_hash,
+        state.download_dir,
+        str(state.status),
+        state.percent_done,
+        state.stopped,
+        state.checking,
+        not state.stopped and not state.checking,
+    )
+
+
+def _prepare_journal_reconcile(journal: _JournalView) -> _PreparedJournalReconcile:
+    if (
+        journal.operation_type not in REPAIR_DOWNLOADER_RECONCILABLE_OPERATIONS
+        or journal.after_snapshot is None
+        or journal.intent.get("schema_version") != REPAIR_DOWNLOADER_OPERATION_SCHEMA_VERSION
+    ):
+        raise _reconcile_unprovable()
+    downloader_id = journal.target.get("downloader_id")
+    downloader_version = journal.intent.get("downloader_version")
+    torrent_hash = journal.intent.get("torrent_hash")
+    remote_save_path = journal.intent.get("remote_save_path")
+    ownership_tag = journal.intent.get("ownership_tag")
+    after_hash = journal.after_snapshot.get("torrent_hash")
+    after_save_path = journal.after_snapshot.get("save_path")
+    after_ownership = journal.after_snapshot.get("ownership_tag")
+    progress = journal.after_snapshot.get("progress")
+    if (
+        not isinstance(downloader_id, str)
+        or not downloader_id
+        or not isinstance(downloader_version, int)
+        or isinstance(downloader_version, bool)
+        or downloader_version < 1
+        or not isinstance(torrent_hash, str)
+        or not isinstance(remote_save_path, str)
+        or not isinstance(ownership_tag, str)
+        or not ownership_tag
+        or not isinstance(progress, (int, float))
+        or isinstance(progress, bool)
+    ):
+        raise _reconcile_unprovable()
+    try:
+        normalized_hash = _normalize_hash(torrent_hash)
+        normalized_save_path = normalize_remote_path(remote_save_path)
+    except (ValueError, DomainViolation) as exc:
+        raise _reconcile_unprovable() from exc
+    normalized_progress = float(progress)
+    if (
+        normalized_hash != torrent_hash
+        or normalized_save_path != remote_save_path
+        or after_hash != torrent_hash
+        or after_save_path != remote_save_path
+        or after_ownership != ownership_tag
+        or normalized_progress < 0.0
+        or normalized_progress > 1.0
+    ):
+        raise _reconcile_unprovable()
+    if journal.operation_type in {
+        QBITTORRENT_REPAIR_STOP_OPERATION,
+        TRANSMISSION_REPAIR_STOP_OPERATION,
+    } and (
+        journal.after_snapshot.get("stopped") is not True
+        or journal.after_snapshot.get("complete") is not True
+        or normalized_progress != 1.0
+    ):
+        raise _reconcile_unprovable()
+    return _PreparedJournalReconcile(
+        operation_type=journal.operation_type,
+        downloader_id=downloader_id,
+        downloader_version=downloader_version,
+        torrent_hash=normalized_hash,
+        remote_save_path=normalized_save_path,
+        ownership_tag=ownership_tag,
+        recorded_progress=normalized_progress,
+    )
+
+
+def _reconcile_postcondition_holds(
+    prepared: _PreparedJournalReconcile,
+    state: _ObservedState,
+) -> bool:
+    if state.checking or state.progress < prepared.recorded_progress:
+        return False
+    if prepared.operation_type in {
+        QBITTORRENT_REPAIR_STOP_OPERATION,
+        TRANSMISSION_REPAIR_STOP_OPERATION,
+    }:
+        return state.stopped and state.complete
+    return state.active or (state.stopped and state.complete)
 
 
 def _prepare_start(
@@ -850,6 +1144,24 @@ def _journal_not_executable(journal: _JournalView) -> ApplicationError:
         status=409,
         title="修复下载 operation journal 不能继续执行",
         detail=f"journal 当前状态为 {journal.status.value}",
+    )
+
+
+def _reconcile_state_invalid() -> ApplicationError:
+    return ApplicationError(
+        code="OPERATION_RECONCILE_STATE_INVALID",
+        status=409,
+        title="repair operation 当前不允许自动对账",
+        detail="只接受 RECONCILE_REQUIRED，或 action receipt 重放时重新证明 APPLIED journal",
+    )
+
+
+def _reconcile_unprovable() -> ApplicationError:
+    return ApplicationError(
+        code="OPERATION_RECONCILE_UNPROVABLE",
+        status=409,
+        title="repair operation 完成证据无效",
+        detail="journal intent/after snapshot 无法安全绑定原 repair start/stop 结果",
     )
 
 

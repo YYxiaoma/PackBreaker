@@ -1798,7 +1798,7 @@ async def test_transmission_cancellation_removes_before_rollback_and_recovers_wi
         task = session.get(UnpackTask, adding_fixture.task_id)
         assert task is not None and task.status == TaskStatus.ROLLING_BACK.value
         assert task.checkpoint["downloader_kind"] == DownloaderKind.TRANSMISSION.value
-        assert task.checkpoint["schema_version"] == "packbreaker-cancellation-checkpoint-v2"
+        assert task.checkpoint["schema_version"] == "packbreaker-cancellation-checkpoint-v3"
 
     report = await _recovery_coordinator(adding_fixture, cancellation).reconcile_once()
 

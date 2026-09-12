@@ -25,9 +25,11 @@ from backend.app.infrastructure.safe_filesystem import (
 FILESYSTEM_OPERATION_SCHEMA_VERSION = "packbreaker-filesystem-operation-v1"
 REPAIR_ISOLATION_SCHEMA_VERSION = "packbreaker-repair-isolation-v1"
 REPAIR_ISOLATION_PROGRESS_SCHEMA_VERSION = "packbreaker-repair-isolation-progress-v1"
+REPAIR_CLEANUP_SCHEMA_VERSION = "packbreaker-repair-cleanup-v1"
 CREATE_DIRECTORY_OPERATION = "CREATE_DIRECTORY"
 CREATE_HARDLINK_OPERATION = "CREATE_HARDLINK"
 ISOLATE_REPAIR_TARGET_OPERATION = "ISOLATE_REPAIR_TARGET"
+CLEANUP_REPAIR_TARGET_OPERATION = "CLEANUP_REPAIR_TARGET"
 _FILESYSTEM_OPERATION_LOCKS = tuple(Lock() for _ in range(64))
 
 
@@ -59,6 +61,23 @@ class RepairIsolationExecutionRequest:
 class RepairIsolationExecutionResult:
     isolation_journal_id: str
     target_snapshot: FilesystemSnapshot
+    replayed: bool
+    recovered_after_unknown_result: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RepairTargetCleanupRequest:
+    task_id: str
+    execution_plan_id: str
+    isolation_journal_id: str
+    remove_journal_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepairTargetCleanupResult:
+    cleanup_journal_id: str
+    isolation_journal_id: str
+    removed: bool
     replayed: bool
     recovered_after_unknown_result: bool
 
@@ -103,6 +122,19 @@ class _PreparedRepairIsolation:
     expected_source_snapshot: FileSnapshot
     expected_target_snapshot: FilesystemSnapshot
     temporary_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRepairCleanup:
+    operation_key: str
+    task_id: str
+    execution_plan_id: str
+    isolation_journal_id: str
+    remove_journal_id: str
+    hardlink_journal_id: str
+    target_root_relative_path: str
+    target_relative_path: str
+    expected_isolation_snapshot: FilesystemSnapshot
 
 
 class FilesystemOperationService:
@@ -518,6 +550,79 @@ class FilesystemOperationService:
             status=rolled_back.status,
         )
 
+    def cleanup_repair_target(
+        self,
+        request: RepairTargetCleanupRequest,
+        *,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> RepairTargetCleanupResult:
+        """在下载器 remove 已确认后，删除仍由 isolation journal 拥有的独立 target。"""
+
+        prepared = self._prepare_repair_cleanup(request)
+        with _filesystem_operation_lock(prepared.operation_key):
+            existing = self._load_by_key(prepared.operation_key)
+            if existing is not None:
+                self._assert_same_repair_cleanup_intent(existing, prepared)
+                if existing.status is OperationStatus.APPLIED:
+                    self._gateway.assert_repair_target_absent(
+                        target_root_relative_path=prepared.target_root_relative_path,
+                        target_relative_path=prepared.target_relative_path,
+                    )
+                    return RepairTargetCleanupResult(
+                        cleanup_journal_id=existing.id,
+                        isolation_journal_id=prepared.isolation_journal_id,
+                        removed=True,
+                        replayed=True,
+                        recovered_after_unknown_result=False,
+                    )
+                if existing.status is not OperationStatus.INTENT_RECORDED:
+                    raise _journal_not_executable(existing)
+                journal = existing
+                replayed = True
+            else:
+                journal, _ = self._record_intent(
+                    OperationIntent(
+                        task_id=prepared.task_id,
+                        idempotency_key=prepared.operation_key,
+                        operation_type=CLEANUP_REPAIR_TARGET_OPERATION,
+                        target={
+                            "target_root": prepared.target_root_relative_path,
+                            "relative_path": prepared.target_relative_path,
+                        },
+                        intent=_repair_cleanup_intent_payload(prepared),
+                        before_snapshot=prepared.expected_isolation_snapshot.to_payload(),
+                    )
+                )
+                replayed = False
+
+            try:
+                removed = self._gateway.remove_repair_target_if_matches(
+                    target_root_relative_path=prepared.target_root_relative_path,
+                    target_relative_path=prepared.target_relative_path,
+                    expected_isolation_snapshot=prepared.expected_isolation_snapshot,
+                )
+            except DomainViolation:
+                self._transition_if_current(
+                    journal.id,
+                    OperationStatus.INTENT_RECORDED,
+                    OperationStatus.RECONCILE_REQUIRED,
+                )
+                raise
+            _call_fault_hook(fault_hook, "after_repair_target_cleanup")
+            completed = self._transition(
+                journal.id,
+                OperationStatus.INTENT_RECORDED,
+                OperationStatus.APPLIED,
+                after_snapshot={"target_absent": True},
+            )
+            return RepairTargetCleanupResult(
+                cleanup_journal_id=completed.id,
+                isolation_journal_id=prepared.isolation_journal_id,
+                removed=removed,
+                replayed=replayed,
+                recovered_after_unknown_result=replayed and not removed,
+            )
+
     def reconcile_journal(
         self,
         journal_id: str,
@@ -729,6 +834,75 @@ class FilesystemOperationService:
             temporary_name=f".packbreaker-repair-{operation_key}.tmp",
         )
 
+    def _prepare_repair_cleanup(
+        self,
+        request: RepairTargetCleanupRequest,
+    ) -> _PreparedRepairCleanup:
+        isolation = self._load_by_id(request.isolation_journal_id)
+        if (
+            isolation.task_id != request.task_id
+            or isolation.operation_type != ISOLATE_REPAIR_TARGET_OPERATION
+            or isolation.status is not OperationStatus.APPLIED
+            or isolation.intent.get("schema_version") != REPAIR_ISOLATION_SCHEMA_VERSION
+            or isolation.intent.get("resource_kind") != "repair_isolation"
+        ):
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                "repair cleanup 只能由同任务 APPLIED isolation journal 授权",
+            )
+        hardlink_journal_id = _required_text(isolation.intent, "hardlink_journal_id")
+        hardlink = self._load_by_id(hardlink_journal_id)
+        if (
+            hardlink.task_id != request.task_id
+            or hardlink.operation_type != CREATE_HARDLINK_OPERATION
+            or hardlink.status is not OperationStatus.APPLIED
+        ):
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                "repair cleanup 的 isolation 已无法绑定原 APPLIED hardlink journal",
+            )
+        remove = self._load_by_id(request.remove_journal_id)
+        if (
+            remove.task_id != request.task_id
+            or remove.operation_type not in {"QBITTORRENT_REMOVE", "TRANSMISSION_REMOVE"}
+            or remove.status not in {OperationStatus.APPLIED, OperationStatus.NOOP}
+            or remove.intent.get("execution_plan_id") != request.execution_plan_id
+        ):
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                "repair cleanup 前必须由同 execution plan 的 downloader remove journal "
+                "证明停止写入",
+            )
+        target_root = self._gateway.normalize_relative_path(
+            _required_text(isolation.target, "target_root"),
+            allow_root=True,
+        )
+        target_relative = self._gateway.normalize_relative_path(
+            _required_text(isolation.target, "relative_path")
+        )
+        snapshot = _filesystem_snapshot_from_payload(isolation.after_snapshot)
+        if snapshot.file_type != "regular" or snapshot.link_count != 1:
+            raise DomainViolation(
+                ErrorCode.SOURCE_NOT_STABLE,
+                "repair cleanup 的 isolation after snapshot 不是独立普通 inode",
+            )
+        operation_key = file_operation_key(
+            candidate_key=isolation.idempotency_key,
+            operation_type=CLEANUP_REPAIR_TARGET_OPERATION,
+            normalized_target_path=_target_key_path(target_root, target_relative),
+        )
+        return _PreparedRepairCleanup(
+            operation_key=operation_key,
+            task_id=request.task_id,
+            execution_plan_id=request.execution_plan_id,
+            isolation_journal_id=isolation.id,
+            remove_journal_id=remove.id,
+            hardlink_journal_id=hardlink.id,
+            target_root_relative_path=target_root,
+            target_relative_path=target_relative,
+            expected_isolation_snapshot=snapshot,
+        )
+
     def _assert_same_repair_isolation_intent(
         self,
         journal: _JournalView,
@@ -745,6 +919,25 @@ class FilesystemOperationService:
                 },
                 intent=_repair_isolation_intent_payload(prepared),
                 before_snapshot=deepcopy(journal.before_snapshot),
+            )
+        )
+
+    def _assert_same_repair_cleanup_intent(
+        self,
+        journal: _JournalView,
+        prepared: _PreparedRepairCleanup,
+    ) -> None:
+        self._record_intent(
+            OperationIntent(
+                task_id=prepared.task_id,
+                idempotency_key=journal.idempotency_key,
+                operation_type=CLEANUP_REPAIR_TARGET_OPERATION,
+                target={
+                    "target_root": prepared.target_root_relative_path,
+                    "relative_path": prepared.target_relative_path,
+                },
+                intent=_repair_cleanup_intent_payload(prepared),
+                before_snapshot=prepared.expected_isolation_snapshot.to_payload(),
             )
         )
 
@@ -960,6 +1153,17 @@ def _repair_isolation_progress_payload(snapshot: FilesystemSnapshot) -> dict[str
         "schema_version": REPAIR_ISOLATION_PROGRESS_SCHEMA_VERSION,
         "stage": "TEMP_OWNED",
         "temporary": snapshot.to_payload(),
+    }
+
+
+def _repair_cleanup_intent_payload(prepared: _PreparedRepairCleanup) -> dict[str, Any]:
+    return {
+        "schema_version": REPAIR_CLEANUP_SCHEMA_VERSION,
+        "resource_kind": "repair_cleanup",
+        "execution_plan_id": prepared.execution_plan_id,
+        "isolation_journal_id": prepared.isolation_journal_id,
+        "hardlink_journal_id": prepared.hardlink_journal_id,
+        "remove_journal_id": prepared.remove_journal_id,
     }
 
 

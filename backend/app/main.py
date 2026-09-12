@@ -217,6 +217,7 @@ def create_app(
             downloader_service,
             qbit_journal_reconcile,
             transmission_journal_reconcile,
+            repair_download_operations,
         )
         task_linking_coordinator = TaskLinkingCoordinator(
             resolved_runtime.session_factory,

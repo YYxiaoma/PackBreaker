@@ -22,6 +22,14 @@ from backend.app.application.filesystem_operations import (
     CREATE_HARDLINK_OPERATION,
     FilesystemOperationService,
 )
+from backend.app.application.repair_downloader_operations import (
+    QBITTORRENT_REPAIR_START_OPERATION,
+    QBITTORRENT_REPAIR_STOP_OPERATION,
+    REPAIR_DOWNLOADER_RECONCILABLE_OPERATIONS,
+    TRANSMISSION_REPAIR_START_OPERATION,
+    TRANSMISSION_REPAIR_STOP_OPERATION,
+    RepairDownloadJournalReconcileResult,
+)
 from backend.app.application.task_actions import TaskActionActor
 from backend.app.application.transmission_operations import (
     TRANSMISSION_RECONCILABLE_OPERATIONS,
@@ -43,7 +51,7 @@ _FILESYSTEM_RECONCILE_TYPES = frozenset({CREATE_DIRECTORY_OPERATION, CREATE_HARD
 _ATTENTION_STATUSES = frozenset(
     {OperationStatus.RECONCILE_REQUIRED, OperationStatus.ROLLBACK_BLOCKED}
 )
-_RECONCILABLE_OPERATION_TYPES = (
+_BASE_RECONCILABLE_OPERATION_TYPES = (
     _FILESYSTEM_RECONCILE_TYPES
     | QBITTORRENT_RECONCILABLE_OPERATIONS
     | TRANSMISSION_RECONCILABLE_OPERATIONS
@@ -165,6 +173,24 @@ class TransmissionJournalReconcilePort(Protocol):
     ) -> TransmissionJournalReconcileResult: ...
 
 
+class RepairDownloadJournalReconcilePort(Protocol):
+    async def reconcile_qbittorrent(
+        self,
+        journal_id: str,
+        binding: QbittorrentWriteBindingPort,
+        *,
+        allow_applied_replay: bool = False,
+    ) -> RepairDownloadJournalReconcileResult: ...
+
+    async def reconcile_transmission(
+        self,
+        journal_id: str,
+        binding: TransmissionWriteBindingPort,
+        *,
+        allow_applied_replay: bool = False,
+    ) -> RepairDownloadJournalReconcileResult: ...
+
+
 class TaskOperationService:
     """公开脱敏 journal 摘要，并只通过既有完成证据重新证明文件/下载器状态。"""
 
@@ -175,19 +201,29 @@ class TaskOperationService:
         downloader_bindings: DownloaderBindingProvider,
         qbit_reconcile: QbittorrentJournalReconcilePort,
         transmission_reconcile: TransmissionJournalReconcilePort,
+        repair_reconcile: RepairDownloadJournalReconcilePort | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._filesystem_operations = filesystem_operations
         self._downloader_bindings = downloader_bindings
         self._qbit_reconcile = qbit_reconcile
         self._transmission_reconcile = transmission_reconcile
+        self._repair_reconcile = repair_reconcile
+        self._reconcilable_operation_types = _BASE_RECONCILABLE_OPERATION_TYPES | (
+            REPAIR_DOWNLOADER_RECONCILABLE_OPERATIONS
+            if repair_reconcile is not None
+            else frozenset()
+        )
 
     def list_operations(self, task_id: str) -> tuple[TaskOperationView, ...]:
         with self._session_factory() as session:
             if TaskRepository(session).get(task_id) is None:
                 raise _task_not_found()
             journals = OperationJournalRepository(session).list_for_task(task_id)
-            return tuple(_operation_view(item) for item in reversed(journals))
+            return tuple(
+                _operation_view(item, self._reconcilable_operation_types)
+                for item in reversed(journals)
+            )
 
     def maintenance_report(self, *, limit: int = 100) -> OperationMaintenanceReport:
         if limit <= 0 or limit > 500:
@@ -203,12 +239,14 @@ class TaskOperationService:
             attention_required = repository.count_by_statuses(attention_statuses)
             retention_candidates = repository.count_by_statuses(retention_statuses)
             reconcile_supported = repository.count_reconcile_supported(
-                tuple(sorted(_RECONCILABLE_OPERATION_TYPES))
+                tuple(sorted(self._reconcilable_operation_types))
             )
             repair_journals = repository.list_by_statuses(attention_statuses, limit=limit)
             cleanup_journals = repository.list_by_statuses(retention_statuses, limit=limit)
 
-        repair_items = tuple(_repair_item(item) for item in repair_journals)
+        repair_items = tuple(
+            _repair_item(item, self._reconcilable_operation_types) for item in repair_journals
+        )
         cleanup_candidates = tuple(_cleanup_candidate(item) for item in cleanup_journals)
         return OperationMaintenanceReport(
             generated_at=datetime.now(UTC),
@@ -277,6 +315,52 @@ class TaskOperationService:
                     )
                     result_status = reconciled.status
                     operation_replayed = reconciled.replayed
+                elif current.operation_type in {
+                    QBITTORRENT_REPAIR_START_OPERATION,
+                    QBITTORRENT_REPAIR_STOP_OPERATION,
+                }:
+                    if current.after_snapshot is None or self._repair_reconcile is None:
+                        raise ApplicationError(
+                            code="OPERATION_RECONCILE_UNPROVABLE",
+                            status=409,
+                            title="repair operation 缺少安全对账能力或完成后快照",
+                            detail=(
+                                "未知 repair start/stop 结果禁止根据当前下载器状态反推历史副作用"
+                            ),
+                        )
+                    qbit_binding = self._downloader_bindings.qbittorrent_write_binding(
+                        _required_downloader_id(current)
+                    )
+                    reconciled_repair = await self._repair_reconcile.reconcile_qbittorrent(
+                        journal_id,
+                        qbit_binding,
+                        allow_applied_replay=replayed,
+                    )
+                    result_status = reconciled_repair.status
+                    operation_replayed = reconciled_repair.replayed
+                elif current.operation_type in {
+                    TRANSMISSION_REPAIR_START_OPERATION,
+                    TRANSMISSION_REPAIR_STOP_OPERATION,
+                }:
+                    if current.after_snapshot is None or self._repair_reconcile is None:
+                        raise ApplicationError(
+                            code="OPERATION_RECONCILE_UNPROVABLE",
+                            status=409,
+                            title="repair operation 缺少安全对账能力或完成后快照",
+                            detail=(
+                                "未知 repair start/stop 结果禁止根据当前下载器状态反推历史副作用"
+                            ),
+                        )
+                    transmission_binding = self._downloader_bindings.transmission_write_binding(
+                        _required_downloader_id(current)
+                    )
+                    reconciled_repair = await self._repair_reconcile.reconcile_transmission(
+                        journal_id,
+                        transmission_binding,
+                        allow_applied_replay=replayed,
+                    )
+                    result_status = reconciled_repair.status
+                    operation_replayed = reconciled_repair.replayed
                 elif current.operation_type in QBITTORRENT_RECONCILABLE_OPERATIONS:
                     if current.after_snapshot is None:
                         raise ApplicationError(
@@ -439,7 +523,10 @@ class TaskOperationService:
             session.commit()
 
 
-def _operation_view(journal: OperationJournal) -> TaskOperationView:
+def _operation_view(
+    journal: OperationJournal,
+    reconcilable_operation_types: frozenset[str],
+) -> TaskOperationView:
     status = OperationStatus(journal.status)
     return TaskOperationView(
         id=journal.id,
@@ -447,23 +534,29 @@ def _operation_view(journal: OperationJournal) -> TaskOperationView:
         kind=operation_kind(journal.operation_type),
         status=status,
         attention_required=status in _ATTENTION_STATUSES,
-        reconcile_supported=_reconcile_supported(journal),
+        reconcile_supported=_reconcile_supported(journal, reconcilable_operation_types),
         created_at=journal.created_at,
         updated_at=journal.updated_at,
     )
 
 
-def _reconcile_supported(journal: OperationJournal) -> bool:
+def _reconcile_supported(
+    journal: OperationJournal,
+    reconcilable_operation_types: frozenset[str],
+) -> bool:
     return (
         OperationStatus(journal.status) is OperationStatus.RECONCILE_REQUIRED
-        and journal.operation_type in _RECONCILABLE_OPERATION_TYPES
+        and journal.operation_type in reconcilable_operation_types
         and journal.after_snapshot is not None
     )
 
 
-def _repair_item(journal: OperationJournal) -> OperationRepairItemView:
+def _repair_item(
+    journal: OperationJournal,
+    reconcilable_operation_types: frozenset[str],
+) -> OperationRepairItemView:
     status = OperationStatus(journal.status)
-    supported = _reconcile_supported(journal)
+    supported = _reconcile_supported(journal, reconcilable_operation_types)
     if status is OperationStatus.ROLLBACK_BLOCKED:
         reason_code: OperationRepairReason = "ROLLBACK_BLOCKED"
         reason = "回滚因所有权、完成快照或当前资源状态证据不足而被安全门阻断。"

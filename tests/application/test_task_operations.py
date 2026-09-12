@@ -20,6 +20,12 @@ from backend.app.application.filesystem_operations import (
     FilesystemOperationService,
     HardlinkExecutionRequest,
 )
+from backend.app.application.repair_downloader_operations import (
+    QBITTORRENT_REPAIR_STOP_OPERATION,
+    REPAIR_DOWNLOADER_OPERATION_SCHEMA_VERSION,
+    TRANSMISSION_REPAIR_START_OPERATION,
+    RepairDownloadOperationService,
+)
 from backend.app.application.task_actions import TaskActionActor
 from backend.app.application.task_operations import TaskOperationService
 from backend.app.application.transmission_operations import (
@@ -533,6 +539,202 @@ async def test_task_operation_service_dispatches_safe_qb_reconcile(
             select(TaskActionReceipt).where(TaskActionReceipt.task_id == operation_fixture.task_id)
         )
         assert receipt is not None and receipt.state == "SUCCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_task_operation_service_reconciles_repair_stop_without_downloader_writes(
+    operation_fixture: _OperationFixture,
+) -> None:
+    torrent_hash = "9" * 40
+    ownership_tag = "packbreaker-repair-reconcile"
+    save_path = "/downloads/repair-reconcile"
+    state = QbittorrentTorrentState(
+        torrent_hash=torrent_hash,
+        save_path=save_path,
+        content_path=None,
+        state="stoppedUP",
+        tags=(ownership_tag,),
+        progress=1.0,
+    )
+    adapter = _ReadOnlyQbittorrent(state)
+    binding = _ReadOnlyBinding(adapter)
+    provider = _QbBindings(binding)
+    with operation_fixture.factory() as session:
+        repository = OperationJournalRepository(session)
+        journal, _ = repository.record_intent(
+            OperationIntent(
+                task_id=operation_fixture.task_id,
+                idempotency_key="8" * 64,
+                operation_type=QBITTORRENT_REPAIR_STOP_OPERATION,
+                target={"downloader_id": binding.downloader_id, "torrent_hash": torrent_hash},
+                intent={
+                    "schema_version": REPAIR_DOWNLOADER_OPERATION_SCHEMA_VERSION,
+                    "downloader_version": binding.downloader_version,
+                    "execution_plan_id": "repair-plan-reconcile",
+                    "add_journal_id": "add-journal",
+                    "source_verification_journal_id": "verify-journal",
+                    "repair_evidence_digest": "7" * 64,
+                    "torrent_hash": torrent_hash,
+                    "remote_save_path": save_path,
+                    "ownership_tag": ownership_tag,
+                    "repair_start_journal_id": "repair-start",
+                },
+                before_snapshot={
+                    "torrent_hash": torrent_hash,
+                    "save_path": save_path,
+                    "progress": 1.0,
+                    "ownership_tag": ownership_tag,
+                    "stopped": False,
+                    "complete": True,
+                },
+            )
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+            after_snapshot={
+                "torrent_hash": torrent_hash,
+                "save_path": save_path,
+                "state": "stoppedUP",
+                "progress": 1.0,
+                "ownership_tag": ownership_tag,
+                "stopped": True,
+                "complete": True,
+            },
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.APPLIED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+        session.commit()
+        journal_id = journal.id
+
+    service = TaskOperationService(
+        operation_fixture.factory,
+        operation_fixture.filesystem,
+        provider,
+        QbittorrentJournalReconcileService(operation_fixture.factory),
+        TransmissionJournalReconcileService(operation_fixture.factory),
+        RepairDownloadOperationService(operation_fixture.factory),
+    )
+    summary = next(
+        item for item in service.list_operations(operation_fixture.task_id) if item.id == journal_id
+    )
+    assert summary.kind is OperationKind.QBITTORRENT_REPAIR_STOP
+    assert summary.reconcile_supported is True
+    report = service.maintenance_report(limit=20)
+    repair_item = next(item for item in report.repair_items if item.journal_id == journal_id)
+    assert repair_item.action == "RECONCILE"
+    assert repair_item.manual_required is False
+
+    result = await service.reconcile(
+        task_id=operation_fixture.task_id,
+        journal_id=journal_id,
+        actor=TaskActionActor("admin_session", "repair-stop-reconcile"),
+        idempotency_key="repair-stop-reconcile-key",
+    )
+
+    assert result.status is OperationStatus.APPLIED
+    assert result.kind is OperationKind.QBITTORRENT_REPAIR_STOP
+    assert adapter.write_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_task_operation_service_reconciles_transmission_repair_start_read_only(
+    operation_fixture: _OperationFixture,
+) -> None:
+    torrent_hash = "6" * 40
+    ownership_tag = "packbreaker-tr-repair-reconcile"
+    save_path = "/downloads/tr-repair"
+    state = TransmissionTorrentState(
+        torrent_hash=torrent_hash,
+        download_dir=save_path,
+        status=4,
+        labels=(ownership_tag,),
+        percent_done=0.8,
+        recheck_progress=0.0,
+    )
+    adapter = _ReadOnlyTransmission(state)
+    binding = _ReadOnlyTransmissionBinding(adapter)
+    provider = _TransmissionBindings(binding)
+    with operation_fixture.factory() as session:
+        repository = OperationJournalRepository(session)
+        journal, _ = repository.record_intent(
+            OperationIntent(
+                task_id=operation_fixture.task_id,
+                idempotency_key="6" * 64,
+                operation_type=TRANSMISSION_REPAIR_START_OPERATION,
+                target={"downloader_id": binding.downloader_id, "torrent_hash": torrent_hash},
+                intent={
+                    "schema_version": REPAIR_DOWNLOADER_OPERATION_SCHEMA_VERSION,
+                    "downloader_version": binding.downloader_version,
+                    "execution_plan_id": "tr-repair-plan",
+                    "add_journal_id": "tr-add",
+                    "source_verification_journal_id": "tr-verify",
+                    "repair_evidence_digest": "5" * 64,
+                    "torrent_hash": torrent_hash,
+                    "remote_save_path": save_path,
+                    "ownership_tag": ownership_tag,
+                },
+                before_snapshot={
+                    "torrent_hash": torrent_hash,
+                    "save_path": save_path,
+                    "progress": 0.7,
+                    "ownership_tag": ownership_tag,
+                    "stopped": True,
+                    "complete": False,
+                },
+            )
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+            after_snapshot={
+                "torrent_hash": torrent_hash,
+                "save_path": save_path,
+                "state": "4",
+                "progress": 0.75,
+                "ownership_tag": ownership_tag,
+                "stopped": False,
+                "complete": False,
+            },
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.APPLIED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+        session.commit()
+        journal_id = journal.id
+
+    service = TaskOperationService(
+        operation_fixture.factory,
+        operation_fixture.filesystem,
+        provider,
+        QbittorrentJournalReconcileService(operation_fixture.factory),
+        TransmissionJournalReconcileService(operation_fixture.factory),
+        RepairDownloadOperationService(operation_fixture.factory),
+    )
+    summary = next(
+        item for item in service.list_operations(operation_fixture.task_id) if item.id == journal_id
+    )
+    assert summary.kind is OperationKind.TRANSMISSION_REPAIR_START
+    assert summary.reconcile_supported is True
+
+    result = await service.reconcile(
+        task_id=operation_fixture.task_id,
+        journal_id=journal_id,
+        actor=TaskActionActor("admin_session", "tr-repair-start-reconcile"),
+        idempotency_key="tr-repair-start-reconcile-key",
+    )
+
+    assert result.status is OperationStatus.APPLIED
+    assert result.kind is OperationKind.TRANSMISSION_REPAIR_START
+    assert provider.requested == [binding.downloader_id]
+    assert adapter.write_calls == 0
 
 
 @pytest.mark.asyncio

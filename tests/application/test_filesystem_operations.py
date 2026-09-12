@@ -10,12 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.filesystem_operations import (
+    CLEANUP_REPAIR_TARGET_OPERATION,
     CREATE_DIRECTORY_OPERATION,
     CREATE_HARDLINK_OPERATION,
     ISOLATE_REPAIR_TARGET_OPERATION,
     FilesystemOperationService,
     HardlinkExecutionRequest,
     RepairIsolationExecutionRequest,
+    RepairTargetCleanupRequest,
 )
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.operation import OperationStatus
@@ -26,7 +28,12 @@ from backend.app.infrastructure.persistence.database import (
     create_sqlite_engine,
 )
 from backend.app.infrastructure.persistence.models import OperationJournal
-from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
+from backend.app.infrastructure.persistence.repositories import (
+    OperationIntent,
+    OperationJournalRepository,
+    TaskCreate,
+    TaskRepository,
+)
 from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 
 
@@ -86,6 +93,34 @@ def _request(
         target_relative_path=target,
         expected_source_snapshot=_source_snapshot(source),
     )
+
+
+def _applied_remove_journal(
+    factory: sessionmaker[Session],
+    *,
+    task_id: str,
+    execution_plan_id: str,
+) -> str:
+    with factory() as session:
+        repository = OperationJournalRepository(session)
+        journal, _ = repository.record_intent(
+            OperationIntent(
+                task_id=task_id,
+                idempotency_key="f" * 64,
+                operation_type="QBITTORRENT_REMOVE",
+                target={"downloader_id": "qb-test"},
+                intent={"execution_plan_id": execution_plan_id},
+                before_snapshot={"torrent_hash": "a" * 40},
+            )
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+            after_snapshot={"torrent_absent": True},
+        )
+        session.commit()
+        return journal.id
 
 
 def _prepare(data_root: Path) -> Path:
@@ -523,3 +558,99 @@ def test_repair_isolation_operation_is_not_generic_rollback_resource(
         item for item in _journals(factory) if item.id == isolated.isolation_journal_id
     )
     assert isolation.status == OperationStatus.APPLIED.value
+
+
+def test_repair_target_cleanup_recovers_after_unlink_response_loss(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    source = _prepare(data_root)
+    source_before = source.stat(follow_symlinks=False)
+    source_bytes = source.read_bytes()
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    isolated = service.execute_repair_isolation(
+        RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+    )
+    target = data_root / "target" / "movie.mkv"
+    target.write_bytes(b"x" * target.stat().st_size)
+    plan_id = "plan-cleanup"
+    remove_id = _applied_remove_journal(
+        factory,
+        task_id=task_id,
+        execution_plan_id=plan_id,
+    )
+    request = RepairTargetCleanupRequest(task_id, plan_id, isolated.isolation_journal_id, remove_id)
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_repair_target_cleanup":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        service.cleanup_repair_target(request, fault_hook=crash)
+    assert not target.exists()
+    cleanup = next(
+        item
+        for item in _journals(factory)
+        if item.operation_type == CLEANUP_REPAIR_TARGET_OPERATION
+    )
+    assert cleanup.status == OperationStatus.INTENT_RECORDED.value
+
+    recovered = service.cleanup_repair_target(request)
+    assert recovered.replayed is True
+    assert recovered.recovered_after_unknown_result is True
+    assert recovered.removed is False
+    assert not target.exists()
+    source_after = source.stat(follow_symlinks=False)
+    assert (
+        source_before.st_ino,
+        source_before.st_size,
+        source_before.st_mtime_ns,
+        source_bytes,
+    ) == (
+        source_after.st_ino,
+        source_after.st_size,
+        source_after.st_mtime_ns,
+        source.read_bytes(),
+    )
+    journals = {item.id: item for item in _journals(factory)}
+    assert journals[hardlink.hardlink_journal_id].status == OperationStatus.APPLIED.value
+    assert journals[isolated.isolation_journal_id].status == OperationStatus.APPLIED.value
+    assert journals[recovered.cleanup_journal_id].status == OperationStatus.APPLIED.value
+
+
+def test_repair_target_cleanup_preserves_external_inode_replacement(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    _prepare(data_root)
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    isolated = service.execute_repair_isolation(
+        RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+    )
+    target = data_root / "target" / "movie.mkv"
+    expected_size = target.stat().st_size
+    target.unlink()
+    target.write_bytes(b"z" * expected_size)
+    replacement_inode = target.stat().st_ino
+    plan_id = "plan-cleanup-replaced"
+    remove_id = _applied_remove_journal(
+        factory,
+        task_id=task_id,
+        execution_plan_id=plan_id,
+    )
+
+    with pytest.raises(DomainViolation) as failure:
+        service.cleanup_repair_target(
+            RepairTargetCleanupRequest(task_id, plan_id, isolated.isolation_journal_id, remove_id)
+        )
+
+    assert failure.value.code is ErrorCode.ROLLBACK_BLOCKED
+    assert target.exists()
+    assert target.stat().st_ino == replacement_inode
+    assert target.read_bytes() == b"z" * expected_size
+    cleanup = next(
+        item
+        for item in _journals(factory)
+        if item.operation_type == CLEANUP_REPAIR_TARGET_OPERATION
+    )
+    assert cleanup.status == OperationStatus.RECONCILE_REQUIRED.value

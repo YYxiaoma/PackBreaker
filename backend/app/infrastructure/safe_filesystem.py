@@ -897,6 +897,77 @@ class SafeFilesystemGateway:
         finally:
             os.close(parent_fd)
 
+    def remove_repair_target_if_matches(
+        self,
+        *,
+        target_root_relative_path: str,
+        target_relative_path: str,
+        expected_isolation_snapshot: FilesystemSnapshot,
+    ) -> bool:
+        """只删除仍匹配 isolation journal 的独立 target inode。"""
+
+        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_parts = _normalize_relative_path(target_relative_path)
+        parent_fd = _open_directory_chain(
+            self._data_root,
+            target_root_parts + target_parts[:-1],
+        )
+        try:
+            name = target_parts[-1]
+            current = _stat_at(parent_fd, name, missing_ok=True)
+            if current is None:
+                return False
+            if (
+                current.file_type != "regular"
+                or current.device != expected_isolation_snapshot.device
+                or current.inode != expected_isolation_snapshot.inode
+                or current.size != expected_isolation_snapshot.size
+                or current.link_count != 1
+            ):
+                raise DomainViolation(
+                    ErrorCode.ROLLBACK_BLOCKED,
+                    "repair target 已偏离 journal-owned 独立 inode，禁止自动清理",
+                )
+            try:
+                os.unlink(name, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            except OSError as exc:
+                raise DomainViolation(
+                    ErrorCode.ROLLBACK_BLOCKED,
+                    "无法安全删除 journal-owned repair target",
+                ) from exc
+            if _stat_at(parent_fd, name, missing_ok=True) is not None:
+                raise DomainViolation(
+                    ErrorCode.ROLLBACK_BLOCKED,
+                    "repair target 删除后仍然可见，无法确认清理结果",
+                )
+            return True
+        finally:
+            os.close(parent_fd)
+
+    def assert_repair_target_absent(
+        self,
+        *,
+        target_root_relative_path: str,
+        target_relative_path: str,
+    ) -> None:
+        """只读证明 repair target 当前不存在；用于 cleanup APPLIED 重放。"""
+
+        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_parts = _normalize_relative_path(target_relative_path)
+        parent_fd = _open_directory_chain(
+            self._data_root,
+            target_root_parts + target_parts[:-1],
+        )
+        try:
+            if _stat_at(parent_fd, target_parts[-1], missing_ok=True) is not None:
+                raise DomainViolation(
+                    ErrorCode.ROLLBACK_BLOCKED,
+                    "已确认清理的 repair target 再次出现，不能按历史 cleanup 继续自动处理",
+                )
+        finally:
+            os.close(parent_fd)
+
     def assert_hardlink_matches(
         self,
         *,

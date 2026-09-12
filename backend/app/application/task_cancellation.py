@@ -20,6 +20,7 @@ from backend.app.application.filesystem_operations import (
     CREATE_HARDLINK_OPERATION,
     ISOLATE_REPAIR_TARGET_OPERATION,
     FilesystemOperationService,
+    RepairTargetCleanupRequest,
 )
 from backend.app.application.transmission_operations import (
     TRANSMISSION_ADD_OPERATION,
@@ -40,9 +41,14 @@ from backend.app.infrastructure.persistence.task_analysis_repositories import (
 )
 
 _LEGACY_CANCELLATION_CHECKPOINT_SCHEMA_VERSION = "packbreaker-cancellation-checkpoint-v1"
-CANCELLATION_CHECKPOINT_SCHEMA_VERSION = "packbreaker-cancellation-checkpoint-v2"
+_PREVIOUS_CANCELLATION_CHECKPOINT_SCHEMA_VERSION = "packbreaker-cancellation-checkpoint-v2"
+CANCELLATION_CHECKPOINT_SCHEMA_VERSION = "packbreaker-cancellation-checkpoint-v3"
 _CANCELLATION_CHECKPOINT_SCHEMAS = frozenset(
-    {_LEGACY_CANCELLATION_CHECKPOINT_SCHEMA_VERSION, CANCELLATION_CHECKPOINT_SCHEMA_VERSION}
+    {
+        _LEGACY_CANCELLATION_CHECKPOINT_SCHEMA_VERSION,
+        _PREVIOUS_CANCELLATION_CHECKPOINT_SCHEMA_VERSION,
+        CANCELLATION_CHECKPOINT_SCHEMA_VERSION,
+    }
 )
 
 _SIDE_EFFECT_STATUSES = frozenset(
@@ -101,6 +107,8 @@ class _RollbackPlan:
     ownership_tag: str | None
     hardlink_journal_ids: tuple[str, ...]
     directory_journal_ids: tuple[str, ...]
+    repair_cleanup_isolation_journal_ids: tuple[str, ...]
+    retained_repair_isolation_journal_ids: tuple[str, ...]
 
 
 class TaskCancellationCoordinator:
@@ -198,7 +206,25 @@ class TaskCancellationCoordinator:
 
         rolled_back_hardlinks: list[str] = []
         rolled_back_directories: list[str] = []
+        cleanup_repair_target_journal_ids: list[str] = []
         if plan.rollback_created_resources:
+            if plan.repair_cleanup_isolation_journal_ids:
+                if remove_journal_id is None:
+                    raise _cancellation_evidence_invalid(
+                        "repair target cleanup 缺少已确认 downloader remove journal"
+                    )
+                for isolation_journal_id in plan.repair_cleanup_isolation_journal_ids:
+                    cleanup = self._filesystem_operations.cleanup_repair_target(
+                        RepairTargetCleanupRequest(
+                            task_id=plan.task_id,
+                            execution_plan_id=plan.execution_plan_id,
+                            isolation_journal_id=isolation_journal_id,
+                            remove_journal_id=remove_journal_id,
+                        )
+                    )
+                    cleanup_repair_target_journal_ids.append(cleanup.cleanup_journal_id)
+                    if fault_hook is not None:
+                        fault_hook(f"after_repair_target_cleanup:{isolation_journal_id}")
             for journal_id in reversed(plan.hardlink_journal_ids):
                 result = self._filesystem_operations.rollback_journal(journal_id)
                 if result.status is OperationStatus.ROLLED_BACK:
@@ -215,6 +241,7 @@ class TaskCancellationCoordinator:
         return self._complete(
             plan,
             remove_journal_id=remove_journal_id,
+            cleanup_repair_target_journal_ids=tuple(cleanup_repair_target_journal_ids),
             rolled_back_hardlink_journal_ids=tuple(rolled_back_hardlinks),
             rolled_back_directory_journal_ids=tuple(rolled_back_directories),
             replayed=replayed,
@@ -400,21 +427,25 @@ class TaskCancellationCoordinator:
             if journal.operation_type == ISOLATE_REPAIR_TARGET_OPERATION
             and OperationStatus(journal.status) is OperationStatus.APPLIED
         )
-        if rollback_created_resources and applied_isolations:
-            raise ApplicationError(
-                code="CANCELLATION_REPAIR_ISOLATION_RETAIN_REQUIRED",
-                status=409,
-                title="已隔离修复目标不能按 hardlink 回滚",
-                detail=(
-                    "repair isolation 已把原 hardlink 替换为独立 inode；"
-                    "当前切片不自动删除该隔离副本。"
-                    "请取消资源回滚选项以保留目标文件，或等待专用 repair cleanup 能力。"
-                ),
-            )
+        handed_off_hardlink_ids: set[str] = set()
+        for isolation in applied_isolations:
+            hardlink_id = isolation.intent.get("hardlink_journal_id")
+            hardlink = journal_repository.get(hardlink_id) if isinstance(hardlink_id, str) else None
+            if (
+                hardlink is None
+                or hardlink.task_id != task_id
+                or hardlink.operation_type != CREATE_HARDLINK_OPERATION
+                or OperationStatus(hardlink.status) is not OperationStatus.APPLIED
+            ):
+                raise _cancellation_evidence_invalid(
+                    "APPLIED repair isolation 已无法证明对原 hardlink journal 的 ownership handoff"
+                )
+            handed_off_hardlink_ids.add(hardlink.id)
         hardlinks = tuple(
             journal.id
             for journal in file_journals
             if journal.operation_type == CREATE_HARDLINK_OPERATION
+            and journal.id not in handed_off_hardlink_ids
             and OperationStatus(journal.status)
             in {
                 OperationStatus.APPLIED,
@@ -496,6 +527,16 @@ class TaskCancellationCoordinator:
             ownership_tag=ownership_tag,
             hardlink_journal_ids=hardlinks,
             directory_journal_ids=directories,
+            repair_cleanup_isolation_journal_ids=(
+                tuple(sorted(journal.id for journal in applied_isolations))
+                if rollback_created_resources
+                else ()
+            ),
+            retained_repair_isolation_journal_ids=(
+                ()
+                if rollback_created_resources
+                else tuple(sorted(journal.id for journal in applied_isolations))
+            ),
         )
 
     def _load_binding(
@@ -532,6 +573,7 @@ class TaskCancellationCoordinator:
         plan: _RollbackPlan,
         *,
         remove_journal_id: str | None,
+        cleanup_repair_target_journal_ids: tuple[str, ...],
         rolled_back_hardlink_journal_ids: tuple[str, ...],
         rolled_back_directory_journal_ids: tuple[str, ...],
         replayed: bool,
@@ -555,6 +597,7 @@ class TaskCancellationCoordinator:
                         if plan.downloader_kind is DownloaderKind.QBITTORRENT
                         else None
                     ),
+                    "cleanup_repair_target_journal_ids": list(cleanup_repair_target_journal_ids),
                     "rolled_back_hardlink_journal_ids": list(rolled_back_hardlink_journal_ids),
                     "rolled_back_directory_journal_ids": list(rolled_back_directory_journal_ids),
                 }
@@ -567,8 +610,11 @@ class TaskCancellationCoordinator:
                     event_type="ROLLBACK_COMPLETED",
                     reason=(
                         "冻结取消请求已完成；journal-owned 文件回滚确认："
+                        f"{len(cleanup_repair_target_journal_ids)} 个 repair target cleanup、"
                         f"{len(rolled_back_hardlink_journal_ids)} 个 hardlink、"
                         f"{len(rolled_back_directory_journal_ids)} 个目录；"
+                        "保留 "
+                        f"{len(plan.retained_repair_isolation_journal_ids)} 个独立 repair target；"
                         "源媒体不在删除范围"
                     ),
                     checkpoint=checkpoint,
@@ -609,6 +655,8 @@ def _rollback_checkpoint(plan: _RollbackPlan, *, stage: TaskStatus) -> dict[str,
         "ownership_tag": plan.ownership_tag,
         "hardlink_journal_ids": list(plan.hardlink_journal_ids),
         "directory_journal_ids": list(plan.directory_journal_ids),
+        "repair_cleanup_isolation_journal_ids": list(plan.repair_cleanup_isolation_journal_ids),
+        "retained_repair_isolation_journal_ids": list(plan.retained_repair_isolation_journal_ids),
     }
 
 
@@ -617,6 +665,8 @@ def _rollback_plan_from_checkpoint(
     task_version: int,
     checkpoint: dict[str, object],
 ) -> _RollbackPlan:
+    schema_version = checkpoint.get("schema_version")
+    has_repair_cleanup_fields = schema_version == CANCELLATION_CHECKPOINT_SCHEMA_VERSION
     return _RollbackPlan(
         task_id=task_id,
         task_version=task_version,
@@ -637,6 +687,16 @@ def _rollback_plan_from_checkpoint(
         ownership_tag=_optional_text(checkpoint, "ownership_tag"),
         hardlink_journal_ids=_required_string_tuple(checkpoint, "hardlink_journal_ids"),
         directory_journal_ids=_required_string_tuple(checkpoint, "directory_journal_ids"),
+        repair_cleanup_isolation_journal_ids=(
+            _required_string_tuple(checkpoint, "repair_cleanup_isolation_journal_ids")
+            if has_repair_cleanup_fields
+            else ()
+        ),
+        retained_repair_isolation_journal_ids=(
+            _required_string_tuple(checkpoint, "retained_repair_isolation_journal_ids")
+            if has_repair_cleanup_fields
+            else ()
+        ),
     )
 
 
@@ -693,6 +753,8 @@ def _with_task_version(plan: _RollbackPlan, task_version: int) -> _RollbackPlan:
         ownership_tag=plan.ownership_tag,
         hardlink_journal_ids=plan.hardlink_journal_ids,
         directory_journal_ids=plan.directory_journal_ids,
+        repair_cleanup_isolation_journal_ids=plan.repair_cleanup_isolation_journal_ids,
+        retained_repair_isolation_journal_ids=plan.retained_repair_isolation_journal_ids,
     )
 
 
