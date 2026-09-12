@@ -55,6 +55,7 @@ from backend.app.config import AppSettings
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
 from backend.app.infrastructure.runtime import RuntimeManager
 from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
+from backend.app.infrastructure.site_reliability import SiteReliabilityRegistry
 
 _request_logger = logging.getLogger("packbreaker.http")
 _recovery_logger = logging.getLogger("packbreaker.recovery")
@@ -155,7 +156,15 @@ def create_app(
             resolved_runtime.session_factory
         )
         app.state.transmission_journal_reconcile_service = transmission_journal_reconcile
-        site_service = SiteService(resolved_runtime.session_factory, secret_store)
+        site_reliability_registry = SiteReliabilityRegistry(
+            event_sink=notification_service.record_site_reliability_event
+        )
+        app.state.site_reliability_registry = site_reliability_registry
+        site_service = SiteService(
+            resolved_runtime.session_factory,
+            secret_store,
+            reliability_registry=site_reliability_registry,
+        )
         app.state.site_service = site_service
         task_analysis_service = TaskAnalysisService(
             resolved_runtime.session_factory,

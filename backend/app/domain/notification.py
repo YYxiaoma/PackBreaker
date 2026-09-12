@@ -90,6 +90,38 @@ _TERMINAL_MESSAGES: dict[str, tuple[str, NotificationSeverity]] = {
 }
 
 
+def notification_message_for_site_reliability_event(
+    *,
+    site_id: str,
+    event_type: str,
+    error_code: str | None,
+) -> NotificationMessage | None:
+    if event_type == "CIRCUIT_OPENED":
+        safe_code = (
+            error_code
+            if error_code
+            and len(error_code) <= 64
+            and error_code.isascii()
+            and error_code == error_code.upper()
+            and error_code.replace("_", "").isalnum()
+            else "SITE_RELIABILITY_FAILURE"
+        )
+        return NotificationMessage(
+            title="站点自动化已熔断",
+            body=f"站点配置 {site_id} 因连续异常进入熔断保护；错误码：{safe_code}。",
+            severity=NotificationSeverity.WARNING,
+            event_key="SITE_CIRCUIT_OPENED",
+        )
+    if event_type == "CIRCUIT_RECOVERED":
+        return NotificationMessage(
+            title="站点自动化已恢复",
+            body=f"站点配置 {site_id} 已通过半开探测并恢复正常调用。",
+            severity=NotificationSeverity.INFO,
+            event_key="SITE_CIRCUIT_RECOVERED",
+        )
+    return None
+
+
 def notification_message_for_task_event(
     *,
     task_id: str,

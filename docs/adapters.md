@@ -57,7 +57,7 @@ class SiteAdapter(Protocol):
 - `HDTimeAdapter`：基于 NexusPHP profile，实现站点特有字段映射与契约测试。
 - `HHClubAdapter`：确认引擎和规则后选择 profile 或独立适配器；确认前不得按猜测上线。
 
-M2 当前已落下正式 `SiteAdapter` 只读端口和 M-Team HTTP 边界：`/api/member/profile` 用于连接探测，`/api/torrent/search` 使用 JSON POST，`/api/torrent/detail` 与 `/api/torrent/genDlToken` 使用表单 POST；所有 API 请求通过 `x-api-key`。下载令牌返回的 URL 只在内存使用，必须是配置站点域族下的 HTTPS URL，第二跳下载请求绝不携带 `x-api-key`，并使用 20 MiB 默认上限流式读取。根据站点当前公布的搜索建议上限，capability 暂以 90 秒作为保守最小请求间隔提示；M4 已在 `SiteService` 输出边界接入按站点配置 version 共享的 `SiteReliabilityRegistry`，统一执行并发限制、最小请求间隔、有限重试、抖动退避、缓存与熔断，具体站点 adapter 不再各自复制调度策略。响应 envelope/候选字段无法按已知 profile 解释时明确失败，不记录第三方 message、下载 URL 或响应头。站点配置现已持久化到 SQLite；凭证模型区分 `API_KEY` 与 `COOKIE`，二者都只写入 SecretStore，CRUD 使用强 ETag/`If-Match`，连接测试在数据库事务外执行。修改站点地址/类型/凭证会自动禁用并使旧探测失效，同时通过 version 边界丢弃旧可靠性状态；只有通过只读连接测试后才能启用。真实账号验收、持久化健康指标和人工 reset-circuit API 仍属于后续切片。
+M2 当前已落下正式 `SiteAdapter` 只读端口和 M-Team HTTP 边界：`/api/member/profile` 用于连接探测，`/api/torrent/search` 使用 JSON POST，`/api/torrent/detail` 与 `/api/torrent/genDlToken` 使用表单 POST；所有 API 请求通过 `x-api-key`。下载令牌返回的 URL 只在内存使用，必须是配置站点域族下的 HTTPS URL，第二跳下载请求绝不携带 `x-api-key`，并使用 20 MiB 默认上限流式读取。根据站点当前公布的搜索建议上限，capability 暂以 90 秒作为保守最小请求间隔提示；M4 已在 `SiteService` 输出边界接入按站点配置 version 共享的 `SiteReliabilityRegistry`，统一执行并发限制、最小请求间隔、有限重试、抖动退避、缓存与熔断，具体站点 adapter 不再各自复制调度策略。响应 envelope/候选字段无法按已知 profile 解释时明确失败，不记录第三方 message、下载 URL 或响应头。站点配置现已持久化到 SQLite；凭证模型区分 `API_KEY` 与 `COOKIE`，二者都只写入 SecretStore，CRUD 使用强 ETag/`If-Match`，连接测试在数据库事务外执行。修改站点地址/类型/凭证会自动禁用并使旧探测失效，同时通过 version 边界丢弃旧可靠性状态；只有通过只读连接测试后才能启用。M4 进一步开放了脱敏、进程内的 `/sites/{id}/health` 运行指标和受 `config:write` + 强 `If-Match` 保护的 `reset_circuit`；人工 reset 只清空熔断状态，不清空缓存/累计计数，也不会伪造连接恢复。真实账号验收与跨进程持久化趋势指标仍属于后续工作。
 
 NexusPHP Web 站点现使用 `NexusPhpProfile` 描述登录标记、搜索/详情路径、时区和结果列布局，由 `NexusPhpWebAdapter` 统一执行 Cookie 认证的只读请求、HTML 结构提取与有界响应读取。`HDTimeAdapter` 的首个 profile 使用 `https://hdtime.org`、`index.php`、`torrents.php`、`details.php` 与 `usercp.php` 登录标记；搜索支持关键词、IMDb/豆瓣 ID、分页和稳定排序映射。Cookie 只允许发送到配置的精确 HTTPS origin，详情页发现的下载链接也必须保持同源；HTML 默认限制 5 MiB、torrent 默认限制 20 MiB，登录重定向、跨域链接、超限响应和非 bencode 下载体均明确失败。HDTime 现已进入同一套 `site` 持久化和 `/sites/{id}/test` 流程：Cookie 以 `SITE_COOKIE` 密文保存，读取端只暴露 `credential_kind=COOKIE` 与是否已配置。当前仍只有合成页面/MockTransport 契约证据，真实账号验收尚未执行。
 
@@ -175,7 +175,8 @@ DownloaderCapabilities
 - `fetch_torrent` 始终重新读取且不进入自动重试，因为 M-Team 等站点可能先生成一次性下载令牌；execution plan、人工重验证和 ADDING 继续由新鲜 payload 的 metainfo digest 证明一致性。
 - `SITE_AUTH_FAILED` 立即打开熔断；临时可重试错误与连续 `SITE_INVALID_RESPONSE` 计入阈值，达到阈值后打开；冷却期结束后的半开阶段只允许一个真实探测，请求成功才闭合，失败重新打开。
 - `search` 与 `fetch_details` 使用有界进程内 TTL/LRU 缓存，并对同 key 并发 miss 做 single-flight；缓存 key 只使用规范化查询/远程 ID 与外层配置身份，不含 API Key/Cookie。配置 version 变化会同时丢弃旧缓存、限流和熔断状态。
-- 当前尚未把熔断状态/命中率持久化为 health 指标，也未开放 `reset_circuit` 管理动作；聚合通知仍由后续 M4 切片完成。
+- `/sites/{id}/health` 只返回当前进程的 circuit、失败次数、限流等待、cache hit/miss/eviction、真实请求成功/失败与重试计数以及稳定错误码，不返回 base URL、凭证或第三方响应；`reset_circuit` 只重置 breaker，站点是否真实恢复仍必须由后续请求/连接测试证明。
+- 熔断打开与 half-open 成功恢复会投影为 `SITE` subject 的通知 outbox，沿用通知渠道聚合窗口；相同站点/事件键只累积计数，不为每次失败单独发消息。通知正文只含站点配置 ID 与经过机器码校验的稳定错误码。
 
 ## 9. 契约测试
 

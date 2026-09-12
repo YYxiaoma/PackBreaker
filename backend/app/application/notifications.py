@@ -29,6 +29,7 @@ from backend.app.infrastructure.persistence.notification_repositories import (
     NotificationChannelRepository,
     NotificationOutboxRepository,
 )
+from backend.app.infrastructure.site_reliability import SiteReliabilityEvent
 
 _SECRET_KIND = "notification-credential"
 _SERVERCHAN_SC3_PATTERN = re.compile(r"^sctp\d+t")
@@ -280,6 +281,16 @@ class NotificationService:
             ) from exc
         self._save_probe(snapshot_id, snapshot_version, "OK", tested_at)
         return {"status": "ok", "type": result.provider.value, "tested_at": tested_at.isoformat()}
+
+    def record_site_reliability_event(self, event: SiteReliabilityEvent) -> None:
+        with self._session_factory() as session:
+            NotificationOutboxRepository(session).project_site_reliability_event(
+                site_id=event.config_id,
+                event_type=event.event_type,
+                error_code=event.error_code,
+                occurred_at=datetime.now(UTC),
+            )
+            session.commit()
 
     async def deliver_due_once(
         self,

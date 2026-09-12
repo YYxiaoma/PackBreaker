@@ -90,9 +90,11 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 | GET/PATCH/DELETE | `/sites/{site_id}` | 详情、局部更新、删除未被任务引用的站点 |
 | POST | `/sites/{site_id}/test` | 测试鉴权、搜索和取种能力，不持久化原始响应 |
 | GET | `/sites/{site_id}/health` | 最近状态、熔断和限流信息 |
-| POST | `/sites/{site_id}/actions` | `enable`、`disable`、`reset_circuit` |
+| POST | `/sites/{site_id}/actions` | `enable`、`disable`、`refresh_capabilities`、`reset_circuit` |
 
-凭证字段为只写对象。读取时只返回 `credential_configured` 和 `credential_updated_at`；传 `null` 表示保持不变，显式 `clear_credential` 才能删除。
+站点读取端点（含 health）允许管理员会话或 `config:read` API Token；创建、更新、删除、连接测试和 action 允许受 CSRF 保护的管理员会话或 `config:write` API Token。`reset_circuit` 必须携带当前强 `If-Match`，只清空当前配置 version 的熔断状态且不递增配置 version；它不会把连接探测状态改为 `OK`。health 仅暴露进程内 circuit/限流/cache/request 计数和稳定错误码，不返回 base URL、凭证、请求头或远端响应正文。
+
+凭证字段为只写对象。读取时只返回 `credential_configured`；传 `null` 表示保持不变，显式 `clear_credential` 才能删除。
 
 ### 5.3 下载器
 

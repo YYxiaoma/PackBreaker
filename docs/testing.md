@@ -117,12 +117,14 @@ LINKING 协调器额外覆盖两阶段当前性：调用前 plan provider 必须
 每个站点适配器覆盖连接、认证失败、分页、空结果、详情缺字段、取种、限流、超时、HTML/API 结构变化、熔断与恢复。
 
 站点可靠性层使用 fake clock/sleep 与 `httpx` MockTransport 单独验证：同一 search key 并发 miss 只能产生一次真实请求，后续命中 TTL 缓存；不同 key 按 `min_request_interval_seconds` 排队；429/临时失败使用带抖动退避并尊重 `Retry-After`，且总重试调度不得越过 deadline。`SITE_AUTH_FAILED` 必须一次失败立即开路，连续 `SITE_INVALID_RESPONSE` 与临时错误达到阈值后开路；冷却后只允许一个 half-open 探测，取消该探测必须释放占位，成功才恢复闭路。站点 config version 变化必须清空旧缓存/熔断状态。`fetch_torrent` 不缓存且不自动重试一次性令牌流程，确保 execution plan/reverify/ADDING 每次仍用新鲜 metainfo digest 做安全复核。缓存键、异常与 `repr` 不得包含 credential canary。
+health 还必须验证 circuit CLOSED/OPEN/HALF_OPEN、retry-after、限流等待、cache hit/miss/eviction、真实请求与重试计数均与 fake clock/调用次数一致；人工 `reset_circuit` 保留累计指标且不产生虚假的 recovery 通知。health/API 响应不得包含 base URL、凭证或第三方正文。管理员 reset 需要 CSRF + `If-Match`，`config:write` Token 可无 CSRF 调用而 `config:read` 只能读取 health。熔断打开/恢复通过通用 notification outbox 的 `SITE` subject 聚合，相同站点+事件键复用同一 outbox；非法 error code 必须退化为固定安全码。`0014 → 0015` 迁移必须把已有 task outbox 回填为 `TASK` subject 且保持 task/event 外键证据。
+
 
 每个下载器适配器覆盖版本/能力探测、路径映射、完成任务、暂停添加、重复添加、完整校验、校验失败、连接中断、任务被外部删除和保存路径变化。
 
 所有适配器额外执行 secret canary 测试：在凭证中放入唯一标记，断言日志、异常、repr、缓存键、数据库普通字段和 API 响应中不存在该标记。
 
-通知适配器只使用 `httpx` MockTransport 做默认测试：断言 Telegram 固定调用官方 Bot API `sendMessage`、Server酱按 SendKey 类型选择固定官方端点、禁止重定向，远端 401/403/429/5xx/非法 JSON 不回显 token/SendKey/响应正文。TaskEvent 与 outbox 必须同事务回滚；相同任务/事件键重复事件只形成一条滚动 outbox，首次发送后窗口内聚合；发送失败仅推进 outbox RETRY/DEAD，不改变 task 状态。NotificationDriver 需要覆盖重入保护和 shutdown 取消。
+通知适配器只使用 `httpx` MockTransport 做默认测试：断言 Telegram 固定调用官方 Bot API `sendMessage`、Server酱按 SendKey 类型选择固定官方端点、禁止重定向，远端 401/403/429/5xx/非法 JSON 不回显 token/SendKey/响应正文。TaskEvent 与 outbox 必须同事务回滚；相同 TASK/SITE subject + 事件键重复事件只形成一条滚动 outbox，首次发送后窗口内聚合；发送失败仅推进 outbox RETRY/DEAD，不改变 task 或 site 状态。NotificationDriver 需要覆盖重入保护和 shutdown 取消。
 
 ## 8. API 与前端测试
 

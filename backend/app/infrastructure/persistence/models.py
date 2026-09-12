@@ -233,14 +233,23 @@ class NotificationOutbox(Base):
         CheckConstraint(f"severity IN ({_NOTIFICATION_SEVERITY_SQL})", name="severity"),
         CheckConstraint("pending_count >= 0", name="pending_count"),
         CheckConstraint("attempt_count >= 0", name="attempt_count"),
+        CheckConstraint("subject_kind IN ('TASK', 'SITE')", name="subject_kind"),
+        CheckConstraint(
+            "(subject_kind = 'TASK' AND task_id IS NOT NULL AND last_event_id IS NOT NULL "
+            "AND subject_id = task_id) OR "
+            "(subject_kind = 'SITE' AND task_id IS NULL AND last_event_id IS NULL)",
+            name="subject_identity",
+        ),
         UniqueConstraint(
             "channel_id",
-            "task_id",
+            "subject_kind",
+            "subject_id",
             "event_key",
-            name="uq_notification_outbox_channel_task_event_key",
+            name="uq_notification_outbox_channel_subject_event_key",
         ),
         Index("ix_notification_outbox_due", "state", "next_attempt_at"),
         Index("ix_notification_outbox_task_updated", "task_id", "updated_at"),
+        Index("ix_notification_outbox_subject_updated", "subject_kind", "subject_id", "updated_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -249,11 +258,13 @@ class NotificationOutbox(Base):
         ForeignKey("notification_channel.id", ondelete="CASCADE"),
         nullable=False,
     )
-    task_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=False
+    subject_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=True
     )
-    last_event_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("task_event.id", ondelete="CASCADE"), nullable=False
+    last_event_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("task_event.id", ondelete="CASCADE"), nullable=True
     )
     channel_version: Mapped[int] = mapped_column(nullable=False)
     event_key: Mapped[str] = mapped_column(String(128), nullable=False)

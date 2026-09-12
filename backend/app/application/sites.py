@@ -22,7 +22,10 @@ from backend.app.domain.site_config import (
 from backend.app.infrastructure.adapters.sites import SiteAdapterError, SiteAdapterFactory
 from backend.app.infrastructure.persistence.models import Site
 from backend.app.infrastructure.persistence.site_repositories import SiteRepository
-from backend.app.infrastructure.site_reliability import SiteReliabilityRegistry
+from backend.app.infrastructure.site_reliability import (
+    SiteReliabilityHealth,
+    SiteReliabilityRegistry,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +94,25 @@ class SiteService:
     def get(self, site_id: str) -> SiteView:
         with self._session_factory() as session:
             return self._view(self._require_record(SiteRepository(session), site_id))
+
+    async def health(self, site_id: str) -> SiteReliabilityHealth:
+        with self._session_factory() as session:
+            current = self._require_record(SiteRepository(session), site_id)
+            version = current.version
+        return await self._reliability_registry.health(
+            config_id=site_id,
+            config_version=version,
+        )
+
+    async def reset_circuit(self, site_id: str, *, expected_version: int) -> SiteReliabilityHealth:
+        with self._session_factory() as session:
+            current = self._require_record(SiteRepository(session), site_id)
+            if current.version != expected_version:
+                raise self._version_conflict()
+        return await self._reliability_registry.reset_circuit(
+            config_id=site_id,
+            config_version=expected_version,
+        )
 
     def enabled_adapters(self) -> tuple[EnabledSiteAdapter, ...]:
         with self._session_factory() as session:
@@ -283,7 +305,9 @@ class SiteService:
             except IntegrityError as exc:
                 session.rollback()
                 raise self._name_conflict() from exc
-            return self._view(self._require_record(repository, site_id))
+            view = self._view(self._require_record(repository, site_id))
+            self._reliability_registry.discard(site_id)
+            return view
 
     def delete(self, site_id: str, *, expected_version: int) -> None:
         with self._session_factory() as session:
@@ -295,6 +319,7 @@ class SiteService:
             if current.secret_id is not None:
                 self._secret_store.delete_in_session(session, current.secret_id)
             session.commit()
+        self._reliability_registry.discard(site_id)
 
     def set_enabled(self, site_id: str, *, expected_version: int, enabled: bool) -> SiteView:
         with self._session_factory() as session:
@@ -327,7 +352,9 @@ class SiteService:
                 session.rollback()
                 raise self._version_conflict()
             session.commit()
-            return self._view(self._require_record(repository, site_id))
+            view = self._view(self._require_record(repository, site_id))
+            self._reliability_registry.discard(site_id)
+            return view
 
     async def test_connection(self, site_id: str) -> dict[str, object]:
         snapshot = self._connection_snapshot(site_id)

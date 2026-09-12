@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from backend.app.domain.notification import (
     NotificationDeliveryState,
+    NotificationMessage,
+    notification_message_for_site_reliability_event,
     notification_message_for_task_event,
 )
 from backend.app.infrastructure.persistence.models import (
@@ -132,7 +134,6 @@ class NotificationOutboxRepository:
     def project_event(self, event: TaskEvent) -> int:
         channels = NotificationChannelRepository(self._session).list_enabled()
         projected = 0
-        now = event.created_at
         for channel in channels:
             link = _task_link(channel.task_link_base_url, event.task_id)
             message = notification_message_for_task_event(
@@ -143,62 +144,115 @@ class NotificationOutboxRepository:
             )
             if message is None:
                 continue
-            existing = self._session.scalar(
-                select(NotificationOutbox).where(
-                    NotificationOutbox.channel_id == channel.id,
-                    NotificationOutbox.task_id == event.task_id,
-                    NotificationOutbox.event_key == message.event_key,
-                )
+            self._upsert_message(
+                channel=channel,
+                subject_kind="TASK",
+                subject_id=event.task_id,
+                message=message,
+                occurred_at=event.created_at,
+                task_id=event.task_id,
+                last_event_id=event.id,
             )
-            if existing is None:
-                self._session.add(
-                    NotificationOutbox(
-                        id=new_uuid(),
-                        channel_id=channel.id,
-                        task_id=event.task_id,
-                        last_event_id=event.id,
-                        channel_version=channel.version,
-                        event_key=message.event_key,
-                        title=message.title,
-                        body=message.body,
-                        severity=message.severity.value,
-                        link=message.link,
-                        state=NotificationDeliveryState.PENDING.value,
-                        pending_count=1,
-                        attempt_count=0,
-                        next_attempt_at=now,
-                        last_sent_at=None,
-                        delivered_at=None,
-                        last_error_code=None,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-                projected += 1
-                continue
-
-            existing.last_event_id = event.id
-            existing.channel_version = channel.version
-            existing.title = message.title
-            existing.body = message.body
-            existing.severity = message.severity.value
-            existing.link = message.link
-            existing.updated_at = now
-            if existing.state == NotificationDeliveryState.DEAD.value:
-                existing.state = NotificationDeliveryState.PENDING.value
-                existing.pending_count = 1
-                existing.attempt_count = 0
-                existing.next_attempt_at = now
-                existing.last_error_code = None
-            else:
-                existing.pending_count += 1
-                if existing.state == NotificationDeliveryState.DELIVERED.value:
-                    last_sent = existing.last_sent_at or now
-                    due_at = last_sent + timedelta(seconds=channel.aggregation_window_seconds)
-                    existing.next_attempt_at = max(now, due_at)
             projected += 1
         self._session.flush()
         return projected
+
+    def project_site_reliability_event(
+        self,
+        *,
+        site_id: str,
+        event_type: str,
+        error_code: str | None,
+        occurred_at: datetime,
+    ) -> int:
+        message = notification_message_for_site_reliability_event(
+            site_id=site_id,
+            event_type=event_type,
+            error_code=error_code,
+        )
+        if message is None:
+            return 0
+        channels = NotificationChannelRepository(self._session).list_enabled()
+        for channel in channels:
+            self._upsert_message(
+                channel=channel,
+                subject_kind="SITE",
+                subject_id=site_id,
+                message=message,
+                occurred_at=occurred_at,
+                task_id=None,
+                last_event_id=None,
+            )
+        self._session.flush()
+        return len(channels)
+
+    def _upsert_message(
+        self,
+        *,
+        channel: NotificationChannel,
+        subject_kind: str,
+        subject_id: str,
+        message: NotificationMessage,
+        occurred_at: datetime,
+        task_id: str | None,
+        last_event_id: str | None,
+    ) -> None:
+        existing = self._session.scalar(
+            select(NotificationOutbox).where(
+                NotificationOutbox.channel_id == channel.id,
+                NotificationOutbox.subject_kind == subject_kind,
+                NotificationOutbox.subject_id == subject_id,
+                NotificationOutbox.event_key == message.event_key,
+            )
+        )
+        if existing is None:
+            self._session.add(
+                NotificationOutbox(
+                    id=new_uuid(),
+                    channel_id=channel.id,
+                    subject_kind=subject_kind,
+                    subject_id=subject_id,
+                    task_id=task_id,
+                    last_event_id=last_event_id,
+                    channel_version=channel.version,
+                    event_key=message.event_key,
+                    title=message.title,
+                    body=message.body,
+                    severity=message.severity.value,
+                    link=message.link,
+                    state=NotificationDeliveryState.PENDING.value,
+                    pending_count=1,
+                    attempt_count=0,
+                    next_attempt_at=occurred_at,
+                    last_sent_at=None,
+                    delivered_at=None,
+                    last_error_code=None,
+                    created_at=occurred_at,
+                    updated_at=occurred_at,
+                )
+            )
+            return
+
+        existing.task_id = task_id
+        existing.last_event_id = last_event_id
+        existing.channel_version = channel.version
+        existing.title = message.title
+        existing.body = message.body
+        existing.severity = message.severity.value
+        existing.link = message.link
+        existing.updated_at = occurred_at
+        if existing.state == NotificationDeliveryState.DEAD.value:
+            existing.state = NotificationDeliveryState.PENDING.value
+            existing.pending_count = 1
+            existing.attempt_count = 0
+            existing.next_attempt_at = occurred_at
+            existing.last_error_code = None
+            return
+        existing.pending_count += 1
+        if existing.state == NotificationDeliveryState.DELIVERED.value:
+            last_sent = existing.last_sent_at or occurred_at
+            due_at = last_sent + timedelta(seconds=channel.aggregation_window_seconds)
+            existing.next_attempt_at = max(occurred_at, due_at)
 
     def list_due(self, *, now: datetime, limit: int) -> list[NotificationOutbox]:
         if limit <= 0:

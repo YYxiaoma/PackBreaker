@@ -393,6 +393,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/sites/{site_id}/health': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Site Health */
+    get: operations['get_site_health_api_v1_sites__site_id__health_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/sites/{site_id}/test': {
     parameters: {
       query?: never;
@@ -1269,7 +1286,7 @@ export interface components {
        * Action
        * @enum {string}
        */
-      action: 'enable' | 'disable' | 'refresh_capabilities';
+      action: 'enable' | 'disable' | 'refresh_capabilities' | 'reset_circuit';
     };
     /** SiteCreateRequest */
     SiteCreateRequest: {
@@ -1294,6 +1311,42 @@ export interface components {
      * @enum {string}
      */
     SiteCredentialKind: 'API_KEY' | 'COOKIE';
+    /** SiteHealthResponse */
+    SiteHealthResponse: {
+      /** Cache Entries */
+      cache_entries: number;
+      /** Cache Evictions */
+      cache_evictions: number;
+      /** Cache Hits */
+      cache_hits: number;
+      /** Cache Misses */
+      cache_misses: number;
+      /**
+       * Circuit State
+       * @enum {string}
+       */
+      circuit_state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+      /** Config Version */
+      config_version: number;
+      /** Failure Count */
+      failure_count: number;
+      /** Half Open Probe In Flight */
+      half_open_probe_in_flight: boolean;
+      /** Last Error Code */
+      last_error_code: string | null;
+      /** Rate Limit Wait Seconds */
+      rate_limit_wait_seconds: number;
+      /** Requests Failed */
+      requests_failed: number;
+      /** Requests Started */
+      requests_started: number;
+      /** Requests Succeeded */
+      requests_succeeded: number;
+      /** Retries Scheduled */
+      retries_scheduled: number;
+      /** Retry After Seconds */
+      retry_after_seconds: number | null;
+    };
     /**
      * SiteKind
      * @enum {string}
@@ -2806,6 +2859,41 @@ export interface operations {
         };
         content: {
           'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_site_health_api_v1_sites__site_id__health_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteHealthResponse'];
         };
       };
       /** @description Validation Error */

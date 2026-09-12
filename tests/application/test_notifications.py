@@ -38,6 +38,7 @@ from backend.app.infrastructure.persistence.models import (
 )
 from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
 from backend.app.infrastructure.security import SecretCipher
+from backend.app.infrastructure.site_reliability import SiteReliabilityEvent
 
 
 @dataclass
@@ -223,6 +224,51 @@ async def test_retry_failure_does_not_change_task_or_leak_secret(
         assert task is not None and task.status == "PENDING"
         assert outbox is not None and outbox.state == "RETRY"
         assert outbox.last_error_code == "NOTIFICATION_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_site_reliability_events_use_shared_aggregation_without_task_or_secret_data(
+    notification_fixture: _Fixture,
+) -> None:
+    await _enable_channel(notification_fixture, window=60)
+    site_id = "site-synthetic-123"
+    for _ in range(2):
+        notification_fixture.service.record_site_reliability_event(
+            SiteReliabilityEvent(
+                site_id,
+                3,
+                "CIRCUIT_OPENED",
+                "private-path=/data/secret?token=canary",
+            )
+        )
+
+    with notification_fixture.factory() as session:
+        rows = list(session.scalars(select(NotificationOutbox)))
+        assert len(rows) == 1
+        outbox = rows[0]
+        assert outbox.subject_kind == "SITE"
+        assert outbox.subject_id == site_id
+        assert outbox.task_id is None
+        assert outbox.last_event_id is None
+        assert outbox.event_key == "SITE_CIRCUIT_OPENED"
+        assert outbox.pending_count == 2
+        assert "SITE_RELIABILITY_FAILURE" in outbox.body
+        assert "/data/secret" not in outbox.body
+        assert "canary" not in outbox.body
+
+    report = await notification_fixture.service.deliver_due_once(limit=10, max_attempts=3)
+    assert report.delivered_count == 1
+    delivered = notification_fixture.provider.messages[-1]
+    assert delivered.repeat_count == 2
+    assert delivered.event_key == "SITE_CIRCUIT_OPENED"
+    assert "/data/secret" not in delivered.body
+
+    notification_fixture.service.record_site_reliability_event(
+        SiteReliabilityEvent(site_id, 3, "CIRCUIT_RECOVERED")
+    )
+    recovery = await notification_fixture.service.deliver_due_once(limit=10, max_attempts=3)
+    assert recovery.delivered_count == 1
+    assert notification_fixture.provider.messages[-1].event_key == "SITE_CIRCUIT_RECOVERED"
 
 
 def test_non_high_value_event_creates_no_outbox(notification_fixture: _Fixture) -> None:

@@ -34,6 +34,8 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
         "task_review_verification",
         "task_execution_gate",
         "task_execution_plan",
+        "notification_channel",
+        "notification_outbox",
     }.issubset(set(inspector.get_table_names()))
     task_unique_names = {
         constraint["name"] for constraint in inspector.get_unique_constraints("unpack_task")
@@ -80,6 +82,17 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert "credential_kind" in site_columns
     site_checks = {constraint["name"] for constraint in inspector.get_check_constraints("site")}
     assert {"ck_site_type", "ck_site_credential_kind"}.issubset(site_checks)
+    outbox_columns = {
+        column["name"]: column for column in inspector.get_columns("notification_outbox")
+    }
+    assert {"subject_kind", "subject_id"}.issubset(outbox_columns)
+    assert outbox_columns["subject_kind"]["nullable"] is False
+    assert outbox_columns["subject_id"]["nullable"] is False
+    assert outbox_columns["task_id"]["nullable"] is True
+    assert outbox_columns["last_event_id"]["nullable"] is True
+    assert {
+        constraint["name"] for constraint in inspector.get_unique_constraints("notification_outbox")
+    } == {"uq_notification_outbox_channel_subject_event_key"}
     engine.dispose()
 
 
@@ -107,4 +120,63 @@ def test_site_credential_migration_backfills_existing_mteam_rows(tmp_path: Path)
             text("SELECT credential_kind FROM site WHERE id = 'site-1'")
         )
     assert credential_kind == "API_KEY"
+    engine.dispose()
+
+
+def test_notification_subject_migration_backfills_existing_task_outbox(tmp_path: Path) -> None:
+    database_path = tmp_path / "notification-subject-migration.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database_path)
+    command.upgrade(config, "0014_notifications")
+
+    engine = create_engine(sqlite_database_url(database_path))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO unpack_task "
+                "(id, type, source_downloader_id, source_hash, normalized_unit_key, "
+                "idempotency_key, status, trace_id, checkpoint, error_code, version) "
+                "VALUES ('task-legacy', 'PACKAGE_UNPACK', 'downloader-legacy', 'hash', 'unit', "
+                "'idem-legacy', 'PENDING', '00000000-0000-0000-0000-000000000001', '{}', NULL, 1)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO task_event "
+                "(id, task_id, from_status, to_status, event_type, reason) "
+                "VALUES ('event-legacy', 'task-legacy', NULL, 'PENDING', 'TASK_CREATED', 'legacy')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO notification_channel "
+                "(id, name, type, secret_id, task_link_base_url, aggregation_window_seconds, "
+                "connection_status, enabled, version, last_test_at) "
+                "VALUES ('channel-legacy', 'legacy', 'TELEGRAM', NULL, NULL, 300, "
+                "'UNTESTED', 0, 1, NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO notification_outbox "
+                "(id, channel_id, task_id, last_event_id, channel_version, event_key, title, body, "
+                "severity, link, state, pending_count, attempt_count, next_attempt_at, "
+                "last_sent_at, "
+                "delivered_at, last_error_code) "
+                "VALUES ('outbox-legacy', 'channel-legacy', 'task-legacy', 'event-legacy', 1, "
+                "'TASK_PENDING', 'legacy', 'legacy', 'INFO', NULL, 'PENDING', 1, 0, "
+                "CURRENT_TIMESTAMP, NULL, NULL, NULL)"
+            )
+        )
+
+    command.upgrade(config, "head")
+    command.check(config)
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT subject_kind, subject_id, task_id, last_event_id "
+                "FROM notification_outbox WHERE id = 'outbox-legacy'"
+            )
+        ).one()
+    assert row == ("TASK", "task-legacy", "task-legacy", "event-legacy")
     engine.dispose()

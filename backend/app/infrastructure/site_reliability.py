@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Hashable
 from dataclasses import dataclass
-from typing import TypeVar, cast
+from typing import Literal, TypeVar, cast
 from weakref import WeakValueDictionary
 
 from backend.app.domain.site_adapter import (
@@ -20,6 +21,35 @@ from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 
 _T = TypeVar("_T")
 _CACHE_MISS = object()
+_logger = logging.getLogger("packbreaker.site_reliability")
+
+
+@dataclass(frozen=True, slots=True)
+class SiteReliabilityEvent:
+    config_id: str
+    config_version: int
+    event_type: Literal["CIRCUIT_OPENED", "CIRCUIT_RECOVERED"]
+    error_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SiteReliabilityHealth:
+    config_id: str
+    config_version: int
+    circuit_state: Literal["CLOSED", "OPEN", "HALF_OPEN"]
+    failure_count: int
+    retry_after_seconds: float | None
+    half_open_probe_in_flight: bool
+    rate_limit_wait_seconds: float
+    cache_entries: int
+    cache_hits: int
+    cache_misses: int
+    cache_evictions: int
+    requests_started: int
+    requests_succeeded: int
+    requests_failed: int
+    retries_scheduled: int
+    last_error_code: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +107,14 @@ class _SiteReliabilityState:
         self.capabilities: SiteSearchCapabilities | None = None
         self.cache: OrderedDict[Hashable, _CacheEntry] = OrderedDict()
         self.cache_key_locks: WeakValueDictionary[Hashable, asyncio.Lock] = WeakValueDictionary()
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.cache_evictions = 0
+        self.requests_started = 0
+        self.requests_succeeded = 0
+        self.requests_failed = 0
+        self.retries_scheduled = 0
+        self.last_error_code: str | None = None
 
     def cache_key_lock(self, key: Hashable) -> asyncio.Lock:
         existing = self.cache_key_locks.get(key)
@@ -97,11 +135,13 @@ class SiteReliabilityRegistry:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         random_fn: Callable[[], float] = random.random,
+        event_sink: Callable[[SiteReliabilityEvent], None] | None = None,
     ) -> None:
         self._policy = policy or SiteReliabilityPolicy()
         self._clock = clock
         self._sleep = sleep
         self._random = random_fn
+        self._event_sink = event_sink
         self._states: dict[tuple[str, int], _SiteReliabilityState] = {}
 
     def wrap(
@@ -113,19 +153,95 @@ class SiteReliabilityRegistry:
     ) -> SiteAdapter:
         if not config_id.strip() or config_version < 1:
             raise ValueError("站点可靠性绑定必须包含有效配置 ID 与 version")
-        key = (config_id, config_version)
-        for stale_key in tuple(self._states):
-            if stale_key[0] == config_id and stale_key != key:
-                del self._states[stale_key]
-        state = self._states.setdefault(key, _SiteReliabilityState(self._policy))
+        state = self._state(config_id, config_version)
         return ReliableSiteAdapter(
             adapter,
             state,
             self._policy,
+            config_id=config_id,
+            config_version=config_version,
             clock=self._clock,
             sleep=self._sleep,
             random_fn=self._random,
+            event_sink=self._emit_event,
         )
+
+    async def health(self, *, config_id: str, config_version: int) -> SiteReliabilityHealth:
+        state = self._state(config_id, config_version)
+        now = self._clock()
+        async with state.breaker_lock:
+            open_until = state.open_until
+            if open_until is None:
+                circuit_state: Literal["CLOSED", "OPEN", "HALF_OPEN"] = "CLOSED"
+                retry_after = None
+            elif now < open_until:
+                circuit_state = "OPEN"
+                retry_after = max(0.0, open_until - now)
+            else:
+                circuit_state = "HALF_OPEN"
+                retry_after = 0.0
+            failure_count = state.failure_count
+            half_open_in_flight = state.half_open_in_flight
+            last_error_code = state.last_error_code
+        async with state.rate_lock:
+            rate_limit_wait = max(0.0, state.next_request_at - self._clock())
+        async with state.cache_lock:
+            cache_entries = len(state.cache)
+            cache_hits = state.cache_hits
+            cache_misses = state.cache_misses
+            cache_evictions = state.cache_evictions
+        return SiteReliabilityHealth(
+            config_id=config_id,
+            config_version=config_version,
+            circuit_state=circuit_state,
+            failure_count=failure_count,
+            retry_after_seconds=retry_after,
+            half_open_probe_in_flight=half_open_in_flight,
+            rate_limit_wait_seconds=rate_limit_wait,
+            cache_entries=cache_entries,
+            cache_hits=cache_hits,
+            cache_misses=cache_misses,
+            cache_evictions=cache_evictions,
+            requests_started=state.requests_started,
+            requests_succeeded=state.requests_succeeded,
+            requests_failed=state.requests_failed,
+            retries_scheduled=state.retries_scheduled,
+            last_error_code=last_error_code,
+        )
+
+    async def reset_circuit(self, *, config_id: str, config_version: int) -> SiteReliabilityHealth:
+        state = self._state(config_id, config_version)
+        async with state.breaker_lock:
+            state.failure_count = 0
+            state.open_until = None
+            state.half_open_in_flight = False
+            state.last_error_code = None
+        return await self.health(config_id=config_id, config_version=config_version)
+
+    def discard(self, config_id: str) -> None:
+        for key in tuple(self._states):
+            if key[0] == config_id:
+                del self._states[key]
+
+    def _state(self, config_id: str, config_version: int) -> _SiteReliabilityState:
+        if not config_id.strip() or config_version < 1:
+            raise ValueError("站点可靠性绑定必须包含有效配置 ID 与 version")
+        key = (config_id, config_version)
+        for stale_key in tuple(self._states):
+            if stale_key[0] == config_id and stale_key != key:
+                del self._states[stale_key]
+        return self._states.setdefault(key, _SiteReliabilityState(self._policy))
+
+    def _emit_event(self, event: SiteReliabilityEvent) -> None:
+        if self._event_sink is None:
+            return
+        try:
+            self._event_sink(event)
+        except Exception as exc:
+            _logger.warning(
+                "site reliability notification projection failed error_type=%s",
+                type(exc).__name__,
+            )
 
 
 class ReliableSiteAdapter:
@@ -137,16 +253,22 @@ class ReliableSiteAdapter:
         state: _SiteReliabilityState,
         policy: SiteReliabilityPolicy,
         *,
+        config_id: str,
+        config_version: int,
         clock: Callable[[], float],
         sleep: Callable[[float], Awaitable[None]],
         random_fn: Callable[[], float],
+        event_sink: Callable[[SiteReliabilityEvent], None],
     ) -> None:
         self._delegate = delegate
         self._state = state
         self._policy = policy
+        self._config_id = config_id
+        self._config_version = config_version
         self._clock = clock
         self._sleep = sleep
         self._random = random_fn
+        self._event_sink = event_sink
 
     async def capabilities(self) -> SiteSearchCapabilities:
         if self._state.capabilities is not None:
@@ -193,14 +315,14 @@ class ReliableSiteAdapter:
         operation: Callable[[], Awaitable[_T]],
         expected_type: type[_T],
     ) -> _T:
+        if ttl_seconds <= 0:
+            return await self._invoke(operation)
         cached = await self._cache_get(key)
         if cached is not _CACHE_MISS:
             return cast(_T, cached)
-        if ttl_seconds <= 0:
-            return await self._invoke(operation)
 
         async with self._state.cache_key_lock(key):
-            cached = await self._cache_get(key)
+            cached = await self._cache_get(key, record=False)
             if cached is not _CACHE_MISS:
                 return cast(_T, cached)
             result = await self._invoke(operation)
@@ -229,18 +351,22 @@ class ReliableSiteAdapter:
                 ):
                     break
                 half_open_probe = await self._begin_attempt()
+                self._state.requests_started += 1
                 try:
                     result = await operation()
                 except asyncio.CancelledError:
                     await self._abort_attempt(half_open_probe)
                     raise
                 except SiteAdapterError as exc:
+                    self._state.requests_failed += 1
+                    self._state.last_error_code = exc.code
                     if not exc.retryable:
                         await self._record_nonretryable_failure(exc, half_open_probe)
                         raise
                     last_error = exc
-                    await self._record_breaker_failure(half_open_probe)
+                    await self._record_breaker_failure(half_open_probe, exc.code)
                 else:
+                    self._state.requests_succeeded += 1
                     await self._record_success()
                     return result
 
@@ -251,6 +377,7 @@ class ReliableSiteAdapter:
             delay = self._retry_delay(attempt, last_error.retry_after_seconds)
             if self._clock() + delay > deadline:
                 break
+            self._state.retries_scheduled += 1
             await self._sleep(delay)
 
         if last_error is None:
@@ -288,10 +415,21 @@ class ReliableSiteAdapter:
             self._state.half_open_in_flight = False
 
     async def _record_success(self) -> None:
+        recovered = False
         async with self._state.breaker_lock:
+            recovered = self._state.open_until is not None
             self._state.failure_count = 0
             self._state.open_until = None
             self._state.half_open_in_flight = False
+            self._state.last_error_code = None
+        if recovered:
+            self._event_sink(
+                SiteReliabilityEvent(
+                    self._config_id,
+                    self._config_version,
+                    "CIRCUIT_RECOVERED",
+                )
+            )
 
     async def _record_nonretryable_failure(
         self,
@@ -299,30 +437,50 @@ class ReliableSiteAdapter:
         half_open_probe: bool,
     ) -> None:
         if error.code == "SITE_AUTH_FAILED":
-            await self._open_circuit_immediately()
+            await self._open_circuit_immediately(error.code)
             return
         if error.code == "SITE_INVALID_RESPONSE":
-            await self._record_breaker_failure(half_open_probe)
+            await self._record_breaker_failure(half_open_probe, error.code)
             return
         await self._record_success()
 
-    async def _open_circuit_immediately(self) -> None:
+    async def _open_circuit_immediately(self, error_code: str) -> None:
         async with self._state.breaker_lock:
             self._state.failure_count = self._policy.circuit_failure_threshold
             self._state.open_until = self._clock() + self._policy.circuit_open_seconds
             self._state.half_open_in_flight = False
+        self._event_sink(
+            SiteReliabilityEvent(
+                self._config_id,
+                self._config_version,
+                "CIRCUIT_OPENED",
+                error_code,
+            )
+        )
 
-    async def _record_breaker_failure(self, half_open_probe: bool) -> None:
+    async def _record_breaker_failure(self, half_open_probe: bool, error_code: str) -> None:
+        opened = False
         async with self._state.breaker_lock:
             if half_open_probe:
                 self._state.failure_count = self._policy.circuit_failure_threshold
                 self._state.open_until = self._clock() + self._policy.circuit_open_seconds
                 self._state.half_open_in_flight = False
-                return
-            self._state.failure_count += 1
-            if self._state.failure_count >= self._policy.circuit_failure_threshold:
-                self._state.open_until = self._clock() + self._policy.circuit_open_seconds
-                self._state.half_open_in_flight = False
+                opened = True
+            else:
+                self._state.failure_count += 1
+                if self._state.failure_count >= self._policy.circuit_failure_threshold:
+                    self._state.open_until = self._clock() + self._policy.circuit_open_seconds
+                    self._state.half_open_in_flight = False
+                    opened = True
+        if opened:
+            self._event_sink(
+                SiteReliabilityEvent(
+                    self._config_id,
+                    self._config_version,
+                    "CIRCUIT_OPENED",
+                    error_code,
+                )
+            )
 
     async def _wait_for_rate_slot(
         self,
@@ -357,14 +515,21 @@ class ReliableSiteAdapter:
             backoff = max(backoff, retry_after_seconds)
         return backoff
 
-    async def _cache_get(self, key: Hashable) -> object:
+    async def _cache_get(self, key: Hashable, *, record: bool = True) -> object:
         async with self._state.cache_lock:
             entry = self._state.cache.get(key)
             if entry is None:
+                if record:
+                    self._state.cache_misses += 1
                 return _CACHE_MISS
             if entry.expires_at <= self._clock():
                 del self._state.cache[key]
+                if record:
+                    self._state.cache_misses += 1
+                self._state.cache_evictions += 1
                 return _CACHE_MISS
+            if record:
+                self._state.cache_hits += 1
             self._state.cache.move_to_end(key)
             return entry.value
 
@@ -374,6 +539,7 @@ class ReliableSiteAdapter:
             self._state.cache.move_to_end(key)
             while len(self._state.cache) > self._policy.cache_max_entries:
                 self._state.cache.popitem(last=False)
+                self._state.cache_evictions += 1
 
 
 def _circuit_open(retry_after_seconds: float) -> SiteAdapterError:

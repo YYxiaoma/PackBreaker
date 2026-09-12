@@ -17,6 +17,7 @@ from backend.app.domain.site_search import (
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.adapters.sites import MTeamAdapter
 from backend.app.infrastructure.site_reliability import (
+    SiteReliabilityEvent,
     SiteReliabilityPolicy,
     SiteReliabilityRegistry,
 )
@@ -106,12 +107,14 @@ def _registry(
     fake_time: _FakeTime,
     *,
     policy: SiteReliabilityPolicy | None = None,
+    events: list[SiteReliabilityEvent] | None = None,
 ) -> SiteReliabilityRegistry:
     return SiteReliabilityRegistry(
         policy,
         clock=fake_time.monotonic,
         sleep=fake_time.sleep,
         random_fn=lambda: 0.5,
+        event_sink=None if events is None else events.append,
     )
 
 
@@ -401,6 +404,115 @@ async def test_site_reliability_cancelled_half_open_probe_does_not_stick_breaker
     recovered = await adapter.search(query)
     assert recovered.items
     assert raw.search_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_site_reliability_health_reports_cache_request_and_rate_metrics() -> None:
+    fake_time = _FakeTime()
+    raw = _FakeSiteAdapter(interval=5.0)
+    raw.clock = fake_time
+    registry = _registry(fake_time)
+    adapter = registry.wrap(config_id="site-health", config_version=4, adapter=raw)
+    query = SearchQuery(("health",), SearchMediaType.MOVIE)
+
+    baseline = await registry.health(config_id="site-health", config_version=4)
+    assert baseline.circuit_state == "CLOSED"
+    assert baseline.cache_entries == baseline.cache_hits == baseline.cache_misses == 0
+    assert baseline.requests_started == baseline.requests_succeeded == baseline.requests_failed == 0
+
+    await adapter.search(query)
+    after_first = await registry.health(config_id="site-health", config_version=4)
+    assert after_first.cache_entries == 1
+    assert after_first.cache_misses == 1
+    assert after_first.cache_hits == 0
+    assert after_first.requests_started == 1
+    assert after_first.requests_succeeded == 1
+    assert after_first.requests_failed == 0
+    assert after_first.rate_limit_wait_seconds == pytest.approx(5.0)
+
+    await adapter.search(query)
+    after_hit = await registry.health(config_id="site-health", config_version=4)
+    assert after_hit.cache_hits == 1
+    assert after_hit.requests_started == 1
+    assert raw.search_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_site_reliability_health_reset_and_transition_events_are_fail_closed() -> None:
+    fake_time = _FakeTime()
+    events: list[SiteReliabilityEvent] = []
+    raw = _FakeSiteAdapter()
+    raw.search_failures.append(
+        SiteAdapterError("SITE_UNAVAILABLE", "private remote body", retryable=True)
+    )
+    policy = SiteReliabilityPolicy(
+        max_attempts=1,
+        circuit_failure_threshold=1,
+        circuit_open_seconds=8.0,
+        search_cache_ttl_seconds=0.0,
+    )
+    registry = _registry(fake_time, policy=policy, events=events)
+    adapter = registry.wrap(config_id="site-health-breaker", config_version=7, adapter=raw)
+    query = SearchQuery(("health-breaker",), SearchMediaType.MOVIE)
+
+    with pytest.raises(SiteAdapterError):
+        await adapter.search(query)
+    opened = await registry.health(config_id="site-health-breaker", config_version=7)
+    assert opened.circuit_state == "OPEN"
+    assert opened.failure_count == 1
+    assert opened.retry_after_seconds == pytest.approx(8.0)
+    assert opened.last_error_code == "SITE_UNAVAILABLE"
+    assert opened.requests_started == opened.requests_failed == 1
+    assert events == [
+        SiteReliabilityEvent("site-health-breaker", 7, "CIRCUIT_OPENED", "SITE_UNAVAILABLE")
+    ]
+
+    with pytest.raises(SiteAdapterError) as rejected:
+        await adapter.search(query)
+    assert rejected.value.code == "SITE_CIRCUIT_OPEN"
+    assert raw.search_calls == 1
+    assert len(events) == 1
+
+    reset = await registry.reset_circuit(config_id="site-health-breaker", config_version=7)
+    assert reset.circuit_state == "CLOSED"
+    assert reset.failure_count == 0
+    assert reset.last_error_code is None
+    assert reset.requests_failed == 1
+    assert len(events) == 1
+
+    await adapter.search(query)
+    assert len(events) == 1, "人工 reset 后成功不应伪造自动恢复事件"
+
+
+@pytest.mark.asyncio
+async def test_site_reliability_half_open_success_emits_recovered_once() -> None:
+    fake_time = _FakeTime()
+    events: list[SiteReliabilityEvent] = []
+    raw = _FakeSiteAdapter()
+    raw.search_failures.append(SiteAdapterError("SITE_UNAVAILABLE", "down", retryable=True))
+    policy = SiteReliabilityPolicy(
+        max_attempts=1,
+        circuit_failure_threshold=1,
+        circuit_open_seconds=3.0,
+        search_cache_ttl_seconds=0.0,
+    )
+    registry = _registry(fake_time, policy=policy, events=events)
+    adapter = registry.wrap(config_id="site-recovery", config_version=2, adapter=raw)
+    query = SearchQuery(("recover",), SearchMediaType.MOVIE)
+
+    with pytest.raises(SiteAdapterError):
+        await adapter.search(query)
+    fake_time.advance(3.0)
+    half_open = await registry.health(config_id="site-recovery", config_version=2)
+    assert half_open.circuit_state == "HALF_OPEN"
+
+    await adapter.search(query)
+    recovered = await registry.health(config_id="site-recovery", config_version=2)
+    assert recovered.circuit_state == "CLOSED"
+    assert events == [
+        SiteReliabilityEvent("site-recovery", 2, "CIRCUIT_OPENED", "SITE_UNAVAILABLE"),
+        SiteReliabilityEvent("site-recovery", 2, "CIRCUIT_RECOVERED"),
+    ]
 
 
 @pytest.mark.asyncio

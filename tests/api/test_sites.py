@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -224,6 +225,109 @@ def test_hdtime_cookie_is_encrypted_and_drives_read_only_connection_probe(tmp_pa
         assert cookie not in tested.text
         refreshed = client.get(f"/api/v1/sites/{created['id']}")
         assert refreshed.json()["connection_status"] == "OK"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_site_health_reset_and_config_scopes_are_safe_and_versioned(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    canary = "PACKBREAKER-SITE-HEALTH-CANARY-a72c"
+    try:
+        created = _create_site(client, canary)
+        site_id = cast(str, created["id"])
+
+        def auth_failure(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(401, text=f"remote secret {canary}")
+
+        app.state.site_service._adapter_factory = SiteAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(auth_failure)
+        )
+        failed = client.post(f"/api/v1/sites/{site_id}/test", headers=_csrf(client))
+        assert failed.status_code == 502
+        assert failed.json()["code"] == "SITE_AUTH_FAILED"
+        assert canary not in failed.text
+
+        health = client.get(f"/api/v1/sites/{site_id}/health")
+        assert health.status_code == 200
+        payload = health.json()
+        assert payload["config_version"] == 1
+        assert payload["circuit_state"] == "OPEN"
+        assert payload["failure_count"] >= 1
+        assert payload["last_error_code"] == "SITE_AUTH_FAILED"
+        assert payload["requests_started"] == payload["requests_failed"] == 1
+        assert "base_url" not in payload
+        assert canary not in health.text
+
+        no_csrf = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={"If-Match": '"1"'},
+            json={"action": "reset_circuit"},
+        )
+        assert no_csrf.status_code == 403
+        assert no_csrf.json()["code"] == "CSRF_INVALID"
+
+        missing_if_match = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers=_csrf(client),
+            json={"action": "reset_circuit"},
+        )
+        assert missing_if_match.status_code == 428
+
+        stale = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={**_csrf(client), "If-Match": '"2"'},
+            json={"action": "reset_circuit"},
+        )
+        assert stale.status_code == 412
+        assert stale.json()["code"] == "SITE_VERSION_CONFLICT"
+
+        expires_at = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+        write_token_response = client.post(
+            "/api/v1/api-tokens",
+            headers=_csrf(client),
+            json={
+                "name": "site-health-writer",
+                "scopes": ["config:write"],
+                "expires_at": expires_at,
+            },
+        )
+        read_token_response = client.post(
+            "/api/v1/api-tokens",
+            headers=_csrf(client),
+            json={
+                "name": "site-health-reader",
+                "scopes": ["config:read"],
+                "expires_at": expires_at,
+            },
+        )
+        assert write_token_response.status_code == read_token_response.status_code == 201
+        write_token = write_token_response.json()["token"]
+        read_token = read_token_response.json()["token"]
+
+        read_health = client.get(
+            f"/api/v1/sites/{site_id}/health",
+            headers={"Authorization": f"Bearer {read_token}"},
+        )
+        assert read_health.status_code == 200
+        denied_reset = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={"Authorization": f"Bearer {read_token}", "If-Match": '"1"'},
+            json={"action": "reset_circuit"},
+        )
+        assert denied_reset.status_code == 403
+
+        reset = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={"Authorization": f"Bearer {write_token}", "If-Match": '"1"'},
+            json={"action": "reset_circuit"},
+        )
+        assert reset.status_code == 200
+        assert reset.headers["ETag"] == '"1"'
+        reset_payload = reset.json()
+        assert reset_payload["circuit_state"] == "CLOSED"
+        assert reset_payload["failure_count"] == 0
+        assert reset_payload["last_error_code"] is None
+        assert reset_payload["requests_failed"] == 1
     finally:
         client.__exit__(None, None, None)
 

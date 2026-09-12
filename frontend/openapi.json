@@ -1470,7 +1470,8 @@
             "enum": [
               "enable",
               "disable",
-              "refresh_capabilities"
+              "refresh_capabilities",
+              "reset_circuit"
             ],
             "title": "Action",
             "type": "string"
@@ -1546,6 +1547,108 @@
         ],
         "title": "SiteCredentialKind",
         "type": "string"
+      },
+      "SiteHealthResponse": {
+        "properties": {
+          "cache_entries": {
+            "title": "Cache Entries",
+            "type": "integer"
+          },
+          "cache_evictions": {
+            "title": "Cache Evictions",
+            "type": "integer"
+          },
+          "cache_hits": {
+            "title": "Cache Hits",
+            "type": "integer"
+          },
+          "cache_misses": {
+            "title": "Cache Misses",
+            "type": "integer"
+          },
+          "circuit_state": {
+            "enum": [
+              "CLOSED",
+              "OPEN",
+              "HALF_OPEN"
+            ],
+            "title": "Circuit State",
+            "type": "string"
+          },
+          "config_version": {
+            "title": "Config Version",
+            "type": "integer"
+          },
+          "failure_count": {
+            "title": "Failure Count",
+            "type": "integer"
+          },
+          "half_open_probe_in_flight": {
+            "title": "Half Open Probe In Flight",
+            "type": "boolean"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "rate_limit_wait_seconds": {
+            "title": "Rate Limit Wait Seconds",
+            "type": "number"
+          },
+          "requests_failed": {
+            "title": "Requests Failed",
+            "type": "integer"
+          },
+          "requests_started": {
+            "title": "Requests Started",
+            "type": "integer"
+          },
+          "requests_succeeded": {
+            "title": "Requests Succeeded",
+            "type": "integer"
+          },
+          "retries_scheduled": {
+            "title": "Retries Scheduled",
+            "type": "integer"
+          },
+          "retry_after_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry After Seconds"
+          }
+        },
+        "required": [
+          "config_version",
+          "circuit_state",
+          "failure_count",
+          "retry_after_seconds",
+          "half_open_probe_in_flight",
+          "rate_limit_wait_seconds",
+          "cache_entries",
+          "cache_hits",
+          "cache_misses",
+          "cache_evictions",
+          "requests_started",
+          "requests_succeeded",
+          "requests_failed",
+          "retries_scheduled",
+          "last_error_code"
+        ],
+        "title": "SiteHealthResponse",
+        "type": "object"
       },
       "SiteKind": {
         "enum": [
@@ -5292,6 +5395,80 @@
           }
         },
         "summary": "Site Action",
+        "tags": [
+          "sites"
+        ]
+      }
+    },
+    "/api/v1/sites/{site_id}/health": {
+      "get": {
+        "operationId": "get_site_health_api_v1_sites__site_id__health_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "site_id",
+            "required": true,
+            "schema": {
+              "title": "Site Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteHealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Site Health",
         "tags": [
           "sites"
         ]

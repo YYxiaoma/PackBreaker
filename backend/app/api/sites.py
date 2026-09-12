@@ -15,6 +15,7 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import SiteUpdate, SiteView
 from backend.app.domain.auth import ApiScope
 from backend.app.domain.site_config import SiteCredentialKind, SiteKind, SiteProbeStatus
+from backend.app.infrastructure.site_reliability import SiteReliabilityHealth
 
 router = APIRouter(tags=["sites"])
 CONFIG_READ_ACCESS = require_admin_or_scope(ApiScope.CONFIG_READ)
@@ -62,12 +63,30 @@ class SitePatchRequest(BaseModel):
 
 
 class SiteActionRequest(BaseModel):
-    action: Literal["enable", "disable", "refresh_capabilities"]
+    action: Literal["enable", "disable", "refresh_capabilities", "reset_circuit"]
 
 
 class SiteProbeResponse(BaseModel):
     status: Literal["ok"]
     capabilities: dict[str, Any]
+
+
+class SiteHealthResponse(BaseModel):
+    config_version: int
+    circuit_state: Literal["CLOSED", "OPEN", "HALF_OPEN"]
+    failure_count: int
+    retry_after_seconds: float | None
+    half_open_probe_in_flight: bool
+    rate_limit_wait_seconds: float
+    cache_entries: int
+    cache_hits: int
+    cache_misses: int
+    cache_evictions: int
+    requests_started: int
+    requests_succeeded: int
+    requests_failed: int
+    retries_scheduled: int
+    last_error_code: str | None
 
 
 def _view(record: SiteView) -> SiteViewResponse:
@@ -85,6 +104,26 @@ def _view(record: SiteView) -> SiteViewResponse:
         last_test_at=record.last_test_at,
         created_at=record.created_at,
         updated_at=record.updated_at,
+    )
+
+
+def _health(record: SiteReliabilityHealth) -> SiteHealthResponse:
+    return SiteHealthResponse(
+        config_version=record.config_version,
+        circuit_state=record.circuit_state,
+        failure_count=record.failure_count,
+        retry_after_seconds=record.retry_after_seconds,
+        half_open_probe_in_flight=record.half_open_probe_in_flight,
+        rate_limit_wait_seconds=record.rate_limit_wait_seconds,
+        cache_entries=record.cache_entries,
+        cache_hits=record.cache_hits,
+        cache_misses=record.cache_misses,
+        cache_evictions=record.cache_evictions,
+        requests_started=record.requests_started,
+        requests_succeeded=record.requests_succeeded,
+        requests_failed=record.requests_failed,
+        retries_scheduled=record.retries_scheduled,
+        last_error_code=record.last_error_code,
     )
 
 
@@ -215,6 +254,15 @@ async def delete_site(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get("/sites/{site_id}/health", response_model=SiteHealthResponse)
+async def get_site_health(
+    site_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> SiteHealthResponse:
+    return _health(await site_service(request).health(site_id))
+
+
 @router.post("/sites/{site_id}/test", response_model=SiteProbeResponse)
 async def test_site(
     site_id: str,
@@ -235,6 +283,15 @@ async def site_action(
     if payload.action == "refresh_capabilities":
         result = await site_service(request).test_connection(site_id)
         return JSONResponse(result)
+    if payload.action == "reset_circuit":
+        health = await site_service(request).reset_circuit(
+            site_id,
+            expected_version=_expected_version(if_match),
+        )
+        return JSONResponse(
+            _health(health).model_dump(mode="json"),
+            headers={"ETag": f'"{health.config_version}"'},
+        )
     record = site_service(request).set_enabled(
         site_id,
         expected_version=_expected_version(if_match),
