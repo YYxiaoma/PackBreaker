@@ -117,7 +117,14 @@ _ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
             TaskStatus.FAILED,
         }
     ),
-    TaskStatus.RETRY: frozenset({TaskStatus.ANALYZING, TaskStatus.CANCELLING, TaskStatus.FAILED}),
+    TaskStatus.RETRY: frozenset(
+        {
+            TaskStatus.ANALYZING,
+            TaskStatus.CLIENT_VERIFYING,
+            TaskStatus.CANCELLING,
+            TaskStatus.FAILED,
+        }
+    ),
     TaskStatus.CANCELLING: frozenset(
         {TaskStatus.ROLLING_BACK, TaskStatus.CANCELLED, TaskStatus.FAILED}
     ),

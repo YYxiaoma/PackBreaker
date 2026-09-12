@@ -526,6 +526,57 @@ class SafeFilesystemGateway:
             os.close(source_parent_fd)
             os.close(target_parent_fd)
 
+    def assert_repair_target_remains_isolated(
+        self,
+        *,
+        source_relative_path: str,
+        target_root_relative_path: str,
+        target_relative_path: str,
+        expected_source_snapshot: FileSnapshot,
+        expected_isolation_snapshot: FilesystemSnapshot,
+        expected_length: int,
+    ) -> FilesystemSnapshot:
+        """客户端下载写入后只证明 target 仍是原独立 inode；不再要求内容等于 source。"""
+
+        if expected_length < 0:
+            raise ValueError("repair target expected_length 不能为负数")
+        _, source_parts = _normalize_relative_path(source_relative_path)
+        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_parts = _normalize_relative_path(target_relative_path)
+        source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
+        target_parent_fd = _open_directory_chain(
+            self._data_root,
+            target_root_parts + target_parts[:-1],
+        )
+        source_fd: int | None = None
+        target_fd: int | None = None
+        try:
+            source_fd = _open_regular_file_at(source_parent_fd, source_parts[-1], write=False)
+            source_snapshot = _snapshot_from_stat(os.fstat(source_fd))
+            _assert_source_snapshot(source_snapshot, expected_source_snapshot)
+            target_fd = _open_regular_file_at(target_parent_fd, target_parts[-1], write=False)
+            current_target = _snapshot_from_stat(os.fstat(target_fd))
+            if (
+                current_target.file_type != "regular"
+                or current_target.device != expected_isolation_snapshot.device
+                or current_target.inode != expected_isolation_snapshot.inode
+                or current_target.size != expected_length
+                or current_target.link_count != 1
+                or _same_owned_inode(current_target, source_snapshot)
+            ):
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "repair download 后 target 已不再匹配 journal-owned 独立 inode",
+                )
+            return current_target
+        finally:
+            if target_fd is not None:
+                os.close(target_fd)
+            if source_fd is not None:
+                os.close(source_fd)
+            os.close(source_parent_fd)
+            os.close(target_parent_fd)
+
     def _assert_recovered_isolation_target(
         self,
         *,

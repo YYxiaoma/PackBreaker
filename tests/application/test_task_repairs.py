@@ -15,7 +15,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.downloader_operations import (
     QBITTORRENT_ADD_OPERATION,
     QBITTORRENT_RECHECK_OPERATION,
+    QbittorrentRecheckOperationService,
     QbittorrentRemoveOperationService,
+    QbittorrentStartOperationService,
 )
 from backend.app.application.downloaders import QbittorrentWriteBinding
 from backend.app.application.errors import ApplicationError
@@ -25,16 +27,28 @@ from backend.app.application.filesystem_operations import (
     ISOLATE_REPAIR_TARGET_OPERATION,
     FilesystemOperationService,
 )
+from backend.app.application.repair_downloader_operations import (
+    QBITTORRENT_REPAIR_START_OPERATION,
+    QBITTORRENT_REPAIR_STOP_OPERATION,
+    RepairDownloadOperationService,
+)
 from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.task_adding import CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION
 from backend.app.application.task_cancellation import (
     TaskCancellationCoordinator,
     TaskCancellationRequest,
 )
+from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
 from backend.app.application.task_repairs import (
+    REPAIR_STAGE_DOWNLOAD_PENDING,
+    REPAIR_STAGE_DOWNLOADING,
+    REPAIR_STAGE_INCOMPLETE,
+    REPAIR_STAGE_RECHECK_PENDING,
+    TaskRepairCoordinator,
     TaskRepairIsolationCoordinator,
     TaskRepairPlanService,
 )
+from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.domain.downloader import (
     PathMappingRule,
     ProbeStatus,
@@ -118,6 +132,10 @@ class _ReadOnlyQbittorrent:
     def __init__(self, state: QbittorrentTorrentState) -> None:
         self.state = state
         self.write_calls = 0
+        self.allow_repair_writes = False
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.recheck_calls = 0
 
     async def get_torrents(
         self, torrent_hashes: tuple[str, ...]
@@ -132,15 +150,36 @@ class _ReadOnlyQbittorrent:
 
     async def stop_torrent(self, torrent_hash: str) -> None:
         self.write_calls += 1
-        raise AssertionError(f"repair plan 不得 stop: {torrent_hash}")
+        self.stop_calls += 1
+        if not self.allow_repair_writes:
+            raise AssertionError(f"repair plan 不得 stop: {torrent_hash}")
+        assert torrent_hash == self.state.torrent_hash
+        self.state = replace(
+            self.state,
+            state="stoppedUP" if self.state.progress == 1.0 else "stoppedDL",
+        )
 
     async def start_torrent(self, torrent_hash: str) -> None:
         self.write_calls += 1
-        raise AssertionError(f"repair plan 不得 start: {torrent_hash}")
+        self.start_calls += 1
+        if not self.allow_repair_writes:
+            raise AssertionError(f"repair plan 不得 start: {torrent_hash}")
+        assert torrent_hash == self.state.torrent_hash
+        self.state = replace(
+            self.state,
+            state="uploading" if self.state.progress == 1.0 else "downloading",
+        )
 
     async def recheck_torrent(self, torrent_hash: str) -> None:
         self.write_calls += 1
-        raise AssertionError(f"repair plan 不得 recheck: {torrent_hash}")
+        self.recheck_calls += 1
+        if not self.allow_repair_writes:
+            raise AssertionError(f"repair plan 不得 recheck: {torrent_hash}")
+        assert torrent_hash == self.state.torrent_hash
+        self.state = replace(
+            self.state,
+            state="checkingUP" if self.state.progress == 1.0 else "checkingDL",
+        )
 
     async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
         self.write_calls += 1
@@ -710,6 +749,377 @@ async def test_task_repair_isolation_resumes_owned_inflight_journal(
             .count()
             == 1
         )
+
+
+@pytest.mark.asyncio
+async def test_task_repair_download_rechecks_and_returns_to_done_without_touching_source(
+    repair_fixture: _RepairFixture,
+) -> None:
+    repair_fixture.qbit.allow_repair_writes = True
+    filesystem = FilesystemOperationService(
+        repair_fixture.factory,
+        SafeFilesystemGateway(repair_fixture.data_root),
+    )
+    isolation = TaskRepairIsolationCoordinator(repair_fixture.service, filesystem)
+    repair = TaskRepairCoordinator(
+        repair_fixture.factory,
+        repair_fixture.service,
+        isolation,
+    )
+    repair_download = RepairDownloadOperationService(repair_fixture.factory)
+    verifier = TaskClientVerificationCoordinator(
+        repair_fixture.factory,
+        repair_fixture.downloader_provider,
+        QbittorrentRecheckOperationService(repair_fixture.factory),
+        repair_download_operations=repair_download,
+        data_root=repair_fixture.data_root,
+    )
+    seeding = TaskSeedingCoordinator(
+        repair_fixture.factory,
+        repair_fixture.downloader_provider,
+        QbittorrentStartOperationService(repair_fixture.factory),
+        data_root=repair_fixture.data_root,
+    )
+    source_before = repair_fixture.source.stat(follow_symlinks=False)
+    source_bytes = repair_fixture.source.read_bytes()
+
+    prepared = await repair.execute(repair_fixture.unit_id)
+    replayed_prepared = await repair.execute(repair_fixture.unit_id)
+
+    assert prepared.status is TaskStatus.CLIENT_VERIFYING
+    assert replayed_prepared.replayed is True
+    assert repair_fixture.qbit.write_calls == 0
+    assert repair_fixture.target.stat().st_ino != repair_fixture.source.stat().st_ino
+    with repair_fixture.factory() as session:
+        task = session.get(UnpackTask, repair_fixture.task_id)
+        assert task is not None
+        assert task.checkpoint["repair_stage"] == REPAIR_STAGE_DOWNLOAD_PENDING
+
+    downloading = await verifier.execute(
+        repair_fixture.unit_id,
+        execution_plan_id=repair_fixture.plan_id,
+    )
+
+    assert downloading.status is TaskStatus.CLIENT_VERIFYING
+    assert downloading.verification_outcome == "REPAIR_DOWNLOADING"
+    assert repair_fixture.qbit.start_calls == 1
+    assert repair_fixture.qbit.state.state == "downloading"
+    with repair_fixture.factory() as session:
+        task = session.get(UnpackTask, repair_fixture.task_id)
+        assert task is not None
+        assert task.checkpoint["repair_stage"] == REPAIR_STAGE_DOWNLOADING
+
+    # 模拟下载器只写已隔离 target，把错误 piece 补齐；源 inode/字节不得变化。
+    repair_fixture.target.write_bytes(b"0123456789abcdef")
+    repair_fixture.qbit.state = replace(
+        repair_fixture.qbit.state,
+        state="uploading",
+        progress=1.0,
+    )
+    ready_for_recheck = await verifier.execute(
+        repair_fixture.unit_id,
+        execution_plan_id=repair_fixture.plan_id,
+    )
+
+    assert ready_for_recheck.verification_outcome == "REPAIR_RECHECK_PENDING"
+    assert repair_fixture.qbit.start_calls == 1
+    assert repair_fixture.qbit.stop_calls == 1
+    assert repair_fixture.qbit.state.state == "stoppedUP"
+    with repair_fixture.factory() as session:
+        task = session.get(UnpackTask, repair_fixture.task_id)
+        assert task is not None
+        assert task.checkpoint["repair_stage"] == REPAIR_STAGE_RECHECK_PENDING
+
+    checking = await verifier.execute(
+        repair_fixture.unit_id,
+        execution_plan_id=repair_fixture.plan_id,
+    )
+    assert checking.status is TaskStatus.CLIENT_VERIFYING
+    assert checking.verification_outcome == "CHECKING"
+    assert repair_fixture.qbit.recheck_calls == 1
+    assert repair_fixture.qbit.state.state == "checkingUP"
+
+    repair_fixture.qbit.state = replace(
+        repair_fixture.qbit.state,
+        state="stoppedUP",
+        progress=1.0,
+    )
+    verified = await verifier.execute(
+        repair_fixture.unit_id,
+        execution_plan_id=repair_fixture.plan_id,
+    )
+    assert verified.status is TaskStatus.SEEDING
+    assert verified.recheck_journal_id != repair_fixture.verify_journal_id
+
+    done = await seeding.execute(
+        repair_fixture.unit_id,
+        execution_plan_id=repair_fixture.plan_id,
+    )
+    assert done.status is TaskStatus.DONE
+    assert repair_fixture.qbit.start_calls == 2
+    assert repair_fixture.qbit.stop_calls == 1
+    assert repair_fixture.qbit.recheck_calls == 1
+
+    source_after = repair_fixture.source.stat(follow_symlinks=False)
+    assert repair_fixture.source.read_bytes() == source_bytes
+    assert (
+        source_before.st_ino,
+        source_before.st_size,
+        source_before.st_mtime_ns,
+    ) == (
+        source_after.st_ino,
+        source_after.st_size,
+        source_after.st_mtime_ns,
+    )
+    assert repair_fixture.target.read_bytes() == b"0123456789abcdef"
+    assert repair_fixture.target.stat().st_ino != source_after.st_ino
+    with repair_fixture.factory() as session:
+        repair_starts = tuple(
+            session.scalars(
+                select(OperationJournal).where(
+                    OperationJournal.task_id == repair_fixture.task_id,
+                    OperationJournal.operation_type == QBITTORRENT_REPAIR_START_OPERATION,
+                )
+            )
+        )
+        repair_stops = tuple(
+            session.scalars(
+                select(OperationJournal).where(
+                    OperationJournal.task_id == repair_fixture.task_id,
+                    OperationJournal.operation_type == QBITTORRENT_REPAIR_STOP_OPERATION,
+                )
+            )
+        )
+        rechecks = tuple(
+            session.scalars(
+                select(OperationJournal).where(
+                    OperationJournal.task_id == repair_fixture.task_id,
+                    OperationJournal.operation_type == QBITTORRENT_RECHECK_OPERATION,
+                )
+            )
+        )
+        assert len(repair_starts) == 1
+        assert repair_starts[0].status == OperationStatus.APPLIED.value
+        assert len(repair_stops) == 1
+        assert repair_stops[0].status == OperationStatus.APPLIED.value
+        assert len(rechecks) == 2
+        task = session.get(UnpackTask, repair_fixture.task_id)
+        assert task is not None
+        assert task.status == TaskStatus.DONE.value
+        assert task.checkpoint["verification_journal_id"] == verified.recheck_journal_id
+
+
+@pytest.mark.asyncio
+async def test_repair_second_incomplete_cycle_reuses_isolated_inode_without_touching_source(
+    repair_fixture: _RepairFixture,
+) -> None:
+    repair_fixture.qbit.allow_repair_writes = True
+    filesystem = FilesystemOperationService(
+        repair_fixture.factory,
+        SafeFilesystemGateway(repair_fixture.data_root),
+    )
+    isolation = TaskRepairIsolationCoordinator(repair_fixture.service, filesystem)
+    repair = TaskRepairCoordinator(
+        repair_fixture.factory,
+        repair_fixture.service,
+        isolation,
+    )
+    verifier = TaskClientVerificationCoordinator(
+        repair_fixture.factory,
+        repair_fixture.downloader_provider,
+        QbittorrentRecheckOperationService(repair_fixture.factory),
+        repair_download_operations=RepairDownloadOperationService(repair_fixture.factory),
+        data_root=repair_fixture.data_root,
+    )
+    source_before = repair_fixture.source.stat(follow_symlinks=False)
+    source_bytes = repair_fixture.source.read_bytes()
+
+    first_cycle = await repair.execute(repair_fixture.unit_id)
+    isolated_inode = repair_fixture.target.stat(follow_symlinks=False).st_ino
+    assert first_cycle.isolation_journal_ids
+
+    await verifier.execute(repair_fixture.unit_id, execution_plan_id=repair_fixture.plan_id)
+    # 第一轮只补了一部分错误内容：target 可被客户端下载器修改，但仍必须保持原隔离 inode。
+    repair_fixture.target.write_bytes(b"012Y456789abcdef")
+    repair_fixture.qbit.state = replace(
+        repair_fixture.qbit.state,
+        state="uploading",
+        progress=1.0,
+    )
+    await verifier.execute(repair_fixture.unit_id, execution_plan_id=repair_fixture.plan_id)
+    checking = await verifier.execute(
+        repair_fixture.unit_id,
+        execution_plan_id=repair_fixture.plan_id,
+    )
+    assert checking.verification_outcome == "CHECKING"
+
+    repair_fixture.qbit.state = replace(
+        repair_fixture.qbit.state,
+        state="stoppedDL",
+        progress=0.75,
+    )
+    incomplete = await verifier.execute(
+        repair_fixture.unit_id,
+        execution_plan_id=repair_fixture.plan_id,
+    )
+    assert incomplete.status is TaskStatus.RETRY
+    assert incomplete.recheck_journal_id != repair_fixture.verify_journal_id
+    with repair_fixture.factory() as session:
+        task = session.get(UnpackTask, repair_fixture.task_id)
+        assert task is not None
+        assert task.checkpoint["repair_stage"] == REPAIR_STAGE_INCOMPLETE
+        assert task.checkpoint["verification_journal_id"] == incomplete.recheck_journal_id
+
+    second_plan = await repair_fixture.service.generate(
+        repair_fixture.unit_id,
+        mode=RepairMode.AUTO_PIECE,
+    )
+    assert second_plan.plan.ready is True
+    assert second_plan.plan.isolation_bytes_required == 0
+    assert all(not item.isolation_required for item in second_plan.plan.affected_files)
+    assert repair_fixture.target.stat(follow_symlinks=False).st_ino == isolated_inode
+
+    second_cycle = await repair.execute(repair_fixture.unit_id)
+    assert second_cycle.repair_candidate_key != first_cycle.repair_candidate_key
+    assert second_cycle.isolation_journal_ids == first_cycle.isolation_journal_ids
+    assert repair_fixture.target.stat(follow_symlinks=False).st_ino == isolated_inode
+    with repair_fixture.factory() as session:
+        isolations = tuple(
+            session.scalars(
+                select(OperationJournal).where(
+                    OperationJournal.task_id == repair_fixture.task_id,
+                    OperationJournal.operation_type == ISOLATE_REPAIR_TARGET_OPERATION,
+                )
+            )
+        )
+        assert len(isolations) == 1
+
+    second_downloading = await verifier.execute(
+        repair_fixture.unit_id,
+        execution_plan_id=repair_fixture.plan_id,
+    )
+    assert second_downloading.verification_outcome == "REPAIR_DOWNLOADING"
+    assert repair_fixture.qbit.start_calls == 2
+    assert repair_fixture.target.stat(follow_symlinks=False).st_ino == isolated_inode
+
+    source_after = repair_fixture.source.stat(follow_symlinks=False)
+    assert repair_fixture.source.read_bytes() == source_bytes
+    assert (
+        source_before.st_ino,
+        source_before.st_size,
+        source_before.st_mtime_ns,
+    ) == (
+        source_after.st_ino,
+        source_after.st_size,
+        source_after.st_mtime_ns,
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_written_target_inode_replacement_blocks_next_cycle(
+    repair_fixture: _RepairFixture,
+) -> None:
+    repair_fixture.qbit.allow_repair_writes = True
+    filesystem = FilesystemOperationService(
+        repair_fixture.factory,
+        SafeFilesystemGateway(repair_fixture.data_root),
+    )
+    repair = TaskRepairCoordinator(
+        repair_fixture.factory,
+        repair_fixture.service,
+        TaskRepairIsolationCoordinator(repair_fixture.service, filesystem),
+    )
+    verifier = TaskClientVerificationCoordinator(
+        repair_fixture.factory,
+        repair_fixture.downloader_provider,
+        QbittorrentRecheckOperationService(repair_fixture.factory),
+        repair_download_operations=RepairDownloadOperationService(repair_fixture.factory),
+        data_root=repair_fixture.data_root,
+    )
+
+    await repair.execute(repair_fixture.unit_id)
+    await verifier.execute(repair_fixture.unit_id, execution_plan_id=repair_fixture.plan_id)
+    repair_fixture.target.write_bytes(b"012Y456789abcdef")
+    repair_fixture.qbit.state = replace(
+        repair_fixture.qbit.state,
+        state="uploading",
+        progress=1.0,
+    )
+    await verifier.execute(repair_fixture.unit_id, execution_plan_id=repair_fixture.plan_id)
+    await verifier.execute(repair_fixture.unit_id, execution_plan_id=repair_fixture.plan_id)
+    repair_fixture.qbit.state = replace(
+        repair_fixture.qbit.state,
+        state="stoppedDL",
+        progress=0.75,
+    )
+    incomplete = await verifier.execute(
+        repair_fixture.unit_id,
+        execution_plan_id=repair_fixture.plan_id,
+    )
+    assert incomplete.status is TaskStatus.RETRY
+
+    old_inode = repair_fixture.target.stat(follow_symlinks=False).st_ino
+    replacement = repair_fixture.target.with_suffix(".replacement")
+    replacement.write_bytes(repair_fixture.target.read_bytes())
+    os.replace(replacement, repair_fixture.target)
+    assert repair_fixture.target.stat(follow_symlinks=False).st_ino != old_inode
+
+    with pytest.raises(ApplicationError) as failure:
+        await repair_fixture.service.generate(
+            repair_fixture.unit_id,
+            mode=RepairMode.AUTO_PIECE,
+        )
+
+    assert failure.value.code == "REPAIR_PLAN_TARGET_OWNERSHIP_UNPROVEN"
+
+
+@pytest.mark.asyncio
+async def test_repair_download_response_loss_replays_start_without_second_write(
+    repair_fixture: _RepairFixture,
+) -> None:
+    repair_fixture.qbit.allow_repair_writes = True
+    filesystem = FilesystemOperationService(
+        repair_fixture.factory,
+        SafeFilesystemGateway(repair_fixture.data_root),
+    )
+    repair = TaskRepairCoordinator(
+        repair_fixture.factory,
+        repair_fixture.service,
+        TaskRepairIsolationCoordinator(repair_fixture.service, filesystem),
+    )
+    verifier = TaskClientVerificationCoordinator(
+        repair_fixture.factory,
+        repair_fixture.downloader_provider,
+        QbittorrentRecheckOperationService(repair_fixture.factory),
+        repair_download_operations=RepairDownloadOperationService(repair_fixture.factory),
+        data_root=repair_fixture.data_root,
+    )
+    await repair.execute(repair_fixture.unit_id)
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_repair_download_started":
+            raise RuntimeError(checkpoint)
+
+    with pytest.raises(RuntimeError, match="after_repair_download_started"):
+        await verifier.execute(
+            repair_fixture.unit_id,
+            execution_plan_id=repair_fixture.plan_id,
+            fault_hook=crash,
+        )
+
+    assert repair_fixture.qbit.start_calls == 1
+    with repair_fixture.factory() as session:
+        task = session.get(UnpackTask, repair_fixture.task_id)
+        assert task is not None
+        assert task.checkpoint["repair_stage"] == REPAIR_STAGE_DOWNLOAD_PENDING
+
+    resumed = await verifier.execute(
+        repair_fixture.unit_id,
+        execution_plan_id=repair_fixture.plan_id,
+    )
+    assert resumed.verification_outcome == "REPAIR_DOWNLOADING"
+    assert resumed.replayed is True
+    assert repair_fixture.qbit.start_calls == 1
 
 
 @pytest.mark.asyncio

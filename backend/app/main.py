@@ -31,6 +31,7 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import FilesystemOperationService
 from backend.app.application.notification_driver import NotificationDriver
 from backend.app.application.notifications import NotificationService
+from backend.app.application.repair_downloader_operations import RepairDownloadOperationService
 from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
 from backend.app.application.task_actions import TaskActionService
@@ -43,6 +44,7 @@ from backend.app.application.task_linking import TaskLinkingCoordinator
 from backend.app.application.task_operations import TaskOperationService
 from backend.app.application.task_recovery import TaskRecoveryCoordinator
 from backend.app.application.task_repairs import (
+    TaskRepairCoordinator,
     TaskRepairIsolationCoordinator,
     TaskRepairPlanService,
 )
@@ -132,6 +134,10 @@ def create_app(
             resolved_runtime.session_factory
         )
         app.state.qbittorrent_recheck_operation_service = qbit_recheck_operations
+        repair_download_operations = RepairDownloadOperationService(
+            resolved_runtime.session_factory
+        )
+        app.state.repair_download_operation_service = repair_download_operations
         transmission_add_operations = TransmissionAddOperationService(
             resolved_runtime.session_factory
         )
@@ -189,9 +195,15 @@ def create_app(
             SafeFilesystemGateway(resolved_settings.data_dir),
         )
         app.state.filesystem_operation_service = filesystem_operations
-        app.state.task_repair_isolation_coordinator = TaskRepairIsolationCoordinator(
+        task_repair_isolation_coordinator = TaskRepairIsolationCoordinator(
             task_repair_plan_service,
             filesystem_operations,
+        )
+        app.state.task_repair_isolation_coordinator = task_repair_isolation_coordinator
+        app.state.task_repair_coordinator = TaskRepairCoordinator(
+            resolved_runtime.session_factory,
+            task_repair_plan_service,
+            task_repair_isolation_coordinator,
         )
         app.state.task_operation_service = TaskOperationService(
             resolved_runtime.session_factory,
@@ -221,6 +233,7 @@ def create_app(
             downloader_service,
             qbit_recheck_operations,
             transmission_verify_operations,
+            repair_download_operations,
             data_root=resolved_settings.data_dir,
         )
         app.state.task_client_verification_coordinator = task_client_verification_coordinator

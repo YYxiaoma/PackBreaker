@@ -16,10 +16,25 @@ from backend.app.application.downloader_operations import (
 )
 from backend.app.application.downloaders import QbittorrentWriteBinding, TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
+from backend.app.application.repair_downloader_operations import (
+    RepairDownloadOperationResult,
+    RepairDownloadOperationService,
+    RepairDownloadStartRequest,
+    RepairDownloadStopRequest,
+)
 from backend.app.application.task_adding import (
     CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION,
     POST_ADD_CHECKPOINT_SCHEMA_VERSION,
     SEEDING_CHECKPOINT_SCHEMA_VERSION,
+)
+from backend.app.application.task_repairs import (
+    REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION,
+    REPAIR_STAGE_DOWNLOAD_PENDING,
+    REPAIR_STAGE_DOWNLOADING,
+    REPAIR_STAGE_INCOMPLETE,
+    REPAIR_STAGE_RECHECK_PENDING,
+    REPAIR_STAGE_RECHECKING,
+    REPAIR_STAGE_VERIFIED,
 )
 from backend.app.application.transmission_operations import (
     TRANSMISSION_ADD_OPERATION,
@@ -100,6 +115,7 @@ class TaskClientVerificationCoordinator:
         downloader_service: DownloaderBindingProvider,
         recheck_operations: QbittorrentRecheckOperationService,
         transmission_verify_operations: TransmissionVerifyOperationService | None = None,
+        repair_download_operations: RepairDownloadOperationService | None = None,
         *,
         data_root: Path,
     ) -> None:
@@ -107,6 +123,7 @@ class TaskClientVerificationCoordinator:
         self._downloader_service = downloader_service
         self._recheck_operations = recheck_operations
         self._transmission_verify_operations = transmission_verify_operations
+        self._repair_download_operations = repair_download_operations
         self._data_root = data_root
         self._filesystem = SafeFilesystemGateway(data_root)
 
@@ -123,11 +140,22 @@ class TaskClientVerificationCoordinator:
 
         authorized = self._load_authorized(unit_id, execution_plan_id)
         binding = self._load_target_binding(authorized)
-        candidate_key = candidate_execution_key(
-            task_key=authorized.task_idempotency_key,
-            site_id=authorized.candidate_site_id,
-            remote_torrent_id=authorized.candidate_torrent_id,
-            target_downloader_id=authorized.target_downloader_id,
+        repair_stage = _repair_stage(authorized.checkpoint)
+        if repair_stage in {REPAIR_STAGE_DOWNLOAD_PENDING, REPAIR_STAGE_DOWNLOADING}:
+            return await self._execute_repair_download(
+                authorized,
+                binding,
+                fault_hook=fault_hook,
+            )
+        candidate_key = (
+            _required_digest(authorized.checkpoint, "repair_candidate_key")
+            if repair_stage in {REPAIR_STAGE_RECHECK_PENDING, REPAIR_STAGE_RECHECKING}
+            else candidate_execution_key(
+                task_key=authorized.task_idempotency_key,
+                site_id=authorized.candidate_site_id,
+                remote_torrent_id=authorized.candidate_torrent_id,
+                target_downloader_id=authorized.target_downloader_id,
+            )
         )
         if authorized.downloader_kind is DownloaderKind.QBITTORRENT:
             if not isinstance(binding, QbittorrentWriteBinding):
@@ -218,6 +246,191 @@ class TaskClientVerificationCoordinator:
             title="客户端下载器校验状态不可安全解释",
             detail="torrent 离开 checking 后既不是停止且完整，也不是停止且不完整；禁止自动推进",
         )
+
+    async def _execute_repair_download(
+        self,
+        authorized: _AuthorizedVerification,
+        binding: QbittorrentWriteBinding | TransmissionWriteBinding,
+        *,
+        fault_hook: Callable[[str], None] | None,
+    ) -> TaskClientVerificationResult:
+        operations = self._repair_download_operations
+        if operations is None:
+            raise ApplicationError(
+                code="REPAIR_DOWNLOAD_SERVICE_UNAVAILABLE",
+                status=409,
+                title="修复下载服务未注册",
+                detail="当前运行时尚未注册 journal-backed repair download start/stop 服务",
+            )
+        checkpoint = authorized.checkpoint
+        candidate_key = _required_digest(checkpoint, "repair_candidate_key")
+        evidence_digest = _required_digest(checkpoint, "repair_evidence_digest")
+        source_verification_journal_id = _required_text(
+            checkpoint,
+            "repair_source_verification_journal_id",
+        )
+        start = await operations.start(
+            RepairDownloadStartRequest(
+                task_id=authorized.task_id,
+                candidate_key=candidate_key,
+                downloader_id=authorized.target_downloader_id,
+                downloader_version=authorized.target_downloader_version,
+                execution_plan_id=authorized.plan_id,
+                add_journal_id=authorized.add_journal_id,
+                source_verification_journal_id=source_verification_journal_id,
+                torrent_hash=authorized.torrent_hash,
+                remote_save_path=authorized.target_remote_save_path,
+                ownership_tag=authorized.ownership_tag,
+                repair_evidence_digest=evidence_digest,
+            ),
+            binding,
+        )
+        if fault_hook is not None:
+            fault_hook("after_repair_download_started")
+
+        if not start.complete:
+            if start.stopped:
+                raise ApplicationError(
+                    code="REPAIR_DOWNLOAD_STOPPED_INCOMPLETE",
+                    status=409,
+                    title="修复下载在补齐完成前停止",
+                    detail=(
+                        "repair start journal 已 APPLIED，但 owned torrent 当前停止且仍不完整；"
+                        "禁止把外部停止状态自动解释为可再次 start"
+                    ),
+                )
+            return self._record_repair_progress(
+                authorized,
+                start,
+                repair_stage=REPAIR_STAGE_DOWNLOADING,
+                outcome="REPAIR_DOWNLOADING",
+                repair_start_journal_id=start.journal_id,
+                repair_stop_journal_id=None,
+                event_type="REPAIR_DOWNLOAD_PROGRESS",
+                reason="修复下载已启动，等待客户端下载补齐受影响数据",
+            )
+
+        stop = await operations.stop(
+            RepairDownloadStopRequest(
+                task_id=authorized.task_id,
+                candidate_key=candidate_key,
+                downloader_id=authorized.target_downloader_id,
+                downloader_version=authorized.target_downloader_version,
+                execution_plan_id=authorized.plan_id,
+                add_journal_id=authorized.add_journal_id,
+                source_verification_journal_id=source_verification_journal_id,
+                repair_start_journal_id=start.journal_id,
+                torrent_hash=authorized.torrent_hash,
+                remote_save_path=authorized.target_remote_save_path,
+                ownership_tag=authorized.ownership_tag,
+                repair_evidence_digest=evidence_digest,
+            ),
+            binding,
+        )
+        stop_journal_id = stop.journal_id
+        if fault_hook is not None:
+            fault_hook("after_repair_download_stopped")
+        if not stop.complete or not stop.stopped:
+            raise ApplicationError(
+                code="REPAIR_DOWNLOAD_STOP_STATE_UNSAFE",
+                status=409,
+                title="修复下载停止结果不可安全确认",
+                detail="进入第二轮客户端校验前必须由真实状态证明 torrent 已停止且完整",
+            )
+        return self._record_repair_progress(
+            authorized,
+            stop,
+            repair_stage=REPAIR_STAGE_RECHECK_PENDING,
+            outcome="REPAIR_RECHECK_PENDING",
+            repair_start_journal_id=start.journal_id,
+            repair_stop_journal_id=stop_journal_id,
+            event_type="REPAIR_DOWNLOAD_COMPLETED",
+            reason="客户端下载已补齐到 100% 并停止；下一 tick 将启动独立第二轮完整校验",
+        )
+
+    def _record_repair_progress(
+        self,
+        authorized: _AuthorizedVerification,
+        result: RepairDownloadOperationResult,
+        *,
+        repair_stage: str,
+        outcome: str,
+        repair_start_journal_id: str,
+        repair_stop_journal_id: str | None,
+        event_type: str,
+        reason: str,
+    ) -> TaskClientVerificationResult:
+        checkpoint = deepcopy(authorized.checkpoint)
+        checkpoint.update(
+            {
+                "schema_version": CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION,
+                "stage": TaskStatus.CLIENT_VERIFYING.value,
+                "client_state": result.state,
+                "client_progress": result.progress,
+                "checking_observed": False,
+                "verification_outcome": outcome,
+                "repair_schema_version": REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION,
+                "repair_stage": repair_stage,
+                "repair_start_journal_id": repair_start_journal_id,
+                "repair_stop_journal_id": repair_stop_journal_id,
+            }
+        )
+        with self._session_factory() as session:
+            repository = TaskRepository(session)
+            task = repository.get(authorized.task_id)
+            if (
+                task is None
+                or task.status != TaskStatus.CLIENT_VERIFYING.value
+                or task.version != authorized.task_version
+            ):
+                raise _verification_task_changed()
+            if task.checkpoint == checkpoint:
+                return TaskClientVerificationResult(
+                    task_id=task.id,
+                    task_version=task.version,
+                    status=TaskStatus.CLIENT_VERIFYING,
+                    execution_plan_id=authorized.plan_id,
+                    recheck_journal_id=_required_text(
+                        checkpoint,
+                        "repair_source_verification_journal_id",
+                    ),
+                    torrent_hash=result.torrent_hash,
+                    client_state=result.state,
+                    progress=result.progress,
+                    verification_outcome=outcome,
+                    checking_observed=False,
+                    replayed=True,
+                    recovered_after_unknown_result=result.recovered_after_unknown_result,
+                )
+            try:
+                task = repository.record_checkpoint(
+                    task_id=task.id,
+                    expected_version=task.version,
+                    expected_status=TaskStatus.CLIENT_VERIFYING,
+                    checkpoint=checkpoint,
+                    event_type=event_type,
+                    reason=reason,
+                )
+            except DomainViolation as exc:
+                raise _verification_task_changed() from exc
+            session.commit()
+            return TaskClientVerificationResult(
+                task_id=task.id,
+                task_version=task.version,
+                status=TaskStatus.CLIENT_VERIFYING,
+                execution_plan_id=authorized.plan_id,
+                recheck_journal_id=_required_text(
+                    checkpoint,
+                    "repair_source_verification_journal_id",
+                ),
+                torrent_hash=result.torrent_hash,
+                client_state=result.state,
+                progress=result.progress,
+                verification_outcome=outcome,
+                checking_observed=False,
+                replayed=result.replayed,
+                recovered_after_unknown_result=result.recovered_after_unknown_result,
+            )
 
     def _load_authorized(self, unit_id: str, plan_id: str) -> _AuthorizedVerification:
         with self._session_factory() as session:
@@ -574,6 +787,13 @@ def _verification_checkpoint(
             "verification_outcome": outcome,
         }
     )
+    if checkpoint.get("repair_schema_version") == REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION:
+        if status is TaskStatus.CLIENT_VERIFYING:
+            checkpoint["repair_stage"] = REPAIR_STAGE_RECHECKING
+        elif status is TaskStatus.SEEDING:
+            checkpoint["repair_stage"] = REPAIR_STAGE_VERIFIED
+        elif status is TaskStatus.RETRY:
+            checkpoint["repair_stage"] = REPAIR_STAGE_INCOMPLETE
     return checkpoint
 
 
@@ -628,6 +848,33 @@ def _required_text(payload: dict[str, object], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise _verification_evidence_invalid(f"CLIENT_VERIFYING 证据缺少有效 {key}")
     return value
+
+
+def _required_digest(payload: dict[str, object], key: str) -> str:
+    value = _required_text(payload, key)
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise _verification_evidence_invalid(f"CLIENT_VERIFYING 证据包含无效 {key}")
+    return value
+
+
+def _repair_stage(checkpoint: dict[str, object]) -> str | None:
+    schema = checkpoint.get("repair_schema_version")
+    if schema is None:
+        return None
+    if schema != REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION:
+        raise _verification_evidence_invalid("repair download checkpoint schema 无效")
+    stage = checkpoint.get("repair_stage")
+    if stage not in {
+        REPAIR_STAGE_DOWNLOAD_PENDING,
+        REPAIR_STAGE_DOWNLOADING,
+        REPAIR_STAGE_RECHECK_PENDING,
+        REPAIR_STAGE_RECHECKING,
+        REPAIR_STAGE_VERIFIED,
+        REPAIR_STAGE_INCOMPLETE,
+    }:
+        raise _verification_evidence_invalid("repair download checkpoint stage 无效")
+    assert isinstance(stage, str)
+    return stage
 
 
 def _required_positive_int(payload: dict[str, object], key: str) -> int:

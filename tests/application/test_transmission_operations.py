@@ -12,7 +12,20 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.app.application.downloaders import TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
+from backend.app.application.repair_downloader_operations import (
+    TRANSMISSION_REPAIR_START_OPERATION,
+    TRANSMISSION_REPAIR_STOP_OPERATION,
+    RepairDownloadOperationService,
+    RepairDownloadStartRequest,
+    RepairDownloadStopRequest,
+)
+from backend.app.application.task_adding import CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION
+from backend.app.application.task_repairs import (
+    REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION,
+    REPAIR_STAGE_DOWNLOAD_PENDING,
+)
 from backend.app.application.transmission_operations import (
     TRANSMISSION_ADD_OPERATION,
     TRANSMISSION_REMOVE_OPERATION,
@@ -31,6 +44,7 @@ from backend.app.application.transmission_operations import (
     TransmissionVerifyOperationService,
 )
 from backend.app.domain.operation import OperationStatus
+from backend.app.domain.task_state import TaskStatus
 from backend.app.infrastructure.adapters.downloaders import (
     DownloaderAdapterError,
     TransmissionAddRequest,
@@ -425,6 +439,235 @@ async def test_transmission_verify_response_loss_recovers_and_completion_is_prov
             TRANSMISSION_VERIFY_OPERATION,
         ]
         assert all(item.status == OperationStatus.APPLIED.value for item in journals)
+
+
+@pytest.mark.asyncio
+async def test_transmission_repair_download_start_stop_are_journal_backed_and_replay_safe(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    added = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    adapter.states[added.torrent_hash] = replace(
+        adapter.states[added.torrent_hash],
+        status=0,
+        percent_done=0.75,
+        recheck_progress=0.0,
+    )
+    verify_request = TransmissionVerifyOperationRequest(
+        task_id=task_id,
+        candidate_key="a" * 64,
+        downloader_id=binding.downloader_id,
+        downloader_version=binding.downloader_version,
+        execution_plan_id="plan-tr",
+        add_journal_id=added.journal_id,
+        torrent_hash=added.torrent_hash,
+        remote_save_path=added.save_path,
+        ownership_tag=added.ownership_tag,
+    )
+    verify_service = TransmissionVerifyOperationService(factory)
+    await verify_service.execute(verify_request, binding)
+    adapter.states[added.torrent_hash] = replace(
+        adapter.states[added.torrent_hash],
+        status=0,
+        percent_done=0.75,
+        recheck_progress=1.0,
+    )
+    incomplete = await verify_service.execute(verify_request, binding)
+    assert incomplete.verification_incomplete is True
+
+    repair_candidate_key = "c" * 64
+    repair_evidence_digest = "d" * 64
+    with factory() as session:
+        task = TaskRepository(session).get(task_id)
+        assert task is not None
+        task.status = TaskStatus.CLIENT_VERIFYING.value
+        task.checkpoint = {
+            "schema_version": CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION,
+            "stage": TaskStatus.CLIENT_VERIFYING.value,
+            "execution_plan_id": "plan-tr",
+            "add_journal_id": added.journal_id,
+            "verification_journal_id": incomplete.journal_id,
+            "target_downloader_id": binding.downloader_id,
+            "target_downloader_version": binding.downloader_version,
+            "torrent_hash": added.torrent_hash,
+            "remote_save_path": added.save_path,
+            "ownership_tag": added.ownership_tag,
+            "repair_schema_version": REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION,
+            "repair_stage": REPAIR_STAGE_DOWNLOAD_PENDING,
+            "repair_candidate_key": repair_candidate_key,
+            "repair_evidence_digest": repair_evidence_digest,
+            "repair_source_verification_journal_id": incomplete.journal_id,
+            "repair_isolation_journal_ids": [],
+            "repair_start_journal_id": None,
+        }
+        session.commit()
+
+    runtime_binding = TransmissionWriteBinding(
+        downloader_id=binding.downloader_id,
+        downloader_version=binding.downloader_version,
+        binding_digest="e" * 64,
+        path_mappings=(),
+        capabilities=binding.capabilities,
+        adapter=adapter,
+        data_root=Path("/tmp"),
+    )
+    service = RepairDownloadOperationService(factory)
+    start_request = RepairDownloadStartRequest(
+        task_id=task_id,
+        candidate_key=repair_candidate_key,
+        downloader_id=binding.downloader_id,
+        downloader_version=binding.downloader_version,
+        execution_plan_id="plan-tr",
+        add_journal_id=added.journal_id,
+        source_verification_journal_id=incomplete.journal_id,
+        torrent_hash=added.torrent_hash,
+        remote_save_path=added.save_path,
+        ownership_tag=added.ownership_tag,
+        repair_evidence_digest=repair_evidence_digest,
+    )
+
+    started = await service.start(start_request, runtime_binding)
+    replayed_start = await service.start(start_request, runtime_binding)
+
+    assert started.active is True
+    assert started.complete is False
+    assert replayed_start.replayed is True
+    assert adapter.start_calls == 1
+    adapter.states[added.torrent_hash] = replace(
+        adapter.states[added.torrent_hash],
+        status=6,
+        percent_done=1.0,
+    )
+    stop_request = RepairDownloadStopRequest(
+        task_id=task_id,
+        candidate_key=repair_candidate_key,
+        downloader_id=binding.downloader_id,
+        downloader_version=binding.downloader_version,
+        execution_plan_id="plan-tr",
+        add_journal_id=added.journal_id,
+        source_verification_journal_id=incomplete.journal_id,
+        repair_start_journal_id=started.journal_id,
+        torrent_hash=added.torrent_hash,
+        remote_save_path=added.save_path,
+        ownership_tag=added.ownership_tag,
+        repair_evidence_digest=repair_evidence_digest,
+    )
+    stopped = await service.stop(stop_request, runtime_binding)
+    replayed_stop = await service.stop(stop_request, runtime_binding)
+
+    assert stopped.stopped is True
+    assert stopped.complete is True
+    assert replayed_stop.replayed is True
+    assert adapter.stop_calls == 1
+    with factory() as session:
+        repair_journals = tuple(
+            session.scalars(
+                select(OperationJournal)
+                .where(
+                    OperationJournal.operation_type.in_(
+                        [TRANSMISSION_REPAIR_START_OPERATION, TRANSMISSION_REPAIR_STOP_OPERATION]
+                    )
+                )
+                .order_by(OperationJournal.created_at)
+            )
+        )
+        assert [item.operation_type for item in repair_journals] == [
+            TRANSMISSION_REPAIR_START_OPERATION,
+            TRANSMISSION_REPAIR_STOP_OPERATION,
+        ]
+        assert all(item.status == OperationStatus.APPLIED.value for item in repair_journals)
+
+
+@pytest.mark.asyncio
+async def test_transmission_repair_download_rejects_ownership_drift_before_start(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    added = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    adapter.states[added.torrent_hash] = replace(
+        adapter.states[added.torrent_hash],
+        status=0,
+        percent_done=0.5,
+    )
+    verify_request = TransmissionVerifyOperationRequest(
+        task_id=task_id,
+        candidate_key="a" * 64,
+        downloader_id=binding.downloader_id,
+        downloader_version=binding.downloader_version,
+        execution_plan_id="plan-tr",
+        add_journal_id=added.journal_id,
+        torrent_hash=added.torrent_hash,
+        remote_save_path=added.save_path,
+        ownership_tag=added.ownership_tag,
+    )
+    verification = await TransmissionVerifyOperationService(factory).execute(
+        verify_request,
+        binding,
+    )
+    repair_candidate_key = "c" * 64
+    repair_evidence_digest = "d" * 64
+    with factory() as session:
+        task = TaskRepository(session).get(task_id)
+        assert task is not None
+        task.status = TaskStatus.CLIENT_VERIFYING.value
+        task.checkpoint = {
+            "schema_version": CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION,
+            "stage": TaskStatus.CLIENT_VERIFYING.value,
+            "execution_plan_id": "plan-tr",
+            "add_journal_id": added.journal_id,
+            "target_downloader_id": binding.downloader_id,
+            "target_downloader_version": binding.downloader_version,
+            "torrent_hash": added.torrent_hash,
+            "remote_save_path": added.save_path,
+            "ownership_tag": added.ownership_tag,
+            "repair_schema_version": REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION,
+            "repair_stage": REPAIR_STAGE_DOWNLOAD_PENDING,
+            "repair_candidate_key": repair_candidate_key,
+            "repair_evidence_digest": repair_evidence_digest,
+            "repair_source_verification_journal_id": verification.journal_id,
+            "repair_isolation_journal_ids": [],
+            "repair_start_journal_id": None,
+        }
+        session.commit()
+    adapter.states[added.torrent_hash] = replace(
+        adapter.states[added.torrent_hash],
+        status=0,
+        labels=("external-owner",),
+    )
+    runtime_binding = TransmissionWriteBinding(
+        downloader_id=binding.downloader_id,
+        downloader_version=binding.downloader_version,
+        binding_digest="e" * 64,
+        path_mappings=(),
+        capabilities=binding.capabilities,
+        adapter=adapter,
+        data_root=Path("/tmp"),
+    )
+
+    with pytest.raises(ApplicationError) as failure:
+        await RepairDownloadOperationService(factory).start(
+            RepairDownloadStartRequest(
+                task_id=task_id,
+                candidate_key=repair_candidate_key,
+                downloader_id=binding.downloader_id,
+                downloader_version=binding.downloader_version,
+                execution_plan_id="plan-tr",
+                add_journal_id=added.journal_id,
+                source_verification_journal_id=verification.journal_id,
+                torrent_hash=added.torrent_hash,
+                remote_save_path=added.save_path,
+                ownership_tag=added.ownership_tag,
+                repair_evidence_digest=repair_evidence_digest,
+            ),
+            runtime_binding,
+        )
+
+    assert failure.value.code == "REPAIR_DOWNLOAD_STATE_MISMATCH"
+    assert adapter.start_calls == 0
 
 
 @pytest.mark.asyncio

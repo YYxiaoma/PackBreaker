@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -37,8 +39,10 @@ from backend.app.domain.execution_plan import (
     execution_plan_actions_from_payload,
 )
 from backend.app.domain.file_mapping import AutoMappingDecision, MappingMethod
+from backend.app.domain.idempotency import downloader_operation_key
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.repair import (
+    RepairActionKind,
     RepairMode,
     RepairPlan,
     RepairTargetEvidence,
@@ -78,6 +82,14 @@ from backend.app.infrastructure.source_inventory import (
 )
 from backend.app.infrastructure.torrent_parser import parse_torrent
 
+REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION = "packbreaker-repair-download-checkpoint-v1"
+REPAIR_STAGE_DOWNLOAD_PENDING = "DOWNLOAD_PENDING"
+REPAIR_STAGE_DOWNLOADING = "DOWNLOADING"
+REPAIR_STAGE_RECHECK_PENDING = "RECHECK_PENDING"
+REPAIR_STAGE_RECHECKING = "RECHECKING"
+REPAIR_STAGE_VERIFIED = "VERIFIED"
+REPAIR_STAGE_INCOMPLETE = "INCOMPLETE"
+
 
 class DownloaderBindingProvider(Protocol):
     def write_binding(
@@ -116,6 +128,21 @@ class TaskRepairIsolationResult:
     execution_plan_id: str
     isolated_paths: tuple[str, ...]
     isolation_journal_ids: tuple[str, ...]
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TaskRepairExecutionResult:
+    task_id: str
+    task_version: int
+    task_unit_id: str
+    execution_plan_id: str
+    status: TaskStatus
+    repair_candidate_key: str
+    repair_evidence_digest: str
+    isolation_journal_ids: tuple[str, ...]
+    affected_piece_count: int
+    affected_file_count: int
     replayed: bool
 
 
@@ -936,13 +963,23 @@ class TaskRepairPlanService:
                 )
             expected_isolated = _filesystem_snapshot(isolation.after_snapshot)
             try:
-                self._filesystem.assert_repair_isolation_matches(
-                    source_relative_path=source_relative,
-                    target_root_relative_path=authorized.target_root,
-                    target_relative_path=action.torrent_path,
-                    expected_source_snapshot=action.source_snapshot,
-                    expected_target_snapshot=expected_isolated,
-                )
+                if self._repair_write_handoff_completed(authorized, isolation):
+                    self._filesystem.assert_repair_target_remains_isolated(
+                        source_relative_path=source_relative,
+                        target_root_relative_path=authorized.target_root,
+                        target_relative_path=action.torrent_path,
+                        expected_source_snapshot=action.source_snapshot,
+                        expected_isolation_snapshot=expected_isolated,
+                        expected_length=action.length,
+                    )
+                else:
+                    self._filesystem.assert_repair_isolation_matches(
+                        source_relative_path=source_relative,
+                        target_root_relative_path=authorized.target_root,
+                        target_relative_path=action.torrent_path,
+                        expected_source_snapshot=action.source_snapshot,
+                        expected_target_snapshot=expected_isolated,
+                    )
             except DomainViolation as exc:
                 raise _repair_ownership_unproven(
                     "journal-owned repair isolation 当前快照已变化"
@@ -986,6 +1023,97 @@ class TaskRepairPlanService:
                 )
             session.expunge(isolation)
             return isolation
+
+    def _repair_write_handoff_completed(
+        self,
+        authorized: _AuthorizedRepair,
+        isolation: OperationJournal,
+    ) -> bool:
+        checkpoint = authorized.checkpoint
+        schema = checkpoint.get("repair_schema_version")
+        if schema is None:
+            return False
+        if (
+            schema != REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION
+            or checkpoint.get("repair_stage") != REPAIR_STAGE_INCOMPLETE
+        ):
+            raise _repair_evidence_invalid(
+                "RETRY repair checkpoint 未处于可证明的 INCOMPLETE repair cycle"
+            )
+        isolation_ids = _required_string_tuple(checkpoint, "repair_isolation_journal_ids")
+        if isolation.id not in isolation_ids:
+            raise _repair_ownership_unproven(
+                "当前 isolation journal 未包含在上一轮 repair download 冻结证据中"
+            )
+        source_verification_id = _required_text(
+            checkpoint,
+            "repair_source_verification_journal_id",
+        )
+        if source_verification_id == authorized.verification_journal_id:
+            raise _repair_evidence_invalid("repair cycle 没有形成新的第二轮客户端校验 journal")
+        repair_candidate_key = _required_digest(checkpoint, "repair_candidate_key")
+        repair_evidence_digest = _required_digest(checkpoint, "repair_evidence_digest")
+        start_id = _required_text(checkpoint, "repair_start_journal_id")
+        stop_id = _required_text(checkpoint, "repair_stop_journal_id")
+        if authorized.downloader_kind is DownloaderKind.QBITTORRENT:
+            start_operation = "QBITTORRENT_REPAIR_START"
+            stop_operation = "QBITTORRENT_REPAIR_STOP"
+            verify_operation = QBITTORRENT_RECHECK_OPERATION
+        else:
+            start_operation = "TRANSMISSION_REPAIR_START"
+            stop_operation = "TRANSMISSION_REPAIR_STOP"
+            verify_operation = TRANSMISSION_VERIFY_OPERATION
+        expected_verify_key = downloader_operation_key(
+            candidate_key=repair_candidate_key,
+            operation_type=verify_operation,
+            downloader_id=authorized.target_downloader_id,
+        )
+        with self._session_factory() as session:
+            repository = OperationJournalRepository(session)
+            start = repository.get(start_id)
+            stop = repository.get(stop_id)
+            verification = repository.get(authorized.verification_journal_id)
+            if (
+                start is None
+                or start.task_id != authorized.task_id
+                or start.operation_type != start_operation
+                or OperationStatus(start.status) is not OperationStatus.APPLIED
+                or start.intent.get("execution_plan_id") != authorized.plan_id
+                or start.intent.get("add_journal_id") != authorized.add_journal_id
+                or start.intent.get("source_verification_journal_id") != source_verification_id
+                or start.intent.get("repair_evidence_digest") != repair_evidence_digest
+                or start.intent.get("torrent_hash") != authorized.torrent_hash
+                or start.intent.get("remote_save_path") != authorized.target_remote_save_path
+                or start.intent.get("ownership_tag") != authorized.ownership_tag
+            ):
+                raise _repair_evidence_invalid("repair start journal 无法证明上一轮受控下载授权")
+            if (
+                stop is None
+                or stop.task_id != authorized.task_id
+                or stop.operation_type != stop_operation
+                or OperationStatus(stop.status)
+                not in {OperationStatus.APPLIED, OperationStatus.NOOP}
+                or stop.intent.get("execution_plan_id") != authorized.plan_id
+                or stop.intent.get("add_journal_id") != authorized.add_journal_id
+                or stop.intent.get("source_verification_journal_id") != source_verification_id
+                or stop.intent.get("repair_start_journal_id") != start.id
+                or stop.intent.get("repair_evidence_digest") != repair_evidence_digest
+                or stop.intent.get("torrent_hash") != authorized.torrent_hash
+                or stop.intent.get("remote_save_path") != authorized.target_remote_save_path
+                or stop.intent.get("ownership_tag") != authorized.ownership_tag
+            ):
+                raise _repair_evidence_invalid("repair stop journal 无法证明上一轮下载已安全停止")
+            if (
+                verification is None
+                or verification.task_id != authorized.task_id
+                or verification.operation_type != verify_operation
+                or OperationStatus(verification.status) is not OperationStatus.APPLIED
+                or verification.idempotency_key != expected_verify_key
+            ):
+                raise _repair_evidence_invalid(
+                    "当前 INCOMPLETE verification journal 未绑定上一轮 repair candidate key"
+                )
+        return True
 
     def _recheck_hardlink_ownership(self, authorized: _AuthorizedRepair) -> None:
         journals = self._hardlink_journals(authorized)
@@ -1050,6 +1178,208 @@ class TaskRepairIsolationCoordinator:
             )
             isolated_paths.append(target.torrent_path)
             journal_ids.append(result.isolation_journal_id)
+
+
+class TaskRepairCoordinator:
+    """完成 inode 隔离与最终证据复核后，把 RETRY 安全推进回 CLIENT_VERIFYING。"""
+
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        plan_service: TaskRepairPlanService,
+        isolation: TaskRepairIsolationCoordinator,
+    ) -> None:
+        self._session_factory = session_factory
+        self._plan_service = plan_service
+        self._isolation = isolation
+
+    async def execute(self, unit_id: str) -> TaskRepairExecutionResult:
+        existing = self._load_existing(unit_id)
+        if existing is not None:
+            return existing
+
+        await self._isolation.execute(unit_id)
+        view = await self._plan_service.generate(unit_id, mode=RepairMode.AUTO_PIECE)
+        if not view.plan.ready or view.plan.blocked_reasons:
+            raise ApplicationError(
+                code="REPAIR_EXECUTION_PLAN_NOT_READY",
+                status=409,
+                title="修复执行计划尚未通过安全门",
+                detail="最终 AUTO_PIECE repair plan 必须 ready 且没有阻断原因",
+            )
+        if view.plan.isolation_bytes_required != 0 or any(
+            item.isolation_required for item in view.plan.affected_files
+        ):
+            raise ApplicationError(
+                code="REPAIR_EXECUTION_ISOLATION_INCOMPLETE",
+                status=409,
+                title="修复目标 inode 隔离尚未完成",
+                detail="所有可能被下载器写入的受影响 hardlink 必须先完成 journal-backed inode 隔离",
+            )
+        repair_actions = {item.kind for item in view.plan.actions}
+        if not view.plan.affected_files or not repair_actions.intersection(
+            {RepairActionKind.REPAIR_PIECES, RepairActionKind.FETCH_FILE}
+        ):
+            raise ApplicationError(
+                code="REPAIR_EXECUTION_NOT_REQUIRED",
+                status=409,
+                title="当前没有需要启动下载器修复的内容",
+                detail="最终 repair plan 没有需要客户端下载补齐的受影响文件或 piece",
+            )
+
+        return self._reserve_repair_download(view)
+
+    def _reserve_repair_download(self, view: RepairPlanView) -> TaskRepairExecutionResult:
+        with self._session_factory() as session:
+            plan = TaskExecutionPlanRepository(session).get(view.execution_plan_id)
+            latest = TaskExecutionPlanRepository(session).latest(view.task_unit_id)
+            task = TaskRepository(session).get(view.task_id)
+            if (
+                plan is None
+                or latest is None
+                or latest.id != plan.id
+                or task is None
+                or TaskStatus(task.status) is not TaskStatus.RETRY
+            ):
+                raise _repair_input_changed()
+            checkpoint = deepcopy(task.checkpoint)
+            source_verification_journal_id = _required_text(
+                checkpoint,
+                "verification_journal_id",
+                fallback="recheck_journal_id",
+            )
+            isolation_journal_ids = self._applied_isolation_journal_ids(
+                session,
+                task.id,
+            )
+            repair_evidence_digest = _repair_evidence_digest(
+                plan_id=plan.id,
+                plan_digest=plan.plan_digest,
+                source_verification_journal_id=source_verification_journal_id,
+                isolation_journal_ids=isolation_journal_ids,
+                affected_piece_indexes=tuple(item.index for item in view.plan.affected_pieces),
+                affected_files=tuple(item.torrent_path for item in view.plan.affected_files),
+            )
+            repair_candidate_key = sha256(
+                (
+                    f"{plan.id}:{source_verification_journal_id}:"
+                    f"{repair_evidence_digest}:repair-download"
+                ).encode()
+            ).hexdigest()
+            checkpoint.update(
+                {
+                    "schema_version": CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION,
+                    "stage": TaskStatus.CLIENT_VERIFYING.value,
+                    "checking_observed": False,
+                    "verification_outcome": "REPAIR_DOWNLOAD_PENDING",
+                    "repair_schema_version": REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION,
+                    "repair_stage": REPAIR_STAGE_DOWNLOAD_PENDING,
+                    "repair_candidate_key": repair_candidate_key,
+                    "repair_evidence_digest": repair_evidence_digest,
+                    "repair_source_verification_journal_id": source_verification_journal_id,
+                    "repair_isolation_journal_ids": list(isolation_journal_ids),
+                    "repair_affected_piece_indexes": [
+                        item.index for item in view.plan.affected_pieces
+                    ],
+                    "repair_affected_file_count": len(view.plan.affected_files),
+                    "repair_start_journal_id": None,
+                    "repair_stop_journal_id": None,
+                }
+            )
+            try:
+                task = TaskRepository(session).transition(
+                    task_id=task.id,
+                    expected_version=task.version,
+                    to_status=TaskStatus.CLIENT_VERIFYING,
+                    event_type="REPAIR_DOWNLOAD_PREPARED",
+                    reason=(
+                        "受影响 hardlink 已完成 inode 隔离并重新验证；"
+                        "进入受控客户端下载补齐与第二轮完整校验"
+                    ),
+                    checkpoint=checkpoint,
+                )
+            except DomainViolation as exc:
+                raise _repair_input_changed() from exc
+            session.commit()
+            return TaskRepairExecutionResult(
+                task_id=task.id,
+                task_version=task.version,
+                task_unit_id=view.task_unit_id,
+                execution_plan_id=plan.id,
+                status=TaskStatus.CLIENT_VERIFYING,
+                repair_candidate_key=repair_candidate_key,
+                repair_evidence_digest=repair_evidence_digest,
+                isolation_journal_ids=isolation_journal_ids,
+                affected_piece_count=len(view.plan.affected_pieces),
+                affected_file_count=len(view.plan.affected_files),
+                replayed=False,
+            )
+
+    def _load_existing(self, unit_id: str) -> TaskRepairExecutionResult | None:
+        with self._session_factory() as session:
+            plan = TaskExecutionPlanRepository(session).latest(unit_id)
+            if plan is None:
+                return None
+            task = TaskRepository(session).get(plan.task_id)
+            if task is None or TaskStatus(task.status) is not TaskStatus.CLIENT_VERIFYING:
+                return None
+            checkpoint = deepcopy(task.checkpoint)
+            if checkpoint.get("repair_schema_version") != REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION:
+                return None
+            if checkpoint.get("execution_plan_id") != plan.id:
+                raise _repair_evidence_invalid("repair checkpoint 与 latest execution plan 不一致")
+            repair_stage = checkpoint.get("repair_stage")
+            if repair_stage not in {
+                REPAIR_STAGE_DOWNLOAD_PENDING,
+                REPAIR_STAGE_DOWNLOADING,
+                REPAIR_STAGE_RECHECK_PENDING,
+                REPAIR_STAGE_RECHECKING,
+            }:
+                return None
+            isolation_journal_ids = _required_string_tuple(
+                checkpoint,
+                "repair_isolation_journal_ids",
+            )
+            affected_piece_indexes = _required_int_tuple(
+                checkpoint,
+                "repair_affected_piece_indexes",
+            )
+            return TaskRepairExecutionResult(
+                task_id=task.id,
+                task_version=task.version,
+                task_unit_id=unit_id,
+                execution_plan_id=plan.id,
+                status=TaskStatus.CLIENT_VERIFYING,
+                repair_candidate_key=_required_digest(checkpoint, "repair_candidate_key"),
+                repair_evidence_digest=_required_digest(checkpoint, "repair_evidence_digest"),
+                isolation_journal_ids=isolation_journal_ids,
+                affected_piece_count=len(affected_piece_indexes),
+                affected_file_count=_required_nonnegative_int(
+                    checkpoint,
+                    "repair_affected_file_count",
+                ),
+                replayed=True,
+            )
+
+    def _applied_isolation_journal_ids(
+        self,
+        session: Session,
+        task_id: str,
+    ) -> tuple[str, ...]:
+        journals = OperationJournalRepository(session).list_for_task(
+            task_id,
+            operation_types=(ISOLATE_REPAIR_TARGET_OPERATION,),
+        )
+        unresolved = tuple(
+            journal
+            for journal in journals
+            if OperationStatus(journal.status) is not OperationStatus.APPLIED
+        )
+        if unresolved:
+            raise _repair_ownership_unproven(
+                "存在尚未 APPLIED 的 repair isolation journal，不能启动客户端下载修复"
+            )
+        return tuple(sorted(journal.id for journal in journals))
 
 
 def _plan_mapping_evidence(
@@ -1155,11 +1485,61 @@ def _required_positive_int(payload: dict[str, object], key: str) -> int:
     return value
 
 
+def _required_nonnegative_int(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise _repair_evidence_invalid(f"repair evidence 缺少有效 {key}")
+    return value
+
+
+def _required_string_tuple(payload: dict[str, object], key: str) -> tuple[str, ...]:
+    value = payload.get(key)
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise _repair_evidence_invalid(f"repair evidence 缺少有效 {key}")
+    return tuple(value)
+
+
+def _required_int_tuple(payload: dict[str, object], key: str) -> tuple[int, ...]:
+    value = payload.get(key)
+    if not isinstance(value, list) or any(
+        not isinstance(item, int) or isinstance(item, bool) or item < 0 for item in value
+    ):
+        raise _repair_evidence_invalid(f"repair evidence 缺少有效 {key}")
+    return tuple(value)
+
+
 def _required_digest(payload: dict[str, object], key: str) -> str:
     value = _required_text(payload, key)
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         raise _repair_evidence_invalid(f"repair evidence {key} digest 无效")
     return value
+
+
+def _repair_evidence_digest(
+    *,
+    plan_id: str,
+    plan_digest: str,
+    source_verification_journal_id: str,
+    isolation_journal_ids: tuple[str, ...],
+    affected_piece_indexes: tuple[int, ...],
+    affected_files: tuple[str, ...],
+) -> str:
+    payload = {
+        "schema_version": REPAIR_DOWNLOAD_CHECKPOINT_SCHEMA_VERSION,
+        "execution_plan_id": plan_id,
+        "execution_plan_digest": plan_digest,
+        "source_verification_journal_id": source_verification_journal_id,
+        "isolation_journal_ids": list(isolation_journal_ids),
+        "affected_piece_indexes": list(affected_piece_indexes),
+        "affected_files": list(affected_files),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 def _required_plan_text(payload: dict[str, Any], key: str) -> str:
