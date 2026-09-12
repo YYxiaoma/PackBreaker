@@ -74,6 +74,9 @@ class HybridVerificationResult:
     v2: V2VerificationResult
 
 
+TorrentVerificationResult = V1VerificationResult | V2VerificationResult | HybridVerificationResult
+
+
 class DownloaderKind(StrEnum):
     QBITTORRENT = "QBITTORRENT"
     TRANSMISSION = "TRANSMISSION"

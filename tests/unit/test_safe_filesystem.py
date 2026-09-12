@@ -156,3 +156,109 @@ def test_hardlink_inspection_uses_nearest_existing_parent_snapshot(tmp_path: Pat
     assert result.nearest_target_parent_relative_path == "Pack"
     assert result.target_parent_snapshot.inode == actual.st_ino
     assert result.missing_directories == ("Pack/Season",)
+
+
+def test_repair_target_inspection_proves_shared_inode_without_writing(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "movie.mkv"
+    target_root = tmp_path / "target"
+    target = target_root / "movie.mkv"
+    source.parent.mkdir()
+    target_root.mkdir()
+    source.write_bytes(b"synthetic")
+    os.link(source, target)
+    before = target.stat(follow_symlinks=False)
+
+    result = SafeFilesystemGateway(tmp_path).inspect_repair_target(
+        target_root_relative_path="target",
+        target_relative_path="movie.mkv",
+        expected_length=source.stat().st_size,
+        source_relative_path="source/movie.mkv",
+        expected_source_snapshot=_snapshot(source),
+    )
+
+    after = target.stat(follow_symlinks=False)
+    assert result.target_exists is True
+    assert result.shares_source_inode is True
+    assert result.target_inode == source.stat(follow_symlinks=False).st_ino
+    assert result.target_link_count == 2
+    assert result.available_bytes >= 0
+    assert before.st_ino == after.st_ino
+    assert before.st_nlink == after.st_nlink == 2
+
+
+def test_repair_target_inspection_distinguishes_independent_inode(tmp_path: Path) -> None:
+    source = tmp_path / "source.bin"
+    target_root = tmp_path / "target"
+    target = target_root / "source.bin"
+    source.write_bytes(b"data")
+    target_root.mkdir()
+    target.write_bytes(source.read_bytes())
+
+    result = SafeFilesystemGateway(tmp_path).inspect_repair_target(
+        target_root_relative_path="target",
+        target_relative_path="source.bin",
+        expected_length=4,
+        source_relative_path="source.bin",
+        expected_source_snapshot=_snapshot(source),
+    )
+
+    assert result.target_exists is True
+    assert result.shares_source_inode is False
+    assert result.target_link_count == 1
+    assert result.target_size == 4
+
+
+def test_repair_target_inspection_allows_missing_target_for_future_target_only_fetch(
+    tmp_path: Path,
+) -> None:
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+
+    result = SafeFilesystemGateway(tmp_path).inspect_repair_target(
+        target_root_relative_path="target",
+        target_relative_path="extra.nfo",
+        expected_length=128,
+    )
+
+    assert result.target_exists is False
+    assert result.target_inode is None
+    assert result.shares_source_inode is None
+    assert result.available_bytes >= 0
+    assert not (target_root / "extra.nfo").exists()
+
+
+def test_repair_target_inspection_rejects_changed_source_snapshot(tmp_path: Path) -> None:
+    source = tmp_path / "movie.mkv"
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    source.write_bytes(b"first")
+    snapshot = _snapshot(source)
+    source.write_bytes(b"changed")
+
+    with pytest.raises(DomainViolation) as failure:
+        SafeFilesystemGateway(tmp_path).inspect_repair_target(
+            target_root_relative_path="target",
+            target_relative_path="movie.mkv",
+            expected_length=snapshot.size,
+            source_relative_path="movie.mkv",
+            expected_source_snapshot=snapshot,
+        )
+
+    assert failure.value.code is ErrorCode.SOURCE_CHANGED
+
+
+def test_repair_target_inspection_rejects_symlink_target(tmp_path: Path) -> None:
+    real = tmp_path / "real.mkv"
+    target_root = tmp_path / "target"
+    real.write_bytes(b"data")
+    target_root.mkdir()
+    (target_root / "movie.mkv").symlink_to(real)
+
+    with pytest.raises(DomainViolation) as failure:
+        SafeFilesystemGateway(tmp_path).inspect_repair_target(
+            target_root_relative_path="target",
+            target_relative_path="movie.mkv",
+            expected_length=4,
+        )
+
+    assert failure.value.code is ErrorCode.PATH_MAPPING_INVALID

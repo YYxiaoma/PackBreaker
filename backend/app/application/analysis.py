@@ -23,7 +23,7 @@ from backend.app.domain.preflight import (
 from backend.app.domain.site_search import CandidateMeta, SearchQuery, build_search_queries
 from backend.app.domain.task_units import TaskUnit
 from backend.app.domain.torrent import TorrentKind, TorrentMeta
-from backend.app.domain.verification import VerificationLevel
+from backend.app.domain.verification import TorrentVerificationResult, VerificationLevel
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.persistence.preflight_repositories import (
     PreflightSnapshotRepository,
@@ -387,12 +387,14 @@ class AnalysisService:
             return task.version
 
 
-def verify_torrent_mappings(
+def verify_torrent_evidence(
     meta: TorrentMeta,
     mappings: tuple[AutoMappingDecision, ...],
     *,
     cancel_check: Callable[[], None] | None = None,
-) -> VerificationLevel:
+) -> TorrentVerificationResult:
+    """返回完整只读 piece/file 验证证据，供 repair planner 等安全分析复用。"""
+
     piece_mappings = tuple(
         V1FileMapping(
             mapping.torrent_path,
@@ -402,10 +404,19 @@ def verify_torrent_mappings(
         for mapping in mappings
     )
     if meta.torrent_kind is TorrentKind.V1:
-        return verify_v1_pieces(meta, piece_mappings, cancel_check=cancel_check).level
+        return verify_v1_pieces(meta, piece_mappings, cancel_check=cancel_check)
     if meta.torrent_kind is TorrentKind.V2:
-        return verify_v2_files(meta, piece_mappings, cancel_check=cancel_check).level
-    return verify_hybrid(meta, piece_mappings, cancel_check=cancel_check).level
+        return verify_v2_files(meta, piece_mappings, cancel_check=cancel_check)
+    return verify_hybrid(meta, piece_mappings, cancel_check=cancel_check)
+
+
+def verify_torrent_mappings(
+    meta: TorrentMeta,
+    mappings: tuple[AutoMappingDecision, ...],
+    *,
+    cancel_check: Callable[[], None] | None = None,
+) -> VerificationLevel:
+    return verify_torrent_evidence(meta, mappings, cancel_check=cancel_check).level
 
 
 def _candidate_key(candidate: CandidateMeta) -> str:

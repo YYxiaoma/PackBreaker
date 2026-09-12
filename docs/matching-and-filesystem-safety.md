@@ -200,6 +200,10 @@ M3 的 `SafeFilesystemGateway` 负责上述动作前的统一只读检查：输�
 
 空间不足、源变化、无法暂停或无法隔离时进入人工处理。禁止直接打开硬链接目标写入，也禁止在源文件上做原地 patch。
 
+当前 M4 已实现第一层**只读修复规划**，但尚未开放修复写入：`verify_torrent_evidence()` 可保留 v1/v2/hybrid 的完整 piece/file 验证证据，`build_repair_plan()` 由非 `VERIFIED` piece 推导受影响文件。v1 使用 verifier 已记录的 `covered_files` 精确识别跨文件 piece，并忽略仅由 padding/零长度文件造成的伪跨界；v2 piece 保持单文件作用域。`SafeFilesystemGateway.inspect_repair_target()` 只读取 target device/inode/size/link count 与文件系统可用空间，并重新核对可用的源快照，不创建、替换或打开文件写入。
+
+自动 piece 计划和文件级计划都要求下载器已经停止写入；目标只要与源 device+inode 相同，或自身 `link_count > 1`，就计入完整文件大小的隔离空间预算。缺失源文件只允许规划为目标侧 `FETCH_FILE`，不会生成源目录写入动作。FILE_ONLY 遇到跨文件 v1 piece 或任一需要 inode 隔离的目标都会失败关闭；空间预算不足同样阻断自动模式。人工引导只输出证据和前置条件，不把“未暂停/空间不足”误报成自动可执行。所有当前 `RepairPlan` 固定 `execution_allowed=false`；后续真正 copy + fsync + atomic replace、下载器补齐/重校验和 operation journal 所有权证明必须另行实现后才能开放执行。
+
 ### 10.3 缺失小文件
 
 - 存在字节完全一致的本地文件时可复制或硬链接，并纳入验证。

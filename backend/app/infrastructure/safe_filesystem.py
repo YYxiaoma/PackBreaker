@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
+from backend.app.domain.repair import RepairTargetEvidence
 from backend.app.domain.verification import FileSnapshot
 
 
@@ -88,6 +89,87 @@ class SafeFilesystemGateway:
         if expected_device is not None and snapshot.device != expected_device:
             raise DomainViolation(ErrorCode.CROSS_DEVICE_LINK, "目标目录设备与执行计划不一致")
         return snapshot
+
+    def inspect_repair_target(
+        self,
+        *,
+        target_root_relative_path: str,
+        target_relative_path: str,
+        expected_length: int,
+        source_relative_path: str | None = None,
+        expected_source_snapshot: FileSnapshot | None = None,
+    ) -> RepairTargetEvidence:
+        """只读检查未来 repair target 的 inode 身份和可用空间，不创建或修改文件。"""
+
+        if expected_length < 0:
+            raise ValueError("repair target expected_length 不能为负数")
+        if (source_relative_path is None) != (expected_source_snapshot is None):
+            raise ValueError("repair target source 路径与快照必须同时提供")
+
+        root, root_snapshot = self._require_data_root()
+        _, target_root_parts = _normalize_relative_path(
+            target_root_relative_path,
+            allow_root=True,
+        )
+        target_relative, target_parts = _normalize_relative_path(target_relative_path)
+        _, target_root_snapshot = self._require_directory_chain(
+            root,
+            target_root_parts,
+            root_snapshot,
+        )
+
+        source_device: int | None = None
+        source_inode: int | None = None
+        if source_relative_path is not None and expected_source_snapshot is not None:
+            _, source_parts = _normalize_relative_path(source_relative_path)
+            _, source_snapshot = self._require_regular_file(root, source_parts)
+            _assert_source_snapshot(source_snapshot, expected_source_snapshot)
+            source_device = source_snapshot.device
+            source_inode = source_snapshot.inode
+            if source_snapshot.size != expected_length:
+                raise DomainViolation(
+                    ErrorCode.SOURCE_CHANGED,
+                    "repair source 长度与计划不一致",
+                )
+
+        parent_fd = _open_directory_chain(root, target_root_parts + target_parts[:-1])
+        try:
+            parent_snapshot = _fstat_snapshot(parent_fd)
+            if parent_snapshot.device != target_root_snapshot.device:
+                raise DomainViolation(
+                    ErrorCode.CROSS_DEVICE_LINK,
+                    "repair target 父目录设备与目标根不一致",
+                )
+            target_snapshot = _stat_at(parent_fd, target_parts[-1], missing_ok=True)
+            if target_snapshot is not None and target_snapshot.file_type != "regular":
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "repair target 必须是普通文件且不能是符号链接",
+                )
+            try:
+                filesystem = os.fstatvfs(parent_fd)
+            except OSError as exc:
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "无法读取 repair target 文件系统空间",
+                ) from exc
+            fragment_size = filesystem.f_frsize or filesystem.f_bsize
+            available_bytes = filesystem.f_bavail * fragment_size
+        finally:
+            os.close(parent_fd)
+
+        return RepairTargetEvidence(
+            torrent_path=target_relative,
+            expected_length=expected_length,
+            target_exists=target_snapshot is not None,
+            target_device=None if target_snapshot is None else target_snapshot.device,
+            target_inode=None if target_snapshot is None else target_snapshot.inode,
+            target_size=None if target_snapshot is None else target_snapshot.size,
+            target_link_count=None if target_snapshot is None else target_snapshot.link_count,
+            source_device=source_device,
+            source_inode=source_inode,
+            available_bytes=available_bytes,
+        )
 
     def inspect_hardlink(
         self,

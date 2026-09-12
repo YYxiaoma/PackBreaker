@@ -112,6 +112,8 @@ Transmission 写事务测试同样只使用 fake/MockTransport：除 ADD/VERIFY/
 
 LINKING 协调器额外覆盖两阶段当前性：调用前 plan provider 必须返回 latest/current/ready；真正推进任务前还要在数据库事务内重新核对 latest plan/gate/review/candidate/preflight/task version。测试必须模拟两次检查之间新增 review revision 并证明零文件副作用；还要模拟 LINKING checkpoint 已提交后 source inventory 改变，证明在首个 operation journal intent/目录/hardlink 前阻断。重复调用已进入 LINKING 的任务只能恢复 checkpoint 精确绑定的同一 plan。
 
+99% 修复安全基础层必须作为纯只读能力测试：v1 mismatch piece 的 `covered_files` 要能识别真实跨文件边界，padding/零长度范围不能制造伪跨文件风险；v2 piece 始终保持文件内作用域。自动 piece 模式在目标仍与源共享 inode、目标 `link_count > 1`、下载器未暂停或隔离/缺失文件预算超过可用空间时不得进入 ready；FILE_ONLY 还必须额外拒绝跨文件 piece 和任何需要隔离的目标。缺失 NFO/图片/字幕只能规划为目标侧完整文件获取，不允许产生源目录写入。`inspect_repair_target` 测试要证明 hardlink/独立 inode/missing target/symlink/source snapshot 漂移均被正确区分且检查前后没有文件副作用。所有 planner 测试必须断言 `execution_allowed=false`，直到后续 journal-backed copy/fsync/atomic-replace 与 downloader repair executor 完成。
+
 ## 7. 适配器测试矩阵
 
 每个站点适配器覆盖连接、认证失败、分页、空结果、详情缺字段、取种、限流、超时、HTML/API 结构变化、熔断与恢复。
