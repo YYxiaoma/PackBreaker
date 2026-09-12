@@ -46,6 +46,7 @@ from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.application.transmission_operations import (
     TransmissionAddOperationService,
+    TransmissionJournalReconcileService,
     TransmissionRemoveOperationService,
     TransmissionStartOperationService,
     TransmissionVerifyOperationService,
@@ -150,6 +151,10 @@ def create_app(
             resolved_runtime.session_factory
         )
         app.state.qbittorrent_journal_reconcile_service = qbit_journal_reconcile
+        transmission_journal_reconcile = TransmissionJournalReconcileService(
+            resolved_runtime.session_factory
+        )
+        app.state.transmission_journal_reconcile_service = transmission_journal_reconcile
         site_service = SiteService(resolved_runtime.session_factory, secret_store)
         app.state.site_service = site_service
         task_analysis_service = TaskAnalysisService(
@@ -169,6 +174,7 @@ def create_app(
             filesystem_operations,
             downloader_service,
             qbit_journal_reconcile,
+            transmission_journal_reconcile,
         )
         task_linking_coordinator = TaskLinkingCoordinator(
             resolved_runtime.session_factory,

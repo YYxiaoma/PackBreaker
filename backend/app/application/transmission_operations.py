@@ -35,6 +35,14 @@ TRANSMISSION_START_OPERATION = "TRANSMISSION_START"
 TRANSMISSION_START_SCHEMA_VERSION = "packbreaker-transmission-start-v1"
 TRANSMISSION_REMOVE_OPERATION = "TRANSMISSION_REMOVE"
 TRANSMISSION_REMOVE_SCHEMA_VERSION = "packbreaker-transmission-remove-v1"
+TRANSMISSION_RECONCILABLE_OPERATIONS = frozenset(
+    {
+        TRANSMISSION_ADD_OPERATION,
+        TRANSMISSION_VERIFY_OPERATION,
+        TRANSMISSION_START_OPERATION,
+        TRANSMISSION_REMOVE_OPERATION,
+    }
+)
 
 _OPERATION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
@@ -143,6 +151,14 @@ class TransmissionRemoveOperationResult:
     recovered_after_unknown_result: bool
 
 
+@dataclass(frozen=True, slots=True)
+class TransmissionJournalReconcileResult:
+    journal_id: str
+    operation_type: str
+    status: OperationStatus
+    replayed: bool
+
+
 class TransmissionWriteBindingPort(Protocol):
     @property
     def downloader_id(self) -> str: ...
@@ -202,6 +218,16 @@ class _PreparedStart:
 class _PreparedRemove:
     request: TransmissionRemoveOperationRequest
     operation_key: str
+    torrent_hash: str
+    remote_save_path: str
+    ownership_tag: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedJournalReconcile:
+    operation_type: str
+    downloader_id: str
+    downloader_version: int
     torrent_hash: str
     remote_save_path: str
     ownership_tag: str
@@ -1175,6 +1201,139 @@ class TransmissionRemoveOperationService:
             session.commit()
 
 
+class TransmissionJournalReconcileService:
+    """只读查询 Transmission 真实状态，重新证明已有 after snapshot；绝不重发写命令。"""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    async def reconcile(
+        self,
+        journal_id: str,
+        binding: TransmissionWriteBindingPort,
+        *,
+        allow_applied_replay: bool = False,
+    ) -> TransmissionJournalReconcileResult:
+        async with _operation_lock(f"journal-reconcile:{journal_id}"):
+            journal = self._load(journal_id)
+            if journal.operation_type not in TRANSMISSION_RECONCILABLE_OPERATIONS:
+                raise ApplicationError(
+                    code="OPERATION_RECONCILE_UNSUPPORTED",
+                    status=409,
+                    title="该 Transmission 操作不能自动对账",
+                    detail="仅 ADD、VERIFY、START、REMOVE 的已确认完成快照支持只读重新证明",
+                )
+            if journal.status is OperationStatus.APPLIED:
+                if not allow_applied_replay:
+                    raise _transmission_reconcile_state_invalid()
+                replayed = True
+            elif journal.status is OperationStatus.RECONCILE_REQUIRED:
+                replayed = False
+            else:
+                raise _transmission_reconcile_state_invalid()
+
+            prepared = _prepare_journal_reconcile(journal)
+            if (
+                binding.downloader_id != prepared.downloader_id
+                or binding.downloader_version != prepared.downloader_version
+            ):
+                raise ApplicationError(
+                    code="DOWNLOADER_CONFIG_CHANGED",
+                    status=409,
+                    title="Transmission 配置已经变化",
+                    detail="对账只能使用 operation journal 原先绑定的下载器配置版本",
+                )
+
+            if prepared.operation_type == TRANSMISSION_REMOVE_OPERATION:
+                if not await self._torrent_absent(binding.adapter, prepared):
+                    raise _transmission_reconcile_blocked()
+            else:
+                state = await self._owned_state(binding.adapter, prepared)
+                if not _transmission_reconcile_postcondition_holds(
+                    prepared.operation_type,
+                    state,
+                ):
+                    raise _transmission_reconcile_blocked()
+
+            if journal.status is OperationStatus.RECONCILE_REQUIRED:
+                assert journal.after_snapshot is not None
+                journal = self._transition_to_applied(journal, journal.after_snapshot)
+            return TransmissionJournalReconcileResult(
+                journal_id=journal.id,
+                operation_type=journal.operation_type,
+                status=journal.status,
+                replayed=replayed,
+            )
+
+    async def _owned_state(
+        self,
+        adapter: TransmissionWriteAdapter,
+        prepared: _PreparedJournalReconcile,
+    ) -> TransmissionTorrentState:
+        try:
+            observed = await adapter.get_torrents((prepared.torrent_hash,))
+        except DownloaderAdapterError as exc:
+            raise ApplicationError(
+                code="OPERATION_RECONCILE_DOWNLOADER_UNAVAILABLE",
+                status=502,
+                title="无法查询 Transmission 当前状态",
+                detail="当前无法取得足够的下载器状态证据，operation journal 保持安全阻断",
+            ) from exc
+        matching = tuple(
+            state
+            for state in observed
+            if state.torrent_hash == prepared.torrent_hash
+            and state.download_dir == prepared.remote_save_path
+            and prepared.ownership_tag in state.labels
+        )
+        if len(observed) != 1 or len(matching) != 1:
+            raise _transmission_reconcile_blocked()
+        return matching[0]
+
+    async def _torrent_absent(
+        self,
+        adapter: TransmissionWriteAdapter,
+        prepared: _PreparedJournalReconcile,
+    ) -> bool:
+        try:
+            observed = await adapter.get_torrents((prepared.torrent_hash,))
+        except DownloaderAdapterError as exc:
+            raise ApplicationError(
+                code="OPERATION_RECONCILE_DOWNLOADER_UNAVAILABLE",
+                status=502,
+                title="无法查询 Transmission 当前状态",
+                detail="当前无法取得足够的下载器状态证据，operation journal 保持安全阻断",
+            ) from exc
+        return not observed
+
+    def _load(self, journal_id: str) -> _JournalView:
+        with self._session_factory() as session:
+            journal = OperationJournalRepository(session).get(journal_id)
+            if journal is None:
+                raise ApplicationError(
+                    code="OPERATION_NOT_FOUND",
+                    status=404,
+                    title="operation journal 不存在",
+                    detail="无法对不存在的 Transmission operation journal 执行对账",
+                )
+            return _journal_view(journal)
+
+    def _transition_to_applied(
+        self,
+        journal: _JournalView,
+        after_snapshot: dict[str, Any],
+    ) -> _JournalView:
+        with self._session_factory() as session:
+            updated = OperationJournalRepository(session).transition_status(
+                journal_id=journal.id,
+                expected_status=OperationStatus.RECONCILE_REQUIRED,
+                to_status=OperationStatus.APPLIED,
+                after_snapshot=deepcopy(after_snapshot),
+            )
+            session.commit()
+            return _journal_view(updated)
+
+
 def _assert_binding(
     downloader_id: str,
     downloader_version: int,
@@ -1187,6 +1346,206 @@ def _assert_binding(
             title="Transmission 配置已经变化",
             detail="operation intent 必须绑定同一个下载器 ID 与配置版本",
         )
+
+
+def _prepare_journal_reconcile(journal: _JournalView) -> _PreparedJournalReconcile:
+    expected_schema = {
+        TRANSMISSION_ADD_OPERATION: TRANSMISSION_ADD_SCHEMA_VERSION,
+        TRANSMISSION_VERIFY_OPERATION: TRANSMISSION_VERIFY_SCHEMA_VERSION,
+        TRANSMISSION_START_OPERATION: TRANSMISSION_START_SCHEMA_VERSION,
+        TRANSMISSION_REMOVE_OPERATION: TRANSMISSION_REMOVE_SCHEMA_VERSION,
+    }.get(journal.operation_type)
+    if expected_schema is None or journal.after_snapshot is None:
+        raise _transmission_reconcile_unprovable()
+
+    downloader_id = journal.target.get("downloader_id")
+    downloader_version = journal.intent.get("downloader_version")
+    execution_plan_id = journal.intent.get("execution_plan_id")
+    remote_save_path = journal.intent.get("remote_save_path")
+    ownership_tag = journal.intent.get("ownership_tag")
+    torrent_hash = journal.after_snapshot.get("torrent_hash")
+    if (
+        journal.intent.get("schema_version") != expected_schema
+        or not isinstance(downloader_id, str)
+        or not downloader_id
+        or not isinstance(downloader_version, int)
+        or isinstance(downloader_version, bool)
+        or downloader_version < 1
+        or not isinstance(execution_plan_id, str)
+        or not execution_plan_id
+        or not isinstance(remote_save_path, str)
+        or not isinstance(ownership_tag, str)
+        or not ownership_tag
+        or not isinstance(torrent_hash, str)
+    ):
+        raise _transmission_reconcile_unprovable()
+    try:
+        normalized_hash = _normalize_hash(torrent_hash)
+        normalized_save_path = normalize_remote_path(remote_save_path)
+    except (DomainViolation, ValueError) as exc:
+        raise _transmission_reconcile_unprovable() from exc
+    if normalized_hash != torrent_hash or normalized_save_path != remote_save_path:
+        raise _transmission_reconcile_unprovable()
+
+    if journal.operation_type == TRANSMISSION_ADD_OPERATION:
+        checked_hashes = (
+            journal.before_snapshot.get("checked_hashes") if journal.before_snapshot else None
+        )
+        expected_hashes = journal.intent.get("expected_hashes")
+        if (
+            journal.target.get("remote_save_path") != normalized_save_path
+            or journal.intent.get("paused") is not True
+            or journal.intent.get("skip_checking") is not False
+            or not isinstance(expected_hashes, list)
+            or normalized_hash not in expected_hashes
+            or journal.before_snapshot is None
+            or journal.before_snapshot.get("torrent_absent") is not True
+            or not isinstance(checked_hashes, list)
+            or normalized_hash not in checked_hashes
+        ):
+            raise _transmission_reconcile_unprovable()
+        after_state = _snapshot_state(
+            journal.after_snapshot,
+            torrent_hash=normalized_hash,
+            remote_save_path=normalized_save_path,
+            ownership_tag=ownership_tag,
+        )
+        if not after_state.stopped:
+            raise _transmission_reconcile_unprovable()
+    elif journal.operation_type == TRANSMISSION_VERIFY_OPERATION:
+        if (
+            journal.target.get("torrent_hash") != normalized_hash
+            or journal.intent.get("torrent_hash") != normalized_hash
+            or not isinstance(journal.intent.get("add_journal_id"), str)
+            or not journal.intent.get("add_journal_id")
+            or journal.before_snapshot is None
+        ):
+            raise _transmission_reconcile_unprovable()
+        before_state = _snapshot_state(
+            journal.before_snapshot,
+            torrent_hash=normalized_hash,
+            remote_save_path=normalized_save_path,
+            ownership_tag=ownership_tag,
+        )
+        after_state = _snapshot_state(
+            journal.after_snapshot,
+            torrent_hash=normalized_hash,
+            remote_save_path=normalized_save_path,
+            ownership_tag=ownership_tag,
+        )
+        if not before_state.stopped or not (
+            after_state.checking
+            or _state_differs_from_snapshot(after_state, journal.before_snapshot)
+        ):
+            raise _transmission_reconcile_unprovable()
+    elif journal.operation_type == TRANSMISSION_START_OPERATION:
+        if (
+            journal.target.get("torrent_hash") != normalized_hash
+            or journal.intent.get("torrent_hash") != normalized_hash
+            or not isinstance(journal.intent.get("add_journal_id"), str)
+            or not journal.intent.get("add_journal_id")
+            or not isinstance(journal.intent.get("verification_journal_id"), str)
+            or not journal.intent.get("verification_journal_id")
+            or journal.before_snapshot is None
+        ):
+            raise _transmission_reconcile_unprovable()
+        before_state = _snapshot_state(
+            journal.before_snapshot,
+            torrent_hash=normalized_hash,
+            remote_save_path=normalized_save_path,
+            ownership_tag=ownership_tag,
+        )
+        after_state = _snapshot_state(
+            journal.after_snapshot,
+            torrent_hash=normalized_hash,
+            remote_save_path=normalized_save_path,
+            ownership_tag=ownership_tag,
+        )
+        if not before_state.verification_complete or not after_state.seeding:
+            raise _transmission_reconcile_unprovable()
+    else:
+        if (
+            journal.target.get("torrent_hash") != normalized_hash
+            or journal.intent.get("torrent_hash") != normalized_hash
+            or not isinstance(journal.intent.get("add_journal_id"), str)
+            or not journal.intent.get("add_journal_id")
+            or journal.intent.get("delete_local_data") is not False
+            or journal.after_snapshot.get("torrent_absent") is not True
+            or journal.after_snapshot.get("delete_local_data") is not False
+            or journal.before_snapshot is None
+            or journal.before_snapshot.get("torrent_absent") is True
+        ):
+            raise _transmission_reconcile_unprovable()
+        _snapshot_state(
+            journal.before_snapshot,
+            torrent_hash=normalized_hash,
+            remote_save_path=normalized_save_path,
+            ownership_tag=ownership_tag,
+        )
+
+    return _PreparedJournalReconcile(
+        operation_type=journal.operation_type,
+        downloader_id=downloader_id,
+        downloader_version=downloader_version,
+        torrent_hash=normalized_hash,
+        remote_save_path=normalized_save_path,
+        ownership_tag=ownership_tag,
+    )
+
+
+def _snapshot_state(
+    snapshot: dict[str, Any],
+    *,
+    torrent_hash: str,
+    remote_save_path: str,
+    ownership_tag: str,
+) -> TransmissionTorrentState:
+    labels = snapshot.get("labels")
+    status = snapshot.get("status")
+    progress = snapshot.get("progress")
+    recheck_progress = snapshot.get("recheck_progress")
+    if (
+        snapshot.get("torrent_hash") != torrent_hash
+        or snapshot.get("save_path") != remote_save_path
+        or snapshot.get("ownership_tag") != ownership_tag
+        or not isinstance(labels, list)
+        or not all(isinstance(item, str) for item in labels)
+        or ownership_tag not in labels
+        or isinstance(status, bool)
+        or not isinstance(status, int)
+        or isinstance(progress, bool)
+        or not isinstance(progress, (int, float))
+        or isinstance(recheck_progress, bool)
+        or not isinstance(recheck_progress, (int, float))
+    ):
+        raise _transmission_reconcile_unprovable()
+    try:
+        state = TransmissionTorrentState(
+            torrent_hash=torrent_hash,
+            download_dir=remote_save_path,
+            status=status,
+            labels=tuple(labels),
+            percent_done=float(progress),
+            recheck_progress=float(recheck_progress),
+        )
+    except (TypeError, ValueError) as exc:
+        raise _transmission_reconcile_unprovable() from exc
+    if snapshot.get("state") != str(state.status) or snapshot.get("checking") is not state.checking:
+        raise _transmission_reconcile_unprovable()
+    return state
+
+
+def _transmission_reconcile_postcondition_holds(
+    operation_type: str,
+    state: TransmissionTorrentState,
+) -> bool:
+    if operation_type == TRANSMISSION_ADD_OPERATION:
+        return state.stopped
+    if operation_type == TRANSMISSION_VERIFY_OPERATION:
+        return state.checking or state.verification_complete or state.verification_incomplete
+    if operation_type == TRANSMISSION_START_OPERATION:
+        return state.seeding
+    return False
 
 
 def _prepare_add(request: TransmissionAddOperationRequest) -> _PreparedAdd:
@@ -1674,6 +2033,36 @@ def _journal_not_executable(journal: _JournalView) -> ApplicationError:
         status=409,
         title="Transmission operation journal 需要人工对账",
         detail=f"当前 journal 状态为 {journal.status.value}，不能自动重复执行",
+    )
+
+
+def _transmission_reconcile_state_invalid() -> ApplicationError:
+    return ApplicationError(
+        code="OPERATION_RECONCILE_STATE_INVALID",
+        status=409,
+        title="operation journal 当前不需要重新验证",
+        detail="新的 Transmission 对账只接受 RECONCILE_REQUIRED；幂等重放只验证已恢复的 APPLIED",
+    )
+
+
+def _transmission_reconcile_unprovable() -> ApplicationError:
+    return ApplicationError(
+        code="OPERATION_RECONCILE_UNPROVABLE",
+        status=409,
+        title="Transmission 完成证据不足",
+        detail="operation journal 缺少可安全绑定到当前下载器状态的历史完成快照",
+    )
+
+
+def _transmission_reconcile_blocked() -> ApplicationError:
+    return ApplicationError(
+        code="OPERATION_RECONCILE_BLOCKED",
+        status=409,
+        title="Transmission 当前状态不能确认原操作结果",
+        detail=(
+            "当前 torrent 的所有权、保存路径、存在性或操作后状态与已登记完成证据不一致；"
+            "journal 保持安全阻断"
+        ),
     )
 
 

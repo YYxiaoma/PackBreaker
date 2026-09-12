@@ -21,6 +21,7 @@ from backend.app.application.transmission_operations import (
     TransmissionAddOperationRequest,
     TransmissionAddOperationResult,
     TransmissionAddOperationService,
+    TransmissionJournalReconcileService,
     TransmissionRemoveOperationRequest,
     TransmissionRemoveOperationService,
     TransmissionStartOperationRequest,
@@ -44,6 +45,7 @@ from backend.app.infrastructure.persistence.database import (
 )
 from backend.app.infrastructure.persistence.models import OperationJournal
 from backend.app.infrastructure.persistence.repositories import (
+    OperationJournalRepository,
     TaskCreate,
     TaskRepository,
 )
@@ -249,6 +251,19 @@ def _remove_request(
         remote_save_path=add_result.save_path,
         ownership_tag=add_result.ownership_tag,
     )
+
+
+def _mark_reconcile(factory: sessionmaker[Session], journal_id: str) -> None:
+    with factory() as session:
+        repository = OperationJournalRepository(session)
+        journal = repository.get(journal_id)
+        assert journal is not None
+        repository.transition_status(
+            journal_id=journal_id,
+            expected_status=OperationStatus(journal.status),
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+        session.commit()
 
 
 async def _verified_chain(
@@ -579,3 +594,200 @@ async def test_transmission_remove_rejects_ownership_mismatch_before_external_wr
             )
             == 0
         )
+
+
+@pytest.mark.asyncio
+async def test_transmission_reconcile_reproves_add_without_external_write(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    added = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    _mark_reconcile(factory, added.journal_id)
+    service = TransmissionJournalReconcileService(factory)
+
+    first = await service.reconcile(added.journal_id, binding)
+    replayed = await service.reconcile(
+        added.journal_id,
+        binding,
+        allow_applied_replay=True,
+    )
+
+    assert first.status is OperationStatus.APPLIED
+    assert first.replayed is False
+    assert replayed.status is OperationStatus.APPLIED
+    assert replayed.replayed is True
+    assert adapter.add_calls == 1
+    assert adapter.verify_calls == 0
+    assert adapter.start_calls == 0
+    assert adapter.stop_calls == 0
+    assert adapter.remove_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_transmission_reconcile_reproves_verify_and_start_without_writes(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    added = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    verify_request = TransmissionVerifyOperationRequest(
+        task_id=task_id,
+        candidate_key="a" * 64,
+        downloader_id=binding.downloader_id,
+        downloader_version=binding.downloader_version,
+        execution_plan_id="plan-tr",
+        add_journal_id=added.journal_id,
+        torrent_hash=added.torrent_hash,
+        remote_save_path=added.save_path,
+        ownership_tag=added.ownership_tag,
+    )
+    verify_service = TransmissionVerifyOperationService(factory)
+    checking = await verify_service.execute(verify_request, binding)
+    _mark_reconcile(factory, checking.journal_id)
+    reconcile = TransmissionJournalReconcileService(factory)
+
+    verify_reconciled = await reconcile.reconcile(checking.journal_id, binding)
+
+    assert verify_reconciled.status is OperationStatus.APPLIED
+    assert adapter.verify_calls == 1
+    assert adapter.start_calls == 0
+    assert adapter.stop_calls == 0
+    assert adapter.remove_calls == 0
+
+    adapter.states[added.torrent_hash] = replace(
+        adapter.states[added.torrent_hash],
+        status=0,
+        percent_done=1.0,
+        recheck_progress=1.0,
+    )
+    verified = await verify_service.execute(verify_request, binding)
+    started = await TransmissionStartOperationService(factory).execute(
+        _start_request(task_id, added.journal_id, verified),
+        binding,
+    )
+    _mark_reconcile(factory, started.journal_id)
+
+    start_reconciled = await reconcile.reconcile(started.journal_id, binding)
+
+    assert start_reconciled.status is OperationStatus.APPLIED
+    assert adapter.verify_calls == 1
+    assert adapter.start_calls == 1
+    assert adapter.stop_calls == 0
+    assert adapter.remove_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_transmission_reconcile_reproves_remove_from_absence_without_second_remove(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    added = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    removed = await TransmissionRemoveOperationService(factory).execute(
+        _remove_request(task_id, added),
+        binding,
+    )
+    _mark_reconcile(factory, removed.journal_id)
+
+    result = await TransmissionJournalReconcileService(factory).reconcile(
+        removed.journal_id,
+        binding,
+    )
+
+    assert result.status is OperationStatus.APPLIED
+    assert adapter.remove_calls == 1
+    assert adapter.stop_calls == 0
+    assert adapter.add_calls == 1
+    assert added.torrent_hash not in adapter.states
+
+
+@pytest.mark.asyncio
+async def test_transmission_remove_reconcile_blocks_if_torrent_reappears_without_write(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    added = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    removed = await TransmissionRemoveOperationService(factory).execute(
+        _remove_request(task_id, added),
+        binding,
+    )
+    _mark_reconcile(factory, removed.journal_id)
+    adapter.states[added.torrent_hash] = TransmissionTorrentState(
+        torrent_hash=added.torrent_hash,
+        download_dir=added.save_path,
+        status=0,
+        labels=(added.ownership_tag,),
+        percent_done=1.0,
+        recheck_progress=0.0,
+    )
+
+    with pytest.raises(ApplicationError) as failure:
+        await TransmissionJournalReconcileService(factory).reconcile(removed.journal_id, binding)
+
+    assert failure.value.code == "OPERATION_RECONCILE_BLOCKED"
+    assert adapter.remove_calls == 1
+    assert adapter.stop_calls == 0
+    with factory() as session:
+        journal = session.get(OperationJournal, removed.journal_id)
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+
+
+@pytest.mark.asyncio
+async def test_transmission_reconcile_blocks_identity_drift_and_changed_binding_without_writes(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    added = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    _mark_reconcile(factory, added.journal_id)
+    service = TransmissionJournalReconcileService(factory)
+    original = adapter.states[added.torrent_hash]
+
+    adapter.states[added.torrent_hash] = replace(original, labels=("external",))
+    with pytest.raises(ApplicationError) as ownership:
+        await service.reconcile(added.journal_id, binding)
+    assert ownership.value.code == "OPERATION_RECONCILE_BLOCKED"
+
+    adapter.states[added.torrent_hash] = original
+    with pytest.raises(ApplicationError) as changed:
+        await service.reconcile(
+            added.journal_id,
+            replace(binding, downloader_version=binding.downloader_version + 1),
+        )
+    assert changed.value.code == "DOWNLOADER_CONFIG_CHANGED"
+    assert adapter.add_calls == 1
+    assert adapter.verify_calls == 0
+    assert adapter.start_calls == 0
+    assert adapter.stop_calls == 0
+    assert adapter.remove_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_transmission_reconcile_requires_historical_after_snapshot(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    added = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    with factory() as session:
+        journal = session.get(OperationJournal, added.journal_id)
+        assert journal is not None
+        journal.status = OperationStatus.RECONCILE_REQUIRED.value
+        journal.after_snapshot = None
+        session.commit()
+
+    with pytest.raises(ApplicationError) as failure:
+        await TransmissionJournalReconcileService(factory).reconcile(added.journal_id, binding)
+
+    assert failure.value.code == "OPERATION_RECONCILE_UNPROVABLE"
+    assert adapter.add_calls == 1
+    assert adapter.stop_calls == 0

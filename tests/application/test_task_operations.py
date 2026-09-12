@@ -20,6 +20,10 @@ from backend.app.application.filesystem_operations import (
 )
 from backend.app.application.task_actions import TaskActionActor
 from backend.app.application.task_operations import TaskOperationService
+from backend.app.application.transmission_operations import (
+    TransmissionJournalReconcileService,
+    TransmissionWriteBindingPort,
+)
 from backend.app.domain.operation import OperationKind, OperationStatus
 from backend.app.domain.verification import FileSnapshot
 from backend.app.infrastructure.adapters.downloaders import (
@@ -27,6 +31,10 @@ from backend.app.infrastructure.adapters.downloaders import (
     QbittorrentAddResult,
     QbittorrentTorrentState,
     QbittorrentWriteAdapter,
+    TransmissionAddRequest,
+    TransmissionAddResult,
+    TransmissionTorrentState,
+    TransmissionWriteAdapter,
 )
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.database import (
@@ -54,6 +62,9 @@ class SimulatedCrash(RuntimeError):
 class _NoQbBindings:
     def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBindingPort:
         raise AssertionError(f"unexpected qB binding request: {downloader_id}")
+
+    def transmission_write_binding(self, downloader_id: str) -> TransmissionWriteBindingPort:
+        raise AssertionError(f"unexpected Transmission binding request: {downloader_id}")
 
 
 class _ReadOnlyQbittorrent:
@@ -87,11 +98,56 @@ class _ReadOnlyQbittorrent:
         raise AssertionError("reconcile must not remove torrent")
 
 
+class _ReadOnlyTransmission:
+    def __init__(self, state: TransmissionTorrentState | None) -> None:
+        self.state = state
+        self.write_calls = 0
+
+    async def get_torrents(
+        self, torrent_hashes: tuple[str, ...]
+    ) -> tuple[TransmissionTorrentState, ...]:
+        if self.state is None or self.state.torrent_hash not in torrent_hashes:
+            return ()
+        return (self.state,)
+
+    async def add_torrent(self, request: TransmissionAddRequest) -> TransmissionAddResult:
+        self.write_calls += 1
+        raise AssertionError("reconcile must not add Transmission torrent")
+
+    async def stop_torrent(self, torrent_hash: str) -> None:
+        self.write_calls += 1
+        raise AssertionError("reconcile must not stop Transmission torrent")
+
+    async def start_torrent(self, torrent_hash: str) -> None:
+        self.write_calls += 1
+        raise AssertionError("reconcile must not start Transmission torrent")
+
+    async def verify_torrent(self, torrent_hash: str) -> None:
+        self.write_calls += 1
+        raise AssertionError("reconcile must not verify Transmission torrent")
+
+    async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
+        self.write_calls += 1
+        raise AssertionError("reconcile must not remove Transmission torrent")
+
+
 @dataclass(frozen=True, slots=True)
 class _ReadOnlyBinding:
     adapter: QbittorrentWriteAdapter
     downloader_id: str = "qb-reconcile"
     downloader_version: int = 7
+    capabilities: dict[str, object] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.capabilities is None:
+            object.__setattr__(self, "capabilities", {})
+
+
+@dataclass(frozen=True, slots=True)
+class _ReadOnlyTransmissionBinding:
+    adapter: TransmissionWriteAdapter
+    downloader_id: str = "tr-reconcile"
+    downloader_version: int = 4
     capabilities: dict[str, object] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -105,6 +161,22 @@ class _QbBindings:
         self.requested: list[str] = []
 
     def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBindingPort:
+        self.requested.append(downloader_id)
+        return self.binding
+
+    def transmission_write_binding(self, downloader_id: str) -> TransmissionWriteBindingPort:
+        raise AssertionError(f"unexpected Transmission binding request: {downloader_id}")
+
+
+class _TransmissionBindings:
+    def __init__(self, binding: TransmissionWriteBindingPort) -> None:
+        self.binding = binding
+        self.requested: list[str] = []
+
+    def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBindingPort:
+        raise AssertionError(f"unexpected qB binding request: {downloader_id}")
+
+    def transmission_write_binding(self, downloader_id: str) -> TransmissionWriteBindingPort:
         self.requested.append(downloader_id)
         return self.binding
 
@@ -177,6 +249,7 @@ def operation_fixture(tmp_path: Path) -> Iterator[_OperationFixture]:
             filesystem,
             _NoQbBindings(),
             QbittorrentJournalReconcileService(factory),
+            TransmissionJournalReconcileService(factory),
         ),
         filesystem=filesystem,
         factory=factory,
@@ -409,6 +482,7 @@ async def test_task_operation_service_dispatches_safe_qb_reconcile(
         operation_fixture.filesystem,
         provider,
         QbittorrentJournalReconcileService(operation_fixture.factory),
+        TransmissionJournalReconcileService(operation_fixture.factory),
     )
     summary = next(
         item for item in service.list_operations(operation_fixture.task_id) if item.id == journal_id
@@ -499,3 +573,96 @@ async def test_qb_unknown_result_without_after_snapshot_stays_manual_only(
             idempotency_key="reconcile-qb-unsupported",
         )
     assert failure.value.code == "OPERATION_RECONCILE_UNPROVABLE"
+
+
+@pytest.mark.asyncio
+async def test_task_operation_service_dispatches_safe_transmission_reconcile(
+    operation_fixture: _OperationFixture,
+) -> None:
+    torrent_hash = "b" * 40
+    ownership_tag = "packbreaker-tr-reconcile"
+    save_path = "/downloads/reconcile"
+    state = TransmissionTorrentState(
+        torrent_hash=torrent_hash,
+        download_dir=save_path,
+        status=0,
+        labels=(ownership_tag,),
+        percent_done=1.0,
+        recheck_progress=0.0,
+    )
+    adapter = _ReadOnlyTransmission(state)
+    binding = _ReadOnlyTransmissionBinding(adapter)
+    provider = _TransmissionBindings(binding)
+    with operation_fixture.factory() as session:
+        repository = OperationJournalRepository(session)
+        journal, _ = repository.record_intent(
+            OperationIntent(
+                task_id=operation_fixture.task_id,
+                idempotency_key="f" * 64,
+                operation_type="TRANSMISSION_ADD",
+                target={"downloader_id": binding.downloader_id, "remote_save_path": save_path},
+                intent={
+                    "schema_version": "packbreaker-transmission-add-v1",
+                    "downloader_version": binding.downloader_version,
+                    "execution_plan_id": "plan-tr-reconcile",
+                    "execution_plan_digest": "1" * 64,
+                    "expected_metainfo_digest": "2" * 64,
+                    "torrent_payload_digest": "3" * 64,
+                    "expected_hashes": [torrent_hash],
+                    "remote_save_path": save_path,
+                    "paused": True,
+                    "skip_checking": False,
+                    "ownership_tag": ownership_tag,
+                },
+                before_snapshot={"torrent_absent": True, "checked_hashes": [torrent_hash]},
+            )
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+            after_snapshot={
+                "torrent_hash": torrent_hash,
+                "save_path": save_path,
+                "state": "0",
+                "status": 0,
+                "progress": 1.0,
+                "recheck_progress": 0.0,
+                "checking": False,
+                "ownership_tag": ownership_tag,
+                "labels": [ownership_tag],
+            },
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.APPLIED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+        session.commit()
+        journal_id = journal.id
+
+    service = TaskOperationService(
+        operation_fixture.factory,
+        operation_fixture.filesystem,
+        provider,
+        QbittorrentJournalReconcileService(operation_fixture.factory),
+        TransmissionJournalReconcileService(operation_fixture.factory),
+    )
+    summary = next(
+        item for item in service.list_operations(operation_fixture.task_id) if item.id == journal_id
+    )
+    assert summary.kind is OperationKind.TRANSMISSION_ADD
+    assert summary.reconcile_supported is True
+
+    result = await service.reconcile(
+        task_id=operation_fixture.task_id,
+        journal_id=journal_id,
+        actor=TaskActionActor("admin_session", "tr-safe-reconcile"),
+        idempotency_key="tr-safe-reconcile-key",
+    )
+
+    assert result.status is OperationStatus.APPLIED
+    assert result.kind is OperationKind.TRANSMISSION_ADD
+    assert result.operation_replayed is False
+    assert provider.requested == [binding.downloader_id]
+    assert adapter.write_calls == 0

@@ -23,6 +23,11 @@ from backend.app.application.filesystem_operations import (
     FilesystemOperationService,
 )
 from backend.app.application.task_actions import TaskActionActor
+from backend.app.application.transmission_operations import (
+    TRANSMISSION_RECONCILABLE_OPERATIONS,
+    TransmissionJournalReconcileResult,
+    TransmissionWriteBindingPort,
+)
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.operation import OperationKind, OperationStatus, operation_kind
 from backend.app.infrastructure.persistence.models import OperationJournal
@@ -73,8 +78,10 @@ class _ReceiptView:
     error_payload: dict[str, Any] | None
 
 
-class QbittorrentBindingProvider(Protocol):
+class DownloaderBindingProvider(Protocol):
     def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBindingPort: ...
+
+    def transmission_write_binding(self, downloader_id: str) -> TransmissionWriteBindingPort: ...
 
 
 class QbittorrentJournalReconcilePort(Protocol):
@@ -87,20 +94,32 @@ class QbittorrentJournalReconcilePort(Protocol):
     ) -> QbittorrentJournalReconcileResult: ...
 
 
+class TransmissionJournalReconcilePort(Protocol):
+    async def reconcile(
+        self,
+        journal_id: str,
+        binding: TransmissionWriteBindingPort,
+        *,
+        allow_applied_replay: bool = False,
+    ) -> TransmissionJournalReconcileResult: ...
+
+
 class TaskOperationService:
-    """公开脱敏 journal 摘要，并只通过既有完成证据重新证明文件/qB 状态。"""
+    """公开脱敏 journal 摘要，并只通过既有完成证据重新证明文件/下载器状态。"""
 
     def __init__(
         self,
         session_factory: sessionmaker[Session],
         filesystem_operations: FilesystemOperationService,
-        downloader_bindings: QbittorrentBindingProvider,
+        downloader_bindings: DownloaderBindingProvider,
         qbit_reconcile: QbittorrentJournalReconcilePort,
+        transmission_reconcile: TransmissionJournalReconcilePort,
     ) -> None:
         self._session_factory = session_factory
         self._filesystem_operations = filesystem_operations
         self._downloader_bindings = downloader_bindings
         self._qbit_reconcile = qbit_reconcile
+        self._transmission_reconcile = transmission_reconcile
 
     def list_operations(self, task_id: str) -> tuple[TaskOperationView, ...]:
         with self._session_factory() as session:
@@ -167,16 +186,36 @@ class TaskOperationService:
                             title="缺少完成后快照，不能自动确认",
                             detail="qBittorrent 未确认完成的未知结果不能根据当前状态反推历史所有权",
                         )
-                    binding = self._downloader_bindings.qbittorrent_write_binding(
+                    qbit_binding = self._downloader_bindings.qbittorrent_write_binding(
                         _required_downloader_id(current)
                     )
                     reconciled_qbit = await self._qbit_reconcile.reconcile(
                         journal_id,
-                        binding,
+                        qbit_binding,
                         allow_applied_replay=replayed,
                     )
                     result_status = reconciled_qbit.status
                     operation_replayed = reconciled_qbit.replayed
+                elif current.operation_type in TRANSMISSION_RECONCILABLE_OPERATIONS:
+                    if current.after_snapshot is None:
+                        raise ApplicationError(
+                            code="OPERATION_RECONCILE_UNPROVABLE",
+                            status=409,
+                            title="缺少完成后快照，不能自动确认",
+                            detail=(
+                                "Transmission 未确认完成的未知结果不能根据当前状态反推历史所有权"
+                            ),
+                        )
+                    transmission_binding = self._downloader_bindings.transmission_write_binding(
+                        _required_downloader_id(current)
+                    )
+                    reconciled_transmission = await self._transmission_reconcile.reconcile(
+                        journal_id,
+                        transmission_binding,
+                        allow_applied_replay=replayed,
+                    )
+                    result_status = reconciled_transmission.status
+                    operation_replayed = reconciled_transmission.replayed
                 else:
                     raise ApplicationError(
                         code="OPERATION_RECONCILE_UNSUPPORTED",
@@ -312,7 +351,11 @@ def _operation_view(journal: OperationJournal) -> TaskOperationView:
         reconcile_supported=(
             status is OperationStatus.RECONCILE_REQUIRED
             and journal.operation_type
-            in (_FILESYSTEM_RECONCILE_TYPES | QBITTORRENT_RECONCILABLE_OPERATIONS)
+            in (
+                _FILESYSTEM_RECONCILE_TYPES
+                | QBITTORRENT_RECONCILABLE_OPERATIONS
+                | TRANSMISSION_RECONCILABLE_OPERATIONS
+            )
             and journal.after_snapshot is not None
         ),
         created_at=journal.created_at,
@@ -479,7 +522,7 @@ def _required_downloader_id(journal: OperationJournal) -> str:
         raise ApplicationError(
             code="OPERATION_RECONCILE_UNPROVABLE",
             status=409,
-            title="qBittorrent 绑定证据无效",
+            title="下载器绑定证据无效",
             detail="operation journal 无法安全绑定到目标下载器，禁止自动对账",
         )
     return downloader_id
