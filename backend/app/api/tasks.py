@@ -16,6 +16,7 @@ from backend.app.api.dependencies import (
     task_analysis_service,
     task_event_service,
     task_operation_service,
+    task_repair_action_service,
     task_repair_plan_service,
 )
 from backend.app.application.errors import ApplicationError
@@ -33,6 +34,7 @@ from backend.app.application.task_operations import (
     TaskOperationReconcileResult,
     TaskOperationView,
 )
+from backend.app.application.task_repair_actions import TaskRepairActionResult
 from backend.app.application.task_repairs import RepairPlanView
 from backend.app.application.tasks import (
     ExecutionGateView,
@@ -210,6 +212,22 @@ class TaskMutationActionResponse(BaseModel):
     status: TaskStatus
     task_version: int
     execution_plan_id: str | None
+    operation_replayed: bool
+    idempotency_replayed: bool
+    receipt_id: str
+
+
+class RepairExecuteActionRequest(BaseModel):
+    action: Literal["execute"]
+
+
+class RepairExecuteActionResponse(BaseModel):
+    action: Literal["execute"]
+    task_id: str
+    task_unit_id: str
+    status: TaskStatus
+    task_version: int
+    execution_plan_id: str
     operation_replayed: bool
     idempotency_replayed: bool
     receipt_id: str
@@ -770,6 +788,27 @@ async def get_task_unit_repair_plan(
     )
 
 
+@router.post(
+    "/task-units/{unit_id}/repair/actions",
+    response_model=RepairExecuteActionResponse,
+)
+async def task_unit_repair_action(
+    unit_id: str,
+    request: Request,
+    payload: RepairExecuteActionRequest,
+    principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> RepairExecuteActionResponse:
+    if payload.action != "execute":
+        raise AssertionError("未覆盖的 repair 动作")
+    result = await task_repair_action_service(request).execute(
+        unit_id,
+        actor=TaskActionActor(principal.kind, principal.subject_id),
+        idempotency_key=idempotency_key,
+    )
+    return _repair_execute_action_response(result)
+
+
 def _task_response(item: TaskView) -> TaskResponse:
     return TaskResponse(
         id=item.id,
@@ -912,6 +951,20 @@ def _task_mutation_action_response(item: TaskMutationActionResult) -> TaskMutati
     return TaskMutationActionResponse(
         action=item.action,
         task_id=item.task_id,
+        status=item.status,
+        task_version=item.task_version,
+        execution_plan_id=item.execution_plan_id,
+        operation_replayed=item.operation_replayed,
+        idempotency_replayed=item.idempotency_replayed,
+        receipt_id=item.receipt_id,
+    )
+
+
+def _repair_execute_action_response(item: TaskRepairActionResult) -> RepairExecuteActionResponse:
+    return RepairExecuteActionResponse(
+        action=item.action,
+        task_id=item.task_id,
+        task_unit_id=item.task_unit_id,
         status=item.status,
         task_version=item.task_version,
         execution_plan_id=item.execution_plan_id,

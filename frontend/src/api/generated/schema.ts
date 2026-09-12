@@ -549,6 +549,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/task-units/{unit_id}/repair/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Task Unit Repair Action */
+    post: operations['task_unit_repair_action_api_v1_task_units__unit_id__repair_actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/tasks': {
     parameters: {
       query?: never;
@@ -1326,6 +1343,37 @@ export interface components {
       | 'INSUFFICIENT_SPACE'
       | 'FILE_ONLY_CROSS_FILE_PIECE'
       | 'FILE_ONLY_REQUIRES_ISOLATION';
+    /** RepairExecuteActionRequest */
+    RepairExecuteActionRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'execute';
+    };
+    /** RepairExecuteActionResponse */
+    RepairExecuteActionResponse: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'execute';
+      /** Execution Plan Id */
+      execution_plan_id: string;
+      /** Idempotency Replayed */
+      idempotency_replayed: boolean;
+      /** Operation Replayed */
+      operation_replayed: boolean;
+      /** Receipt Id */
+      receipt_id: string;
+      status: components['schemas']['TaskStatus'];
+      /** Task Id */
+      task_id: string;
+      /** Task Unit Id */
+      task_unit_id: string;
+      /** Task Version */
+      task_version: number;
+    };
     /**
      * RepairMode
      * @enum {string}
@@ -3456,6 +3504,48 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['RepairPlanResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  task_unit_repair_action_api_v1_task_units__unit_id__repair_actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'Idempotency-Key'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        unit_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['RepairExecuteActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['RepairExecuteActionResponse'];
         };
       };
       /** @description Validation Error */

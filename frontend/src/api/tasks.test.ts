@@ -6,6 +6,7 @@ import {
   cancelTask,
   createTaskUnitExecutionPlan,
   createTask,
+  executeTaskUnitRepair,
   executeTask,
   getOperationMaintenanceReport,
   getTaskPreflight,
@@ -308,5 +309,33 @@ describe('任务分析 API', () => {
       params: { mode: 'FILE_ONLY' },
     });
     expect(result.execution_allowed).toBe(false);
+  });
+
+  it('repair execute 只提交动作和幂等键，不提交客户端安全事实', async () => {
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValueOnce({
+      data: {
+        action: 'execute',
+        task_id: 'task-1',
+        task_unit_id: 'unit/with slash',
+        status: 'CLIENT_VERIFYING',
+        task_version: 12,
+        execution_plan_id: 'plan-1',
+        operation_replayed: false,
+        idempotency_replayed: false,
+        receipt_id: 'receipt-1',
+      },
+    });
+
+    const result = await executeTaskUnitRepair('unit/with slash', 'repair-execute-key');
+
+    expect(post).toHaveBeenCalledWith(
+      '/task-units/unit%2Fwith%20slash/repair/actions',
+      { action: 'execute' },
+      { headers: { 'Idempotency-Key': 'repair-execute-key' } },
+    );
+    expect(result.status).toBe('CLIENT_VERIFYING');
+    const submittedBody = post.mock.calls[0]?.[1];
+    expect(submittedBody).toEqual({ action: 'execute' });
+    expect(JSON.stringify(submittedBody)).not.toMatch(/inode|ownership|journal|hash|paused/i);
   });
 });

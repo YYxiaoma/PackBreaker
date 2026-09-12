@@ -22,6 +22,7 @@ import {
   type Level,
 } from '../demo';
 import TaskAnalysisPanel from './TaskAnalysisPanel.vue';
+import TaskRepairPanel from './TaskRepairPanel.vue';
 const props = defineProps<{ task: Task }>();
 const emit = defineEmits<{ export: [unknown, string] }>();
 const tab = ref('计划'),
@@ -441,10 +442,11 @@ async function runRepair() {
         当前示例跨文件 piece 涉及媒体，文件级修复已阻断。
       </p>
       <p v-if="!repairScenario" class="muted">请打开「森林之境」体验对应失败场景。</p>
-    </div></template
-  >
+    </div>
+    <TaskRepairPanel />
+  </template>
   <div class="detail-footer">
-    <span><ShieldCheck :size="15" />仅模拟操作</span
+    <span><ShieldCheck :size="15" />主任务卡片为演示；真实后端区域单独标识</span
     ><el-button
       v-if="task.state === 'CLIENT_VERIFYING'"
       type="primary"

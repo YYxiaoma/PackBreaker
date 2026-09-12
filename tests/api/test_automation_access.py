@@ -11,6 +11,7 @@ from sqlalchemy import select
 from backend.app.api.dependencies import CSRF_COOKIE
 from backend.app.application.task_actions import TaskMutationActionResult
 from backend.app.application.task_operations import TaskOperationReconcileResult
+from backend.app.application.task_repair_actions import TaskRepairActionResult
 from backend.app.config import AppSettings
 from backend.app.domain.operation import OperationKind, OperationStatus
 from backend.app.domain.task_state import TaskStatus
@@ -153,6 +154,60 @@ def test_tasks_write_api_token_can_execute_without_csrf_but_tasks_read_cannot(
                 "Idempotency-Key": "token-execute-denied",
             },
             json=payload,
+        )
+        assert rejected.status_code == 403
+        assert rejected.json()["code"] == "API_TOKEN_SCOPE_FORBIDDEN"
+        assert execute.await_count == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_tasks_write_api_token_can_execute_repair_without_csrf_but_tasks_read_cannot(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        allowed = _create_token(client, scopes=["tasks:write"], name="repair-writer")
+        denied = _create_token(client, scopes=["tasks:read"], name="repair-reader")
+        execute = AsyncMock(
+            return_value=TaskRepairActionResult(
+                action="execute",
+                task_id="task-token",
+                task_unit_id="unit-token",
+                status=TaskStatus.CLIENT_VERIFYING,
+                task_version=5,
+                execution_plan_id="plan-token",
+                operation_replayed=False,
+                receipt_id="receipt-repair-token",
+                idempotency_replayed=False,
+            )
+        )
+        app.state.task_repair_action_service = SimpleNamespace(execute=execute)
+        path = "/api/v1/task-units/unit-token/repair/actions"
+
+        accepted = client.post(
+            path,
+            headers={
+                "Authorization": f"Bearer {allowed['token']}",
+                "Idempotency-Key": "token-repair-execute",
+            },
+            json={"action": "execute"},
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "CLIENT_VERIFYING"
+        assert execute.await_count == 1
+        assert execute.await_args is not None
+        actor = execute.await_args.kwargs["actor"]
+        assert actor.kind == "api_token"
+        assert actor.subject_id == allowed["id"]
+
+        rejected = client.post(
+            path,
+            headers={
+                "Authorization": f"Bearer {denied['token']}",
+                "Idempotency-Key": "token-repair-execute-denied",
+            },
+            json={"action": "execute"},
         )
         assert rejected.status_code == 403
         assert rejected.json()["code"] == "API_TOKEN_SCOPE_FORBIDDEN"

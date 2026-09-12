@@ -43,6 +43,7 @@ from backend.app.application.task_events import TaskEventService
 from backend.app.application.task_linking import TaskLinkingCoordinator
 from backend.app.application.task_operations import TaskOperationService
 from backend.app.application.task_recovery import TaskRecoveryCoordinator
+from backend.app.application.task_repair_actions import TaskRepairActionService
 from backend.app.application.task_repairs import (
     TaskRepairCoordinator,
     TaskRepairIsolationCoordinator,
@@ -200,10 +201,15 @@ def create_app(
             filesystem_operations,
         )
         app.state.task_repair_isolation_coordinator = task_repair_isolation_coordinator
-        app.state.task_repair_coordinator = TaskRepairCoordinator(
+        task_repair_coordinator = TaskRepairCoordinator(
             resolved_runtime.session_factory,
             task_repair_plan_service,
             task_repair_isolation_coordinator,
+        )
+        app.state.task_repair_coordinator = task_repair_coordinator
+        app.state.task_repair_action_service = TaskRepairActionService(
+            resolved_runtime.session_factory,
+            task_repair_coordinator,
         )
         app.state.task_operation_service = TaskOperationService(
             resolved_runtime.session_factory,

@@ -33,12 +33,14 @@ from backend.app.application.repair_downloader_operations import (
     RepairDownloadOperationService,
 )
 from backend.app.application.sites import EnabledSiteAdapter
+from backend.app.application.task_actions import TaskActionActor
 from backend.app.application.task_adding import CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION
 from backend.app.application.task_cancellation import (
     TaskCancellationCoordinator,
     TaskCancellationRequest,
 )
 from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
+from backend.app.application.task_repair_actions import TaskRepairActionService
 from backend.app.application.task_repairs import (
     REPAIR_STAGE_DOWNLOAD_PENDING,
     REPAIR_STAGE_DOWNLOADING,
@@ -78,6 +80,7 @@ from backend.app.infrastructure.persistence.database import (
 from backend.app.infrastructure.persistence.models import (
     OperationJournal,
     PreflightSnapshotRecord,
+    TaskActionReceipt,
     TaskCandidateRecord,
     TaskExecutionGateRecord,
     TaskReviewRevisionRecord,
@@ -1120,6 +1123,135 @@ async def test_repair_download_response_loss_replays_start_without_second_write(
     assert resumed.verification_outcome == "REPAIR_DOWNLOADING"
     assert resumed.replayed is True
     assert repair_fixture.qbit.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_repair_execute_action_receipt_is_idempotent_and_redacted(
+    repair_fixture: _RepairFixture,
+) -> None:
+    filesystem = FilesystemOperationService(
+        repair_fixture.factory,
+        SafeFilesystemGateway(repair_fixture.data_root),
+    )
+    coordinator = TaskRepairCoordinator(
+        repair_fixture.factory,
+        repair_fixture.service,
+        TaskRepairIsolationCoordinator(repair_fixture.service, filesystem),
+    )
+    actions = TaskRepairActionService(repair_fixture.factory, coordinator)
+    actor = TaskActionActor("admin_session", "repair-action-admin")
+
+    first = await actions.execute(
+        repair_fixture.unit_id,
+        actor=actor,
+        idempotency_key="repair-execute-idempotency",
+    )
+    replay = await actions.execute(
+        repair_fixture.unit_id,
+        actor=actor,
+        idempotency_key="repair-execute-idempotency",
+    )
+
+    assert first.status is TaskStatus.CLIENT_VERIFYING
+    assert first.task_id == repair_fixture.task_id
+    assert first.task_unit_id == repair_fixture.unit_id
+    assert replay.receipt_id == first.receipt_id
+    assert replay.idempotency_replayed is True
+    assert repair_fixture.qbit.write_calls == 0
+    with repair_fixture.factory() as session:
+        receipt = session.get(TaskActionReceipt, first.receipt_id)
+        assert receipt is not None
+        assert receipt.action == "repair_execute"
+        assert receipt.state == "SUCCEEDED"
+        assert receipt.response_payload is not None
+        assert set(receipt.response_payload) == {
+            "action",
+            "execution_plan_id",
+            "operation_replayed",
+            "status",
+            "task_id",
+            "task_unit_id",
+            "task_version",
+        }
+        encoded = json.dumps(receipt.response_payload, sort_keys=True)
+        assert repair_fixture.ownership_tag not in encoded
+        assert repair_fixture.add_journal_id not in encoded
+        assert repair_fixture.verify_journal_id not in encoded
+        isolations = tuple(
+            session.scalars(
+                select(OperationJournal).where(
+                    OperationJournal.task_id == repair_fixture.task_id,
+                    OperationJournal.operation_type == ISOLATE_REPAIR_TARGET_OPERATION,
+                )
+            )
+        )
+        assert len(isolations) == 1
+
+
+@pytest.mark.asyncio
+async def test_repair_execute_action_recovers_pending_receipt_after_prepared_response_loss(
+    repair_fixture: _RepairFixture,
+) -> None:
+    filesystem = FilesystemOperationService(
+        repair_fixture.factory,
+        SafeFilesystemGateway(repair_fixture.data_root),
+    )
+    coordinator = TaskRepairCoordinator(
+        repair_fixture.factory,
+        repair_fixture.service,
+        TaskRepairIsolationCoordinator(repair_fixture.service, filesystem),
+    )
+    actions = TaskRepairActionService(repair_fixture.factory, coordinator)
+    actor = TaskActionActor("admin_session", "repair-action-crash-admin")
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_repair_execution_prepared":
+            raise RuntimeError(checkpoint)
+
+    with pytest.raises(RuntimeError, match="after_repair_execution_prepared"):
+        await actions.execute(
+            repair_fixture.unit_id,
+            actor=actor,
+            idempotency_key="repair-execute-response-loss",
+            fault_hook=crash,
+        )
+
+    with repair_fixture.factory() as session:
+        receipt = session.scalar(
+            select(TaskActionReceipt).where(
+                TaskActionReceipt.actor_id == actor.subject_id,
+                TaskActionReceipt.action == "repair_execute",
+            )
+        )
+        assert receipt is not None
+        assert receipt.state == "PENDING"
+        receipt_id = receipt.id
+        task = session.get(UnpackTask, repair_fixture.task_id)
+        assert task is not None
+        assert task.status == TaskStatus.CLIENT_VERIFYING.value
+        assert task.checkpoint["repair_stage"] == REPAIR_STAGE_DOWNLOAD_PENDING
+
+    recovered = await actions.execute(
+        repair_fixture.unit_id,
+        actor=actor,
+        idempotency_key="repair-execute-response-loss",
+    )
+
+    assert recovered.receipt_id == receipt_id
+    assert recovered.idempotency_replayed is True
+    assert recovered.operation_replayed is True
+    assert recovered.status is TaskStatus.CLIENT_VERIFYING
+    assert repair_fixture.qbit.write_calls == 0
+    with repair_fixture.factory() as session:
+        receipt = session.get(TaskActionReceipt, receipt_id)
+        assert receipt is not None
+        assert receipt.state == "SUCCEEDED"
+        assert (
+            session.query(OperationJournal)
+            .filter(OperationJournal.operation_type == ISOLATE_REPAIR_TARGET_OPERATION)
+            .count()
+            == 1
+        )
 
 
 @pytest.mark.asyncio

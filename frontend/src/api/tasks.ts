@@ -27,6 +27,8 @@ export type ExecutionPlanInput = components['schemas']['ExecutionPlanRequest'];
 export type ExecutionPlan = components['schemas']['ExecutionPlanResponse'];
 export type RepairMode = components['schemas']['RepairMode'];
 export type RepairPlan = components['schemas']['RepairPlanResponse'];
+export type RepairExecuteActionInput = components['schemas']['RepairExecuteActionRequest'];
+export type RepairExecuteAction = components['schemas']['RepairExecuteActionResponse'];
 
 function taskPath(taskId: string): string {
   const normalized = taskId.trim();
@@ -338,6 +340,23 @@ export async function getTaskUnitRepairPlan(
     const response = await apiClient.get<RepairPlan>(`${taskUnitPath(unitId)}/repair-plan`, {
       params: { mode },
     });
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function executeTaskUnitRepair(
+  unitId: string,
+  idempotencyKey: string,
+): Promise<RepairExecuteAction> {
+  const payload: RepairExecuteActionInput = { action: 'execute' };
+  try {
+    const response = await apiClient.post<RepairExecuteAction>(
+      `${taskUnitPath(unitId)}/repair/actions`,
+      payload,
+      { headers: actionHeaders(idempotencyKey) },
+    );
     return response.data;
   } catch (error) {
     throw toApiProblem(error);

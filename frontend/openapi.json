@@ -1527,6 +1527,73 @@
         "title": "RepairBlockReason",
         "type": "string"
       },
+      "RepairExecuteActionRequest": {
+        "properties": {
+          "action": {
+            "const": "execute",
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "RepairExecuteActionRequest",
+        "type": "object"
+      },
+      "RepairExecuteActionResponse": {
+        "properties": {
+          "action": {
+            "const": "execute",
+            "title": "Action",
+            "type": "string"
+          },
+          "execution_plan_id": {
+            "title": "Execution Plan Id",
+            "type": "string"
+          },
+          "idempotency_replayed": {
+            "title": "Idempotency Replayed",
+            "type": "boolean"
+          },
+          "operation_replayed": {
+            "title": "Operation Replayed",
+            "type": "boolean"
+          },
+          "receipt_id": {
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_unit_id": {
+            "title": "Task Unit Id",
+            "type": "string"
+          },
+          "task_version": {
+            "title": "Task Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "task_id",
+          "task_unit_id",
+          "status",
+          "task_version",
+          "execution_plan_id",
+          "operation_replayed",
+          "idempotency_replayed",
+          "receipt_id"
+        ],
+        "title": "RepairExecuteActionResponse",
+        "type": "object"
+      },
       "RepairMode": {
         "enum": [
           "AUTO_PIECE",
@@ -6798,6 +6865,138 @@
           }
         },
         "summary": "Get Task Unit Repair Plan",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/task-units/{unit_id}/repair/actions": {
+      "post": {
+        "operationId": "task_unit_repair_action_api_v1_task_units__unit_id__repair_actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit_id",
+            "required": true,
+            "schema": {
+              "title": "Unit Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepairExecuteActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairExecuteActionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Task Unit Repair Action",
         "tags": [
           "tasks"
         ]

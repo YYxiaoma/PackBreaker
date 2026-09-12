@@ -20,6 +20,7 @@ from backend.app.application.task_actions import (
     TaskActionActor,
     TaskMutationActionResult,
 )
+from backend.app.application.task_repair_actions import TaskRepairActionResult
 from backend.app.application.task_repairs import RepairPlanView
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.config import AppSettings
@@ -1451,6 +1452,93 @@ def test_repair_plan_endpoint_is_read_only_redacted_and_mode_only(tmp_path: Path
         )
         assert invalid_mode.status_code == 422
         assert client.post("/api/v1/task-units/unit/repair-plan", json={}).status_code == 405
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_repair_execute_endpoint_requires_csrf_idempotency_and_returns_redacted_receipt(
+    tmp_path: Path,
+) -> None:
+    client, app, _settings = _authenticated_client(tmp_path)
+
+    class _RepairActionStub:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, TaskActionActor, str | None]] = []
+
+        async def execute(
+            self,
+            unit_id: str,
+            *,
+            actor: TaskActionActor,
+            idempotency_key: str | None,
+        ) -> TaskRepairActionResult:
+            self.calls.append((unit_id, actor, idempotency_key))
+            if idempotency_key is None:
+                raise ApplicationError(
+                    code="IDEMPOTENCY_KEY_REQUIRED",
+                    status=428,
+                    title="缺少幂等键",
+                    detail="repair execute 请求必须携带 Idempotency-Key",
+                )
+            return TaskRepairActionResult(
+                action="execute",
+                task_id="task-safe",
+                task_unit_id=unit_id,
+                status=TaskStatus.CLIENT_VERIFYING,
+                task_version=12,
+                execution_plan_id="plan-safe",
+                operation_replayed=False,
+                receipt_id="receipt-safe",
+                idempotency_replayed=False,
+            )
+
+    stub = _RepairActionStub()
+    app.state.task_repair_action_service = stub
+    path = "/api/v1/task-units/unit-safe/repair/actions"
+    try:
+        without_csrf = client.post(
+            path,
+            headers={"Idempotency-Key": "repair-safe-key"},
+            json={"action": "execute"},
+        )
+        assert without_csrf.status_code == 403
+        assert stub.calls == []
+
+        missing_key = client.post(path, headers=_csrf(client), json={"action": "execute"})
+        assert missing_key.status_code == 428
+        assert missing_key.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+        response = client.post(
+            path,
+            headers={**_csrf(client), "Idempotency-Key": "repair-safe-key"},
+            json={"action": "execute"},
+        )
+        assert response.status_code == 200
+        assert stub.calls[-1][0] == "unit-safe"
+        assert stub.calls[-1][1].kind == "admin_session"
+        assert stub.calls[-1][2] == "repair-safe-key"
+        assert response.json() == {
+            "action": "execute",
+            "task_id": "task-safe",
+            "task_unit_id": "unit-safe",
+            "status": "CLIENT_VERIFYING",
+            "task_version": 12,
+            "execution_plan_id": "plan-safe",
+            "operation_replayed": False,
+            "idempotency_replayed": False,
+            "receipt_id": "receipt-safe",
+        }
+        encoded = response.text
+        for forbidden in (
+            "torrent_hash",
+            "ownership_tag",
+            "journal_id",
+            "repair_candidate_key",
+            "repair_evidence_digest",
+            "inode",
+            "device",
+        ):
+            assert forbidden not in encoded
     finally:
         client.__exit__(None, None, None)
 

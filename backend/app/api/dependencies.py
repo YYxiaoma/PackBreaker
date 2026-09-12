@@ -12,6 +12,7 @@ from backend.app.application.sites import SiteService
 from backend.app.application.task_actions import TaskActionService
 from backend.app.application.task_events import TaskEventService
 from backend.app.application.task_operations import TaskOperationService
+from backend.app.application.task_repair_actions import TaskRepairActionService
 from backend.app.application.task_repairs import TaskRepairPlanService
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.domain.auth import ApiScope
@@ -65,6 +66,10 @@ def task_operation_service(request: Request) -> TaskOperationService:
 
 def task_repair_plan_service(request: Request) -> TaskRepairPlanService:
     return cast(TaskRepairPlanService, request.app.state.task_repair_plan_service)
+
+
+def task_repair_action_service(request: Request) -> TaskRepairActionService:
+    return cast(TaskRepairActionService, request.app.state.task_repair_action_service)
 
 
 def client_source(request: Request) -> str:
