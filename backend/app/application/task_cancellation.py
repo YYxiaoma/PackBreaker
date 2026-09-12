@@ -13,16 +13,22 @@ from backend.app.application.downloader_operations import (
     QbittorrentRemoveOperationRequest,
     QbittorrentRemoveOperationService,
 )
-from backend.app.application.downloaders import QbittorrentWriteBinding
+from backend.app.application.downloaders import QbittorrentWriteBinding, TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import (
     CREATE_DIRECTORY_OPERATION,
     CREATE_HARDLINK_OPERATION,
     FilesystemOperationService,
 )
+from backend.app.application.transmission_operations import (
+    TRANSMISSION_ADD_OPERATION,
+    TransmissionRemoveOperationRequest,
+    TransmissionRemoveOperationService,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_state import TaskStatus
+from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.persistence.models import TaskExecutionPlanRecord
 from backend.app.infrastructure.persistence.repositories import (
     OperationJournalRepository,
@@ -32,7 +38,11 @@ from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskExecutionPlanRepository,
 )
 
-CANCELLATION_CHECKPOINT_SCHEMA_VERSION = "packbreaker-cancellation-checkpoint-v1"
+_LEGACY_CANCELLATION_CHECKPOINT_SCHEMA_VERSION = "packbreaker-cancellation-checkpoint-v1"
+CANCELLATION_CHECKPOINT_SCHEMA_VERSION = "packbreaker-cancellation-checkpoint-v2"
+_CANCELLATION_CHECKPOINT_SCHEMAS = frozenset(
+    {_LEGACY_CANCELLATION_CHECKPOINT_SCHEMA_VERSION, CANCELLATION_CHECKPOINT_SCHEMA_VERSION}
+)
 
 _SIDE_EFFECT_STATUSES = frozenset(
     {
@@ -46,8 +56,10 @@ _SIDE_EFFECT_STATUSES = frozenset(
 )
 
 
-class QbittorrentBindingProvider(Protocol):
-    def qbittorrent_write_binding(self, downloader_id: str) -> QbittorrentWriteBinding: ...
+class DownloaderBindingProvider(Protocol):
+    def write_binding(
+        self, downloader_id: str
+    ) -> QbittorrentWriteBinding | TransmissionWriteBinding: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +75,7 @@ class TaskCancellationResult:
     task_version: int
     status: TaskStatus
     execution_plan_id: str
-    qbit_remove_journal_id: str | None
+    remove_journal_id: str | None
     rolled_back_hardlink_journal_ids: tuple[str, ...]
     rolled_back_directory_journal_ids: tuple[str, ...]
     replayed: bool
@@ -80,7 +92,8 @@ class _RollbackPlan:
     target_downloader_binding_digest: str
     remove_downloader_task: bool
     rollback_created_resources: bool
-    qbit_add_journal_id: str | None
+    downloader_kind: DownloaderKind | None
+    add_journal_id: str | None
     torrent_hash: str | None
     remote_save_path: str | None
     ownership_tag: str | None
@@ -94,13 +107,15 @@ class TaskCancellationCoordinator:
     def __init__(
         self,
         session_factory: sessionmaker[Session],
-        downloader_service: QbittorrentBindingProvider,
+        downloader_service: DownloaderBindingProvider,
         qbit_remove_operations: QbittorrentRemoveOperationService,
         filesystem_operations: FilesystemOperationService,
+        transmission_remove_operations: TransmissionRemoveOperationService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._downloader_service = downloader_service
         self._qbit_remove_operations = qbit_remove_operations
+        self._transmission_remove_operations = transmission_remove_operations
         self._filesystem_operations = filesystem_operations
 
     async def execute(
@@ -110,10 +125,10 @@ class TaskCancellationCoordinator:
         fault_hook: Callable[[str], None] | None = None,
     ) -> TaskCancellationResult:
         plan, replayed = self._reserve_or_load(request)
-        qbit_remove_journal_id: str | None = None
+        remove_journal_id: str | None = None
 
         if (
-            plan.qbit_add_journal_id is not None
+            plan.add_journal_id is not None
             and plan.rollback_created_resources
             and not plan.remove_downloader_task
         ):
@@ -121,28 +136,63 @@ class TaskCancellationCoordinator:
                 code="CANCELLATION_DOWNLOADER_REQUIRED",
                 status=409,
                 title="回滚文件前必须先移除下载器任务",
-                detail="qBittorrent 仍持有目标路径时禁止删除 PackBreaker 创建的 hardlink",
+                detail="下载器仍持有目标路径时禁止删除 PackBreaker 创建的 hardlink",
             )
 
-        if plan.remove_downloader_task and plan.qbit_add_journal_id is not None:
+        if plan.remove_downloader_task and plan.add_journal_id is not None:
             binding = self._load_binding(plan)
-            remove_result = await self._qbit_remove_operations.execute(
-                QbittorrentRemoveOperationRequest(
-                    task_id=plan.task_id,
-                    candidate_key=_remove_candidate_key(plan),
-                    downloader_id=plan.target_downloader_id,
-                    downloader_version=plan.target_downloader_version,
-                    execution_plan_id=plan.execution_plan_id,
-                    qbit_add_journal_id=plan.qbit_add_journal_id,
-                    torrent_hash=_required_optional(plan.torrent_hash, "torrent_hash"),
-                    remote_save_path=_required_optional(plan.remote_save_path, "remote_save_path"),
-                    ownership_tag=_required_optional(plan.ownership_tag, "ownership_tag"),
-                ),
-                binding,
-            )
-            qbit_remove_journal_id = remove_result.journal_id
+            torrent_hash = _required_optional(plan.torrent_hash, "torrent_hash")
+            remote_save_path = _required_optional(plan.remote_save_path, "remote_save_path")
+            ownership_tag = _required_optional(plan.ownership_tag, "ownership_tag")
+            if plan.downloader_kind is DownloaderKind.QBITTORRENT:
+                if not isinstance(binding, QbittorrentWriteBinding):
+                    raise _cancellation_downloader_changed("目标下载器类型与冻结取消计划不一致")
+                qbit_remove_result = await self._qbit_remove_operations.execute(
+                    QbittorrentRemoveOperationRequest(
+                        task_id=plan.task_id,
+                        candidate_key=_remove_candidate_key(plan),
+                        downloader_id=plan.target_downloader_id,
+                        downloader_version=plan.target_downloader_version,
+                        execution_plan_id=plan.execution_plan_id,
+                        qbit_add_journal_id=plan.add_journal_id,
+                        torrent_hash=torrent_hash,
+                        remote_save_path=remote_save_path,
+                        ownership_tag=ownership_tag,
+                    ),
+                    binding,
+                )
+                fault_stage = "after_qb_removed"
+                remove_journal_id = qbit_remove_result.journal_id
+            elif plan.downloader_kind is DownloaderKind.TRANSMISSION:
+                if not isinstance(binding, TransmissionWriteBinding):
+                    raise _cancellation_downloader_changed("目标下载器类型与冻结取消计划不一致")
+                if self._transmission_remove_operations is None:
+                    raise ApplicationError(
+                        code="CANCELLATION_DOWNLOADER_UNSUPPORTED",
+                        status=409,
+                        title="Transmission 取消服务未注册",
+                        detail="当前运行时尚未注册 journal-backed Transmission remove 服务",
+                    )
+                transmission_remove_result = await self._transmission_remove_operations.execute(
+                    TransmissionRemoveOperationRequest(
+                        task_id=plan.task_id,
+                        candidate_key=_remove_candidate_key(plan),
+                        downloader_id=plan.target_downloader_id,
+                        downloader_version=plan.target_downloader_version,
+                        execution_plan_id=plan.execution_plan_id,
+                        add_journal_id=plan.add_journal_id,
+                        torrent_hash=torrent_hash,
+                        remote_save_path=remote_save_path,
+                        ownership_tag=ownership_tag,
+                    ),
+                    binding,
+                )
+                fault_stage = "after_transmission_removed"
+                remove_journal_id = transmission_remove_result.journal_id
+            else:
+                raise _cancellation_evidence_invalid("取消计划缺少可证明的 downloader_kind")
             if fault_hook is not None:
-                fault_hook("after_qb_removed")
+                fault_hook(fault_stage)
 
         rolled_back_hardlinks: list[str] = []
         rolled_back_directories: list[str] = []
@@ -162,7 +212,7 @@ class TaskCancellationCoordinator:
 
         return self._complete(
             plan,
-            qbit_remove_journal_id=qbit_remove_journal_id,
+            remove_journal_id=remove_journal_id,
             rolled_back_hardlink_journal_ids=tuple(rolled_back_hardlinks),
             rolled_back_directory_journal_ids=tuple(rolled_back_directories),
             replayed=replayed,
@@ -176,7 +226,7 @@ class TaskCancellationCoordinator:
             checkpoint = deepcopy(task.checkpoint)
             if checkpoint.get(
                 "schema_version"
-            ) != CANCELLATION_CHECKPOINT_SCHEMA_VERSION or task.status not in {
+            ) not in _CANCELLATION_CHECKPOINT_SCHEMAS or task.status not in {
                 TaskStatus.ROLLING_BACK.value,
                 TaskStatus.CANCELLED.value,
             }:
@@ -265,7 +315,7 @@ class TaskCancellationCoordinator:
             raise _cancellation_state_invalid("任务不处于 ROLLING_BACK")
         checkpoint = deepcopy(task.checkpoint)
         if (
-            checkpoint.get("schema_version") != CANCELLATION_CHECKPOINT_SCHEMA_VERSION
+            checkpoint.get("schema_version") not in _CANCELLATION_CHECKPOINT_SCHEMAS
             or checkpoint.get("stage") != TaskStatus.ROLLING_BACK.value
             or checkpoint.get("remove_downloader_task") != request.remove_downloader_task
             or checkpoint.get("rollback_created_resources") != request.rollback_created_resources
@@ -288,7 +338,7 @@ class TaskCancellationCoordinator:
             raise _cancellation_not_found()
         checkpoint = deepcopy(task.checkpoint)
         if (
-            checkpoint.get("schema_version") != CANCELLATION_CHECKPOINT_SCHEMA_VERSION
+            checkpoint.get("schema_version") not in _CANCELLATION_CHECKPOINT_SCHEMAS
             or checkpoint.get("stage") != TaskStatus.CANCELLED.value
         ):
             raise _cancellation_evidence_invalid("CANCELLED 任务缺少 PackBreaker 取消检查点")
@@ -361,25 +411,32 @@ class TaskCancellationCoordinator:
             journal
             for journal in journal_repository.list_for_task(
                 task_id,
-                operation_types=(QBITTORRENT_ADD_OPERATION,),
+                operation_types=(QBITTORRENT_ADD_OPERATION, TRANSMISSION_ADD_OPERATION),
             )
             if journal.intent.get("execution_plan_id") == plan.id
         )
         if len(add_journals) > 1:
-            raise _cancellation_evidence_invalid("同一 execution plan 出现多个 qB add journal")
+            raise _cancellation_evidence_invalid("同一 execution plan 出现多个下载器 add journal")
         add_journal = add_journals[0] if add_journals else None
-        qbit_add_journal_id: str | None = None
+        downloader_kind: DownloaderKind | None = None
+        add_journal_id: str | None = None
         torrent_hash: str | None = None
         remote_save_path: str | None = None
         ownership_tag: str | None = None
         if add_journal is not None:
             if OperationStatus(add_journal.status) is not OperationStatus.APPLIED:
                 raise _cancellation_evidence_invalid(
-                    "qB add journal 尚未 APPLIED，必须先完成添加结果对账再自动取消"
+                    "下载器 add journal 尚未 APPLIED，必须先完成添加结果对账再自动取消"
                 )
             if add_journal.after_snapshot is None:
-                raise _cancellation_evidence_invalid("qB add journal 缺少 after snapshot")
-            qbit_add_journal_id = add_journal.id
+                raise _cancellation_evidence_invalid("下载器 add journal 缺少 after snapshot")
+            if add_journal.operation_type == QBITTORRENT_ADD_OPERATION:
+                downloader_kind = DownloaderKind.QBITTORRENT
+            elif add_journal.operation_type == TRANSMISSION_ADD_OPERATION:
+                downloader_kind = DownloaderKind.TRANSMISSION
+            else:
+                raise _cancellation_evidence_invalid("下载器 add journal 类型不受支持")
+            add_journal_id = add_journal.id
             torrent_hash = _required_text(add_journal.after_snapshot, "torrent_hash")
             remote_save_path = _required_text(add_journal.after_snapshot, "save_path")
             ownership_tag = _required_text(add_journal.after_snapshot, "ownership_tag")
@@ -388,7 +445,7 @@ class TaskCancellationCoordinator:
                     code="CANCELLATION_DOWNLOADER_REQUIRED",
                     status=409,
                     title="回滚文件前必须先移除下载器任务",
-                    detail="qBittorrent 仍持有目标路径时禁止删除 PackBreaker 创建的 hardlink",
+                    detail="下载器仍持有目标路径时禁止删除 PackBreaker 创建的 hardlink",
                 )
 
         payload = plan.payload
@@ -405,7 +462,8 @@ class TaskCancellationCoordinator:
             ),
             remove_downloader_task=remove_downloader_task,
             rollback_created_resources=rollback_created_resources,
-            qbit_add_journal_id=qbit_add_journal_id,
+            downloader_kind=downloader_kind,
+            add_journal_id=add_journal_id,
             torrent_hash=torrent_hash,
             remote_save_path=remote_save_path,
             ownership_tag=ownership_tag,
@@ -413,25 +471,32 @@ class TaskCancellationCoordinator:
             directory_journal_ids=directories,
         )
 
-    def _load_binding(self, plan: _RollbackPlan) -> QbittorrentWriteBinding:
+    def _load_binding(
+        self,
+        plan: _RollbackPlan,
+    ) -> QbittorrentWriteBinding | TransmissionWriteBinding:
+        if plan.downloader_kind is None:
+            raise _cancellation_evidence_invalid("取消计划缺少 downloader_kind，不能绑定远端任务")
         try:
-            binding = self._downloader_service.qbittorrent_write_binding(plan.target_downloader_id)
+            binding = self._downloader_service.write_binding(plan.target_downloader_id)
         except ApplicationError as exc:
-            raise ApplicationError(
-                code="CANCELLATION_DOWNLOADER_CHANGED",
-                status=409,
-                title="取消时目标 qBittorrent 配置不可用",
-                detail="无法证明当前写 binding 仍指向 execution plan 冻结的下载器",
+            raise _cancellation_downloader_changed(
+                "无法证明当前写 binding 仍指向 execution plan 冻结的下载器"
             ) from exc
         if (
-            binding.downloader_version != plan.target_downloader_version
+            (
+                plan.downloader_kind is DownloaderKind.QBITTORRENT
+                and not isinstance(binding, QbittorrentWriteBinding)
+            )
+            or (
+                plan.downloader_kind is DownloaderKind.TRANSMISSION
+                and not isinstance(binding, TransmissionWriteBinding)
+            )
+            or binding.downloader_version != plan.target_downloader_version
             or binding.binding_digest != plan.target_downloader_binding_digest
         ):
-            raise ApplicationError(
-                code="CANCELLATION_DOWNLOADER_CHANGED",
-                status=409,
-                title="取消时目标 qBittorrent 配置已变化",
-                detail="禁止使用不同 version/binding 的下载器移除既有任务",
+            raise _cancellation_downloader_changed(
+                "下载器类型、version 或 binding digest 与冻结取消计划不一致"
             )
         return binding
 
@@ -439,7 +504,7 @@ class TaskCancellationCoordinator:
         self,
         plan: _RollbackPlan,
         *,
-        qbit_remove_journal_id: str | None,
+        remove_journal_id: str | None,
         rolled_back_hardlink_journal_ids: tuple[str, ...],
         rolled_back_directory_journal_ids: tuple[str, ...],
         replayed: bool,
@@ -457,7 +522,12 @@ class TaskCancellationCoordinator:
             checkpoint = _rollback_checkpoint(plan, stage=TaskStatus.CANCELLED)
             checkpoint.update(
                 {
-                    "qbit_remove_journal_id": qbit_remove_journal_id,
+                    "remove_journal_id": remove_journal_id,
+                    "qbit_remove_journal_id": (
+                        remove_journal_id
+                        if plan.downloader_kind is DownloaderKind.QBITTORRENT
+                        else None
+                    ),
                     "rolled_back_hardlink_journal_ids": list(rolled_back_hardlink_journal_ids),
                     "rolled_back_directory_journal_ids": list(rolled_back_directory_journal_ids),
                 }
@@ -484,7 +554,7 @@ class TaskCancellationCoordinator:
                 task_version=task.version,
                 status=TaskStatus.CANCELLED,
                 execution_plan_id=plan.execution_plan_id,
-                qbit_remove_journal_id=qbit_remove_journal_id,
+                remove_journal_id=remove_journal_id,
                 rolled_back_hardlink_journal_ids=rolled_back_hardlink_journal_ids,
                 rolled_back_directory_journal_ids=rolled_back_directory_journal_ids,
                 replayed=replayed,
@@ -502,7 +572,11 @@ def _rollback_checkpoint(plan: _RollbackPlan, *, stage: TaskStatus) -> dict[str,
         "target_downloader_binding_digest": plan.target_downloader_binding_digest,
         "remove_downloader_task": plan.remove_downloader_task,
         "rollback_created_resources": plan.rollback_created_resources,
-        "qbit_add_journal_id": plan.qbit_add_journal_id,
+        "downloader_kind": None if plan.downloader_kind is None else plan.downloader_kind.value,
+        "add_journal_id": plan.add_journal_id,
+        "qbit_add_journal_id": (
+            plan.add_journal_id if plan.downloader_kind is DownloaderKind.QBITTORRENT else None
+        ),
         "torrent_hash": plan.torrent_hash,
         "remote_save_path": plan.remote_save_path,
         "ownership_tag": plan.ownership_tag,
@@ -529,7 +603,8 @@ def _rollback_plan_from_checkpoint(
         ),
         remove_downloader_task=_required_bool(checkpoint, "remove_downloader_task"),
         rollback_created_resources=_required_bool(checkpoint, "rollback_created_resources"),
-        qbit_add_journal_id=_optional_text(checkpoint, "qbit_add_journal_id"),
+        downloader_kind=_checkpoint_downloader_kind(checkpoint),
+        add_journal_id=_checkpoint_add_journal_id(checkpoint),
         torrent_hash=_optional_text(checkpoint, "torrent_hash"),
         remote_save_path=_optional_text(checkpoint, "remote_save_path"),
         ownership_tag=_optional_text(checkpoint, "ownership_tag"),
@@ -546,7 +621,7 @@ def _result_from_checkpoint(
     replayed: bool,
 ) -> TaskCancellationResult:
     if (
-        checkpoint.get("schema_version") != CANCELLATION_CHECKPOINT_SCHEMA_VERSION
+        checkpoint.get("schema_version") not in _CANCELLATION_CHECKPOINT_SCHEMAS
         or checkpoint.get("stage") != TaskStatus.CANCELLED.value
     ):
         raise _cancellation_evidence_invalid("CANCELLED checkpoint 格式无效")
@@ -555,7 +630,7 @@ def _result_from_checkpoint(
         task_version=task_version,
         status=TaskStatus.CANCELLED,
         execution_plan_id=_required_text(checkpoint, "execution_plan_id"),
-        qbit_remove_journal_id=_optional_text(checkpoint, "qbit_remove_journal_id"),
+        remove_journal_id=_checkpoint_remove_journal_id(checkpoint),
         rolled_back_hardlink_journal_ids=_required_string_tuple(
             checkpoint,
             "rolled_back_hardlink_journal_ids",
@@ -569,7 +644,7 @@ def _result_from_checkpoint(
 
 
 def _remove_candidate_key(plan: _RollbackPlan) -> str:
-    value = f"{plan.execution_plan_id}:{plan.qbit_add_journal_id}:remove"
+    value = f"{plan.execution_plan_id}:{plan.add_journal_id}:remove"
     return sha256(value.encode("utf-8")).hexdigest()
 
 
@@ -584,13 +659,51 @@ def _with_task_version(plan: _RollbackPlan, task_version: int) -> _RollbackPlan:
         target_downloader_binding_digest=plan.target_downloader_binding_digest,
         remove_downloader_task=plan.remove_downloader_task,
         rollback_created_resources=plan.rollback_created_resources,
-        qbit_add_journal_id=plan.qbit_add_journal_id,
+        downloader_kind=plan.downloader_kind,
+        add_journal_id=plan.add_journal_id,
         torrent_hash=plan.torrent_hash,
         remote_save_path=plan.remote_save_path,
         ownership_tag=plan.ownership_tag,
         hardlink_journal_ids=plan.hardlink_journal_ids,
         directory_journal_ids=plan.directory_journal_ids,
     )
+
+
+def _checkpoint_downloader_kind(checkpoint: dict[str, object]) -> DownloaderKind | None:
+    value = checkpoint.get("downloader_kind")
+    if value is None:
+        return (
+            DownloaderKind.QBITTORRENT
+            if _optional_text(checkpoint, "qbit_add_journal_id") is not None
+            else None
+        )
+    if not isinstance(value, str):
+        raise _cancellation_evidence_invalid("取消证据包含无效 downloader_kind")
+    try:
+        kind = DownloaderKind(value)
+    except ValueError as exc:
+        raise _cancellation_evidence_invalid("取消证据包含未知 downloader_kind") from exc
+    if kind not in {DownloaderKind.QBITTORRENT, DownloaderKind.TRANSMISSION}:
+        raise _cancellation_evidence_invalid("取消证据包含不受支持的 downloader_kind")
+    return kind
+
+
+def _checkpoint_add_journal_id(checkpoint: dict[str, object]) -> str | None:
+    value = checkpoint.get("add_journal_id")
+    if value is None:
+        return _optional_text(checkpoint, "qbit_add_journal_id")
+    if not isinstance(value, str) or not value:
+        raise _cancellation_evidence_invalid("取消证据包含无效 add_journal_id")
+    return value
+
+
+def _checkpoint_remove_journal_id(checkpoint: dict[str, object]) -> str | None:
+    value = checkpoint.get("remove_journal_id")
+    if value is None:
+        return _optional_text(checkpoint, "qbit_remove_journal_id")
+    if not isinstance(value, str) or not value:
+        raise _cancellation_evidence_invalid("取消证据包含无效 remove_journal_id")
+    return value
 
 
 def _required_optional(value: str | None, key: str) -> str:
@@ -659,6 +772,15 @@ def _cancellation_evidence_invalid(detail: str) -> ApplicationError:
         code="CANCELLATION_EVIDENCE_INVALID",
         status=409,
         title="取消/回滚证据无效",
+        detail=detail,
+    )
+
+
+def _cancellation_downloader_changed(detail: str) -> ApplicationError:
+    return ApplicationError(
+        code="CANCELLATION_DOWNLOADER_CHANGED",
+        status=409,
+        title="取消时目标下载器配置已变化",
         detail=detail,
     )
 

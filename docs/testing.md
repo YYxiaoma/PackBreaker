@@ -94,6 +94,7 @@
 - 下载器添加请求发送前、响应丢失后。
 - 客户端校验开始后、状态回写前。
 - 下载器做种启动后、START journal 或任务 DONE 状态回写前。
+- 下载器任务移除后、REMOVE journal 或文件系统回滚状态回写前。
 - 硬链接隔离副本完成后、替换前后。
 - 回滚每个动作前后。
 
@@ -104,6 +105,8 @@ operation journal 自身必须先通过状态机/CAS 测试：非法跨级转换
 文件系统事务链测试必须使用临时数据根，不触碰生产 `/data`：覆盖正常目录+hardlink 创建与十次幂等重放、临时 hardlink 后崩溃并安全续跑、最终 hardlink 落位后但 APPLIED 前崩溃转 `RECONCILE_REQUIRED`、目录创建后但 APPLIED 前崩溃不自动认领、逆序回滚，以及目标被外部替换时 `ROLLBACK_BLOCKED` 且替换文件不被删除。所有场景都复核源 inode/size/mtime 不变，允许 link count 只因预期 hardlink 创建/删除发生变化。
 
 qB 写事务测试使用 fake/MockTransport，不访问真实下载器：覆盖 WebAPI 2.15.1 JSON 添加响应、multipart 中强制 paused、FULL_VERIFIED/skip-check 双层门、WebAPI 2.16 参数失效保护、5.x `stop/start/recheck` 端点、`torrents/info` 的 hash/save path/tag/state/严格 0..1 progress 二次确认、十次顺序与十路并发重放都只发一次 add/recheck、add 响应丢失后凭 hash+save path+ownership tag 恢复、recheck 响应丢失时仅凭 checking 或相对 before snapshot 的可证明变化恢复、状态未变化时转 `RECONCILE_REQUIRED` 而不盲目重发、HTTP 成功但 torrent 不可见、添加前已存在同 hash 不自动认领、save path 不符进入 `RECONCILE_REQUIRED`，以及 paused 被客户端忽略时先 stop 并重新确认后才能 APPLIED。
+
+Transmission 写事务测试同样只使用 fake/MockTransport：除 ADD/VERIFY/START 的 ownership label、hash、save path、完整度和响应丢失恢复外，REMOVE 必须把 `delete_local_data=false` 冻结进 intent 与 RPC 参数；活跃 torrent 先 stop，再确认不存在后才 APPLIED。十路并发 remove 只能发送一次远端删除；响应丢失只能凭 torrent 已消失恢复；ownership label 或保存路径漂移必须在远端删除前阻断。任务取消测试必须证明 Transmission remove 先于 journal-owned hardlink 回滚，remove 成功后崩溃并重启不得二次 remove，且旧 qB cancellation v1 checkpoint 仍能安全恢复。
 
 LINKING 协调器额外覆盖两阶段当前性：调用前 plan provider 必须返回 latest/current/ready；真正推进任务前还要在数据库事务内重新核对 latest plan/gate/review/candidate/preflight/task version。测试必须模拟两次检查之间新增 review revision 并证明零文件副作用；还要模拟 LINKING checkpoint 已提交后 source inventory 改变，证明在首个 operation journal intent/目录/hardlink 前阻断。重复调用已进入 LINKING 的任务只能恢复 checkpoint 精确绑定的同一 plan。
 

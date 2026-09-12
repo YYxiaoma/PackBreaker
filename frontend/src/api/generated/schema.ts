@@ -1046,6 +1046,7 @@ export interface components {
       | 'TRANSMISSION_ADD'
       | 'TRANSMISSION_VERIFY'
       | 'TRANSMISSION_START'
+      | 'TRANSMISSION_REMOVE'
       | 'OTHER';
     /**
      * OperationStatus

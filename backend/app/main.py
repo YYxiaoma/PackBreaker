@@ -46,6 +46,7 @@ from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.application.transmission_operations import (
     TransmissionAddOperationService,
+    TransmissionRemoveOperationService,
     TransmissionStartOperationService,
     TransmissionVerifyOperationService,
 )
@@ -137,6 +138,10 @@ def create_app(
             resolved_runtime.session_factory
         )
         app.state.transmission_start_operation_service = transmission_start_operations
+        transmission_remove_operations = TransmissionRemoveOperationService(
+            resolved_runtime.session_factory
+        )
+        app.state.transmission_remove_operation_service = transmission_remove_operations
         qbit_start_operations = QbittorrentStartOperationService(resolved_runtime.session_factory)
         app.state.qbittorrent_start_operation_service = qbit_start_operations
         qbit_remove_operations = QbittorrentRemoveOperationService(resolved_runtime.session_factory)
@@ -202,6 +207,7 @@ def create_app(
             downloader_service,
             qbit_remove_operations,
             filesystem_operations,
+            transmission_remove_operations,
         )
         app.state.task_cancellation_coordinator = task_cancellation_coordinator
         app.state.task_action_service = TaskActionService(

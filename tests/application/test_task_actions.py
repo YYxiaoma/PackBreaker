@@ -72,7 +72,7 @@ class _Cancellation:
             task_version=9,
             status=TaskStatus.CANCELLED,
             execution_plan_id="plan-1",
-            qbit_remove_journal_id=None,
+            remove_journal_id=None,
             rolled_back_hardlink_journal_ids=(),
             rolled_back_directory_journal_ids=(),
             replayed=self.calls > 1,

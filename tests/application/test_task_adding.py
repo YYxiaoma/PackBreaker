@@ -36,9 +36,11 @@ from backend.app.application.task_recovery import RecoveryOutcome, TaskRecoveryC
 from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.application.transmission_operations import (
     TRANSMISSION_ADD_OPERATION,
+    TRANSMISSION_REMOVE_OPERATION,
     TRANSMISSION_START_OPERATION,
     TRANSMISSION_VERIFY_OPERATION,
     TransmissionAddOperationService,
+    TransmissionRemoveOperationService,
     TransmissionStartOperationService,
     TransmissionVerifyOperationService,
 )
@@ -222,6 +224,7 @@ class _FakeTransmission:
         self.add_calls = 0
         self.verify_calls = 0
         self.start_calls = 0
+        self.remove_calls = 0
         self.raise_after_start_apply_once = False
 
     async def add_torrent(self, request: TransmissionAddRequest) -> TransmissionAddResult:
@@ -265,7 +268,8 @@ class _FakeTransmission:
         )
 
     async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
-        raise AssertionError("本切片不能移除 Transmission 任务")
+        self.remove_calls += 1
+        self.states.pop(torrent_hash, None)
 
 
 @dataclass
@@ -1654,6 +1658,174 @@ async def test_startup_recovery_limit_reports_truncation_without_touching_later_
     assert adding_fixture.qbit.start_calls == 0
 
 
+async def _prepare_transmission_seeding_for_cancellation(
+    adding_fixture: _AddingFixture,
+) -> tuple[_FakeTransmission, str]:
+    current_binding = adding_fixture.downloader_provider.binding
+    assert isinstance(current_binding, QbittorrentWriteBinding)
+    capabilities = {
+        "client": "Transmission",
+        "version": "4.1.3",
+        "api_version": "6.0.0",
+        "supports_skip_checking": False,
+        "supports_force_recheck": True,
+        "supports_verify_progress": True,
+    }
+    binding_digest = downloader_execution_binding_digest(
+        downloader_id=current_binding.downloader_id,
+        version=current_binding.downloader_version,
+        kind=DownloaderKind.TRANSMISSION,
+        enabled=True,
+        connection_status=ProbeStatus.OK,
+        path_mapping_status=ProbeStatus.OK,
+        path_mappings=current_binding.path_mappings,
+        capabilities=capabilities,
+    )
+    transmission = _FakeTransmission()
+    adding_fixture.downloader_provider.binding = TransmissionWriteBinding(
+        downloader_id=current_binding.downloader_id,
+        downloader_version=current_binding.downloader_version,
+        binding_digest=binding_digest,
+        path_mappings=current_binding.path_mappings,
+        capabilities=capabilities,
+        adapter=transmission,
+        data_root=adding_fixture.data_root,
+    )
+    with adding_fixture.factory() as session:
+        plan = TaskExecutionPlanRepository(session).get(adding_fixture.plan_id)
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert plan is not None and task is not None
+        plan.payload = {
+            **plan.payload,
+            "target_downloader_binding_digest": binding_digest,
+        }
+        task.checkpoint = {
+            **task.checkpoint,
+            "target_downloader_binding_digest": binding_digest,
+        }
+        session.commit()
+
+    adding = TaskAddingCoordinator(
+        adding_fixture.factory,
+        _FakeSiteProvider(adding_fixture.site_adapter),
+        adding_fixture.downloader_provider,
+        QbittorrentAddOperationService(adding_fixture.factory),
+        TransmissionAddOperationService(adding_fixture.factory),
+        data_root=adding_fixture.data_root,
+    )
+    verifier = TaskClientVerificationCoordinator(
+        adding_fixture.factory,
+        adding_fixture.downloader_provider,
+        QbittorrentRecheckOperationService(adding_fixture.factory),
+        TransmissionVerifyOperationService(adding_fixture.factory),
+        data_root=adding_fixture.data_root,
+    )
+    added = await adding.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    checking = await verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert checking.status is TaskStatus.CLIENT_VERIFYING
+    transmission.states[added.torrent_hash] = replace(
+        transmission.states[added.torrent_hash],
+        status=0,
+        percent_done=1.0,
+        recheck_progress=1.0,
+    )
+    verified = await verifier.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert verified.status is TaskStatus.SEEDING
+    return transmission, added.torrent_hash
+
+
+@pytest.mark.asyncio
+async def test_transmission_cancellation_removes_before_rollback_and_recovers_without_second_remove(
+    adding_fixture: _AddingFixture,
+) -> None:
+    filesystem = FilesystemOperationService(
+        adding_fixture.factory,
+        SafeFilesystemGateway(adding_fixture.data_root),
+    )
+    source_stat = adding_fixture.source_file.stat(follow_symlinks=False)
+    link_result = filesystem.execute_hardlink(
+        HardlinkExecutionRequest(
+            task_id=adding_fixture.task_id,
+            candidate_key="2" * 64,
+            source_relative_path=f"source/{adding_fixture.source_file.name}",
+            target_root_relative_path="target",
+            target_relative_path="owned/transmission-recovery.mkv",
+            expected_source_snapshot=FileSnapshot(
+                device=source_stat.st_dev,
+                inode=source_stat.st_ino,
+                size=source_stat.st_size,
+                mtime_ns=source_stat.st_mtime_ns,
+            ),
+        )
+    )
+    transmission, torrent_hash = await _prepare_transmission_seeding_for_cancellation(
+        adding_fixture
+    )
+    owned_target = adding_fixture.data_root / "target" / "owned" / "transmission-recovery.mkv"
+    cancellation = TaskCancellationCoordinator(
+        adding_fixture.factory,
+        adding_fixture.downloader_provider,
+        QbittorrentRemoveOperationService(adding_fixture.factory),
+        filesystem,
+        TransmissionRemoveOperationService(adding_fixture.factory),
+    )
+    request = TaskCancellationRequest(
+        task_id=adding_fixture.task_id,
+        remove_downloader_task=True,
+        rollback_created_resources=True,
+    )
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_transmission_removed":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        await cancellation.execute(request, fault_hook=crash)
+
+    assert transmission.remove_calls == 1
+    assert torrent_hash not in transmission.states
+    assert owned_target.exists()
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None and task.status == TaskStatus.ROLLING_BACK.value
+        assert task.checkpoint["downloader_kind"] == DownloaderKind.TRANSMISSION.value
+        assert task.checkpoint["schema_version"] == "packbreaker-cancellation-checkpoint-v2"
+
+    report = await _recovery_coordinator(adding_fixture, cancellation).reconcile_once()
+
+    assert report.scanned_count == 1
+    assert report.completed_count == 1
+    assert report.items[0].initial_status is TaskStatus.ROLLING_BACK
+    assert report.items[0].final_status is TaskStatus.CANCELLED
+    assert report.items[0].steps == (TaskStatus.ROLLING_BACK,)
+    assert transmission.remove_calls == 1
+    assert not owned_target.exists()
+    with adding_fixture.factory() as session:
+        hardlink = session.get(OperationJournal, link_result.hardlink_journal_id)
+        assert hardlink is not None and hardlink.status == OperationStatus.ROLLED_BACK.value
+        remove_journal = session.scalar(
+            select(OperationJournal).where(
+                OperationJournal.operation_type == TRANSMISSION_REMOVE_OPERATION
+            )
+        )
+        assert remove_journal is not None
+        assert remove_journal.status == OperationStatus.APPLIED.value
+        assert remove_journal.intent["delete_local_data"] is False
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None
+        assert task.checkpoint["remove_journal_id"] == remove_journal.id
+        assert task.checkpoint["qbit_remove_journal_id"] is None
+
+
 @pytest.mark.asyncio
 async def test_cancellation_removes_qb_and_rolls_back_only_journal_owned_files(
     adding_fixture: _AddingFixture,
@@ -1868,6 +2040,14 @@ async def test_startup_recovery_resumes_rolling_back_without_second_qb_remove(
     with adding_fixture.factory() as session:
         task = session.get(UnpackTask, adding_fixture.task_id)
         assert task is not None and task.status == TaskStatus.ROLLING_BACK.value
+
+        legacy_checkpoint = dict(task.checkpoint)
+        legacy_checkpoint["schema_version"] = "packbreaker-cancellation-checkpoint-v1"
+        legacy_checkpoint.pop("downloader_kind", None)
+        legacy_checkpoint.pop("add_journal_id", None)
+        legacy_checkpoint.pop("remove_journal_id", None)
+        task.checkpoint = legacy_checkpoint
+        session.commit()
 
     report = await _recovery_coordinator(adding_fixture, cancellation).reconcile_once()
 

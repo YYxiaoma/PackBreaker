@@ -15,10 +15,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.errors import ApplicationError
 from backend.app.application.transmission_operations import (
     TRANSMISSION_ADD_OPERATION,
+    TRANSMISSION_REMOVE_OPERATION,
     TRANSMISSION_START_OPERATION,
     TRANSMISSION_VERIFY_OPERATION,
     TransmissionAddOperationRequest,
+    TransmissionAddOperationResult,
     TransmissionAddOperationService,
+    TransmissionRemoveOperationRequest,
+    TransmissionRemoveOperationService,
     TransmissionStartOperationRequest,
     TransmissionStartOperationService,
     TransmissionVerifyOperationRequest,
@@ -53,11 +57,14 @@ class _FakeTransmission:
         self.verify_calls = 0
         self.start_calls = 0
         self.stop_calls = 0
+        self.remove_calls = 0
         self.raise_after_add_apply_once = False
         self.raise_after_verify_apply_once = False
         self.raise_after_start_apply_once = False
+        self.raise_after_remove_apply_once = False
         self.delay_add = False
         self.delay_start = False
+        self.delay_remove = False
         self.apply_on_start = True
         self.start_status = 5
 
@@ -117,7 +124,13 @@ class _FakeTransmission:
             raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "synthetic verify response lost")
 
     async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
+        self.remove_calls += 1
+        if self.delay_remove:
+            await asyncio.sleep(0.01)
         self.states.pop(torrent_hash, None)
+        if self.raise_after_remove_apply_once:
+            self.raise_after_remove_apply_once = False
+            raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "synthetic remove response lost")
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +231,23 @@ def _start_request(
         torrent_hash=verify_result.torrent_hash,
         remote_save_path=verify_result.save_path,
         ownership_tag=verify_result.ownership_tag,
+    )
+
+
+def _remove_request(
+    task_id: str,
+    add_result: TransmissionAddOperationResult,
+) -> TransmissionRemoveOperationRequest:
+    return TransmissionRemoveOperationRequest(
+        task_id=task_id,
+        candidate_key="a" * 64,
+        downloader_id="target-tr",
+        downloader_version=4,
+        execution_plan_id="plan-tr",
+        add_journal_id=add_result.journal_id,
+        torrent_hash=add_result.torrent_hash,
+        remote_save_path=add_result.save_path,
+        ownership_tag=add_result.ownership_tag,
     )
 
 
@@ -450,3 +480,102 @@ async def test_transmission_start_requires_matching_verify_journal_before_write(
 
     assert failure.value.code == "DOWNLOADER_START_AUTHORIZATION_INVALID"
     assert adapter.start_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_transmission_remove_ten_concurrent_replays_remove_once_and_keep_data_contract(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    add_result = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    adapter.states[add_result.torrent_hash] = replace(
+        adapter.states[add_result.torrent_hash],
+        status=6,
+    )
+    adapter.delay_remove = True
+    service = TransmissionRemoveOperationService(factory)
+    request = _remove_request(task_id, add_result)
+
+    results = await asyncio.gather(*(service.execute(request, binding) for _ in range(10)))
+
+    assert all(item.removed for item in results)
+    assert adapter.stop_calls == 1
+    assert adapter.remove_calls == 1
+    assert add_result.torrent_hash not in adapter.states
+    assert len({item.journal_id for item in results}) == 1
+    with factory() as session:
+        journals = session.scalars(
+            select(OperationJournal).order_by(OperationJournal.created_at)
+        ).all()
+        assert [item.operation_type for item in journals] == [
+            TRANSMISSION_ADD_OPERATION,
+            TRANSMISSION_REMOVE_OPERATION,
+        ]
+        assert journals[-1].status == OperationStatus.APPLIED.value
+        assert journals[-1].intent["delete_local_data"] is False
+        assert journals[-1].after_snapshot == {
+            "torrent_absent": True,
+            "torrent_hash": add_result.torrent_hash,
+            "delete_local_data": False,
+        }
+
+
+@pytest.mark.asyncio
+async def test_transmission_remove_response_loss_recovers_from_absence(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    add_result = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    adapter.raise_after_remove_apply_once = True
+
+    result = await TransmissionRemoveOperationService(factory).execute(
+        _remove_request(task_id, add_result),
+        binding,
+    )
+
+    assert result.removed is True
+    assert result.recovered_after_unknown_result is True
+    assert adapter.remove_calls == 1
+    with factory() as session:
+        journal = session.scalar(
+            select(OperationJournal).where(
+                OperationJournal.operation_type == TRANSMISSION_REMOVE_OPERATION
+            )
+        )
+        assert journal is not None and journal.status == OperationStatus.APPLIED.value
+
+
+@pytest.mark.asyncio
+async def test_transmission_remove_rejects_ownership_mismatch_before_external_write(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    add_result = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+    adapter.states[add_result.torrent_hash] = replace(
+        adapter.states[add_result.torrent_hash],
+        labels=("external",),
+    )
+
+    with pytest.raises(ApplicationError) as failure:
+        await TransmissionRemoveOperationService(factory).execute(
+            _remove_request(task_id, add_result),
+            binding,
+        )
+
+    assert failure.value.code == "DOWNLOADER_STATE_MISMATCH"
+    assert adapter.remove_calls == 0
+    with factory() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(OperationJournal)
+                .where(OperationJournal.operation_type == TRANSMISSION_REMOVE_OPERATION)
+            )
+            == 0
+        )
