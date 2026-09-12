@@ -17,6 +17,8 @@ export type TaskOperationPurgeAction = components['schemas']['TaskOperationPurge
 export type TaskOperationAction = TaskOperationReconcileAction | TaskOperationPurgeAction;
 export type OperationMaintenanceReport =
   components['schemas']['OperationMaintenanceReportResponse'];
+export type OperationRetentionPlan = components['schemas']['OperationRetentionPlanResponse'];
+export type TaskOperationPurgeInput = components['schemas']['TaskOperationPurgeActionRequest'];
 export type TaskRecord = components['schemas']['TaskResponse'];
 export type TaskStatus = components['schemas']['TaskStatus'];
 export type TaskCreateInput = components['schemas']['TaskCreateRequest'];
@@ -111,6 +113,26 @@ export async function getOperationMaintenanceReport(
   }
 }
 
+export async function getOperationRetentionPlan(
+  retentionDays = 30,
+  limit = 100,
+): Promise<OperationRetentionPlan> {
+  if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
+    throw new Error('retentionDays 必须位于 1..3650');
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+    throw new Error('limit 必须位于 1..500');
+  }
+  try {
+    const response = await apiClient.get<OperationRetentionPlan>('/operations/retention-plan', {
+      params: { retention_days: retentionDays, limit },
+    });
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
 export function taskEventStreamUrl(taskId: string, afterEventId?: string): string {
   const params = new URLSearchParams();
   if (afterEventId) params.set('after_event_id', afterEventId);
@@ -192,6 +214,30 @@ export async function reconcileTaskOperation(
     const response = await apiClient.post<TaskOperationReconcileAction>(
       `${taskPath(taskId)}/operations/${encodeURIComponent(normalizedJournalId)}/actions`,
       { action: 'reconcile' },
+      { headers: actionHeaders(idempotencyKey) },
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function purgeTaskOperation(
+  taskId: string,
+  journalId: string,
+  retentionDays: number,
+  idempotencyKey: string,
+): Promise<TaskOperationPurgeAction> {
+  const normalizedJournalId = journalId.trim();
+  if (!normalizedJournalId) throw new Error('journalId 不能为空');
+  if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
+    throw new Error('retentionDays 必须位于 1..3650');
+  }
+  const payload: TaskOperationPurgeInput = { action: 'purge', retention_days: retentionDays };
+  try {
+    const response = await apiClient.post<TaskOperationPurgeAction>(
+      `${taskPath(taskId)}/operations/${encodeURIComponent(normalizedJournalId)}/actions`,
+      payload,
       { headers: actionHeaders(idempotencyKey) },
     );
     return response.data;

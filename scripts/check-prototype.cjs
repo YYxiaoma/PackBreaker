@@ -32,12 +32,16 @@ const path = require('node:path');
     const cancelKeys=[];
     const cancelBodies=[];
     const reconcileKeys=[];
+    const retentionKeys=[];
+    const retentionBodies=[];
     const preCancelKeys=[];
     const preCancelBodies=[];
     const analysisCancelKeys=[];
     const analysisCancelBodies=[];
     let preCancelAttempts=0;
     let reconcileAttempts=0;
+    let retentionAttempts=0;
+    let retentionPurged=false;
     let executeAttempts=0;
     const taskEvents={
       'task-e2e-execute':[{id:'event-execute-1',task_id:'task-e2e-execute',from_status:'PREFLIGHT',to_status:'AWAITING_CONFIRMATION',event_type:'REVIEW_OPENED',reason:'E2E 初始审核已确认',created_at:now()}],
@@ -191,7 +195,15 @@ const path = require('node:path');
         {journal_id:'journal-maintenance-manual',task_id:'task-e2e-cancel',kind:'OTHER',status:'RECONCILE_REQUIRED',reason_code:'MANUAL_RECONCILE_REQUIRED',reason:'缺少可安全自动证明的完成证据，或该操作类型没有自动对账器。',recommended_action:'人工核对外部资源与历史记录；不要根据当前资源存在或缺失反推历史副作用。',action:'MANUAL_INSPECTION',reconcile_supported:false,manual_required:true,created_at:now(),updated_at:now()},
       ],
       cleanup_candidates:[
-        {journal_id:'journal-maintenance-noop',task_id:'task-e2e-pre-cancel',kind:'FILESYSTEM_DIRECTORY',status:'NOOP',reason_code:'NO_SIDE_EFFECT',reason:'journal 已确认没有执行外部副作用，因此没有仍由该 journal 创建并需要保留的资源。',recommendation:'仅作为未来保留策略候选；当前 API 不删除 operation journal，达到保留期后仍需专用清理流程再次确认。',created_at:now(),updated_at:now()},
+        {journal_id:'journal-maintenance-noop',task_id:'task-e2e-pre-cancel',kind:'FILESYSTEM_DIRECTORY',status:'NOOP',reason_code:'NO_SIDE_EFFECT',reason:'journal 已确认没有执行外部副作用，因此没有仍由该 journal 创建并需要保留的资源。',recommendation:'先通过 retention-plan 重新证明任务终态、保留期与零恢复引用；只有证明通过后才可使用带 Idempotency-Key 的 purge 动作删除 payload 并保留 tombstone。',created_at:now(),updated_at:now()},
+      ],
+    }));
+    await page.route('**/api/v1/operations/retention-plan**',route=>fulfillJson(route,{
+      generated_at:now(),cutoff:new Date(Date.now()-30*86400000).toISOString(),retention_days:30,
+      summary:{candidates:2,inspected:retentionPurged?1:2,eligible:retentionPurged?0:1,blocked:1,truncated:false},
+      items:[
+        ...(!retentionPurged?[{journal_id:'journal-maintenance-noop',task_id:'task-e2e-pre-cancel',kind:'FILESYSTEM_DIRECTORY',status:'NOOP',eligible:true,reason_code:'ELIGIBLE',updated_at:new Date(Date.now()-60*86400000).toISOString()}]:[]),
+        {journal_id:'journal-maintenance-blocked',task_id:'task-e2e-cancel',kind:'FILESYSTEM_HARDLINK',status:'ROLLED_BACK',eligible:false,reason_code:'TASK_CHECKPOINT_REFERENCE',updated_at:new Date(Date.now()-60*86400000).toISOString()},
       ],
     }));
     await page.route('**/api/v1/task-units/**',async route=>{
@@ -233,6 +245,19 @@ const path = require('node:path');
       if(request.method()==='GET'&&tail==='candidates')return fulfillJson(route,{items:[candidate(id)]});
       if(request.method()==='GET'&&tail==='units')return fulfillJson(route,{items:[taskUnit(id)]});
       if(request.method()==='GET'&&tail==='operations')return fulfillJson(route,{items:taskOperations[id]});
+      if(request.method()==='POST'&&tail==='operations/journal-maintenance-noop/actions'){
+        const body=request.postDataJSON();
+        const key=request.headers()['idempotency-key'];
+        assert.equal(body.action,'purge');
+        assert.equal(body.retention_days,30);
+        assert.ok(key,'operation retention purge 必须携带 Idempotency-Key');
+        retentionKeys.push(key);retentionBodies.push(body);retentionAttempts+=1;
+        if(retentionAttempts===1){
+          retentionPurged=true;
+          return route.abort('connectionreset');
+        }
+        return fulfillJson(route,{action:'purge',task_id:id,journal_id:'journal-maintenance-noop',kind:'FILESYSTEM_DIRECTORY',final_status:'NOOP',purged:true,receipt_id:'receipt-retention',idempotency_replayed:true});
+      }
       if(request.method()==='POST'&&tail==='operations/journal-reconcile-fs/actions'){
         const body=request.postDataJSON();
         const key=request.headers()['idempotency-key'];
@@ -399,10 +424,23 @@ const path = require('node:path');
     await page.getByRole('heading',{name:'清理 / 对账报告',exact:true}).waitFor();
     await page.getByText('journal-maintenance-manual',{exact:false}).waitFor();
     await page.getByText('缺少可安全自动证明的完成证据，或该操作类型没有自动对账器。',{exact:true}).waitFor();
-    await page.getByText('journal-maintenance-noop',{exact:false}).waitFor();
-    await page.getByText('仅候选',{exact:true}).waitFor();
+    const retentionPreview=page.locator('section.panel').filter({has:page.getByRole('heading',{name:'保留期安全预览',exact:true})});
+    await retentionPreview.getByText('journal-maintenance-noop',{exact:false}).waitFor();
+    await page.getByText('候选概览',{exact:true}).waitFor();
+    await retentionPreview.getByText('journal-maintenance-blocked',{exact:false}).waitFor();
+    await retentionPreview.getByText('任务检查点仍引用',{exact:true}).first().waitFor();
+    const retentionPurgeButton=retentionPreview.getByRole('button',{name:'清理 payload',exact:true});
+    assert.equal(await retentionPurgeButton.count(),1,'只有 retention-plan eligible journal 才显示 purge 按钮');
     assert.equal(await page.getByText('/private/maintenance/secret',{exact:true}).count(),0,'维护报告不得暴露私有路径');
-    assert.equal(await page.locator('main').getByRole('button',{name:/删除|清理登记资源|预览并清理/}).count(),0,'维护报告页不得提供删除/清理执行按钮');
+    await retentionPurgeButton.click();
+    await page.locator('.el-message-box').getByRole('button',{name:'重新验证并清理 payload',exact:true}).click();
+    await page.getByText('上一次清理结果未知',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'重试确认同一清理请求',exact:true}).click();
+    await page.getByText(/Journal payload 已安全清理/).waitFor();
+    assert.equal(retentionKeys.length,2,'retention purge 响应丢失后应重试一次');
+    assert.equal(retentionKeys[0],retentionKeys[1],'retention purge 必须复用相同 Idempotency-Key');
+    assert.equal(retentionBodies[0].retention_days,30);
+    assert.equal(await page.getByRole('button',{name:'清理 payload',exact:true}).count(),0,'purge 确认后实时预览不得继续显示已清理 journal');
     await page.getByRole('button',{name:'刷新报告',exact:true}).click();
     await page.locator('nav').getByRole('button',{name:'任务中心',exact:false}).click();
     await page.setViewportSize({width:390,height:844});
@@ -421,6 +459,6 @@ const path = require('node:path');
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,`${name} 移动页溢出`);
     }
     assert.deepEqual(errors,[]);
-    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、状态自动刷新、11 页导航、历史扫描、清理/对账只读报告、390px 移动布局与深色主题。');
+    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、状态自动刷新、11 页导航、历史扫描、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题。');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -9,6 +9,7 @@ import {
   executeTaskUnitRepair,
   executeTask,
   getOperationMaintenanceReport,
+  getOperationRetentionPlan,
   getTaskPreflight,
   getTaskPreflightCurrent,
   getTaskUnitDecision,
@@ -23,6 +24,7 @@ import {
   listTaskUnits,
   reverifyTaskUnitDecision,
   reconcileTaskOperation,
+  purgeTaskOperation,
   refreshTaskUnitExecutionGate,
   submitTaskUnitDecision,
   taskEventStreamUrl,
@@ -166,6 +168,54 @@ describe('任务分析 API', () => {
     });
     expect(report.summary.manual_only).toBe(2);
     await expect(getOperationMaintenanceReport(0)).rejects.toThrow('limit 必须位于 1..500');
+  });
+
+  it('保留期计划只读预览并对单 journal purge 使用显式幂等键', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
+      data: {
+        generated_at: '2026-09-12T00:00:00Z',
+        cutoff: '2026-07-29T00:00:00Z',
+        retention_days: 45,
+        summary: { candidates: 2, inspected: 2, eligible: 1, blocked: 1, truncated: false },
+        items: [],
+      },
+    });
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      data: {
+        action: 'purge',
+        task_id: 'task/with slash',
+        journal_id: 'journal/with slash',
+        kind: 'FILESYSTEM_DIRECTORY',
+        final_status: 'NOOP',
+        purged: true,
+        idempotency_replayed: false,
+        receipt_id: 'receipt-purge',
+      },
+    });
+
+    const plan = await getOperationRetentionPlan(45, 25);
+    const result = await purgeTaskOperation(
+      'task/with slash',
+      'journal/with slash',
+      45,
+      'purge-key',
+    );
+
+    expect(get).toHaveBeenCalledWith('/operations/retention-plan', {
+      params: { retention_days: 45, limit: 25 },
+    });
+    expect(post).toHaveBeenCalledWith(
+      '/tasks/task%2Fwith%20slash/operations/journal%2Fwith%20slash/actions',
+      { action: 'purge', retention_days: 45 },
+      { headers: { 'Idempotency-Key': 'purge-key' } },
+    );
+    expect(plan.summary.eligible).toBe(1);
+    expect(result.purged).toBe(true);
+    await expect(getOperationRetentionPlan(0)).rejects.toThrow('retentionDays 必须位于 1..3650');
+    await expect(getOperationRetentionPlan(30, 501)).rejects.toThrow('limit 必须位于 1..500');
+    await expect(purgeTaskOperation('task-1', 'journal-1', 0, 'purge-key')).rejects.toThrow(
+      'retentionDays 必须位于 1..3650',
+    );
   });
 
   it('execute/cancel 使用生成 schema 并显式携带 Idempotency-Key', async () => {

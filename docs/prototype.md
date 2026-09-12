@@ -29,7 +29,7 @@ pnpm --dir frontend dev
 6. **新建任务**：填写演示名称、处理类型、源/目标下载器与站点，生成预演。相同名称和目标的当前演示任务返回已有任务。正式系统将使用需求定义的源 hash、处理单元等幂等键。
 7. **历史辅种**：新建扫描、推进合成进度、暂停、断点续扫；完成后生成代表性预演。此处不是实际目录扫描器。
 8. **认证与下载器**：首次打开完成管理员初始化/登录；在“系统设置 → 安全与集成”创建或撤销 API Token，明文只展示一次；下载器页读取真实后端配置，新增/编辑只写凭证与路径映射，运行 qB/TR 只读连接测试，为每条映射提交真实测试文件执行路径/hardlink 诊断，并在所有安全门通过后启用。此页不提供任何下载器任务写操作。
-9. **清理与对账**：读取真实 operation journal 维护报告，展示全局待处理数量、可只读对账项目、仅人工检查项目和 `NOOP` / `ROLLED_BACK` 保留期候选；后端已提供脱敏 `retention-plan` 与单 journal 幂等 purge，但当前页面仍保持只读，不返回私有路径/hash/ownership 等内部证据，也不暴露删除按钮。
+9. **清理与对账**：读取真实 operation journal 维护报告和脱敏 `retention-plan`，明确区分“候选概览”和“当前可安全清理”；只有服务端实时判定 `eligible=true` 的单 journal 才显示 purge。确认框明确说明只删除 operation payload、不删除媒体或下载器资源，并保留 tombstone；HTTP 结果未知时页面冻结原 task/journal/保留期与 `Idempotency-Key`，只能同键重试确认，不生成新清理请求。
 10. **系统设置与升级**：体验通知开关、配置导出、恢复确认及升级成功/失败回滚路径。所有操作明确标注演示。
 
 ## 对照 v0.3 的页面覆盖
@@ -42,7 +42,7 @@ pnpm --dir frontend dev
 | 五：99% 修复 | 保留合成演示，同时新增“真实后端安全修复区”：可按真实 task unit 读取三种 repair-plan，展示受影响 piece/文件、隔离/空间预算与阻断原因；AUTO_PIECE ready 后可通过带 Idempotency-Key 的真实 repair execute action 进入 journal-backed inode isolation、qB/TR 补齐、stop、二次 recheck/verify 与 `SEEDING → DONE`。浏览器不提交 hash/ownership/journal/inode/pause 等安全事实，GET plan 固定 `execution_allowed=false` 且 POST 会重新证明。后端取消链已支持 downloader remove 后的专用 `CLEANUP_REPAIR_TARGET`，也可显式保留独立 target；qB/TR repair start/stop 已纳入只读维护对账 | 真实 repair UI 仍以手工输入 task unit ID 为入口，尚未与真实任务列表/详情自动选中单元联动；真实 NAS/qB/TR 端到端验收仍待完成 |
 | 六：站点管理 | 页面仍是多站配置/启停/限流/熔断恢复的原型交互；后端已具备 M-Team/HDTime 真实只读适配器、加密凭证、配置 API、按 version 隔离的限流/重试/缓存/熔断，并提供脱敏 health、受 `If-Match` 保护的人工 reset-circuit 与熔断/恢复聚合通知 | 页面尚未全面切换真实站点 CRUD/health；跨进程趋势指标、真实账号验收与 HHClub 鉴权/引擎仍待确认或实现 |
 | 六：下载器管理 | 真实 CRUD、加密凭证只写、qB/TR 版本/认证探测、多映射路径/权限/设备/hardlink 诊断、启停安全门、`If-Match` 并发控制；后端具备 qB 完整安全执行链，TR 4.1.3 也已把暂停添加、强制校验、start/做种确认和保留数据的取消/回滚接入 operation journal，并支持 ADD/VERIFY/START/REMOVE 的只读安全对账，响应丢失/并发重放均按真实状态与所有权证据恢复 | UI 下载器页仍不提供任务写操作；真实 4.1.3 环境端到端验收仍待 M4 后续切片 |
-| 七：可靠性 | 重复批准无额外状态推进、取消确认；任务详情具备真实脱敏 operation journal 列表/只读对账，全局“清理与对账”页已接真实维护报告与人工修复清单；后端新增 retention-plan、receipt-backed 单 journal purge 与无敏感 payload tombstone | retention purge UI 尚未开放；崩溃恢复、失败重试与回滚继续按后端实现推进 |
+| 七：可靠性 | 重复批准无额外状态推进、取消确认；任务详情具备真实脱敏 operation journal 列表/只读对账，全局“清理与对账”页已接真实维护报告、人工修复清单、retention-plan 与单 journal purge；UI 仅对当前 `eligible=true` 项开放清理，未知结果冻结原请求同键确认，后端以 receipt+tombstone 维持幂等与审计 | 尚未提供批量 purge；崩溃恢复、失败重试与回滚继续按后端实现推进 |
 | 十一、十二：扩展辅种 | 历史根目录、类型/排除表单、扫描游标、暂停续扫、影片/剧集预演 | 真正增量文件发现、季集/Specials/范围集识别、逐单元独立执行 |
 | 八、十：运维 | 总览趋势、依赖状态、日志多维筛选与导出、升级/回滚演示 | 一致性备份、镜像升级、数据库迁移、真实健康检查与生产恢复 |
 | 九：认证与集成 | 管理员首次初始化/登录/退出、全局认证门、CSRF、API Token 创建/一次性明文展示/撤销与 secret store 已接入真实后端 | Webhook HMAC/防重放仍待实现 |
@@ -73,9 +73,9 @@ pnpm --dir frontend build
 pnpm --dir frontend test:e2e
 ```
 
-- Vitest：原型安全门 7 项，加上 API problem 脱敏、强 ETag、下载器 `If-Match`、多 probe 诊断契约、管理员认证 store、API Token 明文不入 store 与服务端状态刷新，共 21 项。
-- Playwright：默认拦截 `/api/v1/auth/me` 为合成的已认证管理员状态，因此不依赖真实后端或真实口令；继续覆盖任务审核、歧义映射修正、11 页导航、历史扫描、清理确认、移动视口和深色主题，浏览器 pageerror 必须为空。截图写入忽略的 `frontend/test-results/`。
-- 本轮 Linux Runner 未安装脚本默认使用的 Microsoft Edge，也没有可复用的系统 Chromium；`test:e2e` 在浏览器启动阶段终止，因此本轮不把 Playwright 记为通过。Vite 8.2.2 开发服务已确认可在 5173 正常启动。
+- Vitest：当前 10 个测试文件共 44 项，覆盖 API problem 脱敏、强 ETag、下载器 `If-Match`、任务公开动作、operation retention API、管理员认证 store、API Token 与前端幂等键安全门。
+- Playwright：默认拦截 `/api/v1/auth/me` 为合成的已认证管理员状态，因此不依赖真实后端或真实口令；覆盖任务审核、执行/取消/对账响应丢失同键确认、11 页导航、历史扫描、retention-plan eligible-only purge、purge 响应丢失同键确认、390px 移动视口和深色主题，浏览器 pageerror 必须为空。截图写入忽略的 `frontend/test-results/`。
+- 本轮 Linux Runner 使用 Playwright 已安装的 bundled Chromium（`PB_BROWSER=bundled`）完整通过浏览器门禁；不会访问真实 PT、下载器或外部站点。
 - 类型检查使用 TypeScript strict；`lint` 当前是 Prettier 格式检查，未引入 ESLint。
 - 当前前端验证使用 Node.js 22.23.2、pnpm 10.34.5，在 Linux Runner 上执行；后续 CI 仍需把该矩阵固化为发布门禁。
 - 默认前端/后端自动测试不访问真实 PT 或下载器。真实下载器只读连接探测与路径诊断必须由用户在已配置环境中显式触发；镜像构建与生产验收仍待完成。

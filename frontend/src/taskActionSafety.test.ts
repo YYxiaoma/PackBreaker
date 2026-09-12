@@ -55,6 +55,9 @@ describe('公开任务动作 UI 安全门', () => {
     expect(createTaskActionIdempotencyKey('reconcile', 'task-1', () => 'uuid-2')).toBe(
       'ui-reconcile-task-1-uuid-2',
     );
+    expect(createTaskActionIdempotencyKey('purge', 'task-1', () => 'uuid-3')).toBe(
+      'ui-purge-task-1-uuid-3',
+    );
     expect(() => createTaskActionIdempotencyKey('cancel', ' ', () => 'uuid-1')).toThrow(
       'taskId 不能为空',
     );
