@@ -43,6 +43,9 @@ const path = require('node:path');
     let retentionAttempts=0;
     let retentionPurged=false;
     let executeAttempts=0;
+    let siteResetCalls=0;
+    let siteEnableCalls=0;
+    let siteTestCalls=0;
     const taskEvents={
       'task-e2e-execute':[{id:'event-execute-1',task_id:'task-e2e-execute',from_status:'PREFLIGHT',to_status:'AWAITING_CONFIRMATION',event_type:'REVIEW_OPENED',reason:'E2E 初始审核已确认',created_at:now()}],
       'task-e2e-cancel':[{id:'event-cancel-1',task_id:'task-e2e-cancel',from_status:'AWAITING_CONFIRMATION',to_status:'LINKING',event_type:'LINKING_STARTED',reason:'E2E 初始链接阶段',created_at:now()}],
@@ -187,6 +190,52 @@ const path = require('node:path');
       enabled:true,version:7,last_test_at:now(),last_path_diagnostic_at:now(),created_at:now(),updated_at:now(),
     };
     await page.route('**/api/v1/downloaders',route=>fulfillJson(route,{items:[e2eDownloader]}));
+    const siteCanary='PACKBREAKER-SITE-E2E-CREDENTIAL-CANARY';
+    const e2eSite={
+      id:'site-e2e-mteam',name:'M-Team E2E',type:'MTEAM',base_url:'https://api.m-team.cc',credential_kind:'API_KEY',credential_configured:true,
+      capabilities:{supports_imdb_id:true,min_request_interval_seconds:2},connection_status:'OK',enabled:false,version:1,last_test_at:now(),created_at:now(),updated_at:now(),
+    };
+    let e2eSiteHealth={
+      config_version:1,circuit_state:'OPEN',failure_count:3,retry_after_seconds:15,half_open_probe_in_flight:false,rate_limit_wait_seconds:0,
+      cache_entries:2,cache_hits:3,cache_misses:1,cache_evictions:0,requests_started:4,requests_succeeded:1,requests_failed:3,retries_scheduled:2,last_error_code:'SITE_TEMPORARY_FAILURE',
+    };
+    await page.route('**/api/v1/sites**',async route=>{
+      const request=route.request();
+      const url=new URL(request.url());
+      if(url.pathname==='/api/v1/sites'&&request.method()==='GET')return fulfillJson(route,{items:[e2eSite]});
+      const match=url.pathname.match(/\/api\/v1\/sites\/site-e2e-mteam(?:\/(health|test|actions))?$/);
+      if(!match)return route.fallback();
+      const tail=match[1]||'';
+      if(request.method()==='GET'&&!tail)return fulfillJson(route,e2eSite);
+      if(request.method()==='GET'&&tail==='health')return fulfillJson(route,e2eSiteHealth);
+      if(request.method()==='POST'&&tail==='test'){
+        siteTestCalls+=1;
+        assert.equal(request.postData(),null,'只读连接测试不应从浏览器提交已保存站点凭证');
+        e2eSite.connection_status='OK';e2eSite.last_test_at=now();
+        return fulfillJson(route,{status:'ok',capabilities:e2eSite.capabilities});
+      }
+      if(request.method()==='POST'&&tail==='actions'){
+        const body=request.postDataJSON();
+        assert.equal(request.headers()['if-match'],`"${e2eSite.version}"`,'站点动作必须绑定当前强 If-Match');
+        if(body.action==='reset_circuit'){
+          siteResetCalls+=1;
+          e2eSiteHealth={...e2eSiteHealth,circuit_state:'CLOSED',failure_count:0,retry_after_seconds:null,half_open_probe_in_flight:false,last_error_code:null};
+          return fulfillJson(route,e2eSiteHealth);
+        }
+        if(body.action==='enable'){
+          siteEnableCalls+=1;
+          e2eSite.enabled=true;e2eSite.version+=1;e2eSite.updated_at=now();
+          e2eSiteHealth={...e2eSiteHealth,config_version:e2eSite.version,circuit_state:'CLOSED',failure_count:0,last_error_code:null};
+          return fulfillJson(route,e2eSite);
+        }
+        if(body.action==='disable'){
+          e2eSite.enabled=false;e2eSite.version+=1;e2eSite.updated_at=now();
+          e2eSiteHealth={...e2eSiteHealth,config_version:e2eSite.version};
+          return fulfillJson(route,e2eSite);
+        }
+      }
+      return fulfillJson(route,{code:'NOT_FOUND',detail:'E2E site route not found'},404);
+    });
     await page.route('**/api/v1/operations/maintenance-report**',route=>fulfillJson(route,{
       generated_at:now(),
       summary:{total_journals:5,attention_required:2,reconcile_supported:1,manual_only:1,retention_candidates:1,truncated:false},
@@ -410,6 +459,29 @@ const path = require('node:path');
     assert.equal(reconcileKeys[0],reconcileKeys[1],'响应丢失后的 reconcile 必须复用相同 Idempotency-Key');
     await page.keyboard.press('Escape');
 
+    // 真实站点管理：health 不伪造、reset 仅重置熔断器、启用使用当前强版本，保存凭证不回显。
+    await page.locator('nav').getByRole('button',{name:'站点管理',exact:true}).click();
+    await page.getByRole('heading',{name:'站点管理',exact:true,level:1}).waitFor();
+    const siteCard=page.locator('.connection-card').filter({hasText:'M-Team E2E'});
+    await siteCard.getByText('熔断 已打开',{exact:true}).waitFor();
+    assert.equal(await page.getByText(siteCanary,{exact:true}).count(),0,'站点页不得回显已保存凭证明文');
+    assert.equal(await page.getByRole('button',{name:/HHClub/}).count(),0,'HHClub 未确认前不得出现可执行创建动作');
+    await page.getByRole('button',{name:'重置熔断器',exact:true}).click();
+    await page.locator('.el-message-box').getByRole('button',{name:'仅重置熔断器',exact:true}).click();
+    await page.getByText('熔断器已重置；站点是否恢复仍以之后真实请求/连接测试为准',{exact:true}).waitFor();
+    assert.equal(siteResetCalls,1,'reset-circuit 应只调用一次');
+    await siteCard.getByText('熔断 关闭',{exact:true}).waitFor();
+    const siteSwitch=siteCard.getByRole('switch',{name:'启用M-Team E2E',exact:true});
+    assert.equal(await siteSwitch.getAttribute('aria-checked'),'false','站点初始应保持停用');
+    await siteCard.locator('.el-switch').click();
+    await page.getByText('M-Team E2E 已启用',{exact:true}).waitFor();
+    assert.equal(await siteSwitch.getAttribute('aria-checked'),'true','启用成功后 switch 应采用服务端状态');
+    assert.equal(siteEnableCalls,1,'站点启用应只调用一次');
+    await siteCard.getByRole('button',{name:'测试连接',exact:true}).click();
+    await page.getByText('M-Team E2E 只读连接测试通过',{exact:true}).waitFor();
+    assert.equal(siteTestCalls,1,'站点连接测试应只调用一次');
+    assert.equal(await page.getByText(/连接恢复/).count(),0,'reset-circuit 不得伪造远端连接恢复文案');
+
     for(const name of ['总览','预演与确认','历史辅种','站点管理','下载器','规则配置','清理与对账','日志','系统设置','升级中心']){
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
@@ -459,6 +531,6 @@ const path = require('node:path');
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,`${name} 移动页溢出`);
     }
     assert.deepEqual(errors,[]);
-    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、状态自动刷新、11 页导航、历史扫描、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题。');
+    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、真实站点 health/reset/启用、状态自动刷新、11 页导航、历史扫描、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题。');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1});

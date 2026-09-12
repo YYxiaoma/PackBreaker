@@ -2,10 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
-  Globe,
   HardDrive,
-  Plus,
-  Settings2,
   ShieldCheck,
   Check,
   Search,
@@ -15,7 +12,6 @@ import {
   Download,
   RefreshCw,
   AlertTriangle,
-  Activity,
   Server,
   Bell,
   LockKeyhole,
@@ -34,131 +30,11 @@ import {
 } from '../api/tasks';
 import { createTaskActionIdempotencyKey } from '../taskActionSafety';
 import DownloaderManagement from './DownloaderManagement.vue';
+import SiteManagement from './SiteManagement.vue';
 import ApiTokenManagement from './AutomationAccessManagement.vue';
 import NotificationManagement from './NotificationManagement.vue';
 const props = defineProps<{ page: string; tasks: Task[] }>();
 const emit = defineEmits<{ export: [unknown, string]; open: [Task]; createHistory: [string] }>();
-interface Connection {
-  name: string;
-  type: string;
-  url: string;
-  enabled: boolean;
-  automation: boolean;
-  configured: boolean;
-  status: string;
-  rate: number;
-  timeout: number;
-  retries: number;
-}
-const sites = ref<Connection[]>([
-  {
-    name: 'M-Team',
-    type: '官方 API',
-    url: 'https://mteam.example.invalid',
-    enabled: true,
-    automation: false,
-    configured: true,
-    status: '演示连接正常',
-    rate: 3,
-    timeout: 20,
-    retries: 2,
-  },
-  {
-    name: 'HDTime',
-    type: 'NexusPHP',
-    url: 'https://hdtime.example.invalid',
-    enabled: true,
-    automation: false,
-    configured: true,
-    status: '演示连接正常',
-    rate: 5,
-    timeout: 20,
-    retries: 2,
-  },
-  {
-    name: 'HHClub',
-    type: '待确认',
-    url: 'https://hhclub.example.invalid',
-    enabled: false,
-    automation: false,
-    configured: false,
-    status: '适配方式待确认',
-    rate: 5,
-    timeout: 20,
-    retries: 2,
-  },
-]);
-const connectionDialog = ref(false),
-  editing = ref<Connection>();
-const draft = reactive<Connection>({
-  name: '',
-  type: '',
-  url: '',
-  enabled: false,
-  automation: false,
-  configured: false,
-  status: '未测试',
-  rate: 3,
-  timeout: 20,
-  retries: 2,
-});
-function editConnection(item?: Connection) {
-  editing.value = item;
-  Object.assign(
-    draft,
-    item ?? {
-      name: '',
-      type: 'NexusPHP',
-      url: 'https://service.example.invalid',
-      enabled: false,
-      automation: false,
-      configured: false,
-      status: '未测试',
-      rate: 3,
-      timeout: 20,
-      retries: 2,
-    },
-  );
-  connectionDialog.value = true;
-}
-function saveConnection() {
-  if (!draft.name.trim() || !/^https?:\/\//.test(draft.url)) {
-    ElMessage.warning('请输入名称和合法的 HTTP / HTTPS 地址');
-    return;
-  }
-  const list = sites.value;
-  if (list.some((c) => c !== editing.value && c.name === draft.name.trim())) {
-    ElMessage.warning('名称已存在');
-    return;
-  }
-  if (editing.value) Object.assign(editing.value, draft);
-  else list.push({ ...draft, name: draft.name.trim() });
-  connectionDialog.value = false;
-  ElMessage.success('演示配置已保存，本次页面会话内有效');
-}
-function testConnection(c: Connection) {
-  if (c.type === '待确认') {
-    ElMessage.warning('HHClub 适配方式待确认，无法模拟通过');
-    return;
-  }
-  c.configured = true;
-  c.status = '演示连接正常';
-  ElMessage.success(`${c.name} 模拟连接测试通过；未发起网络请求`);
-}
-async function removeConnection(c: Connection) {
-  if (props.tasks.some((t) => t.site === c.name)) {
-    ElMessage.warning('该连接已被演示任务引用，不能删除；可停用');
-    return;
-  }
-  try {
-    await ElMessageBox.confirm(`删除演示连接「${c.name}」？`, '确认删除', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-    });
-    sites.value.splice(sites.value.indexOf(c), 1);
-  } catch {}
-}
 const rules = reactive({
   automation: false,
   skip: false,
@@ -454,83 +330,7 @@ async function update() {
 </script>
 <template>
   <DownloaderManagement v-if="page === '下载器'" />
-  <div v-else-if="page === '站点管理'">
-    <div class="section-heading">
-      <h2>已接入站点 <small>站点可用与自动化独立控制</small></h2>
-      <el-button type="primary" @click="editConnection()"><Plus :size="15" />添加站点</el-button>
-    </div>
-    <div class="connection-cards">
-      <article class="panel connection-card" v-for="c in sites" :key="c.name">
-        <div class="card-title">
-          <span class="connection-icon"><Globe :size="25" /></span>
-          <div>
-            <h3>{{ c.name }}</h3>
-            <small>{{ c.type }}</small>
-          </div>
-          <el-switch
-            v-model="c.enabled"
-            :aria-label="'启用' + c.name"
-            :disabled="c.type === '待确认'"
-          />
-        </div>
-        <p class="endpoint">{{ c.url }}</p>
-        <div class="connection-status">
-          <span :class="['dot', { 'gray-dot': !c.configured }]"></span
-          >{{ c.enabled ? c.status : '已停用'
-          }}<el-tag v-if="!c.configured" type="info">未配置</el-tag>
-        </div>
-        <dl class="config-summary">
-          <dt>凭证状态</dt>
-          <dd>{{ c.configured ? '演示凭证 · 已脱敏' : '未配置' }}</dd>
-          <dt>限流 / 超时</dt>
-          <dd>{{ c.rate }} 秒 / {{ c.timeout }} 秒</dd>
-          <dt>允许自动化</dt>
-          <dd>
-            <el-switch
-              v-model="c.automation"
-              size="small"
-              :disabled="!c.enabled || !c.configured || c.type === '待确认'"
-              :aria-label="c.name + '允许自动化'"
-            />
-          </dd>
-        </dl>
-        <div class="card-actions">
-          <el-button size="small" @click="testConnection(c)"
-            ><Activity :size="14" />模拟测试</el-button
-          ><el-button size="small" @click="editConnection(c)"
-            ><Settings2 :size="14" />配置</el-button
-          ><el-button link type="danger" @click="removeConnection(c)">删除</el-button>
-        </div>
-      </article>
-    </div>
-    <div class="panel section-space">
-      <h3>站点健康与可靠性</h3>
-      <el-table :data="sites"
-        ><el-table-column prop="name" label="站点" /><el-table-column label="缓存命中"
-          ><template #default="{ row }">{{
-            row.configured ? '68%（演示）' : '—'
-          }}</template></el-table-column
-        ><el-table-column label="熔断状态"
-          ><template #default="{ row }">{{
-            row.configured ? '关闭' : '未接入'
-          }}</template></el-table-column
-        ><el-table-column label="重试上限"
-          ><template #default="{ row }">{{ row.retries }} 次</template></el-table-column
-        ><el-table-column label="操作"
-          ><template #default="{ row }"
-            ><el-button
-              link
-              type="primary"
-              :disabled="!row.configured"
-              @click="ElMessage.success(row.name + ' 已模拟半开探测，连接恢复')"
-              >模拟熔断恢复</el-button
-            ></template
-          ></el-table-column
-        ></el-table
-      >
-      <p class="muted">HHClub 引擎与鉴权仍待确认；本页不会将其标记为已实现适配器。</p>
-    </div>
-  </div>
+  <SiteManagement v-else-if="page === '站点管理'" />
   <div v-else-if="page === '规则配置'" class="settings-layout">
     <div class="panel">
       <h3>触发与处理规则</h3>
@@ -1076,47 +876,6 @@ async function update() {
       /></el-steps>
     </section>
   </div>
-  <el-dialog
-    v-model="connectionDialog"
-    :title="(editing ? '编辑' : '新增') + '站点'"
-    width="min(600px, 94vw)"
-    ><el-form label-position="top"
-      ><div class="form-grid">
-        <el-form-item label="名称" required
-          ><el-input v-model="draft.name" maxlength="40" /></el-form-item
-        ><el-form-item label="适配器类型"
-          ><el-select v-model="draft.type"
-            ><el-option
-              v-for="s in ['官方 API', 'NexusPHP', '待确认']"
-              :key="s"
-              :value="s" /></el-select
-        ></el-form-item>
-      </div>
-      <el-form-item label="管理地址" required
-        ><el-input
-          v-model="draft.url"
-          placeholder="https://service.example.invalid" /></el-form-item
-      ><el-form-item label="凭证"
-        ><el-input type="password" disabled placeholder="原型不接收真实凭证"
-      /></el-form-item>
-      <div class="form-grid">
-        <el-form-item label="请求间隔（秒）"
-          ><el-input-number v-model="draft.rate" :min="1" :max="120" /></el-form-item
-        ><el-form-item label="超时（秒）"
-          ><el-input-number v-model="draft.timeout" :min="5" :max="120" /></el-form-item
-        ><el-form-item label="重试上限"
-          ><el-input-number v-model="draft.retries" :min="0" :max="5"
-        /></el-form-item>
-      </div>
-      <el-alert
-        title="此处只保存演示配置。测试连接不会访问填写的地址。"
-        type="info"
-        :closable="false" /></el-form
-    ><template #footer
-      ><el-button @click="connectionDialog = false">取消</el-button
-      ><el-button type="primary" @click="saveConnection">保存演示配置</el-button></template
-    ></el-dialog
-  >
   <el-dialog v-model="scanDialog" title="新建历史扫描" width="min(560px, 94vw)"
     ><el-form label-position="top"
       ><el-form-item label="扫描根目录"><el-input v-model="scanPath" /></el-form-item
