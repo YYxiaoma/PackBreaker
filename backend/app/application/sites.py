@@ -22,6 +22,7 @@ from backend.app.domain.site_config import (
 from backend.app.infrastructure.adapters.sites import SiteAdapterError, SiteAdapterFactory
 from backend.app.infrastructure.persistence.models import Site
 from backend.app.infrastructure.persistence.site_repositories import SiteRepository
+from backend.app.infrastructure.site_reliability import SiteReliabilityRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,10 +77,12 @@ class SiteService:
         secret_store: SecretStore,
         *,
         adapter_factory: SiteAdapterFactory | None = None,
+        reliability_registry: SiteReliabilityRegistry | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._secret_store = secret_store
         self._adapter_factory = adapter_factory or SiteAdapterFactory()
+        self._reliability_registry = reliability_registry or SiteReliabilityRegistry()
 
     def list_sites(self) -> list[SiteView]:
         with self._session_factory() as session:
@@ -118,11 +121,15 @@ class SiteService:
                     config_id=snapshot.id,
                     config_version=snapshot.version,
                     site_id=self._expected_site_id(snapshot.type),
-                    adapter=self._adapter_factory.create(
-                        kind=snapshot.type,
-                        base_url=snapshot.base_url,
-                        credential_kind=snapshot.credential_kind,
-                        credential=credential,
+                    adapter=self._reliability_registry.wrap(
+                        config_id=snapshot.id,
+                        config_version=snapshot.version,
+                        adapter=self._adapter_factory.create(
+                            kind=snapshot.type,
+                            base_url=snapshot.base_url,
+                            credential_kind=snapshot.credential_kind,
+                            credential=credential,
+                        ),
                     ),
                 )
             )
@@ -332,11 +339,15 @@ class SiteService:
                 detail="连接测试需要已配置的站点凭证",
             )
         credential = self._secret_store.get(snapshot.secret_id).decode("utf-8")
-        adapter = self._adapter_factory.create(
-            kind=snapshot.type,
-            base_url=snapshot.base_url,
-            credential_kind=snapshot.credential_kind,
-            credential=credential,
+        adapter = self._reliability_registry.wrap(
+            config_id=snapshot.id,
+            config_version=snapshot.version,
+            adapter=self._adapter_factory.create(
+                kind=snapshot.type,
+                base_url=snapshot.base_url,
+                credential_kind=snapshot.credential_kind,
+                credential=credential,
+            ),
         )
         tested_at = datetime.now(UTC)
         try:

@@ -116,6 +116,8 @@ LINKING 协调器额外覆盖两阶段当前性：调用前 plan provider 必须
 
 每个站点适配器覆盖连接、认证失败、分页、空结果、详情缺字段、取种、限流、超时、HTML/API 结构变化、熔断与恢复。
 
+站点可靠性层使用 fake clock/sleep 与 `httpx` MockTransport 单独验证：同一 search key 并发 miss 只能产生一次真实请求，后续命中 TTL 缓存；不同 key 按 `min_request_interval_seconds` 排队；429/临时失败使用带抖动退避并尊重 `Retry-After`，且总重试调度不得越过 deadline。`SITE_AUTH_FAILED` 必须一次失败立即开路，连续 `SITE_INVALID_RESPONSE` 与临时错误达到阈值后开路；冷却后只允许一个 half-open 探测，取消该探测必须释放占位，成功才恢复闭路。站点 config version 变化必须清空旧缓存/熔断状态。`fetch_torrent` 不缓存且不自动重试一次性令牌流程，确保 execution plan/reverify/ADDING 每次仍用新鲜 metainfo digest 做安全复核。缓存键、异常与 `repr` 不得包含 credential canary。
+
 每个下载器适配器覆盖版本/能力探测、路径映射、完成任务、暂停添加、重复添加、完整校验、校验失败、连接中断、任务被外部删除和保存路径变化。
 
 所有适配器额外执行 secret canary 测试：在凭证中放入唯一标记，断言日志、异常、repr、缓存键、数据库普通字段和 API 响应中不存在该标记。
