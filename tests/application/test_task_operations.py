@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -32,7 +33,9 @@ from backend.app.application.transmission_operations import (
     TransmissionJournalReconcileService,
     TransmissionWriteBindingPort,
 )
+from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.operation import OperationKind, OperationStatus
+from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.verification import FileSnapshot
 from backend.app.infrastructure.adapters.downloaders import (
     QbittorrentAddRequest,
@@ -51,8 +54,10 @@ from backend.app.infrastructure.persistence.database import (
 )
 from backend.app.infrastructure.persistence.models import (
     OperationJournal,
+    OperationJournalTombstone,
     TaskActionReceipt,
     TaskEvent,
+    UnpackTask,
 )
 from backend.app.infrastructure.persistence.repositories import (
     OperationIntent,
@@ -1004,9 +1009,7 @@ def test_maintenance_report_is_redacted_and_separates_repair_from_retention_cand
     cleanup = {item.journal_id: item for item in report.cleanup_candidates}
     assert cleanup[noop.id].reason_code == "NO_SIDE_EFFECT"
     assert cleanup[rolled_back.id].reason_code == "ROLLBACK_CONFIRMED"
-    assert all(
-        "当前 API 不删除 operation journal" in item.recommendation for item in cleanup.values()
-    )
+    assert all("retention-plan" in item.recommendation for item in cleanup.values())
 
     encoded = json.dumps(asdict(report), ensure_ascii=False, default=str)
     assert secret_marker not in encoded
@@ -1018,3 +1021,268 @@ def test_maintenance_report_is_redacted_and_separates_repair_from_retention_cand
     assert limited.summary.truncated is True
     assert len(limited.repair_items) == 1
     assert len(limited.cleanup_candidates) == 1
+
+
+def _prepare_retention_candidate(
+    fixture: _OperationFixture,
+    *,
+    idempotency_key: str,
+    now: datetime,
+    status: OperationStatus = OperationStatus.NOOP,
+    secret_marker: str = "retention-private-marker",
+) -> str:
+    old = now - timedelta(days=60)
+    with fixture.factory() as session:
+        repository = OperationJournalRepository(session)
+        journal, _ = repository.record_intent(
+            OperationIntent(
+                task_id=fixture.task_id,
+                idempotency_key=idempotency_key,
+                operation_type="CREATE_DIRECTORY",
+                target={"path": secret_marker},
+                intent={"secret": secret_marker},
+            )
+        )
+        if status is OperationStatus.NOOP:
+            repository.transition_status(
+                journal_id=journal.id,
+                expected_status=OperationStatus.INTENT_RECORDED,
+                to_status=OperationStatus.NOOP,
+            )
+        elif status is OperationStatus.ROLLED_BACK:
+            repository.transition_status(
+                journal_id=journal.id,
+                expected_status=OperationStatus.INTENT_RECORDED,
+                to_status=OperationStatus.APPLIED,
+                after_snapshot={"owned": True},
+            )
+            repository.transition_status(
+                journal_id=journal.id,
+                expected_status=OperationStatus.APPLIED,
+                to_status=OperationStatus.ROLLBACK_PENDING,
+            )
+            repository.transition_status(
+                journal_id=journal.id,
+                expected_status=OperationStatus.ROLLBACK_PENDING,
+                to_status=OperationStatus.ROLLED_BACK,
+            )
+        else:
+            raise AssertionError("测试 helper 只创建 NOOP/ROLLED_BACK candidate")
+        journal.updated_at = old
+        task = session.get(UnpackTask, fixture.task_id)
+        assert task is not None
+        task.status = TaskStatus.DONE.value
+        task.checkpoint = {}
+        task.updated_at = old
+        session.commit()
+        return journal.id
+
+
+@pytest.mark.asyncio
+async def test_retention_purge_commits_tombstone_and_replays_after_response_loss(
+    operation_fixture: _OperationFixture,
+) -> None:
+    now = datetime(2026, 9, 12, 12, 0, tzinfo=UTC)
+    secret_marker = "/private/retention/secret"
+    operation_key = "7" * 64
+    journal_id = _prepare_retention_candidate(
+        operation_fixture,
+        idempotency_key=operation_key,
+        now=now,
+        status=OperationStatus.ROLLED_BACK,
+        secret_marker=secret_marker,
+    )
+    actor = TaskActionActor("admin_session", "retention-admin")
+
+    def lose_response(checkpoint: str) -> None:
+        if checkpoint == "after_operation_retention_committed":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash, match="after_operation_retention_committed"):
+        await operation_fixture.service.purge_retained(
+            task_id=operation_fixture.task_id,
+            journal_id=journal_id,
+            actor=actor,
+            idempotency_key="retention-response-loss",
+            retention_days=30,
+            now=now,
+            fault_hook=lose_response,
+        )
+
+    with operation_fixture.factory() as session:
+        assert session.get(OperationJournal, journal_id) is None
+        tombstone = session.get(OperationJournalTombstone, journal_id)
+        assert tombstone is not None
+        assert tombstone.final_status == OperationStatus.ROLLED_BACK.value
+        assert tombstone.operation_type == "CREATE_DIRECTORY"
+        assert len(tombstone.idempotency_key_digest) == 64
+        assert tombstone.idempotency_key_digest != operation_key
+        assert len(tombstone.journal_digest) == 64
+        serialized = json.dumps(
+            {
+                "journal_id": tombstone.journal_id,
+                "task_id": tombstone.task_id,
+                "idempotency_key_digest": tombstone.idempotency_key_digest,
+                "operation_type": tombstone.operation_type,
+                "final_status": tombstone.final_status,
+                "journal_digest": tombstone.journal_digest,
+            },
+            sort_keys=True,
+        )
+        assert secret_marker not in serialized
+        receipt = session.scalar(
+            select(TaskActionReceipt).where(TaskActionReceipt.actor_id == actor.subject_id)
+        )
+        assert receipt is not None
+        assert receipt.state == "SUCCEEDED"
+        receipt_id = receipt.id
+
+    replay = await operation_fixture.service.purge_retained(
+        task_id=operation_fixture.task_id,
+        journal_id=journal_id,
+        actor=actor,
+        idempotency_key="retention-response-loss",
+        retention_days=30,
+        now=now,
+    )
+    assert replay.purged is True
+    assert replay.final_status is OperationStatus.ROLLED_BACK
+    assert replay.receipt_id == receipt_id
+    assert replay.idempotency_replayed is True
+
+    confirmed_again = await operation_fixture.service.purge_retained(
+        task_id=operation_fixture.task_id,
+        journal_id=journal_id,
+        actor=actor,
+        idempotency_key="retention-new-confirmation-key",
+        retention_days=30,
+        now=now,
+    )
+    assert confirmed_again.purged is True
+    assert confirmed_again.final_status is OperationStatus.ROLLED_BACK
+    assert confirmed_again.receipt_id != receipt_id
+    assert confirmed_again.idempotency_replayed is False
+
+    with operation_fixture.factory() as session:
+        repository = OperationJournalRepository(session)
+        with pytest.raises(DomainViolation) as blocked:
+            repository.record_intent(
+                OperationIntent(
+                    task_id=operation_fixture.task_id,
+                    idempotency_key=operation_key,
+                    operation_type="CREATE_DIRECTORY",
+                    target={"path": secret_marker},
+                    intent={"secret": secret_marker},
+                )
+            )
+        assert blocked.value.code is ErrorCode.IDEMPOTENCY_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_retention_plan_and_purge_fail_closed_on_all_reference_types(
+    operation_fixture: _OperationFixture,
+) -> None:
+    now = datetime(2026, 9, 12, 12, 0, tzinfo=UTC)
+    checkpoint_id = _prepare_retention_candidate(
+        operation_fixture,
+        idempotency_key="8" * 64,
+        now=now,
+    )
+    receipt_id = _prepare_retention_candidate(
+        operation_fixture,
+        idempotency_key="9" * 64,
+        now=now,
+    )
+    journal_reference_id = _prepare_retention_candidate(
+        operation_fixture,
+        idempotency_key="a" * 64,
+        now=now,
+    )
+    young_id = _prepare_retention_candidate(
+        operation_fixture,
+        idempotency_key="b" * 64,
+        now=now,
+    )
+
+    old = now - timedelta(days=60)
+    with operation_fixture.factory() as session:
+        task = session.get(UnpackTask, operation_fixture.task_id)
+        assert task is not None
+        task.checkpoint = {"nested": {"journal_id": checkpoint_id}}
+        task.updated_at = old
+        young = session.get(OperationJournal, young_id)
+        assert young is not None
+        young.updated_at = now
+        session.add(
+            TaskActionReceipt(
+                task_id=operation_fixture.task_id,
+                actor_kind="admin_session",
+                actor_id="historical-retention-actor",
+                idempotency_key_digest="c" * 64,
+                action="synthetic-history",
+                request_digest="d" * 64,
+                state="SUCCEEDED",
+                response_payload={"nested": [receipt_id]},
+                error_payload=None,
+                created_at=old,
+                updated_at=old,
+            )
+        )
+        reference, _ = OperationJournalRepository(session).record_intent(
+            OperationIntent(
+                task_id=operation_fixture.task_id,
+                idempotency_key="e" * 64,
+                operation_type="CREATE_DIRECTORY",
+                target={"depends_on_journal": journal_reference_id},
+                intent={"safe": True},
+            )
+        )
+        assert reference.id not in {
+            checkpoint_id,
+            receipt_id,
+            journal_reference_id,
+            young_id,
+        }
+        session.commit()
+
+    plan = operation_fixture.service.retention_plan(retention_days=30, limit=20, now=now)
+    reasons = {item.journal_id: item.reason_code for item in plan.items}
+    assert reasons[checkpoint_id] == "TASK_CHECKPOINT_REFERENCE"
+    assert reasons[receipt_id] == "ACTION_RECEIPT_REFERENCE"
+    assert reasons[journal_reference_id] == "JOURNAL_REFERENCE"
+    assert reasons[young_id] == "RETENTION_WINDOW_NOT_REACHED"
+    assert all(not item.eligible for item in plan.items if item.journal_id in reasons)
+
+    with pytest.raises(ApplicationError) as blocked:
+        await operation_fixture.service.purge_retained(
+            task_id=operation_fixture.task_id,
+            journal_id=checkpoint_id,
+            actor=TaskActionActor("admin_session", "blocked-retention-admin"),
+            idempotency_key="retention-checkpoint-blocked",
+            retention_days=30,
+            now=now,
+        )
+    assert blocked.value.code == "OPERATION_RETENTION_TASK_CHECKPOINT_REFERENCE"
+    with operation_fixture.factory() as session:
+        assert session.get(OperationJournal, checkpoint_id) is not None
+        assert session.get(OperationJournalTombstone, checkpoint_id) is None
+
+
+def test_retention_plan_requires_terminal_task(operation_fixture: _OperationFixture) -> None:
+    now = datetime(2026, 9, 12, 12, 0, tzinfo=UTC)
+    journal_id = _prepare_retention_candidate(
+        operation_fixture,
+        idempotency_key="f" * 64,
+        now=now,
+    )
+    with operation_fixture.factory() as session:
+        task = session.get(UnpackTask, operation_fixture.task_id)
+        assert task is not None
+        task.status = TaskStatus.RETRY.value
+        task.updated_at = now - timedelta(days=60)
+        session.commit()
+
+    plan = operation_fixture.service.retention_plan(retention_days=30, now=now)
+    item = next(item for item in plan.items if item.journal_id == journal_id)
+    assert item.eligible is False
+    assert item.reason_code == "TASK_NOT_TERMINAL"

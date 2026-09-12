@@ -31,6 +31,8 @@ from backend.app.application.task_operations import (
     OperationCleanupCandidateView,
     OperationMaintenanceReport,
     OperationRepairItemView,
+    OperationRetentionPlan,
+    TaskOperationPurgeResult,
     TaskOperationReconcileResult,
     TaskOperationView,
 )
@@ -169,11 +171,55 @@ class OperationMaintenanceReportResponse(BaseModel):
     cleanup_candidates: list[OperationCleanupCandidateResponse]
 
 
-class TaskOperationActionRequest(BaseModel):
+class OperationRetentionSummaryResponse(BaseModel):
+    candidates: int
+    inspected: int
+    eligible: int
+    blocked: int
+    truncated: bool
+
+
+class OperationRetentionItemResponse(BaseModel):
+    journal_id: str
+    task_id: str
+    kind: OperationKind
+    status: OperationStatus
+    eligible: bool
+    reason_code: Literal[
+        "ELIGIBLE",
+        "RETENTION_WINDOW_NOT_REACHED",
+        "TASK_NOT_TERMINAL",
+        "TASK_CHECKPOINT_REFERENCE",
+        "ACTION_RECEIPT_REFERENCE",
+        "JOURNAL_REFERENCE",
+    ]
+    updated_at: datetime
+
+
+class OperationRetentionPlanResponse(BaseModel):
+    generated_at: datetime
+    cutoff: datetime
+    retention_days: int
+    summary: OperationRetentionSummaryResponse
+    items: list[OperationRetentionItemResponse]
+
+
+class TaskOperationReconcileActionRequest(BaseModel):
     action: Literal["reconcile"]
 
 
-class TaskOperationActionResponse(BaseModel):
+class TaskOperationPurgeActionRequest(BaseModel):
+    action: Literal["purge"]
+    retention_days: int = Field(default=30, ge=1, le=3650)
+
+
+TaskOperationActionRequest = Annotated[
+    TaskOperationReconcileActionRequest | TaskOperationPurgeActionRequest,
+    Field(discriminator="action"),
+]
+
+
+class TaskOperationReconcileActionResponse(BaseModel):
     action: Literal["reconcile"]
     task_id: str
     journal_id: str
@@ -182,6 +228,23 @@ class TaskOperationActionResponse(BaseModel):
     operation_replayed: bool
     idempotency_replayed: bool
     receipt_id: str
+
+
+class TaskOperationPurgeActionResponse(BaseModel):
+    action: Literal["purge"]
+    task_id: str
+    journal_id: str
+    kind: OperationKind
+    final_status: OperationStatus
+    purged: bool
+    idempotency_replayed: bool
+    receipt_id: str
+
+
+TaskOperationActionResponse = Annotated[
+    TaskOperationReconcileActionResponse | TaskOperationPurgeActionResponse,
+    Field(discriminator="action"),
+]
 
 
 class AnalyzeTaskActionRequest(BaseModel):
@@ -523,6 +586,20 @@ async def operation_maintenance_report(
     return _operation_maintenance_report_response(report)
 
 
+@router.get("/operations/retention-plan", response_model=OperationRetentionPlanResponse)
+async def operation_retention_plan(
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
+    retention_days: Annotated[int, Query(ge=1, le=3650)] = 30,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> OperationRetentionPlanResponse:
+    plan = task_operation_service(request).retention_plan(
+        retention_days=retention_days,
+        limit=limit,
+    )
+    return _operation_retention_plan_response(plan)
+
+
 @router.get("/tasks/{task_id}/operations", response_model=TaskOperationListResponse)
 async def list_task_operations(
     task_id: str,
@@ -544,15 +621,27 @@ async def task_operation_action(
     payload: TaskOperationActionRequest,
     principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
-) -> TaskOperationActionResponse:
-    if payload.action != "reconcile":
+) -> TaskOperationReconcileActionResponse | TaskOperationPurgeActionResponse:
+    actor = TaskActionActor(principal.kind, principal.subject_id)
+    if payload.action == "reconcile":
+        result: (
+            TaskOperationReconcileResult | TaskOperationPurgeResult
+        ) = await task_operation_service(request).reconcile(
+            task_id=task_id,
+            journal_id=journal_id,
+            actor=actor,
+            idempotency_key=idempotency_key,
+        )
+    elif payload.action == "purge":
+        result = await task_operation_service(request).purge_retained(
+            task_id=task_id,
+            journal_id=journal_id,
+            actor=actor,
+            idempotency_key=idempotency_key,
+            retention_days=payload.retention_days,
+        )
+    else:
         raise AssertionError("未覆盖的 operation journal 动作")
-    result = await task_operation_service(request).reconcile(
-        task_id=task_id,
-        journal_id=journal_id,
-        actor=TaskActionActor(principal.kind, principal.subject_id),
-        idempotency_key=idempotency_key,
-    )
     return _task_operation_action_response(result)
 
 
@@ -889,6 +978,35 @@ def _operation_maintenance_report_response(
     )
 
 
+def _operation_retention_plan_response(
+    plan: OperationRetentionPlan,
+) -> OperationRetentionPlanResponse:
+    return OperationRetentionPlanResponse(
+        generated_at=plan.generated_at,
+        cutoff=plan.cutoff,
+        retention_days=plan.retention_days,
+        summary=OperationRetentionSummaryResponse(
+            candidates=plan.summary.candidates,
+            inspected=plan.summary.inspected,
+            eligible=plan.summary.eligible,
+            blocked=plan.summary.blocked,
+            truncated=plan.summary.truncated,
+        ),
+        items=[
+            OperationRetentionItemResponse(
+                journal_id=item.journal_id,
+                task_id=item.task_id,
+                kind=item.kind,
+                status=item.status,
+                eligible=item.eligible,
+                reason_code=item.reason_code,
+                updated_at=item.updated_at,
+            )
+            for item in plan.items
+        ],
+    )
+
+
 def _task_operation_response(item: TaskOperationView) -> TaskOperationResponse:
     return TaskOperationResponse(
         id=item.id,
@@ -903,15 +1021,26 @@ def _task_operation_response(item: TaskOperationView) -> TaskOperationResponse:
 
 
 def _task_operation_action_response(
-    item: TaskOperationReconcileResult,
-) -> TaskOperationActionResponse:
-    return TaskOperationActionResponse(
+    item: TaskOperationReconcileResult | TaskOperationPurgeResult,
+) -> TaskOperationReconcileActionResponse | TaskOperationPurgeActionResponse:
+    if isinstance(item, TaskOperationReconcileResult):
+        return TaskOperationReconcileActionResponse(
+            action=item.action,
+            task_id=item.task_id,
+            journal_id=item.journal_id,
+            kind=item.kind,
+            status=item.status,
+            operation_replayed=item.operation_replayed,
+            idempotency_replayed=item.idempotency_replayed,
+            receipt_id=item.receipt_id,
+        )
+    return TaskOperationPurgeActionResponse(
         action=item.action,
         task_id=item.task_id,
         journal_id=item.journal_id,
         kind=item.kind,
-        status=item.status,
-        operation_replayed=item.operation_replayed,
+        final_status=item.final_status,
+        purged=item.purged,
         idempotency_replayed=item.idempotency_replayed,
         receipt_id=item.receipt_id,
     )

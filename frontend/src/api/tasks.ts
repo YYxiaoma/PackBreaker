@@ -11,7 +11,10 @@ export type CancelTaskActionInput = components['schemas']['CancelTaskActionReque
 export type TaskMutationAction = components['schemas']['TaskMutationActionResponse'];
 export type TaskEvent = components['schemas']['TaskEventResponse'];
 export type TaskOperation = components['schemas']['TaskOperationResponse'];
-export type TaskOperationAction = components['schemas']['TaskOperationActionResponse'];
+export type TaskOperationReconcileAction =
+  components['schemas']['TaskOperationReconcileActionResponse'];
+export type TaskOperationPurgeAction = components['schemas']['TaskOperationPurgeActionResponse'];
+export type TaskOperationAction = TaskOperationReconcileAction | TaskOperationPurgeAction;
 export type OperationMaintenanceReport =
   components['schemas']['OperationMaintenanceReportResponse'];
 export type TaskRecord = components['schemas']['TaskResponse'];
@@ -182,11 +185,11 @@ export async function reconcileTaskOperation(
   taskId: string,
   journalId: string,
   idempotencyKey: string,
-): Promise<TaskOperationAction> {
+): Promise<TaskOperationReconcileAction> {
   const normalizedJournalId = journalId.trim();
   if (!normalizedJournalId) throw new Error('journalId 不能为空');
   try {
-    const response = await apiClient.post<TaskOperationAction>(
+    const response = await apiClient.post<TaskOperationReconcileAction>(
       `${taskPath(taskId)}/operations/${encodeURIComponent(normalizedJournalId)}/actions`,
       { action: 'reconcile' },
       { headers: actionHeaders(idempotencyKey) },

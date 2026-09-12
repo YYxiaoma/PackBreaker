@@ -533,6 +533,32 @@ class OperationJournal(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class OperationJournalTombstone(Base):
+    __tablename__ = "operation_journal_tombstone"
+    __table_args__ = (
+        CheckConstraint("final_status IN ('NOOP', 'ROLLED_BACK')", name="final_status"),
+        UniqueConstraint(
+            "idempotency_key_digest",
+            name="uq_operation_journal_tombstone_idempotency_key_digest",
+        ),
+        Index("ix_operation_journal_tombstone_task_purged", "task_id", "purged_at"),
+    )
+
+    journal_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("unpack_task.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idempotency_key_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    final_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    journal_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    original_updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    purged_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class TaskActionReceipt(Base):
     __tablename__ = "task_action_receipt"
     __table_args__ = (

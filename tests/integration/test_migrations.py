@@ -27,6 +27,7 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
         "unpack_task",
         "task_event",
         "operation_journal",
+        "operation_journal_tombstone",
         "preflight_snapshot",
         "task_unit",
         "task_candidate",
@@ -44,6 +45,15 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("operation_journal")
     } == {"uq_operation_journal_idempotency_key"}
+    assert {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("operation_journal_tombstone")
+    } == {"uq_operation_journal_tombstone_idempotency_key_digest"}
+    tombstone_checks = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("operation_journal_tombstone")
+    }
+    assert "ck_operation_journal_tombstone_final_status" in tombstone_checks
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("admin_session")
     } == {"uq_admin_session_token_digest"}

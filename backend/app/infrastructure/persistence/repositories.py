@@ -1,6 +1,7 @@
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
+from hashlib import sha256
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select, update
@@ -23,6 +24,7 @@ from backend.app.domain.task_state import (
 from backend.app.domain.verification import DownloaderKind, VerificationLevel
 from backend.app.infrastructure.persistence.models import (
     OperationJournal,
+    OperationJournalTombstone,
     TaskActionReceipt,
     TaskEvent,
     UnpackTask,
@@ -382,6 +384,17 @@ class OperationJournalRepository:
     def get(self, journal_id: str) -> OperationJournal | None:
         return self._session.get(OperationJournal, journal_id)
 
+    def get_tombstone(self, journal_id: str) -> OperationJournalTombstone | None:
+        return self._session.get(OperationJournalTombstone, journal_id)
+
+    def get_tombstone_by_idempotency_key(self, key: str) -> OperationJournalTombstone | None:
+        return self._session.scalar(
+            select(OperationJournalTombstone).where(
+                OperationJournalTombstone.idempotency_key_digest
+                == _operation_idempotency_key_digest(key)
+            )
+        )
+
     def list_for_task(
         self,
         task_id: str,
@@ -475,6 +488,12 @@ class OperationJournalRepository:
         if existing is not None:
             self._ensure_same_intent(existing, request)
             return existing, False
+        retired = self.get_tombstone_by_idempotency_key(request.idempotency_key)
+        if retired is not None:
+            raise DomainViolation(
+                ErrorCode.IDEMPOTENCY_CONFLICT,
+                "operation 幂等键已进入保留期 tombstone，禁止重新执行历史副作用",
+            )
 
         now = utc_now()
         journal = OperationJournal(
@@ -765,3 +784,7 @@ class TaskActionReceiptRepository:
                 ErrorCode.IDEMPOTENCY_CONFLICT,
                 "相同 API 幂等键对应了不同的任务动作请求",
             )
+
+
+def _operation_idempotency_key_digest(value: str) -> str:
+    return sha256(value.encode("utf-8")).hexdigest()

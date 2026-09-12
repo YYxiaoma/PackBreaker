@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -39,6 +39,8 @@ from backend.app.domain.torrent import TorrentKind
 from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.persistence.models import (
     Downloader,
+    OperationJournal,
+    OperationJournalTombstone,
     TaskCandidateRecord,
     TaskEvent,
     TaskExecutionGateRecord,
@@ -46,6 +48,7 @@ from backend.app.infrastructure.persistence.models import (
     TaskReviewRevisionRecord,
     TaskReviewVerificationRecord,
     TaskUnitRecord,
+    UnpackTask,
     new_uuid,
 )
 from backend.app.infrastructure.persistence.repositories import (
@@ -1332,6 +1335,118 @@ def test_operation_maintenance_report_is_read_only_redacted_and_bounded(tmp_path
 
         assert client.get("/api/v1/operations/maintenance-report?limit=0").status_code == 422
         assert client.get("/api/v1/operations/maintenance-report?limit=501").status_code == 422
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_operation_retention_plan_and_purge_api_are_redacted_and_idempotent(tmp_path: Path) -> None:
+    client, app, _settings = _authenticated_client(tmp_path)
+    task_id = _create_task(app, "operation-retention")
+    secret_marker = "/data/private/retention-api-must-not-leak"
+    old = datetime.now(UTC) - timedelta(days=60)
+
+    with app.state.runtime.session_factory() as session:
+        repository = OperationJournalRepository(session)
+        journal, _ = repository.record_intent(
+            OperationIntent(
+                task_id=task_id,
+                idempotency_key="6" * 64,
+                operation_type="CREATE_DIRECTORY",
+                target={"path": secret_marker},
+                intent={"secret": secret_marker},
+            )
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.NOOP,
+        )
+        journal.updated_at = old
+        task = session.get(UnpackTask, task_id)
+        assert task is not None
+        task.status = TaskStatus.DONE.value
+        task.checkpoint = {}
+        task.updated_at = old
+        session.commit()
+        journal_id = journal.id
+
+    try:
+        plan = client.get("/api/v1/operations/retention-plan?retention_days=30&limit=100")
+        assert plan.status_code == 200
+        payload = plan.json()
+        assert payload["retention_days"] == 30
+        assert payload["summary"] == {
+            "candidates": 1,
+            "inspected": 1,
+            "eligible": 1,
+            "blocked": 0,
+            "truncated": False,
+        }
+        assert payload["items"] == [
+            {
+                "journal_id": journal_id,
+                "task_id": task_id,
+                "kind": "FILESYSTEM_DIRECTORY",
+                "status": "NOOP",
+                "eligible": True,
+                "reason_code": "ELIGIBLE",
+                "updated_at": payload["items"][0]["updated_at"],
+            }
+        ]
+        assert secret_marker not in plan.text
+        assert "target" not in plan.text
+        assert "intent" not in plan.text
+        assert "idempotency_key" not in plan.text
+
+        without_csrf = client.post(
+            f"/api/v1/tasks/{task_id}/operations/{journal_id}/actions",
+            headers={"Idempotency-Key": "operation-retention-purge"},
+            json={"action": "purge", "retention_days": 30},
+        )
+        assert without_csrf.status_code == 403
+
+        missing_key = client.post(
+            f"/api/v1/tasks/{task_id}/operations/{journal_id}/actions",
+            headers=_csrf(client),
+            json={"action": "purge", "retention_days": 30},
+        )
+        assert missing_key.status_code == 428
+        assert missing_key.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+        first = client.post(
+            f"/api/v1/tasks/{task_id}/operations/{journal_id}/actions",
+            headers={**_csrf(client), "Idempotency-Key": "operation-retention-purge"},
+            json={"action": "purge", "retention_days": 30},
+        )
+        assert first.status_code == 200
+        assert first.json()["action"] == "purge"
+        assert first.json()["final_status"] == "NOOP"
+        assert first.json()["kind"] == "FILESYSTEM_DIRECTORY"
+        assert first.json()["purged"] is True
+        assert first.json()["idempotency_replayed"] is False
+        receipt_id = first.json()["receipt_id"]
+
+        replay = client.post(
+            f"/api/v1/tasks/{task_id}/operations/{journal_id}/actions",
+            headers={**_csrf(client), "Idempotency-Key": "operation-retention-purge"},
+            json={"action": "purge", "retention_days": 30},
+        )
+        assert replay.status_code == 200
+        assert replay.json()["receipt_id"] == receipt_id
+        assert replay.json()["idempotency_replayed"] is True
+
+        listing = client.get(f"/api/v1/tasks/{task_id}/operations")
+        assert listing.status_code == 200
+        assert listing.json()["items"] == []
+        with app.state.runtime.session_factory() as session:
+            assert session.get(OperationJournal, journal_id) is None
+            tombstone = session.get(OperationJournalTombstone, journal_id)
+            assert tombstone is not None
+            assert tombstone.task_id == task_id
+            assert tombstone.final_status == OperationStatus.NOOP.value
+
+        assert client.get("/api/v1/operations/retention-plan?retention_days=0").status_code == 422
+        assert client.get("/api/v1/operations/retention-plan?limit=501").status_code == 422
     finally:
         client.__exit__(None, None, None)
 

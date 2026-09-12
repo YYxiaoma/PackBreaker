@@ -7,7 +7,7 @@ import {
   listTaskOperations,
   reconcileTaskOperation,
   type TaskOperation,
-  type TaskOperationAction,
+  type TaskOperationReconcileAction,
 } from '../api/tasks';
 import { createTaskActionIdempotencyKey } from '../taskActionSafety';
 
@@ -22,7 +22,7 @@ const errorCode = ref<string | null>(null);
 const pendingJournalId = ref('');
 const pendingIdempotencyKey = ref('');
 const resultUnknown = ref(false);
-const lastAction = ref<TaskOperationAction | null>(null);
+const lastAction = ref<TaskOperationReconcileAction | null>(null);
 
 const attentionCount = computed(
   () => operations.value.filter((item) => item.attention_required).length,

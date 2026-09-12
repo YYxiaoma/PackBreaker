@@ -339,6 +339,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/operations/retention-plan': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Operation Retention Plan */
+    get: operations['operation_retention_plan_api_v1_operations_retention_plan_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/sites': {
     parameters: {
       query?: never;
@@ -1220,6 +1237,64 @@ export interface components {
        */
       updated_at: string;
     };
+    /** OperationRetentionItemResponse */
+    OperationRetentionItemResponse: {
+      /** Eligible */
+      eligible: boolean;
+      /** Journal Id */
+      journal_id: string;
+      kind: components['schemas']['OperationKind'];
+      /**
+       * Reason Code
+       * @enum {string}
+       */
+      reason_code:
+        | 'ELIGIBLE'
+        | 'RETENTION_WINDOW_NOT_REACHED'
+        | 'TASK_NOT_TERMINAL'
+        | 'TASK_CHECKPOINT_REFERENCE'
+        | 'ACTION_RECEIPT_REFERENCE'
+        | 'JOURNAL_REFERENCE';
+      status: components['schemas']['OperationStatus'];
+      /** Task Id */
+      task_id: string;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
+    /** OperationRetentionPlanResponse */
+    OperationRetentionPlanResponse: {
+      /**
+       * Cutoff
+       * Format: date-time
+       */
+      cutoff: string;
+      /**
+       * Generated At
+       * Format: date-time
+       */
+      generated_at: string;
+      /** Items */
+      items: components['schemas']['OperationRetentionItemResponse'][];
+      /** Retention Days */
+      retention_days: number;
+      summary: components['schemas']['OperationRetentionSummaryResponse'];
+    };
+    /** OperationRetentionSummaryResponse */
+    OperationRetentionSummaryResponse: {
+      /** Blocked */
+      blocked: number;
+      /** Candidates */
+      candidates: number;
+      /** Eligible */
+      eligible: number;
+      /** Inspected */
+      inspected: number;
+      /** Truncated */
+      truncated: boolean;
+    };
     /**
      * OperationStatus
      * @enum {string}
@@ -1726,19 +1801,57 @@ export interface components {
       /** Task Version */
       task_version: number;
     };
-    /** TaskOperationActionRequest */
-    TaskOperationActionRequest: {
+    /** TaskOperationListResponse */
+    TaskOperationListResponse: {
+      /** Items */
+      items: components['schemas']['TaskOperationResponse'][];
+    };
+    /** TaskOperationPurgeActionRequest */
+    TaskOperationPurgeActionRequest: {
       /**
-       * Action
-       * @constant
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: 'purge';
+      /**
+       * Retention Days
+       * @default 30
+       */
+      retention_days: number;
+    };
+    /** TaskOperationPurgeActionResponse */
+    TaskOperationPurgeActionResponse: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: 'purge';
+      final_status: components['schemas']['OperationStatus'];
+      /** Idempotency Replayed */
+      idempotency_replayed: boolean;
+      /** Journal Id */
+      journal_id: string;
+      kind: components['schemas']['OperationKind'];
+      /** Purged */
+      purged: boolean;
+      /** Receipt Id */
+      receipt_id: string;
+      /** Task Id */
+      task_id: string;
+    };
+    /** TaskOperationReconcileActionRequest */
+    TaskOperationReconcileActionRequest: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
        */
       action: 'reconcile';
     };
-    /** TaskOperationActionResponse */
-    TaskOperationActionResponse: {
+    /** TaskOperationReconcileActionResponse */
+    TaskOperationReconcileActionResponse: {
       /**
-       * Action
-       * @constant
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
        */
       action: 'reconcile';
       /** Idempotency Replayed */
@@ -1753,11 +1866,6 @@ export interface components {
       status: components['schemas']['OperationStatus'];
       /** Task Id */
       task_id: string;
-    };
-    /** TaskOperationListResponse */
-    TaskOperationListResponse: {
-      /** Items */
-      items: components['schemas']['TaskOperationResponse'][];
     };
     /** TaskOperationResponse */
     TaskOperationResponse: {
@@ -2847,6 +2955,42 @@ export interface operations {
       };
     };
   };
+  operation_retention_plan_api_v1_operations_retention_plan_get: {
+    parameters: {
+      query?: {
+        retention_days?: number;
+        limit?: number;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['OperationRetentionPlanResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   list_sites_api_v1_sites_get: {
     parameters: {
       query?: never;
@@ -3882,7 +4026,9 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['TaskOperationActionRequest'];
+        'application/json':
+          | components['schemas']['TaskOperationReconcileActionRequest']
+          | components['schemas']['TaskOperationPurgeActionRequest'];
       };
     };
     responses: {
@@ -3892,7 +4038,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          'application/json': components['schemas']['TaskOperationActionResponse'];
+          'application/json':
+            | components['schemas']['TaskOperationReconcileActionResponse']
+            | components['schemas']['TaskOperationPurgeActionResponse'];
         };
       };
       /** @description Validation Error */

@@ -1238,6 +1238,126 @@
         "title": "OperationRepairItemResponse",
         "type": "object"
       },
+      "OperationRetentionItemResponse": {
+        "properties": {
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "journal_id": {
+            "title": "Journal Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OperationKind"
+          },
+          "reason_code": {
+            "enum": [
+              "ELIGIBLE",
+              "RETENTION_WINDOW_NOT_REACHED",
+              "TASK_NOT_TERMINAL",
+              "TASK_CHECKPOINT_REFERENCE",
+              "ACTION_RECEIPT_REFERENCE",
+              "JOURNAL_REFERENCE"
+            ],
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OperationStatus"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "journal_id",
+          "task_id",
+          "kind",
+          "status",
+          "eligible",
+          "reason_code",
+          "updated_at"
+        ],
+        "title": "OperationRetentionItemResponse",
+        "type": "object"
+      },
+      "OperationRetentionPlanResponse": {
+        "properties": {
+          "cutoff": {
+            "format": "date-time",
+            "title": "Cutoff",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OperationRetentionItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "retention_days": {
+            "title": "Retention Days",
+            "type": "integer"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/OperationRetentionSummaryResponse"
+          }
+        },
+        "required": [
+          "generated_at",
+          "cutoff",
+          "retention_days",
+          "summary",
+          "items"
+        ],
+        "title": "OperationRetentionPlanResponse",
+        "type": "object"
+      },
+      "OperationRetentionSummaryResponse": {
+        "properties": {
+          "blocked": {
+            "title": "Blocked",
+            "type": "integer"
+          },
+          "candidates": {
+            "title": "Candidates",
+            "type": "integer"
+          },
+          "eligible": {
+            "title": "Eligible",
+            "type": "integer"
+          },
+          "inspected": {
+            "title": "Inspected",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "candidates",
+          "inspected",
+          "eligible",
+          "blocked",
+          "truncated"
+        ],
+        "title": "OperationRetentionSummaryResponse",
+        "type": "object"
+      },
       "OperationStatus": {
         "enum": [
           "INTENT_RECORDED",
@@ -2538,7 +2658,91 @@
         "title": "TaskMutationActionResponse",
         "type": "object"
       },
-      "TaskOperationActionRequest": {
+      "TaskOperationListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskOperationResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "TaskOperationListResponse",
+        "type": "object"
+      },
+      "TaskOperationPurgeActionRequest": {
+        "properties": {
+          "action": {
+            "const": "purge",
+            "title": "Action",
+            "type": "string"
+          },
+          "retention_days": {
+            "default": 30,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Retention Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "TaskOperationPurgeActionRequest",
+        "type": "object"
+      },
+      "TaskOperationPurgeActionResponse": {
+        "properties": {
+          "action": {
+            "const": "purge",
+            "title": "Action",
+            "type": "string"
+          },
+          "final_status": {
+            "$ref": "#/components/schemas/OperationStatus"
+          },
+          "idempotency_replayed": {
+            "title": "Idempotency Replayed",
+            "type": "boolean"
+          },
+          "journal_id": {
+            "title": "Journal Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/OperationKind"
+          },
+          "purged": {
+            "title": "Purged",
+            "type": "boolean"
+          },
+          "receipt_id": {
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "task_id",
+          "journal_id",
+          "kind",
+          "final_status",
+          "purged",
+          "idempotency_replayed",
+          "receipt_id"
+        ],
+        "title": "TaskOperationPurgeActionResponse",
+        "type": "object"
+      },
+      "TaskOperationReconcileActionRequest": {
         "properties": {
           "action": {
             "const": "reconcile",
@@ -2549,10 +2753,10 @@
         "required": [
           "action"
         ],
-        "title": "TaskOperationActionRequest",
+        "title": "TaskOperationReconcileActionRequest",
         "type": "object"
       },
-      "TaskOperationActionResponse": {
+      "TaskOperationReconcileActionResponse": {
         "properties": {
           "action": {
             "const": "reconcile",
@@ -2596,23 +2800,7 @@
           "idempotency_replayed",
           "receipt_id"
         ],
-        "title": "TaskOperationActionResponse",
-        "type": "object"
-      },
-      "TaskOperationListResponse": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/TaskOperationResponse"
-            },
-            "title": "Items",
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "title": "TaskOperationListResponse",
+        "title": "TaskOperationReconcileActionResponse",
         "type": "object"
       },
       "TaskOperationResponse": {
@@ -5175,6 +5363,95 @@
           }
         },
         "summary": "Operation Maintenance Report",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/operations/retention-plan": {
+      "get": {
+        "operationId": "operation_retention_plan_api_v1_operations_retention_plan_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "retention_days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 3650,
+              "minimum": 1,
+              "title": "Retention Days",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationRetentionPlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operation Retention Plan",
         "tags": [
           "tasks"
         ]
@@ -7889,7 +8166,22 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TaskOperationActionRequest"
+                "discriminator": {
+                  "mapping": {
+                    "purge": "#/components/schemas/TaskOperationPurgeActionRequest",
+                    "reconcile": "#/components/schemas/TaskOperationReconcileActionRequest"
+                  },
+                  "propertyName": "action"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/TaskOperationReconcileActionRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TaskOperationPurgeActionRequest"
+                  }
+                ],
+                "title": "Payload"
               }
             }
           },
@@ -7900,7 +8192,22 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TaskOperationActionResponse"
+                  "discriminator": {
+                    "mapping": {
+                      "purge": "#/components/schemas/TaskOperationPurgeActionResponse",
+                      "reconcile": "#/components/schemas/TaskOperationReconcileActionResponse"
+                    },
+                    "propertyName": "action"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/TaskOperationReconcileActionResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskOperationPurgeActionResponse"
+                    }
+                  ],
+                  "title": "Response Task Operation Action Api V1 Tasks  Task Id  Operations  Journal Id  Actions Post"
                 }
               }
             },
