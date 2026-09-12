@@ -782,6 +782,17 @@
         "title": "ExecutionPlanResponse",
         "type": "object"
       },
+      "FileMappingState": {
+        "enum": [
+          "MAPPED",
+          "MISSING",
+          "AMBIGUOUS",
+          "PADDING",
+          "ZERO_LENGTH"
+        ],
+        "title": "FileMappingState",
+        "type": "string"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1313,6 +1324,15 @@
         "title": "PathMappingInput",
         "type": "object"
       },
+      "PieceStatus": {
+        "enum": [
+          "VERIFIED",
+          "MISMATCH",
+          "UNAVAILABLE"
+        ],
+        "title": "PieceStatus",
+        "type": "string"
+      },
       "PreflightCurrentResponse": {
         "properties": {
           "current": {
@@ -1380,6 +1400,301 @@
           "payload"
         ],
         "title": "PreflightResponse",
+        "type": "object"
+      },
+      "RepairActionKind": {
+        "enum": [
+          "ISOLATE_TARGET",
+          "REPAIR_PIECES",
+          "FETCH_FILE",
+          "REPAIR_FILE",
+          "MANUAL_GUIDANCE"
+        ],
+        "title": "RepairActionKind",
+        "type": "string"
+      },
+      "RepairActionResponse": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RepairActionKind"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "torrent_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrent Path"
+          }
+        },
+        "required": [
+          "kind",
+          "torrent_path",
+          "reason"
+        ],
+        "title": "RepairActionResponse",
+        "type": "object"
+      },
+      "RepairAffectedFileResponse": {
+        "properties": {
+          "affected_pieces": {
+            "items": {
+              "$ref": "#/components/schemas/RepairPieceResponse"
+            },
+            "title": "Affected Pieces",
+            "type": "array"
+          },
+          "isolation_required": {
+            "title": "Isolation Required",
+            "type": "boolean"
+          },
+          "length": {
+            "title": "Length",
+            "type": "integer"
+          },
+          "mapping_state": {
+            "$ref": "#/components/schemas/FileMappingState"
+          },
+          "shares_source_inode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares Source Inode"
+          },
+          "target_exists": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Exists"
+          },
+          "torrent_path": {
+            "title": "Torrent Path",
+            "type": "string"
+          },
+          "whole_file_fetch": {
+            "title": "Whole File Fetch",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "torrent_path",
+          "length",
+          "mapping_state",
+          "affected_pieces",
+          "target_exists",
+          "shares_source_inode",
+          "isolation_required",
+          "whole_file_fetch"
+        ],
+        "title": "RepairAffectedFileResponse",
+        "type": "object"
+      },
+      "RepairBlockReason": {
+        "enum": [
+          "NO_REPAIR_NEEDED",
+          "VERIFICATION_BLOCKED",
+          "TARGET_EVIDENCE_MISSING",
+          "TARGET_MISSING",
+          "TARGET_LENGTH_MISMATCH",
+          "TARGET_SOURCE_IDENTITY_UNKNOWN",
+          "DOWNLOADER_NOT_PAUSED",
+          "INSUFFICIENT_SPACE",
+          "FILE_ONLY_CROSS_FILE_PIECE",
+          "FILE_ONLY_REQUIRES_ISOLATION"
+        ],
+        "title": "RepairBlockReason",
+        "type": "string"
+      },
+      "RepairMode": {
+        "enum": [
+          "AUTO_PIECE",
+          "FILE_ONLY",
+          "GUIDED"
+        ],
+        "title": "RepairMode",
+        "type": "string"
+      },
+      "RepairPieceResponse": {
+        "properties": {
+          "covered_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Covered Files",
+            "type": "array"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/RepairPieceScope"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PieceStatus"
+          },
+          "torrent_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrent Path"
+          }
+        },
+        "required": [
+          "scope",
+          "index",
+          "status",
+          "covered_files",
+          "torrent_path"
+        ],
+        "title": "RepairPieceResponse",
+        "type": "object"
+      },
+      "RepairPieceScope": {
+        "enum": [
+          "V1_STREAM",
+          "V2_FILE"
+        ],
+        "title": "RepairPieceScope",
+        "type": "string"
+      },
+      "RepairPlanResponse": {
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/RepairActionResponse"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "affected_files": {
+            "items": {
+              "$ref": "#/components/schemas/RepairAffectedFileResponse"
+            },
+            "title": "Affected Files",
+            "type": "array"
+          },
+          "affected_pieces": {
+            "items": {
+              "$ref": "#/components/schemas/RepairPieceResponse"
+            },
+            "title": "Affected Pieces",
+            "type": "array"
+          },
+          "available_bytes": {
+            "title": "Available Bytes",
+            "type": "integer"
+          },
+          "blocked_reasons": {
+            "items": {
+              "$ref": "#/components/schemas/RepairBlockReason"
+            },
+            "title": "Blocked Reasons",
+            "type": "array"
+          },
+          "cross_file_pieces": {
+            "items": {
+              "$ref": "#/components/schemas/RepairPieceResponse"
+            },
+            "title": "Cross File Pieces",
+            "type": "array"
+          },
+          "downloader_kind": {
+            "$ref": "#/components/schemas/DownloaderKind"
+          },
+          "downloader_paused": {
+            "title": "Downloader Paused",
+            "type": "boolean"
+          },
+          "estimated_download_bytes_upper_bound": {
+            "title": "Estimated Download Bytes Upper Bound",
+            "type": "integer"
+          },
+          "evidence_source": {
+            "const": "CLIENT_VERIFICATION_INCOMPLETE",
+            "title": "Evidence Source",
+            "type": "string"
+          },
+          "execution_allowed": {
+            "const": false,
+            "title": "Execution Allowed",
+            "type": "boolean"
+          },
+          "execution_plan_id": {
+            "title": "Execution Plan Id",
+            "type": "string"
+          },
+          "isolation_bytes_required": {
+            "title": "Isolation Bytes Required",
+            "type": "integer"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/RepairMode"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "required_free_bytes": {
+            "title": "Required Free Bytes",
+            "type": "integer"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_unit_id": {
+            "title": "Task Unit Id",
+            "type": "string"
+          },
+          "torrent_kind": {
+            "$ref": "#/components/schemas/TorrentKind"
+          }
+        },
+        "required": [
+          "task_id",
+          "task_unit_id",
+          "execution_plan_id",
+          "downloader_kind",
+          "evidence_source",
+          "mode",
+          "torrent_kind",
+          "affected_pieces",
+          "cross_file_pieces",
+          "affected_files",
+          "actions",
+          "isolation_bytes_required",
+          "estimated_download_bytes_upper_bound",
+          "required_free_bytes",
+          "available_bytes",
+          "downloader_paused",
+          "blocked_reasons",
+          "ready",
+          "execution_allowed"
+        ],
+        "title": "RepairPlanResponse",
         "type": "object"
       },
       "ReviewVerificationResponse": {
@@ -2619,6 +2934,15 @@
         ],
         "title": "TelegramCredentialInput",
         "type": "object"
+      },
+      "TorrentKind": {
+        "enum": [
+          "V1",
+          "V2",
+          "HYBRID"
+        ],
+        "title": "TorrentKind",
+        "type": "string"
       },
       "ValidationError": {
         "properties": {
@@ -6386,6 +6710,89 @@
           }
         },
         "summary": "Create Task Unit Execution Plan",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/api/v1/task-units/{unit_id}/repair-plan": {
+      "get": {
+        "operationId": "get_task_unit_repair_plan_api_v1_task_units__unit_id__repair_plan_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "unit_id",
+            "required": true,
+            "schema": {
+              "title": "Unit Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mode",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RepairMode",
+              "default": "AUTO_PIECE"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairPlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Unit Repair Plan",
         "tags": [
           "tasks"
         ]

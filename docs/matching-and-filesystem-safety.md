@@ -204,6 +204,12 @@ M3 的 `SafeFilesystemGateway` 负责上述动作前的统一只读检查：输�
 
 自动 piece 计划和文件级计划都要求下载器已经停止写入；目标只要与源 device+inode 相同，或自身 `link_count > 1`，就计入完整文件大小的隔离空间预算。缺失源文件只允许规划为目标侧 `FETCH_FILE`，不会生成源目录写入动作。FILE_ONLY 遇到跨文件 v1 piece 或任一需要 inode 隔离的目标都会失败关闭；空间预算不足同样阻断自动模式。人工引导只输出证据和前置条件，不把“未暂停/空间不足”误报成自动可执行。所有当前 `RepairPlan` 固定 `execution_allowed=false`；后续真正 copy + fsync + atomic replace、下载器补齐/重校验和 operation journal 所有权证明必须另行实现后才能开放执行。
 
+任务级可信 repair-plan API 已接到这层只读能力，但仍不开放写入。`GET /task-units/{unit_id}/repair-plan` 只接受 `AUTO_PIECE`、`FILE_ONLY`、`GUIDED` 三种 mode，不接受浏览器提交暂停状态、inode、ownership、hash 或 journal 事实。服务端只对真实客户端下载器校验已经形成 `RETRY + CLIENT_VERIFICATION_INCOMPLETE` checkpoint 的任务继续，并要求该 checkpoint 精确绑定 latest ready execution plan、APPLIED ADD/VERIFY journal、目标下载器 version/binding digest/save path、torrent hash 与 PackBreaker ownership tag/label。
+
+进入 target hash 前还会重新读取当前下载器：同一 owned torrent 必须真实处于 stopped 状态；随后重新获取并核对批准候选的 metainfo digest、source inventory 与 target root device。每个 HARDLINK action 还必须找到同一 task 下匹配 source path/source snapshot/target path 的 APPLIED `CREATE_HARDLINK` journal，并用其 after snapshot 只读证明当前 target 仍是 PackBreaker 登记资源。证明不了 ownership 时不会退化为客户端声明或人工猜测，而是拒绝生成可信计划。只有这些证据成立后才对 target 执行 no-follow 的完整 v1/v2/hybrid piece 读取；hash 完成后再次复核 task/plan/downloader/source inventory 与 hardlink ownership，期间任何漂移均失败关闭。
+
+API 响应只返回相对 torrent path、piece/file 影响范围、是否需要隔离、补齐/空间预算和固定阻断原因；torrent hash、ownership tag、journal ID、device/inode、绝对源路径与 operation payload 都留在服务端。该 GET 不暂停下载器、不修改 task/journal、不调用 add/recheck/start/remove，也仍固定 `execution_allowed=false`。
+
 ### 10.3 缺失小文件
 
 - 存在字节完全一致的本地文件时可复制或硬链接，并纳入验证。

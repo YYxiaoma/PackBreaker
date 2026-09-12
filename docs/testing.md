@@ -114,6 +114,8 @@ LINKING 协调器额外覆盖两阶段当前性：调用前 plan provider 必须
 
 99% 修复安全基础层必须作为纯只读能力测试：v1 mismatch piece 的 `covered_files` 要能识别真实跨文件边界，padding/零长度范围不能制造伪跨文件风险；v2 piece 始终保持文件内作用域。自动 piece 模式在目标仍与源共享 inode、目标 `link_count > 1`、下载器未暂停或隔离/缺失文件预算超过可用空间时不得进入 ready；FILE_ONLY 还必须额外拒绝跨文件 piece 和任何需要隔离的目标。缺失 NFO/图片/字幕只能规划为目标侧完整文件获取，不允许产生源目录写入。`inspect_repair_target` 测试要证明 hardlink/独立 inode/missing target/symlink/source snapshot 漂移均被正确区分且检查前后没有文件副作用。所有 planner 测试必须断言 `execution_allowed=false`，直到后续 journal-backed copy/fsync/atomic-replace 与 downloader repair executor 完成。
 
+可信 repair-plan API 额外要求“服务端证明、客户端零安全事实输入”：只有 `RETRY + CLIENT_VERIFICATION_INCOMPLETE` checkpoint，且 latest ready plan、ADD/VERIFY APPLIED journal、downloader version/binding/save path、hash+ownership、当前 stopped 状态全部一致时才允许进入 target hash；未暂停必须在任何 target piece 读取前阻断。HARDLINK 文件必须由匹配 source path/source snapshot/target path 的 APPLIED `CREATE_HARDLINK` journal 和 after snapshot 证明当前 ownership；journal 缺失/状态漂移、target 被替换、source inventory/metainfo/binding/ownership tag 漂移都必须返回稳定错误且不得修改 task/journal/downloader。成功路径要在 hash 后再次复核关键证据，并证明所有下载器写方法调用次数为 0。HTTP 响应脱敏测试必须断言 hash、ownership、journal ID、device/inode、绝对 source path 等 canary 不出现；公开路由只允许 GET + `mode`，不得存在 repair execute/write endpoint。
+
 ## 7. 适配器测试矩阵
 
 每个站点适配器覆盖连接、认证失败、分页、空结果、详情缺字段、取种、限流、超时、HTML/API 结构变化、熔断与恢复。

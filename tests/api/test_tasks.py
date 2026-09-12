@@ -20,9 +20,11 @@ from backend.app.application.task_actions import (
     TaskActionActor,
     TaskMutationActionResult,
 )
+from backend.app.application.task_repairs import RepairPlanView
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.config import AppSettings
 from backend.app.domain.operation import OperationStatus
+from backend.app.domain.repair import RepairAction, RepairActionKind, RepairMode, RepairPlan
 from backend.app.domain.site_adapter import SiteConnectionResult, TorrentDetails, TorrentPayload
 from backend.app.domain.site_search import (
     SearchPage,
@@ -32,6 +34,8 @@ from backend.app.domain.site_search import (
 )
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
+from backend.app.domain.torrent import TorrentKind
+from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.persistence.models import (
     Downloader,
     TaskCandidateRecord,
@@ -1372,6 +1376,81 @@ def test_transmission_plan_binding_is_allowed_and_requires_verify_capabilities(
                 require_client_verification=False,
             )
         assert failure.value.code == "EXECUTION_PLAN_TARGET_DOWNLOADER_NOT_READY"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_repair_plan_endpoint_is_read_only_redacted_and_mode_only(tmp_path: Path) -> None:
+    client, app, _settings = _authenticated_client(tmp_path)
+
+    class _RepairPlanStub:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, RepairMode]] = []
+
+        async def generate(self, unit_id: str, *, mode: RepairMode) -> RepairPlanView:
+            self.calls.append((unit_id, mode))
+            return RepairPlanView(
+                task_id="task-safe",
+                task_unit_id=unit_id,
+                execution_plan_id="plan-safe",
+                downloader_kind=DownloaderKind.QBITTORRENT,
+                evidence_source="CLIENT_VERIFICATION_INCOMPLETE",
+                plan=RepairPlan(
+                    mode=mode,
+                    torrent_kind=TorrentKind.V1,
+                    affected_pieces=(),
+                    cross_file_pieces=(),
+                    affected_files=(),
+                    actions=(
+                        RepairAction(
+                            RepairActionKind.MANUAL_GUIDANCE,
+                            None,
+                            "只读人工引导",
+                        ),
+                    ),
+                    isolation_bytes_required=0,
+                    estimated_download_bytes_upper_bound=0,
+                    required_free_bytes=0,
+                    available_bytes=1024,
+                    downloader_paused=True,
+                    blocked_reasons=(),
+                    ready=True,
+                    execution_allowed=False,
+                ),
+            )
+
+    stub = _RepairPlanStub()
+    app.state.task_repair_plan_service = stub
+    try:
+        response = client.get(
+            "/api/v1/task-units/unit-safe/repair-plan",
+            params={"mode": "GUIDED"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert stub.calls == [("unit-safe", RepairMode.GUIDED)]
+        assert payload["mode"] == "GUIDED"
+        assert payload["execution_allowed"] is False
+        assert payload["evidence_source"] == "CLIENT_VERIFICATION_INCOMPLETE"
+        assert payload["actions"][0]["kind"] == "MANUAL_GUIDANCE"
+        encoded = response.text
+        for forbidden in (
+            "torrent_hash",
+            "ownership_tag",
+            "journal_id",
+            "source_path",
+            "target_inode",
+            "target_device",
+            "/data/private-canary",
+        ):
+            assert forbidden not in encoded
+
+        invalid_mode = client.get(
+            "/api/v1/task-units/unit/repair-plan",
+            params={"mode": "CLIENT_SUPPLIED_INODE"},
+        )
+        assert invalid_mode.status_code == 422
+        assert client.post("/api/v1/task-units/unit/repair-plan", json={}).status_code == 405
     finally:
         client.__exit__(None, None, None)
 

@@ -16,6 +16,7 @@ from backend.app.api.dependencies import (
     task_analysis_service,
     task_event_service,
     task_operation_service,
+    task_repair_plan_service,
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.task_actions import (
@@ -32,6 +33,7 @@ from backend.app.application.task_operations import (
     TaskOperationReconcileResult,
     TaskOperationView,
 )
+from backend.app.application.task_repairs import RepairPlanView
 from backend.app.application.tasks import (
     ExecutionGateView,
     ExecutionPlanView,
@@ -44,8 +46,16 @@ from backend.app.application.tasks import (
 )
 from backend.app.domain.auth import ApiScope
 from backend.app.domain.operation import OperationKind, OperationStatus
+from backend.app.domain.repair import (
+    RepairActionKind,
+    RepairBlockReason,
+    RepairMode,
+    RepairPieceScope,
+)
 from backend.app.domain.review import ManualReviewMapping
 from backend.app.domain.task_state import TaskStatus
+from backend.app.domain.torrent import TorrentKind
+from backend.app.domain.verification import DownloaderKind, FileMappingState, PieceStatus
 
 router = APIRouter(tags=["tasks"])
 TASKS_READ_ACCESS = require_admin_or_scope(ApiScope.TASKS_READ)
@@ -359,6 +369,53 @@ class ExecutionPlanResponse(BaseModel):
     execution_allowed: bool
     side_effects_started: bool
     created_at: datetime
+
+
+class RepairPieceResponse(BaseModel):
+    scope: RepairPieceScope
+    index: int
+    status: PieceStatus
+    covered_files: list[str]
+    torrent_path: str | None
+
+
+class RepairAffectedFileResponse(BaseModel):
+    torrent_path: str
+    length: int
+    mapping_state: FileMappingState
+    affected_pieces: list[RepairPieceResponse]
+    target_exists: bool | None
+    shares_source_inode: bool | None
+    isolation_required: bool
+    whole_file_fetch: bool
+
+
+class RepairActionResponse(BaseModel):
+    kind: RepairActionKind
+    torrent_path: str | None
+    reason: str
+
+
+class RepairPlanResponse(BaseModel):
+    task_id: str
+    task_unit_id: str
+    execution_plan_id: str
+    downloader_kind: DownloaderKind
+    evidence_source: Literal["CLIENT_VERIFICATION_INCOMPLETE"]
+    mode: RepairMode
+    torrent_kind: TorrentKind
+    affected_pieces: list[RepairPieceResponse]
+    cross_file_pieces: list[RepairPieceResponse]
+    affected_files: list[RepairAffectedFileResponse]
+    actions: list[RepairActionResponse]
+    isolation_bytes_required: int
+    estimated_download_bytes_upper_bound: int
+    required_free_bytes: int
+    available_bytes: int
+    downloader_paused: bool
+    blocked_reasons: list[RepairBlockReason]
+    ready: bool
+    execution_allowed: Literal[False]
 
 
 @router.get("/tasks", response_model=TaskListResponse)
@@ -698,6 +755,21 @@ async def create_task_unit_execution_plan(
     )
 
 
+@router.get(
+    "/task-units/{unit_id}/repair-plan",
+    response_model=RepairPlanResponse,
+)
+async def get_task_unit_repair_plan(
+    unit_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
+    mode: Annotated[RepairMode, Query()] = RepairMode.AUTO_PIECE,
+) -> RepairPlanResponse:
+    return _repair_plan_response(
+        await task_repair_plan_service(request).generate(unit_id, mode=mode)
+    )
+
+
 def _task_response(item: TaskView) -> TaskResponse:
     return TaskResponse(
         id=item.id,
@@ -974,4 +1046,60 @@ def _execution_plan_response(item: ExecutionPlanView) -> ExecutionPlanResponse:
         execution_allowed=item.execution_allowed,
         side_effects_started=item.side_effects_started,
         created_at=item.created_at,
+    )
+
+
+def _repair_piece_response(item: Any) -> RepairPieceResponse:
+    return RepairPieceResponse(
+        scope=item.scope,
+        index=item.index,
+        status=item.status,
+        covered_files=list(item.covered_files),
+        torrent_path=item.torrent_path,
+    )
+
+
+def _repair_plan_response(item: RepairPlanView) -> RepairPlanResponse:
+    plan = item.plan
+    return RepairPlanResponse(
+        task_id=item.task_id,
+        task_unit_id=item.task_unit_id,
+        execution_plan_id=item.execution_plan_id,
+        downloader_kind=item.downloader_kind,
+        evidence_source="CLIENT_VERIFICATION_INCOMPLETE",
+        mode=plan.mode,
+        torrent_kind=plan.torrent_kind,
+        affected_pieces=[_repair_piece_response(piece) for piece in plan.affected_pieces],
+        cross_file_pieces=[_repair_piece_response(piece) for piece in plan.cross_file_pieces],
+        affected_files=[
+            RepairAffectedFileResponse(
+                torrent_path=affected.torrent_path,
+                length=affected.length,
+                mapping_state=affected.mapping_state,
+                affected_pieces=[
+                    _repair_piece_response(piece) for piece in affected.affected_pieces
+                ],
+                target_exists=affected.target_exists,
+                shares_source_inode=affected.shares_source_inode,
+                isolation_required=affected.isolation_required,
+                whole_file_fetch=affected.whole_file_fetch,
+            )
+            for affected in plan.affected_files
+        ],
+        actions=[
+            RepairActionResponse(
+                kind=action.kind,
+                torrent_path=action.torrent_path,
+                reason=action.reason,
+            )
+            for action in plan.actions
+        ],
+        isolation_bytes_required=plan.isolation_bytes_required,
+        estimated_download_bytes_upper_bound=plan.estimated_download_bytes_upper_bound,
+        required_free_bytes=plan.required_free_bytes,
+        available_bytes=plan.available_bytes,
+        downloader_paused=plan.downloader_paused,
+        blocked_reasons=list(plan.blocked_reasons),
+        ready=plan.ready,
+        execution_allowed=False,
     )

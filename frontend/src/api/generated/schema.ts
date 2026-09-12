@@ -532,6 +532,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/task-units/{unit_id}/repair-plan': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Task Unit Repair Plan */
+    get: operations['get_task_unit_repair_plan_api_v1_task_units__unit_id__repair_plan_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/tasks': {
     parameters: {
       query?: never;
@@ -990,6 +1007,11 @@ export interface components {
       /** Verification Level */
       verification_level: string;
     };
+    /**
+     * FileMappingState
+     * @enum {string}
+     */
+    FileMappingState: 'MAPPED' | 'MISSING' | 'AMBIGUOUS' | 'PADDING' | 'ZERO_LENGTH';
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
@@ -1214,6 +1236,11 @@ export interface components {
       /** Remote Prefix */
       remote_prefix: string;
     };
+    /**
+     * PieceStatus
+     * @enum {string}
+     */
+    PieceStatus: 'VERIFIED' | 'MISMATCH' | 'UNAVAILABLE';
     /** PreflightCurrentResponse */
     PreflightCurrentResponse: {
       /** Current */
@@ -1242,6 +1269,122 @@ export interface components {
       snapshot_digest: string;
       /** Stale Reasons */
       stale_reasons: string[];
+    };
+    /**
+     * RepairActionKind
+     * @enum {string}
+     */
+    RepairActionKind:
+      | 'ISOLATE_TARGET'
+      | 'REPAIR_PIECES'
+      | 'FETCH_FILE'
+      | 'REPAIR_FILE'
+      | 'MANUAL_GUIDANCE';
+    /** RepairActionResponse */
+    RepairActionResponse: {
+      kind: components['schemas']['RepairActionKind'];
+      /** Reason */
+      reason: string;
+      /** Torrent Path */
+      torrent_path: string | null;
+    };
+    /** RepairAffectedFileResponse */
+    RepairAffectedFileResponse: {
+      /** Affected Pieces */
+      affected_pieces: components['schemas']['RepairPieceResponse'][];
+      /** Isolation Required */
+      isolation_required: boolean;
+      /** Length */
+      length: number;
+      mapping_state: components['schemas']['FileMappingState'];
+      /** Shares Source Inode */
+      shares_source_inode: boolean | null;
+      /** Target Exists */
+      target_exists: boolean | null;
+      /** Torrent Path */
+      torrent_path: string;
+      /** Whole File Fetch */
+      whole_file_fetch: boolean;
+    };
+    /**
+     * RepairBlockReason
+     * @enum {string}
+     */
+    RepairBlockReason:
+      | 'NO_REPAIR_NEEDED'
+      | 'VERIFICATION_BLOCKED'
+      | 'TARGET_EVIDENCE_MISSING'
+      | 'TARGET_MISSING'
+      | 'TARGET_LENGTH_MISMATCH'
+      | 'TARGET_SOURCE_IDENTITY_UNKNOWN'
+      | 'DOWNLOADER_NOT_PAUSED'
+      | 'INSUFFICIENT_SPACE'
+      | 'FILE_ONLY_CROSS_FILE_PIECE'
+      | 'FILE_ONLY_REQUIRES_ISOLATION';
+    /**
+     * RepairMode
+     * @enum {string}
+     */
+    RepairMode: 'AUTO_PIECE' | 'FILE_ONLY' | 'GUIDED';
+    /** RepairPieceResponse */
+    RepairPieceResponse: {
+      /** Covered Files */
+      covered_files: string[];
+      /** Index */
+      index: number;
+      scope: components['schemas']['RepairPieceScope'];
+      status: components['schemas']['PieceStatus'];
+      /** Torrent Path */
+      torrent_path: string | null;
+    };
+    /**
+     * RepairPieceScope
+     * @enum {string}
+     */
+    RepairPieceScope: 'V1_STREAM' | 'V2_FILE';
+    /** RepairPlanResponse */
+    RepairPlanResponse: {
+      /** Actions */
+      actions: components['schemas']['RepairActionResponse'][];
+      /** Affected Files */
+      affected_files: components['schemas']['RepairAffectedFileResponse'][];
+      /** Affected Pieces */
+      affected_pieces: components['schemas']['RepairPieceResponse'][];
+      /** Available Bytes */
+      available_bytes: number;
+      /** Blocked Reasons */
+      blocked_reasons: components['schemas']['RepairBlockReason'][];
+      /** Cross File Pieces */
+      cross_file_pieces: components['schemas']['RepairPieceResponse'][];
+      downloader_kind: components['schemas']['DownloaderKind'];
+      /** Downloader Paused */
+      downloader_paused: boolean;
+      /** Estimated Download Bytes Upper Bound */
+      estimated_download_bytes_upper_bound: number;
+      /**
+       * Evidence Source
+       * @constant
+       */
+      evidence_source: 'CLIENT_VERIFICATION_INCOMPLETE';
+      /**
+       * Execution Allowed
+       * @constant
+       */
+      execution_allowed: false;
+      /** Execution Plan Id */
+      execution_plan_id: string;
+      /** Isolation Bytes Required */
+      isolation_bytes_required: number;
+      mode: components['schemas']['RepairMode'];
+      /** Ready */
+      ready: boolean;
+      /** Required Free Bytes */
+      required_free_bytes: number;
+      /** Task Id */
+      task_id: string;
+      /** Task Unit Id */
+      task_unit_id: string;
+      torrent_kind: components['schemas']['TorrentKind'];
     };
     /** ReviewVerificationResponse */
     ReviewVerificationResponse: {
@@ -1733,6 +1876,11 @@ export interface components {
        */
       chat_id: string;
     };
+    /**
+     * TorrentKind
+     * @enum {string}
+     */
+    TorrentKind: 'V1' | 'V2' | 'HYBRID';
     /** ValidationError */
     ValidationError: {
       /** Context */
@@ -3266,6 +3414,43 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['ExecutionPlanResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_task_unit_repair_plan_api_v1_task_units__unit_id__repair_plan_get: {
+    parameters: {
+      query?: {
+        mode?: components['schemas']['RepairMode'];
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        unit_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['RepairPlanResponse'];
         };
       };
       /** @description Validation Error */

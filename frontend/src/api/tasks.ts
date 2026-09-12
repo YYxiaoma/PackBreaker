@@ -25,6 +25,8 @@ export type ReviewVerification = components['schemas']['ReviewVerificationRespon
 export type ExecutionGate = components['schemas']['ExecutionGateResponse'];
 export type ExecutionPlanInput = components['schemas']['ExecutionPlanRequest'];
 export type ExecutionPlan = components['schemas']['ExecutionPlanResponse'];
+export type RepairMode = components['schemas']['RepairMode'];
+export type RepairPlan = components['schemas']['RepairPlanResponse'];
 
 function taskPath(taskId: string): string {
   const normalized = taskId.trim();
@@ -322,6 +324,20 @@ export async function createTaskUnitExecutionPlan(
       `${taskUnitPath(unitId)}/execution-plan`,
       payload,
     );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function getTaskUnitRepairPlan(
+  unitId: string,
+  mode: RepairMode = 'AUTO_PIECE',
+): Promise<RepairPlan> {
+  try {
+    const response = await apiClient.get<RepairPlan>(`${taskUnitPath(unitId)}/repair-plan`, {
+      params: { mode },
+    });
     return response.data;
   } catch (error) {
     throw toApiProblem(error);

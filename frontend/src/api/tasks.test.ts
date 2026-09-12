@@ -13,6 +13,7 @@ import {
   getTaskUnitDecision,
   getTaskUnitExecutionGate,
   getTaskUnitExecutionPlan,
+  getTaskUnitRepairPlan,
   getTaskUnitReviewVerification,
   listTaskCandidates,
   listTaskEvents,
@@ -274,5 +275,38 @@ describe('任务分析 API', () => {
       target_root: 'seeding/movies',
       target_downloader_id: 'qb-target',
     });
+  });
+
+  it('repair plan 只提交模式，不接受客户端暂停/inode/ownership 证据', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: {
+        task_id: 'task-1',
+        task_unit_id: 'unit/with slash',
+        execution_plan_id: 'plan-1',
+        downloader_kind: 'QBITTORRENT',
+        evidence_source: 'CLIENT_VERIFICATION_INCOMPLETE',
+        mode: 'FILE_ONLY',
+        torrent_kind: 'V1',
+        affected_pieces: [],
+        cross_file_pieces: [],
+        affected_files: [],
+        actions: [],
+        isolation_bytes_required: 0,
+        estimated_download_bytes_upper_bound: 0,
+        required_free_bytes: 0,
+        available_bytes: 1024,
+        downloader_paused: true,
+        blocked_reasons: [],
+        ready: true,
+        execution_allowed: false,
+      },
+    });
+
+    const result = await getTaskUnitRepairPlan('unit/with slash', 'FILE_ONLY');
+
+    expect(get).toHaveBeenCalledWith('/task-units/unit%2Fwith%20slash/repair-plan', {
+      params: { mode: 'FILE_ONLY' },
+    });
+    expect(result.execution_allowed).toBe(false);
   });
 });
