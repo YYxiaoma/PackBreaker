@@ -397,6 +397,7 @@ class FilesystemOperationService:
                         expected_target_snapshot=_filesystem_snapshot_from_payload(
                             existing.after_snapshot
                         ),
+                        ownership_token=existing.id,
                     )
                     return RepairIsolationExecutionResult(
                         isolation_journal_id=existing.id,
@@ -462,6 +463,7 @@ class FilesystemOperationService:
                     expected_target_snapshot=target_before_snapshot,
                     expected_target_parent_snapshot=target_parent_snapshot,
                     operation_token=prepared.operation_key,
+                    ownership_token=journal.id,
                     owned_temporary_snapshot=owned_temporary_snapshot,
                     progress_hook=record_progress,
                     fault_hook=fault_hook,
@@ -600,6 +602,7 @@ class FilesystemOperationService:
                     target_root_relative_path=prepared.target_root_relative_path,
                     target_relative_path=prepared.target_relative_path,
                     expected_isolation_snapshot=prepared.expected_isolation_snapshot,
+                    ownership_token=prepared.isolation_journal_id,
                 )
             except DomainViolation:
                 self._transition_if_current(

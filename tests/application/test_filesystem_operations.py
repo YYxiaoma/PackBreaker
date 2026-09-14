@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -34,7 +36,7 @@ from backend.app.infrastructure.persistence.repositories import (
     TaskCreate,
     TaskRepository,
 )
-from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
+from backend.app.infrastructure.safe_filesystem import REPAIR_OWNER_XATTR, SafeFilesystemGateway
 
 
 class SimulatedCrash(RuntimeError):
@@ -342,6 +344,9 @@ def test_repair_isolation_creates_independent_inode_and_replays_without_source_w
     assert target_after.st_ino != source_after.st_ino
     assert target_after.st_nlink == 1
     assert source_after.st_nlink == source_before.st_nlink - 1
+    assert os.getxattr(target, REPAIR_OWNER_XATTR) == (
+        b"packbreaker-repair-owner-v1:" + first.isolation_journal_id.encode("ascii")
+    )
     assert (source_after.st_ino, source_after.st_size, source_after.st_mtime_ns) == (
         source_before.st_ino,
         source_before.st_size,
@@ -430,6 +435,36 @@ def test_repair_isolation_crash_before_temp_ownership_fails_closed_to_reconcile(
     target = data_root / "target" / "movie.mkv"
     assert target.stat().st_ino == source.stat().st_ino
     assert temporary.exists()
+
+
+def test_repair_isolation_fails_closed_when_target_filesystem_has_no_xattr(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    source = _prepare(data_root)
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    target = data_root / "target" / "movie.mkv"
+
+    def reject_xattr(*args: object, **kwargs: object) -> None:
+        raise OSError(errno.EOPNOTSUPP, "xattr unsupported")
+
+    monkeypatch.setattr(os, "setxattr", reject_xattr)
+
+    with pytest.raises(DomainViolation) as failure:
+        service.execute_repair_isolation(
+            RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+        )
+
+    assert failure.value.code is ErrorCode.PATH_MAPPING_INVALID
+    assert target.stat().st_ino == source.stat().st_ino
+    assert target.read_bytes() == source.read_bytes()
+    isolation = next(
+        item
+        for item in _journals(factory)
+        if item.operation_type == ISOLATE_REPAIR_TARGET_OPERATION
+    )
+    assert isolation.status == OperationStatus.RECONCILE_REQUIRED.value
 
 
 def test_repair_isolation_crash_after_temp_ownership_resumes_safely(
@@ -648,6 +683,43 @@ def test_repair_target_cleanup_preserves_external_inode_replacement(
     assert target.exists()
     assert target.stat().st_ino == replacement_inode
     assert target.read_bytes() == b"z" * expected_size
+    cleanup = next(
+        item
+        for item in _journals(factory)
+        if item.operation_type == CLEANUP_REPAIR_TARGET_OPERATION
+    )
+    assert cleanup.status == OperationStatus.RECONCILE_REQUIRED.value
+
+
+def test_repair_target_cleanup_blocks_when_ownership_marker_changes(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    _prepare(data_root)
+    hardlink = service.execute_hardlink(_request(data_root, task_id, target="movie.mkv"))
+    isolated = service.execute_repair_isolation(
+        RepairIsolationExecutionRequest(task_id, hardlink.hardlink_journal_id)
+    )
+    target = data_root / "target" / "movie.mkv"
+    expected_size = target.stat().st_size
+    target.write_bytes(b"r" * expected_size)
+    os.setxattr(target, REPAIR_OWNER_XATTR, b"external-owner")
+    plan_id = "plan-cleanup-marker-changed"
+    remove_id = _applied_remove_journal(
+        factory,
+        task_id=task_id,
+        execution_plan_id=plan_id,
+    )
+
+    with pytest.raises(DomainViolation) as failure:
+        service.cleanup_repair_target(
+            RepairTargetCleanupRequest(task_id, plan_id, isolated.isolation_journal_id, remove_id)
+        )
+
+    assert failure.value.code is ErrorCode.ROLLBACK_BLOCKED
+    assert target.exists()
+    assert target.read_bytes() == b"r" * expected_size
+    assert os.getxattr(target, REPAIR_OWNER_XATTR) == b"external-owner"
     cleanup = next(
         item
         for item in _journals(factory)

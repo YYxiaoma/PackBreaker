@@ -971,6 +971,7 @@ class TaskRepairPlanService:
                         expected_source_snapshot=action.source_snapshot,
                         expected_isolation_snapshot=expected_isolated,
                         expected_length=action.length,
+                        ownership_token=isolation.id,
                     )
                 else:
                     self._filesystem.assert_repair_isolation_matches(
@@ -979,6 +980,7 @@ class TaskRepairPlanService:
                         target_relative_path=action.torrent_path,
                         expected_source_snapshot=action.source_snapshot,
                         expected_target_snapshot=expected_isolated,
+                        ownership_token=isolation.id,
                     )
             except DomainViolation as exc:
                 raise _repair_ownership_unproven(

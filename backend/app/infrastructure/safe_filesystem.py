@@ -13,6 +13,9 @@ from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.repair import RepairTargetEvidence
 from backend.app.domain.verification import FileSnapshot
 
+REPAIR_OWNER_XATTR = "user.packbreaker.repair_owner"
+_REPAIR_OWNER_MARKER_PREFIX = b"packbreaker-repair-owner-v1:"
+
 
 @dataclass(frozen=True, slots=True)
 class FilesystemSnapshot:
@@ -275,6 +278,7 @@ class SafeFilesystemGateway:
         expected_target_snapshot: FilesystemSnapshot,
         expected_target_parent_snapshot: FilesystemSnapshot,
         operation_token: str,
+        ownership_token: str,
         owned_temporary_snapshot: FilesystemSnapshot | None,
         progress_hook: Callable[[FilesystemSnapshot], None],
         fault_hook: Callable[[str], None] | None = None,
@@ -339,6 +343,7 @@ class SafeFilesystemGateway:
                     target_parent_fd=target_parent_fd,
                     target_name=target_name,
                     target_snapshot=target_snapshot,
+                    ownership_token=ownership_token,
                 )
                 os.fsync(target_parent_fd)
                 return RepairIsolationApplyResult(final_snapshot, True)
@@ -384,6 +389,12 @@ class SafeFilesystemGateway:
                         ErrorCode.TARGET_CONFLICT,
                         "repair isolation 临时 inode 在打开期间发生变化",
                     )
+                _assert_repair_owner_marker(
+                    temporary_fd,
+                    ownership_token,
+                    error_code=ErrorCode.TARGET_CONFLICT,
+                    detail="repair isolation 临时 inode 缺少匹配的 journal ownership marker",
+                )
             else:
                 temporary_fd = _create_repair_temporary(target_parent_fd, temporary_name)
                 created_temporary = _snapshot_from_stat(os.fstat(temporary_fd))
@@ -398,6 +409,8 @@ class SafeFilesystemGateway:
                         "repair isolation 临时 inode 创建后状态异常",
                     )
                 _call_fault_hook(fault_hook, "after_isolation_temp_created")
+                _create_repair_owner_marker(temporary_fd, ownership_token)
+                os.fsync(temporary_fd)
                 progress_hook(created_temporary)
                 owned_temporary_snapshot = created_temporary
                 _call_fault_hook(fault_hook, "after_isolation_temp_owned")
@@ -442,6 +455,12 @@ class SafeFilesystemGateway:
                     ErrorCode.TARGET_CONFLICT,
                     "repair isolation 临时副本无法证明仍由当前 journal 独占",
                 )
+            _assert_repair_owner_marker(
+                temporary_fd,
+                ownership_token,
+                error_code=ErrorCode.TARGET_CONFLICT,
+                detail="repair isolation 临时副本 ownership marker 已变化",
+            )
 
             try:
                 os.replace(
@@ -471,6 +490,12 @@ class SafeFilesystemGateway:
                     ErrorCode.PATH_MAPPING_INVALID,
                     "repair target 原子替换后的 inode 状态异常",
                 )
+            _assert_repair_owner_marker(
+                temporary_fd,
+                ownership_token,
+                error_code=ErrorCode.PATH_MAPPING_INVALID,
+                detail="repair target 原子替换后的 ownership marker 无法证明",
+            )
             return RepairIsolationApplyResult(final_observed, False)
         finally:
             if temporary_fd is not None:
@@ -488,6 +513,7 @@ class SafeFilesystemGateway:
         target_relative_path: str,
         expected_source_snapshot: FileSnapshot,
         expected_target_snapshot: FilesystemSnapshot,
+        ownership_token: str,
     ) -> FilesystemSnapshot:
         """证明已 APPLIED 的隔离结果仍是独立、字节一致且未修改源文件的 inode。"""
 
@@ -517,6 +543,12 @@ class SafeFilesystemGateway:
                     ErrorCode.SOURCE_CHANGED,
                     "已登记 repair isolation 结果与当前 source/target 证据不一致",
                 )
+            _assert_repair_owner_marker(
+                target_fd,
+                ownership_token,
+                error_code=ErrorCode.SOURCE_CHANGED,
+                detail="已登记 repair isolation ownership marker 已变化",
+            )
             return current_target
         finally:
             if target_fd is not None:
@@ -535,6 +567,7 @@ class SafeFilesystemGateway:
         expected_source_snapshot: FileSnapshot,
         expected_isolation_snapshot: FilesystemSnapshot,
         expected_length: int,
+        ownership_token: str,
     ) -> FilesystemSnapshot:
         """客户端下载写入后只证明 target 仍是原独立 inode；不再要求内容等于 source。"""
 
@@ -568,6 +601,12 @@ class SafeFilesystemGateway:
                     ErrorCode.SOURCE_CHANGED,
                     "repair download 后 target 已不再匹配 journal-owned 独立 inode",
                 )
+            _assert_repair_owner_marker(
+                target_fd,
+                ownership_token,
+                error_code=ErrorCode.SOURCE_CHANGED,
+                detail="repair download 后 target ownership marker 已变化",
+            )
             return current_target
         finally:
             if target_fd is not None:
@@ -585,6 +624,7 @@ class SafeFilesystemGateway:
         target_parent_fd: int,
         target_name: str,
         target_snapshot: FilesystemSnapshot,
+        ownership_token: str,
     ) -> FilesystemSnapshot:
         if (
             target_snapshot.file_type != "regular"
@@ -608,6 +648,12 @@ class SafeFilesystemGateway:
                     ErrorCode.TARGET_CONFLICT,
                     "repair isolation 响应丢失后无法证明目标副本内容一致",
                 )
+            _assert_repair_owner_marker(
+                target_fd,
+                ownership_token,
+                error_code=ErrorCode.TARGET_CONFLICT,
+                detail="repair isolation 响应丢失后 ownership marker 无法证明",
+            )
             return opened_target
         finally:
             os.close(target_fd)
@@ -903,8 +949,9 @@ class SafeFilesystemGateway:
         target_root_relative_path: str,
         target_relative_path: str,
         expected_isolation_snapshot: FilesystemSnapshot,
+        ownership_token: str,
     ) -> bool:
-        """只删除仍匹配 isolation journal 的独立 target inode。"""
+        """只删除仍匹配 isolation journal inode + xattr ownership marker 的 target。"""
 
         _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
         _, target_parts = _normalize_relative_path(target_relative_path)
@@ -912,11 +959,14 @@ class SafeFilesystemGateway:
             self._data_root,
             target_root_parts + target_parts[:-1],
         )
+        target_fd: int | None = None
         try:
             name = target_parts[-1]
-            current = _stat_at(parent_fd, name, missing_ok=True)
-            if current is None:
+            path_snapshot = _stat_at(parent_fd, name, missing_ok=True)
+            if path_snapshot is None:
                 return False
+            target_fd = _open_regular_file_at(parent_fd, name, write=False)
+            current = _snapshot_from_stat(os.fstat(target_fd))
             if (
                 current.file_type != "regular"
                 or current.device != expected_isolation_snapshot.device
@@ -927,6 +977,17 @@ class SafeFilesystemGateway:
                 raise DomainViolation(
                     ErrorCode.ROLLBACK_BLOCKED,
                     "repair target 已偏离 journal-owned 独立 inode，禁止自动清理",
+                )
+            _assert_repair_owner_marker(
+                target_fd,
+                ownership_token,
+                error_code=ErrorCode.ROLLBACK_BLOCKED,
+                detail="repair target ownership marker 已缺失或变化，禁止自动清理",
+            )
+            if not _same_owned_inode(current, path_snapshot):
+                raise DomainViolation(
+                    ErrorCode.ROLLBACK_BLOCKED,
+                    "repair target 路径在清理证明期间发生变化，禁止自动清理",
                 )
             try:
                 os.unlink(name, dir_fd=parent_fd)
@@ -943,6 +1004,8 @@ class SafeFilesystemGateway:
                 )
             return True
         finally:
+            if target_fd is not None:
+                os.close(target_fd)
             os.close(parent_fd)
 
     def assert_repair_target_absent(
@@ -1260,6 +1323,63 @@ def _same_owned_directory(current: FilesystemSnapshot, expected: FilesystemSnaps
 def _call_fault_hook(hook: Callable[[str], None] | None, checkpoint: str) -> None:
     if hook is not None:
         hook(checkpoint)
+
+
+def _repair_owner_marker_value(ownership_token: str) -> bytes:
+    try:
+        encoded = ownership_token.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise DomainViolation(
+            ErrorCode.PATH_MAPPING_INVALID,
+            "repair ownership token 必须是 ASCII",
+        ) from exc
+    if not encoded or len(encoded) > 128:
+        raise DomainViolation(
+            ErrorCode.PATH_MAPPING_INVALID,
+            "repair ownership token 长度无效",
+        )
+    return _REPAIR_OWNER_MARKER_PREFIX + encoded
+
+
+def _create_repair_owner_marker(fd: int, ownership_token: str) -> None:
+    """在 journal-owned inode 上一次性创建持久 marker；不支持 xattr 时失败关闭。"""
+
+    create_flag = getattr(os, "XATTR_CREATE", None)
+    if create_flag is None:
+        raise DomainViolation(
+            ErrorCode.PATH_MAPPING_INVALID,
+            "当前平台不支持安全创建 repair ownership xattr",
+        )
+    expected = _repair_owner_marker_value(ownership_token)
+    try:
+        os.setxattr(fd, REPAIR_OWNER_XATTR, expected, flags=create_flag)
+    except OSError as exc:
+        raise DomainViolation(
+            ErrorCode.PATH_MAPPING_INVALID,
+            "目标文件系统无法持久化 repair ownership xattr",
+        ) from exc
+    _assert_repair_owner_marker(
+        fd,
+        ownership_token,
+        error_code=ErrorCode.PATH_MAPPING_INVALID,
+        detail="repair ownership xattr 创建后无法验证",
+    )
+
+
+def _assert_repair_owner_marker(
+    fd: int,
+    ownership_token: str,
+    *,
+    error_code: ErrorCode,
+    detail: str,
+) -> None:
+    expected = _repair_owner_marker_value(ownership_token)
+    try:
+        observed = os.getxattr(fd, REPAIR_OWNER_XATTR)
+    except OSError as exc:
+        raise DomainViolation(error_code, detail) from exc
+    if observed != expected:
+        raise DomainViolation(error_code, detail)
 
 
 def _repair_isolation_temporary_name(operation_token: str) -> str:
