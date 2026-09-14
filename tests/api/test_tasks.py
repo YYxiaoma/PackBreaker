@@ -17,6 +17,7 @@ from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.task_actions import (
     CancelTaskAction,
     ExecuteTaskAction,
+    ReleaseTaskAction,
     TaskActionActor,
     TaskMutationActionResult,
 )
@@ -535,6 +536,17 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         )
         candidate = client.get(f"/api/v1/tasks/{task_id}/candidates").json()["items"][0]
         assert candidate["evidence"]["mappings"][0]["state"] == "AMBIGUOUS"
+
+        # 模拟 preflight 未选中验证的候选：人工审核可在之后通过 reverify
+        # 冻结 metainfo；execution plan 必须信任同一 execution gate 的 digest，
+        # 不能错误要求 preflight candidate 事先已有 metainfo_digest。
+        with app.state.runtime.session_factory() as session:
+            record = session.get(TaskCandidateRecord, candidate["id"])
+            assert record is not None
+            record.selected_for_verification = False
+            record.verification_level = None
+            record.metainfo_digest = None
+            session.commit()
 
         invalid = client.post(
             f"/api/v1/task-units/{current_unit['id']}/decision",
@@ -1654,6 +1666,152 @@ def test_repair_execute_endpoint_requires_csrf_idempotency_and_returns_redacted_
             "device",
         ):
             assert forbidden not in encoded
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_task_rerun_requires_csrf_and_idempotency_and_exposes_run_lineage(tmp_path: Path) -> None:
+    client, app, _settings = _authenticated_client(tmp_path)
+    unit_key = "rerun-api-unit"
+    parent_id = _create_task(app, unit_key)
+    with app.state.runtime.session_factory() as session:
+        parent = session.get(UnpackTask, parent_id)
+        assert parent is not None
+        parent.status = TaskStatus.CANCELLED.value
+        parent.version += 1
+        session.commit()
+
+    path = f"/api/v1/tasks/{parent_id}/rerun"
+    try:
+        without_csrf = client.post(path, headers={"Idempotency-Key": "rerun-api-1"})
+        assert without_csrf.status_code == 403
+
+        missing_key = client.post(path, headers=_csrf(client))
+        assert missing_key.status_code == 428
+        assert missing_key.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+        first = client.post(
+            path,
+            headers={**_csrf(client), "Idempotency-Key": "rerun-api-1"},
+        )
+        assert first.status_code == 200
+        payload = first.json()
+        child_id = payload["task_id"]
+        assert child_id != parent_id
+        assert payload["action"] == "rerun"
+        assert payload["status"] == "PENDING"
+        assert payload["execution_plan_id"] is None
+        assert payload["operation_replayed"] is False
+        assert payload["idempotency_replayed"] is False
+
+        replay = client.post(
+            path,
+            headers={**_csrf(client), "Idempotency-Key": "rerun-api-1"},
+        )
+        assert replay.status_code == 200
+        assert replay.json()["task_id"] == child_id
+        assert replay.json()["receipt_id"] == payload["receipt_id"]
+        assert replay.json()["idempotency_replayed"] is True
+
+        parent = client.get(f"/api/v1/tasks/{parent_id}")
+        child = client.get(f"/api/v1/tasks/{child_id}")
+        assert parent.status_code == child.status_code == 200
+        assert parent.json()["parent_task_id"] is None
+        assert parent.json()["run_number"] == 1
+        assert parent.json()["status"] == "CANCELLED"
+        assert child.json()["parent_task_id"] == parent_id
+        assert child.json()["run_number"] == 2
+        assert child.json()["status"] == "PENDING"
+
+        ordinary_create = client.post(
+            "/api/v1/tasks",
+            headers=_csrf(client),
+            json={
+                "task_type": "PACKAGE_UNPACK",
+                "source_downloader_id": "source",
+                "source_hash": "synthetic-source-hash",
+                "normalized_unit_key": unit_key,
+            },
+        )
+        assert ordinary_create.status_code == 200
+        assert ordinary_create.json()["created"] is False
+        assert ordinary_create.json()["item"]["id"] == child_id
+        assert ordinary_create.json()["item"]["run_number"] == 2
+
+        with app.state.runtime.session_factory() as session:
+            assert session.query(UnpackTask).count() == 2
+            assert session.query(TaskUnitRecord).filter_by(task_id=child_id).count() == 0
+            assert session.query(TaskCandidateRecord).filter_by(task_id=child_id).count() == 0
+            assert session.query(OperationJournal).filter_by(task_id=child_id).count() == 0
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_task_release_requires_csrf_and_idempotency(tmp_path: Path) -> None:
+    client, app, _settings = _authenticated_client(tmp_path)
+
+    class _ReleaseActionStub:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, TaskActionActor, str | None]] = []
+
+        async def release(
+            self,
+            request: ReleaseTaskAction,
+            *,
+            actor: TaskActionActor,
+            idempotency_key: str | None,
+        ) -> TaskMutationActionResult:
+            task_id = request.task_id
+            assert isinstance(task_id, str)
+            self.calls.append((task_id, actor, idempotency_key))
+            if idempotency_key is None:
+                raise ApplicationError(
+                    code="IDEMPOTENCY_KEY_REQUIRED",
+                    status=428,
+                    title="缺少幂等键",
+                    detail="release 请求必须携带 Idempotency-Key",
+                )
+            return TaskMutationActionResult(
+                action="release",
+                task_id=task_id,
+                status=TaskStatus.DONE,
+                task_version=11,
+                execution_plan_id="plan-safe",
+                operation_replayed=False,
+                receipt_id="receipt-safe",
+                idempotency_replayed=False,
+            )
+
+    stub = _ReleaseActionStub()
+    app.state.task_action_service = stub
+    path = "/api/v1/tasks/task-safe/release"
+    try:
+        without_csrf = client.post(path, headers={"Idempotency-Key": "release-safe-key"})
+        assert without_csrf.status_code == 403
+        assert stub.calls == []
+
+        missing_key = client.post(path, headers=_csrf(client))
+        assert missing_key.status_code == 428
+        assert missing_key.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+        response = client.post(
+            path,
+            headers={**_csrf(client), "Idempotency-Key": "release-safe-key"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "action": "release",
+            "task_id": "task-safe",
+            "status": "DONE",
+            "task_version": 11,
+            "execution_plan_id": "plan-safe",
+            "operation_replayed": False,
+            "idempotency_replayed": False,
+            "receipt_id": "receipt-safe",
+        }
+        assert stub.calls[-1][0] == "task-safe"
+        assert stub.calls[-1][1].kind == "admin_session"
+        assert stub.calls[-1][2] == "release-safe-key"
     finally:
         client.__exit__(None, None, None)
 

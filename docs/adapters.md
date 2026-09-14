@@ -55,11 +55,11 @@ class SiteAdapter(Protocol):
 - `MTeamAdapter`：使用官方 API；API Key 放在 `x-api-key`；下载令牌不落库、不进入通用缓存，只在当前取种调用链内使用。
 - `NexusPhpAdapter`：封装通用搜索/详情/下载流程；站点变体通过 profile 配置选择解析器，不用大量 if/else 混入核心类。
 - `HDTimeAdapter`：基于 NexusPHP profile，实现站点特有字段映射与契约测试。
-- `HHClubAdapter`：确认引擎和规则后选择 profile 或独立适配器；确认前不得按猜测上线。
+- `HHClubAdapter`：基于 NexusPHP profile，固定当前主站 `https://hhanclub.net` 与 Cookie 鉴权，并支持站点新版 div 卡片搜索结果布局。
 
 M2 当前已落下正式 `SiteAdapter` 只读端口和 M-Team HTTP 边界：`/api/member/profile` 用于连接探测，`/api/torrent/search` 使用 JSON POST，`/api/torrent/detail` 与 `/api/torrent/genDlToken` 使用表单 POST；所有 API 请求通过 `x-api-key`。下载令牌返回的 URL 只在内存使用，必须是配置站点域族下的 HTTPS URL，第二跳下载请求绝不携带 `x-api-key`，并使用 20 MiB 默认上限流式读取。根据站点当前公布的搜索建议上限，capability 暂以 90 秒作为保守最小请求间隔提示；M4 已在 `SiteService` 输出边界接入按站点配置 version 共享的 `SiteReliabilityRegistry`，统一执行并发限制、最小请求间隔、有限重试、抖动退避、缓存与熔断，具体站点 adapter 不再各自复制调度策略。响应 envelope/候选字段无法按已知 profile 解释时明确失败，不记录第三方 message、下载 URL 或响应头。站点配置现已持久化到 SQLite；凭证模型区分 `API_KEY` 与 `COOKIE`，二者都只写入 SecretStore，CRUD 使用强 ETag/`If-Match`，连接测试在数据库事务外执行。修改站点地址/类型/凭证会自动禁用并使旧探测失效，同时通过 version 边界丢弃旧可靠性状态；只有通过只读连接测试后才能启用。M4 进一步开放了脱敏、进程内的 `/sites/{id}/health` 运行指标和受 `config:write` + 强 `If-Match` 保护的 `reset_circuit`；人工 reset 只清空熔断状态，不清空缓存/累计计数，也不会伪造连接恢复。真实账号验收与跨进程持久化趋势指标仍属于后续工作。
 
-NexusPHP Web 站点现使用 `NexusPhpProfile` 描述登录标记、搜索/详情路径、时区和结果列布局，由 `NexusPhpWebAdapter` 统一执行 Cookie 认证的只读请求、HTML 结构提取与有界响应读取。`HDTimeAdapter` 的首个 profile 使用 `https://hdtime.org`、`index.php`、`torrents.php`、`details.php` 与 `usercp.php` 登录标记；搜索支持关键词、IMDb/豆瓣 ID、分页和稳定排序映射。Cookie 只允许发送到配置的精确 HTTPS origin，详情页发现的下载链接也必须保持同源；HTML 默认限制 5 MiB、torrent 默认限制 20 MiB，登录重定向、跨域链接、超限响应和非 bencode 下载体均明确失败。HDTime 现已进入同一套 `site` 持久化和 `/sites/{id}/test` 流程：Cookie 以 `SITE_COOKIE` 密文保存，读取端只暴露 `credential_kind=COOKIE` 与是否已配置。当前仍只有合成页面/MockTransport 契约证据，真实账号验收尚未执行。
+NexusPHP Web 站点现使用 `NexusPhpProfile` 描述登录标记、搜索/详情路径、时区和结果布局，由 `NexusPhpWebAdapter` 统一执行 Cookie 认证的只读请求、HTML 结构提取与有界响应读取。`HDTimeAdapter` 使用 `https://hdtime.org` 的传统 table 行布局；`HHClubAdapter` 使用 `https://hhanclub.net`，搜索页采用 `torrent-table-sub-info` div 卡片布局，分类同时兼容 `cat` / `cat[]`，详情标题兼容 `种子详情 "..." - Powered by NexusPHP`。两者均使用 `index.php`、`torrents.php`、`details.php` 与 `usercp.php` 登录标记，搜索支持关键词、IMDb/豆瓣 ID、分页和稳定排序映射。Cookie 只允许发送到配置的精确 HTTPS origin，详情页发现的下载链接也必须保持同源；`details.php` / `download.php` 使用精确脚本名匹配，不能把 `userdetails.php` 等后缀相似路径当作种子详情。HTML 默认限制 5 MiB、torrent 默认限制 20 MiB，登录重定向、跨域链接、超限响应和非 bencode 下载体均明确失败。HDTime 与 HHClub 均进入同一套 `site` 持久化和 `/sites/{id}/test` 流程：Cookie 以 `SITE_COOKIE` 密文保存，读取端只暴露 `credential_kind=COOKIE` 与是否已配置。HDTime 与 M-Team 已完成真实连接探测；HHClub 已完成真实 Cookie 的登录、搜索和详情只读验收，验收过程中未额外下载真实 `.torrent`。
 
 HTML 页面解析优先使用 DOM 解析器和稳定选择器。登录失效、验证码、Cloudflare、页面结构变化必须返回明确错误并熔断自动化，禁止绕过站点保护。
 

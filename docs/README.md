@@ -38,17 +38,19 @@
 - 前端：API → 领域状态 → 测试中的端到端场景。
 - 发布运维：部署 → 测试 → 研发路线图的 M6 门禁。
 
-## 当前待确认输入
+## 当前持续验收输入
 
-以下信息无法仅靠设计确定，必须在对应里程碑开始前补齐：
+以下信息需要继续从真实环境积累，但当前没有一项要求通过放宽安全门或人为制造错误来获得：
 
-- 蜂巢 3.3T 大包的脱敏目录树、torrent 元数据和日志。
-- 7 个失败样例及人工归因。
-- HHClub 的引擎、鉴权、搜索/取种方式和自动化规则。
-- 首批支持的 qBittorrent、Transmission 版本以及 NAS 路径映射。
-- 使用真实语料标定的自动匹配阈值。
+- 蜂巢 3.3T 大包的日志与可提交合成等价案例；真实源目录已完成只读扫描，代表性 torrent 元数据已收到。
+- 7 个失败样例及人工归因已完成 7 / 7；新的真实故障继续追加，但不再为数量制造失败，见 [`real-failure-samples.md`](./real-failure-samples.md)。
+- 首批 qBittorrent 5.2.3 / WebAPI 2.15.1、Transmission 4.1.3 与 NAS 路径映射已经完成真实联调；后续版本兼容继续按新环境增量验收。
+- 候选评分已建立真实标定基线，见 [`candidate-threshold-calibration.md`](./candidate-threshold-calibration.md)。当前 12 个去重 `FULL_VERIFIED` 正样本但无高置信内容错误负样本，因此 `recommended_threshold=null`、自动批准保持关闭；后续自然积累正负标签再更新报告。
+- repair 真实 field E2E 等待自然产生的 `CLIENT_CHECK_REQUIRED/RETRY`；现阶段不通过修改真实媒体或伪造 RETRY 来制造验收样本。
 
-在真实语料完成标定前，非同 Info-hash 候选只能进入人工确认或下载器完整校验流程。
+在真实语料证明可安全自动批准前，非同 Info-hash 候选只能进入人工确认和/或完整内容/客户端下载器校验流程。
+
+M4 的正式退出证据见 [`m4-exit-checklist.md`](./m4-exit-checklist.md)；当前已允许进入 M5，repair 天然样本与候选负标签继续作为持续现场验收。
 
 ## 维护规则
 

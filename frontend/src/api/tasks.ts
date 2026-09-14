@@ -289,6 +289,40 @@ export async function cancelTask(
   }
 }
 
+export async function rerunTask(
+  taskId: string,
+  idempotencyKey: string,
+): Promise<TaskMutationAction> {
+  try {
+    const response = await apiClient.post<TaskMutationAction>(
+      `${taskPath(taskId)}/rerun`,
+      undefined,
+      {
+        headers: actionHeaders(idempotencyKey),
+      },
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function releaseTask(
+  taskId: string,
+  idempotencyKey: string,
+): Promise<TaskMutationAction> {
+  try {
+    const response = await apiClient.post<TaskMutationAction>(
+      `${taskPath(taskId)}/release`,
+      undefined,
+      { headers: actionHeaders(idempotencyKey) },
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
 export async function getTaskUnitDecision(unitId: string): Promise<TaskReview> {
   try {
     const response = await apiClient.get<TaskReview>(`${taskUnitPath(unitId)}/decision`);

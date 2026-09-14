@@ -4,7 +4,7 @@ import re
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime
 from typing import Any, cast
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx2
 
@@ -28,13 +28,15 @@ from backend.app.domain.site_search import (
     SiteSearchCapabilities,
     normalize_candidate_meta,
 )
-from backend.app.infrastructure.adapters.nexusphp import HDTimeAdapter
+from backend.app.infrastructure.adapters.nexusphp import HDTimeAdapter, HHClubAdapter
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError as SiteAdapterError
 
 _MTEAM_SITE_ID = "mteam"
-_MTEAM_DEFAULT_BASE_URL = "https://api.m-team.cc"
+_MTEAM_DEFAULT_BASE_URL = "https://kp.m-team.cc"
 _MTEAM_TORRENT_LIMIT_BYTES = 20 * 1024 * 1024
 _MTEAM_MIN_REQUEST_INTERVAL_SECONDS = 90.0
+_MTEAM_MAX_DOWNLOAD_REDIRECTS = 3
+_MTEAM_DOWNLOAD_REDIRECT_HOST_SUFFIXES = ("m-team.cc", "halomt.com", "groueta.cc")
 _IMDB_ID_RE = re.compile(r"tt\d{5,10}", re.IGNORECASE)
 _DOUBAN_ID_RE = re.compile(r"\d{3,12}")
 
@@ -57,6 +59,8 @@ class SiteAdapterFactory:
             return MTeamAdapter(credential, base_url=base_url, transport=self._transport)
         if kind is SiteKind.HDTIME:
             return HDTimeAdapter(credential, base_url=base_url, transport=self._transport)
+        if kind is SiteKind.HHCLUB:
+            return HHClubAdapter(credential, base_url=base_url, transport=self._transport)
         raise ValueError("暂不支持该站点类型")
 
 
@@ -79,7 +83,12 @@ class MTeamAdapter:
         if max_torrent_bytes <= 0:
             raise ValueError("torrent payload 上限必须为正数")
         self._api_key = api_key
-        self._base_url, self._base_host, self._download_host_suffix = _normalize_api_base(base_url)
+        (
+            self._site_origin,
+            self._base_url,
+            self._base_host,
+            self._download_host_suffix,
+        ) = _normalize_mteam_origins(base_url)
         self._transport = transport
         self._timeout_seconds = timeout_seconds
         self._max_torrent_bytes = max_torrent_bytes
@@ -147,7 +156,11 @@ class MTeamAdapter:
         json: Mapping[str, object] | None = None,
         form: Mapping[str, str] | None = None,
     ) -> object:
-        headers = {"Accept": "application/json", "x-api-key": self._api_key}
+        headers = {
+            "Accept": "application/json",
+            "Origin": self._site_origin,
+            "x-api-key": self._api_key,
+        }
         try:
             async with httpx2.AsyncClient(
                 headers=headers,
@@ -199,11 +212,13 @@ class MTeamAdapter:
         try:
             parsed = urlsplit(value.strip())
             host = parsed.hostname
+            port = parsed.port
         except ValueError as exc:
             raise SiteAdapterError("SITE_DOWNLOAD_URL_INVALID", "M-Team 下载 URL 无效") from exc
         if (
             parsed.scheme != "https"
             or host is None
+            or port not in {None, 443}
             or parsed.username is not None
             or parsed.password is not None
             or parsed.fragment
@@ -212,34 +227,79 @@ class MTeamAdapter:
             raise SiteAdapterError("SITE_DOWNLOAD_URL_INVALID", "M-Team 下载 URL 不在允许域")
         return value.strip()
 
+    @staticmethod
+    def _validate_download_redirect_url(value: str) -> str:
+        try:
+            parsed = urlsplit(value.strip())
+            host = parsed.hostname
+            port = parsed.port
+        except ValueError as exc:
+            raise SiteAdapterError(
+                "SITE_DOWNLOAD_URL_INVALID", "M-Team 下载重定向 URL 无效"
+            ) from exc
+        if (
+            parsed.scheme != "https"
+            or host is None
+            or port not in {None, 443}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+            or not any(
+                _host_matches_suffix(host, suffix)
+                for suffix in _MTEAM_DOWNLOAD_REDIRECT_HOST_SUFFIXES
+            )
+        ):
+            raise SiteAdapterError("SITE_DOWNLOAD_URL_INVALID", "M-Team 下载重定向 URL 不在允许域")
+        return value.strip()
+
     async def _download_bounded(self, download_url: str) -> bytes:
         chunks: list[bytes] = []
         total = 0
         try:
-            async with (
-                httpx2.AsyncClient(
-                    timeout=self._timeout_seconds,
-                    follow_redirects=False,
-                    transport=self._transport,
-                ) as client,
-                client.stream("GET", download_url) as response,
-            ):
-                if response.status_code >= 500:
-                    raise SiteAdapterError(
-                        "SITE_UNAVAILABLE", "M-Team torrent 下载暂时不可用", retryable=True
-                    )
-                if response.status_code != 200:
-                    raise SiteAdapterError("SITE_TORRENT_FETCH_FAILED", "M-Team torrent 下载失败")
-                length = _optional_nonnegative_int(response.headers.get("content-length"))
-                if length is not None and length > self._max_torrent_bytes:
-                    raise SiteAdapterError("SITE_TORRENT_TOO_LARGE", "M-Team torrent 超过大小上限")
-                async for chunk in _response_chunks(response):
-                    total += len(chunk)
-                    if total > self._max_torrent_bytes:
-                        raise SiteAdapterError(
-                            "SITE_TORRENT_TOO_LARGE", "M-Team torrent 超过大小上限"
-                        )
-                    chunks.append(chunk)
+            current_url = download_url
+            redirect_count = 0
+            async with httpx2.AsyncClient(
+                timeout=self._timeout_seconds,
+                follow_redirects=False,
+                transport=self._transport,
+            ) as client:
+                while True:
+                    async with client.stream("GET", current_url) as response:
+                        if response.status_code in {301, 302, 303, 307, 308}:
+                            location = response.headers.get("location")
+                            if location is None or redirect_count >= _MTEAM_MAX_DOWNLOAD_REDIRECTS:
+                                raise SiteAdapterError(
+                                    "SITE_TORRENT_FETCH_FAILED",
+                                    "M-Team torrent 下载重定向无效或次数过多",
+                                )
+                            current_url = self._validate_download_redirect_url(
+                                urljoin(current_url, location)
+                            )
+                            redirect_count += 1
+                            continue
+                        if response.status_code >= 500:
+                            raise SiteAdapterError(
+                                "SITE_UNAVAILABLE",
+                                "M-Team torrent 下载暂时不可用",
+                                retryable=True,
+                            )
+                        if response.status_code != 200:
+                            raise SiteAdapterError(
+                                "SITE_TORRENT_FETCH_FAILED", "M-Team torrent 下载失败"
+                            )
+                        length = _optional_nonnegative_int(response.headers.get("content-length"))
+                        if length is not None and length > self._max_torrent_bytes:
+                            raise SiteAdapterError(
+                                "SITE_TORRENT_TOO_LARGE", "M-Team torrent 超过大小上限"
+                            )
+                        async for chunk in _response_chunks(response):
+                            total += len(chunk)
+                            if total > self._max_torrent_bytes:
+                                raise SiteAdapterError(
+                                    "SITE_TORRENT_TOO_LARGE", "M-Team torrent 超过大小上限"
+                                )
+                            chunks.append(chunk)
+                        break
         except SiteAdapterError:
             raise
         except (httpx2.TimeoutException, httpx2.NetworkError) as exc:
@@ -262,11 +322,12 @@ async def _response_chunks(response: httpx2.Response) -> AsyncIterator[bytes]:
             yield chunk
 
 
-def _normalize_api_base(value: str) -> tuple[str, str, str]:
+def _normalize_mteam_origins(value: str) -> tuple[str, str, str, str]:
     try:
         parsed = urlsplit(value.strip())
+        port = parsed.port
     except ValueError as exc:
-        raise ValueError("M-Team API base URL 无效") from exc
+        raise ValueError("M-Team 站点 base URL 无效") from exc
     if (
         parsed.scheme != "https"
         or parsed.hostname is None
@@ -276,11 +337,13 @@ def _normalize_api_base(value: str) -> tuple[str, str, str]:
         or parsed.fragment
         or parsed.path not in {"", "/"}
     ):
-        raise ValueError("M-Team API base URL 必须是无凭证、无路径的 HTTPS origin")
+        raise ValueError("M-Team 站点 base URL 必须是无凭证、无路径的 HTTPS origin")
     host = parsed.hostname.casefold()
-    parts = host.split(".")
-    suffix = ".".join(parts[1:]) if len(parts) >= 3 and parts[0] == "api" else host
-    return f"https://{parsed.netloc}", host, suffix
+    if port not in {None, 443} or not (host == "m-team.cc" or host.endswith(".m-team.cc")):
+        raise ValueError("M-Team 站点地址必须位于 https://*.m-team.cc")
+    site_origin = f"https://{host}"
+    api_host = "api.m-team.cc"
+    return site_origin, f"https://{api_host}", api_host, "m-team.cc"
 
 
 def _host_matches_suffix(host: str, suffix: str) -> bool:

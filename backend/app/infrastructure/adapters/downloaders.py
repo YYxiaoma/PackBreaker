@@ -466,7 +466,14 @@ class QbittorrentAdapter:
                         },
                         headers={"Origin": origin, "Referer": f"{origin}/"},
                     )
-                    if login.status_code in {401, 403} or not login.text.strip().startswith("Ok."):
+                    legacy_login_ok = login.status_code == 200 and login.text.strip().startswith(
+                        "Ok."
+                    )
+                    session_login_ok = login.status_code == 204 and any(
+                        name in {"SID", "QBT_SID"} or name.startswith("QBT_SID_")
+                        for name in client.cookies
+                    )
+                    if not legacy_login_ok and not session_login_ok:
                         raise DownloaderAdapterError(
                             "DOWNLOADER_AUTH_FAILED", "qBittorrent 认证失败"
                         )

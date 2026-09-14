@@ -26,6 +26,8 @@ _IMDB_RE = re.compile(r"/title/(tt\d{5,10})", re.IGNORECASE)
 _DOUBAN_RE = re.compile(r"/subject/(\d{3,12})")
 _SIZE_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGTPE]?i?B)\s*$", re.IGNORECASE)
 _TORRENT_ID_RE = re.compile(r"^\d{1,64}$")
+_POWERED_BY_NEXUSPHP_RE = re.compile(r"\s*-\s*Powered by NexusPHP\s*$", re.IGNORECASE)
+_DETAIL_TITLE_RE = re.compile(r'^(?:种子详情|Torrent Details?)\s*["“](.+)["”]$', re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +87,13 @@ HDTIME_PROFILE = NexusPhpProfile(
     min_request_interval_seconds=0.0,
 )
 
+HHCLUB_PROFILE = NexusPhpProfile(
+    site_id="hhclub",
+    default_base_url="https://hhanclub.net",
+    timezone_offset_minutes=8 * 60,
+    min_request_interval_seconds=2.0,
+)
+
 
 @dataclass(slots=True)
 class _Row:
@@ -94,11 +103,20 @@ class _Row:
     active_cell: int | None = None
 
 
+@dataclass(slots=True)
+class _Card:
+    links: list[tuple[str, str | None, str]] = field(default_factory=list)
+    field_parts: dict[str, list[str]] = field(default_factory=dict)
+
+
 class _NexusHtmlParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._rows: list[_Row] = []
         self._row_stack: list[_Row] = []
+        self._cards: list[_Card] = []
+        self._card_stack: list[_Card] = []
+        self._card_element_stack: list[tuple[str, str | None, bool]] = []
         self._link_stack: list[tuple[str, str | None, list[str]]] = []
         self._heading_depth = 0
         self._heading_text: list[str] = []
@@ -109,6 +127,10 @@ class _NexusHtmlParser(HTMLParser):
     @property
     def rows(self) -> tuple[_Row, ...]:
         return tuple(self._rows)
+
+    @property
+    def cards(self) -> tuple[_Card, ...]:
+        return tuple(self._cards)
 
     @property
     def heading(self) -> str | None:
@@ -122,6 +144,12 @@ class _NexusHtmlParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
+        classes = set((attributes.get("class") or "").split())
+        starts_card = tag == "div" and "torrent-table-sub-info" in classes
+        if starts_card:
+            self._card_stack.append(_Card())
+        card_field = _card_field(classes) if self._card_stack else None
+        self._card_element_stack.append((tag, card_field, starts_card))
         if tag == "tr":
             self._row_stack.append(_Row())
         elif tag == "td" and self._row_stack:
@@ -153,10 +181,22 @@ class _NexusHtmlParser(HTMLParser):
             self.all_links.append(link)
             for row in self._row_stack:
                 row.links.append(link)
+            for card in self._card_stack:
+                card.links.append(link)
         elif tag == "h1" and self._heading_depth:
             self._heading_depth -= 1
         elif tag == "title" and self._title_depth:
             self._title_depth -= 1
+
+        for index in range(len(self._card_element_stack) - 1, -1, -1):
+            if self._card_element_stack[index][0] != tag:
+                continue
+            closed = self._card_element_stack[index:]
+            del self._card_element_stack[index:]
+            for _, _, starts_card in reversed(closed):
+                if starts_card and self._card_stack:
+                    self._cards.append(self._card_stack.pop())
+            break
 
     def handle_data(self, data: str) -> None:
         if not data:
@@ -170,6 +210,11 @@ class _NexusHtmlParser(HTMLParser):
             self._heading_text.append(data)
         if self._title_depth:
             self._title_text.append(data)
+        if self._card_stack:
+            for _, field_name, _ in reversed(self._card_element_stack):
+                if field_name is not None:
+                    self._card_stack[-1].field_parts.setdefault(field_name, []).append(data)
+                    break
 
 
 class NexusPhpWebAdapter:
@@ -399,6 +444,31 @@ class HDTimeAdapter(NexusPhpWebAdapter):
         )
 
 
+class HHClubAdapter(NexusPhpWebAdapter):
+    def __init__(
+        self,
+        cookie: str,
+        *,
+        base_url: str = HHCLUB_PROFILE.default_base_url,
+        transport: httpx2.AsyncBaseTransport | None = None,
+        timeout_seconds: float = 10.0,
+        max_html_bytes: int = _DEFAULT_HTML_LIMIT_BYTES,
+        max_torrent_bytes: int = _DEFAULT_TORRENT_LIMIT_BYTES,
+    ) -> None:
+        normalized_base_url, origin = _normalize_origin(base_url)
+        if origin != ("https", "hhanclub.net", None):
+            raise ValueError("HHClub base URL 必须是 https://hhanclub.net")
+        super().__init__(
+            cookie,
+            profile=HHCLUB_PROFILE,
+            base_url=normalized_base_url,
+            transport=transport,
+            timeout_seconds=timeout_seconds,
+            max_html_bytes=max_html_bytes,
+            max_torrent_bytes=max_torrent_bytes,
+        )
+
+
 def _normalize_origin(value: str) -> tuple[str, tuple[str, str, int | None]]:
     parsed = urlsplit(value.strip())
     if (
@@ -457,16 +527,31 @@ def _parse_search_rows(
             leechers=_parse_nonnegative_int(_cell(row, profile.leechers_cell_from_end)),
             external_ids=_external_ids(row.links),
         )
-        current = best_by_id.get(torrent_id)
-        if current is None or len(row.cells) > current[0]:
-            best_by_id[torrent_id] = (len(row.cells), candidate)
+        _keep_richer_candidate(best_by_id, torrent_id, len(row.cells), candidate)
+    for card in parser.cards:
+        details = _details_link(card.links)
+        if details is None:
+            continue
+        torrent_id, title = details
+        candidate = normalize_candidate_meta(
+            site_id=profile.site_id,
+            torrent_id=torrent_id,
+            display_name=title,
+            total_size=_parse_size(_card_text(card, "size")),
+            category=_category(card.links),
+            seeders=_parse_nonnegative_int(_card_text(card, "seeders")),
+            leechers=_parse_nonnegative_int(_card_text(card, "leechers")),
+            external_ids=_external_ids(card.links),
+        )
+        richness = 100 + sum(bool(_card_text(card, key)) for key in ("size", "seeders", "leechers"))
+        _keep_richer_candidate(best_by_id, torrent_id, richness, candidate)
     return tuple(item[1] for item in best_by_id.values())
 
 
 def _details_link(links: list[tuple[str, str | None, str]]) -> tuple[str, str] | None:
     for href, title, text in links:
         parsed = urlsplit(href)
-        if not parsed.path.endswith("details.php"):
+        if _script_name(parsed.path) != "details.php":
             continue
         values = parse_qs(parsed.query).get("id")
         if not values or _TORRENT_ID_RE.fullmatch(values[0]) is None:
@@ -480,7 +565,7 @@ def _details_link(links: list[tuple[str, str | None, str]]) -> tuple[str, str] |
 def _download_href(links: list[tuple[str, str | None, str]], torrent_id: str) -> str | None:
     for href, _, _ in links:
         parsed = urlsplit(href)
-        if not parsed.path.endswith("download.php"):
+        if _script_name(parsed.path) != "download.php":
             continue
         query = parse_qs(parsed.query)
         ids = query.get("id")
@@ -533,6 +618,34 @@ def _cell(row: _Row, from_end: int) -> str:
     return row.cells[len(row.cells) - from_end]
 
 
+def _card_field(classes: set[str]) -> str | None:
+    for class_name, field_name in (
+        ("torrent-info-text-name", "name"),
+        ("torrent-info-text-size", "size"),
+        ("torrent-info-text-added", "added"),
+        ("torrent-info-text-seeders", "seeders"),
+        ("torrent-info-text-leechers", "leechers"),
+    ):
+        if class_name in classes:
+            return field_name
+    return None
+
+
+def _card_text(card: _Card, field_name: str) -> str:
+    return _clean_text(" ".join(card.field_parts.get(field_name, ())))
+
+
+def _keep_richer_candidate(
+    best_by_id: dict[str, tuple[int, CandidateMeta]],
+    torrent_id: str,
+    richness: int,
+    candidate: CandidateMeta,
+) -> None:
+    current = best_by_id.get(torrent_id)
+    if current is None or richness > current[0]:
+        best_by_id[torrent_id] = (richness, candidate)
+
+
 def _parse_size(value: str) -> int | None:
     match = _SIZE_RE.fullmatch(_clean_text(value))
     if match is None:
@@ -562,7 +675,8 @@ def _parse_nonnegative_int(value: str) -> int | None:
 
 def _category(links: list[tuple[str, str | None, str]]) -> str | None:
     for href, _, _ in links:
-        values = parse_qs(urlsplit(href).query).get("cat")
+        query = parse_qs(urlsplit(href).query)
+        values = query.get("cat") or query.get("cat[]")
         if values and values[0].isdigit():
             return values[0]
     return None
@@ -583,9 +697,14 @@ def _external_ids(links: list[tuple[str, str | None, str]]) -> tuple[ExternalMed
 def _page_title_candidate(value: str | None) -> str | None:
     if value is None:
         return None
-    parts = [_clean_text(part) for part in value.split("::")]
+    cleaned = _POWERED_BY_NEXUSPHP_RE.sub("", value)
+    parts = [_clean_text(part) for part in cleaned.split("::")]
     meaningful = [part for part in parts if part and "nexusphp" not in part.casefold()]
-    return meaningful[-1] if len(meaningful) >= 2 else None
+    if len(meaningful) < 2:
+        return None
+    candidate = meaningful[-1]
+    match = _DETAIL_TITLE_RE.fullmatch(candidate)
+    return _clean_text(match.group(1)) if match is not None else candidate
 
 
 def _validate_torrent_id(value: str) -> str:
@@ -597,6 +716,10 @@ def _validate_torrent_id(value: str) -> str:
 
 def _href_path(value: str) -> str:
     return urlsplit(value).path
+
+
+def _script_name(path: str) -> str:
+    return path.rstrip("/").rsplit("/", 1)[-1].casefold()
 
 
 def _clean_text(value: str) -> str:

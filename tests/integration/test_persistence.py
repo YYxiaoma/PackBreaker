@@ -99,9 +99,83 @@ def test_task_create_replayed_ten_times_is_unique(db_session: Session) -> None:
     assert task_count == 1
     assert event_count == 1
     first = results[0][0]
+    assert first.parent_task_id is None
+    assert first.run_number == 1
     db_session.expire(first)
     db_session.refresh(first)
     assert first.created_at.utcoffset() == timedelta(0)
+
+
+def test_terminal_task_rerun_creates_fresh_latest_run_and_replays_by_actor_key(
+    db_session: Session,
+) -> None:
+    repository = TaskRepository(db_session)
+    parent, _ = repository.create_or_get(_task_request("rerun-unit"))
+    parent.status = TaskStatus.CANCELLED.value
+    db_session.commit()
+
+    child, created = repository.rerun(
+        parent_task_id=parent.id,
+        actor_kind="api_token",
+        actor_id="actor-1",
+        idempotency_key_digest="a" * 64,
+        trace_id=str(uuid4()),
+    )
+    replay, replay_created = repository.rerun(
+        parent_task_id=parent.id,
+        actor_kind="api_token",
+        actor_id="actor-1",
+        idempotency_key_digest="a" * 64,
+        trace_id=str(uuid4()),
+    )
+    db_session.commit()
+
+    assert created is True
+    assert replay_created is False
+    assert replay.id == child.id
+    assert child.id != parent.id
+    assert child.parent_task_id == parent.id
+    assert child.run_number == 2
+    assert child.type == parent.type
+    assert child.source_downloader_id == parent.source_downloader_id
+    assert child.source_hash == parent.source_hash
+    assert child.normalized_unit_key == parent.normalized_unit_key
+    assert child.status == TaskStatus.PENDING.value
+    assert child.checkpoint == {}
+    assert child.version == 1
+
+    latest, latest_created = repository.create_or_get(_task_request("rerun-unit"))
+    assert latest_created is False
+    assert latest.id == child.id
+    child_events = repository.list_events(task_id=child.id)
+    assert [item.event_type for item in child_events] == ["TASK_RERUN_CREATED"]
+
+    with pytest.raises(DomainViolation) as stale:
+        repository.rerun(
+            parent_task_id=parent.id,
+            actor_kind="api_token",
+            actor_id="actor-2",
+            idempotency_key_digest="b" * 64,
+            trace_id=str(uuid4()),
+        )
+    assert stale.value.code is ErrorCode.TASK_VERSION_CONFLICT
+
+
+def test_rerun_rejects_non_terminal_task(db_session: Session) -> None:
+    repository = TaskRepository(db_session)
+    task, _ = repository.create_or_get(_task_request("rerun-active-unit"))
+    db_session.commit()
+
+    with pytest.raises(DomainViolation) as failure:
+        repository.rerun(
+            parent_task_id=task.id,
+            actor_kind="admin_session",
+            actor_id="admin",
+            idempotency_key_digest="c" * 64,
+            trace_id=str(uuid4()),
+        )
+
+    assert failure.value.code is ErrorCode.INVALID_STATE_TRANSITION
 
 
 def test_task_transition_updates_version_and_appends_event(db_session: Session) -> None:
@@ -296,6 +370,68 @@ def test_task_action_audit_event_does_not_change_task_version(db_session: Sessio
     latest_event = repository.latest_event(task.id)
     assert latest_event is not None
     assert latest_event.event_type == "TASK_CANCEL_REQUESTED"
+
+
+def test_latest_transition_event_ignores_same_state_action_audit(db_session: Session) -> None:
+    repository = TaskRepository(db_session)
+    task, _ = repository.create_or_get(_task_request("transition-audit"))
+    task = repository.transition(
+        task_id=task.id,
+        expected_version=task.version,
+        to_status=TaskStatus.ANALYZING,
+        event_type="ANALYSIS_STARTED",
+        reason="synthetic transition",
+    )
+    task = repository.transition(
+        task_id=task.id,
+        expected_version=task.version,
+        to_status=TaskStatus.SEARCHING,
+        event_type="ANALYSIS_SEARCHING",
+        reason="synthetic searching",
+    )
+    task = repository.transition(
+        task_id=task.id,
+        expected_version=task.version,
+        to_status=TaskStatus.MATCHING,
+        event_type="ANALYSIS_MATCHING",
+        reason="synthetic matching",
+    )
+    task = repository.transition(
+        task_id=task.id,
+        expected_version=task.version,
+        to_status=TaskStatus.VERIFYING,
+        event_type="ANALYSIS_VERIFYING",
+        reason="synthetic verifying",
+    )
+    task = repository.transition(
+        task_id=task.id,
+        expected_version=task.version,
+        to_status=TaskStatus.PREFLIGHT,
+        event_type="ANALYSIS_PREFLIGHT_READY",
+        reason="synthetic preflight",
+    )
+    task = repository.transition(
+        task_id=task.id,
+        expected_version=task.version,
+        to_status=TaskStatus.AWAITING_CONFIRMATION,
+        event_type="REVIEW_OPENED",
+        reason="synthetic review bridge",
+    )
+    repository.append_event(
+        task_id=task.id,
+        event_type="TASK_EXECUTE_REQUESTED",
+        reason="synthetic execute audit",
+    )
+    db_session.commit()
+
+    latest_event = repository.latest_event(task.id)
+    latest_transition = repository.latest_transition_event(task.id)
+    assert latest_event is not None
+    assert latest_event.event_type == "TASK_EXECUTE_REQUESTED"
+    assert latest_transition is not None
+    assert latest_transition.event_type == "REVIEW_OPENED"
+    assert latest_transition.from_status == TaskStatus.PREFLIGHT.value
+    assert latest_transition.to_status == TaskStatus.AWAITING_CONFIRMATION.value
 
 
 def test_operation_journal_transition_uses_status_cas_and_requires_applied_snapshot(

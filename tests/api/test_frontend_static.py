@@ -32,10 +32,17 @@ def test_frontend_static_assets_and_api_share_same_app(tmp_path: Path) -> None:
     assert index.status_code == 200
     assert "PackBreaker UI" in index.text
     assert index.headers["X-Content-Type-Options"] == "nosniff"
+    index_csp = index.headers["Content-Security-Policy"]
+    assert "script-src 'self'" in index_csp
+    assert "style-src 'self'" in index_csp
+    assert "connect-src 'self'" in index_csp
     assert asset.status_code == 200
     assert asset.text == "console.log('synthetic')"
     assert live.status_code == 200
     assert live.json()["service"] == "packbreaker"
+    assert live.headers["Content-Security-Policy"] == (
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    )
     assert unknown_api.status_code == 404
 
 

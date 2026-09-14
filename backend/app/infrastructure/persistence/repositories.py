@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
-from backend.app.domain.idempotency import task_idempotency_key
+from backend.app.domain.idempotency import task_idempotency_key, task_rerun_idempotency_key
 from backend.app.domain.operation import (
     OperationStatus,
     operation_event_summary,
@@ -73,10 +73,45 @@ class TaskRepository:
     def get_by_idempotency_key(self, key: str) -> UnpackTask | None:
         return self._session.scalar(select(UnpackTask).where(UnpackTask.idempotency_key == key))
 
+    def latest_for_identity(
+        self,
+        *,
+        task_type: str,
+        source_downloader_id: str,
+        source_hash: str,
+        normalized_unit_key: str,
+    ) -> UnpackTask | None:
+        return self._session.scalar(
+            select(UnpackTask)
+            .where(
+                UnpackTask.type == task_type,
+                UnpackTask.source_downloader_id == source_downloader_id,
+                UnpackTask.source_hash == source_hash,
+                UnpackTask.normalized_unit_key == normalized_unit_key,
+            )
+            .order_by(
+                UnpackTask.run_number.desc(), UnpackTask.created_at.desc(), UnpackTask.id.desc()
+            )
+            .limit(1)
+        )
+
     def latest_event(self, task_id: str) -> TaskEvent | None:
         return self._session.scalar(
             select(TaskEvent)
             .where(TaskEvent.task_id == task_id)
+            .order_by(TaskEvent.created_at.desc(), TaskEvent.id.desc())
+            .limit(1)
+        )
+
+    def latest_transition_event(self, task_id: str) -> TaskEvent | None:
+        """Return the newest lifecycle transition, ignoring same-state audit events."""
+        return self._session.scalar(
+            select(TaskEvent)
+            .where(
+                TaskEvent.task_id == task_id,
+                TaskEvent.from_status.is_not(None),
+                TaskEvent.from_status != TaskEvent.to_status,
+            )
             .order_by(TaskEvent.created_at.desc(), TaskEvent.id.desc())
             .limit(1)
         )
@@ -158,6 +193,14 @@ class TaskRepository:
         return persist_task_event(self._session, event)
 
     def create_or_get(self, request: TaskCreate) -> tuple[UnpackTask, bool]:
+        latest = self.latest_for_identity(
+            task_type=request.task_type,
+            source_downloader_id=request.source_downloader_id,
+            source_hash=request.source_hash,
+            normalized_unit_key=request.normalized_unit_key,
+        )
+        if latest is not None:
+            return latest, False
         key = task_idempotency_key(
             task_type=request.task_type,
             source_downloader_id=request.source_downloader_id,
@@ -176,6 +219,8 @@ class TaskRepository:
             source_hash=request.source_hash,
             normalized_unit_key=request.normalized_unit_key,
             idempotency_key=key,
+            parent_task_id=None,
+            run_number=1,
             status=TaskStatus.PENDING.value,
             trace_id=request.trace_id,
             checkpoint={},
@@ -202,6 +247,90 @@ class TaskRepository:
             if concurrent is None:
                 raise
             return concurrent, False
+        return task, True
+
+    def rerun(
+        self,
+        *,
+        parent_task_id: str,
+        actor_kind: str,
+        actor_id: str,
+        idempotency_key_digest: str,
+        trace_id: str,
+    ) -> tuple[UnpackTask, bool]:
+        key = task_rerun_idempotency_key(
+            parent_task_id=parent_task_id,
+            actor_kind=actor_kind,
+            actor_id=actor_id,
+            idempotency_key_digest=idempotency_key_digest,
+        )
+        existing = self.get_by_idempotency_key(key)
+        if existing is not None:
+            return existing, False
+
+        parent = self.get(parent_task_id)
+        if parent is None:
+            raise DomainViolation(ErrorCode.TASK_NOT_FOUND, "rerun 来源任务不存在")
+        try:
+            parent_status = TaskStatus(parent.status)
+        except ValueError as exc:
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION, "rerun 来源任务状态无效"
+            ) from exc
+        if parent_status not in {TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.DONE}:
+            raise DomainViolation(
+                ErrorCode.INVALID_STATE_TRANSITION,
+                "只有 CANCELLED、FAILED 或 DONE 的最新 run 可以显式 rerun",
+            )
+
+        latest = self.latest_for_identity(
+            task_type=parent.type,
+            source_downloader_id=parent.source_downloader_id,
+            source_hash=parent.source_hash,
+            normalized_unit_key=parent.normalized_unit_key,
+        )
+        if latest is None or latest.id != parent.id:
+            raise DomainViolation(ErrorCode.TASK_VERSION_CONFLICT, "rerun 来源已经不是最新 run")
+
+        now = utc_now()
+        task = UnpackTask(
+            id=new_uuid(),
+            type=parent.type,
+            source_downloader_id=parent.source_downloader_id,
+            source_hash=parent.source_hash,
+            normalized_unit_key=parent.normalized_unit_key,
+            idempotency_key=key,
+            parent_task_id=parent.id,
+            run_number=parent.run_number + 1,
+            status=TaskStatus.PENDING.value,
+            trace_id=trace_id,
+            checkpoint={},
+            version=1,
+            created_at=now,
+            updated_at=now,
+        )
+        event = TaskEvent(
+            id=new_uuid(),
+            task_id=task.id,
+            from_status=None,
+            to_status=TaskStatus.PENDING.value,
+            event_type="TASK_RERUN_CREATED",
+            reason=f"基于父任务 Run #{parent.run_number} 创建新的显式 rerun",
+            created_at=now,
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(task)
+                self._session.flush()
+                persist_task_event(self._session, event)
+        except IntegrityError as exc:
+            concurrent = self.get_by_idempotency_key(key)
+            if concurrent is not None:
+                return concurrent, False
+            raise DomainViolation(
+                ErrorCode.TASK_VERSION_CONFLICT,
+                "rerun 来源或 run_number 已被并发请求推进",
+            ) from exc
         return task, True
 
     def transition(

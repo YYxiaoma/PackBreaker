@@ -7,7 +7,7 @@ import pytest
 
 from backend.app.domain.media_matching import ExternalMediaId
 from backend.app.domain.site_search import SearchMediaType, SearchQuery, SearchSortHint
-from backend.app.infrastructure.adapters.nexusphp import HDTimeAdapter
+from backend.app.infrastructure.adapters.nexusphp import HDTimeAdapter, HHClubAdapter
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from tests.contract.site_adapter_contract import (
     SiteAdapterContractCase,
@@ -195,6 +195,65 @@ def test_hdtime_cookie_and_origin_validation_rejects_unsafe_inputs() -> None:
         HDTimeAdapter(_COOKIE, base_url="https://user:pass@hdtime.org")
 
 
+@pytest.mark.asyncio
+async def test_hhclub_card_layout_search_and_download_use_exact_script_names() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        assert request.url.host == "hhanclub.net"
+        assert request.headers.get("cookie") == _COOKIE
+        if request.url.path == "/index.php":
+            return httpx2.Response(200, text='<a href="usercp.php">profile</a>')
+        if request.url.path == "/torrents.php":
+            return httpx2.Response(200, text=_hhclub_search_html())
+        if request.url.path == "/details.php":
+            return httpx2.Response(200, text=_hhclub_details_html())
+        if request.url.path == "/download.php":
+            return httpx2.Response(200, content=_TORRENT)
+        return httpx2.Response(404)
+
+    adapter = HHClubAdapter(_COOKIE, transport=httpx2.MockTransport(handler))
+    await assert_read_only_site_adapter_contract(
+        SiteAdapterContractCase(
+            adapter,
+            SearchQuery(("Synthetic", "Movie"), SearchMediaType.MOVIE),
+            "hhclub",
+            "456",
+        )
+    )
+    page = await adapter.search(SearchQuery(("Synthetic", "Movie"), SearchMediaType.MOVIE))
+    assert len(page.items) == 1
+    candidate = page.items[0]
+    assert candidate.torrent_id == "456"
+    assert candidate.total_size == int(42.35 * 1024**3)
+    assert candidate.category == "401"
+    assert candidate.seeders == 80
+    assert candidate.leechers == 0
+    assert all(request.url.path != "/userdetails.php" for request in requests)
+
+
+@pytest.mark.asyncio
+async def test_hhclub_torrent_timeout_maps_to_retryable_site_unavailable() -> None:
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ReadTimeout("synthetic timeout")
+
+    adapter = HHClubAdapter(_COOKIE, transport=httpx2.MockTransport(handler))
+    with pytest.raises(SiteAdapterError) as failure:
+        await adapter.fetch_torrent("456")
+
+    assert failure.value.code == "SITE_UNAVAILABLE"
+    assert failure.value.retryable is True
+    assert "synthetic-secret" not in str(failure.value)
+
+
+def test_hhclub_origin_validation_rejects_old_or_unrelated_hosts() -> None:
+    with pytest.raises(ValueError):
+        HHClubAdapter(_COOKIE, base_url="http://hhanclub.net")
+    with pytest.raises(ValueError):
+        HHClubAdapter(_COOKIE, base_url="https://example.com")
+
+
 def _search_html(*, empty: bool = False) -> str:
     if empty:
         return '<html><a href="usercp.php">profile</a><table class="torrents"></table></html>'
@@ -227,4 +286,40 @@ def _details_html() -> str:
       <a href="https://www.imdb.com/title/tt1234567/">IMDb</a>
       <a href="download.php?id=123">download</a></body>
     </html>
+    """
+
+
+def _hhclub_search_html() -> str:
+    return """
+    <html><body>
+      <a href="usercp.php">profile</a>
+      <a href="userdetails.php?id=99">not a torrent detail</a>
+      <div class="torrent-table-sub-info">
+        <a href="?cat[]=401">Movie</a>
+        <div class="torrent-title">
+          <a class="torrent-info-text-name" href="details.php?id=456&amp;hit=1">
+            Synthetic.Movie.2026.2160p.WEB-DL.HEVC
+          </a>
+        </div>
+        <div class="torrent-info-text torrent-info-text-size">42.35 GB</div>
+        <div class="torrent-info-text torrent-info-text-added">3天</div>
+        <div class="torrent-info-text torrent-info-text-seeders">
+          <a href="details.php?id=456&amp;hit=1&amp;dllist=1#seeders">80</a>
+        </div>
+        <div class="torrent-info-text torrent-info-text-leechers">0</div>
+        <a href="download.php?id=456&amp;passkey=synthetic">下载</a>
+      </div>
+    </body></html>
+    """
+
+
+def _hhclub_details_html() -> str:
+    return """
+    <html><head><title>
+      HHCLUB :: 种子详情 "Synthetic.Movie.2026" - Powered by NexusPHP
+    </title></head><body>
+      <a href="usercp.php">profile</a>
+      <a href="userdetails.php?id=99">owner</a>
+      <a href="download.php?id=456&amp;passkey=synthetic">download</a>
+    </body></html>
     """

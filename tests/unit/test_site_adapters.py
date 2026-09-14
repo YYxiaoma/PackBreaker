@@ -73,7 +73,9 @@ async def test_mteam_adapter_satisfies_shared_contract_and_never_forwards_api_ke
         if request.url.host == "download.m-team.cc":
             assert request.headers.get("x-api-key") is None
             return httpx2.Response(200, content=_TORRENT_BYTES)
+        assert request.url.host == "api.m-team.cc"
         assert request.headers.get("x-api-key") == api_key
+        assert request.headers.get("origin") == "https://kp.m-team.cc"
         if request.url.path == "/api/member/profile":
             return httpx2.Response(200, json={"code": "0", "data": {"id": "1"}})
         if request.url.path == "/api/torrent/search":
@@ -111,6 +113,28 @@ async def test_mteam_adapter_satisfies_shared_contract_and_never_forwards_api_ke
     search = next(request for request in requests if request.url.path == "/api/torrent/search")
     assert search.url.query == b""
     assert (await adapter.capabilities()).min_request_interval_seconds == 90.0
+
+
+@pytest.mark.asyncio
+async def test_mteam_configured_site_origin_is_not_used_as_api_origin() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(200, json={"code": "0", "data": {"id": "1"}})
+
+    adapter = MTeamAdapter(
+        "synthetic",
+        base_url="https://kp.m-team.cc",
+        transport=httpx2.MockTransport(handler),
+    )
+
+    await adapter.test_connection()
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url.host == "api.m-team.cc"
+    assert request.headers["origin"] == "https://kp.m-team.cc"
 
 
 @pytest.mark.asyncio
@@ -165,6 +189,93 @@ async def test_mteam_rejects_download_url_outside_configured_site_family() -> No
     assert failure.value.code == "SITE_DOWNLOAD_URL_INVALID"
     assert requested_hosts == ["api.m-team.cc"]
     assert "attacker.invalid" not in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_mteam_follows_allowlisted_download_redirect_without_forwarding_api_key() -> None:
+    api_key = "mteam_synthetic_api_key"
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if request.url.path == "/api/torrent/genDlToken":
+            assert request.headers.get("x-api-key") == api_key
+            return httpx2.Response(
+                200,
+                json={
+                    "code": "0",
+                    "data": "https://api.m-team.cc/api/rss/dlv2?tid=123&sign=opaque",
+                },
+            )
+        assert request.headers.get("x-api-key") is None
+        if request.url.host == "api.m-team.cc":
+            return httpx2.Response(
+                302,
+                headers={
+                    "location": "https://fr1.halomt.com/?app_id=1&sign=opaque",
+                },
+            )
+        assert request.url.host == "fr1.halomt.com"
+        return httpx2.Response(200, content=_TORRENT_BYTES)
+
+    adapter = MTeamAdapter(api_key, transport=httpx2.MockTransport(handler))
+
+    payload = await adapter.fetch_torrent("123")
+
+    assert payload.content == _TORRENT_BYTES
+    assert [request.url.host for request in requests] == [
+        "api.m-team.cc",
+        "api.m-team.cc",
+        "fr1.halomt.com",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mteam_rejects_download_redirect_to_untrusted_host() -> None:
+    requested_hosts: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requested_hosts.append(request.url.host or "")
+        if request.url.path == "/api/torrent/genDlToken":
+            return httpx2.Response(
+                200,
+                json={"code": "0", "data": "https://api.m-team.cc/api/rss/dlv2?tid=123"},
+            )
+        return httpx2.Response(302, headers={"location": "https://attacker.invalid/file"})
+
+    adapter = MTeamAdapter("synthetic", transport=httpx2.MockTransport(handler))
+
+    with pytest.raises(SiteAdapterError) as failure:
+        await adapter.fetch_torrent("123")
+
+    assert failure.value.code == "SITE_DOWNLOAD_URL_INVALID"
+    assert requested_hosts == ["api.m-team.cc", "api.m-team.cc"]
+
+
+@pytest.mark.asyncio
+async def test_mteam_rejects_excessive_download_redirects() -> None:
+    redirect_requests = 0
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal redirect_requests
+        if request.url.path == "/api/torrent/genDlToken":
+            return httpx2.Response(
+                200,
+                json={"code": "0", "data": "https://api.m-team.cc/api/rss/dlv2?tid=123"},
+            )
+        redirect_requests += 1
+        return httpx2.Response(
+            302,
+            headers={"location": f"https://fr{redirect_requests}.halomt.com/?sign=opaque"},
+        )
+
+    adapter = MTeamAdapter("synthetic", transport=httpx2.MockTransport(handler))
+
+    with pytest.raises(SiteAdapterError) as failure:
+        await adapter.fetch_torrent("123")
+
+    assert failure.value.code == "SITE_TORRENT_FETCH_FAILED"
+    assert redirect_requests == 4
 
 
 @pytest.mark.asyncio

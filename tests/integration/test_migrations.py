@@ -37,11 +37,31 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
         "task_execution_plan",
         "notification_channel",
         "notification_outbox",
+        "history_scan",
+        "history_scan_file",
     }.issubset(set(inspector.get_table_names()))
     task_unique_names = {
         constraint["name"] for constraint in inspector.get_unique_constraints("unpack_task")
     }
     assert task_unique_names == {"uq_unpack_task_idempotency_key"}
+    task_indexes = {index["name"]: index for index in inspector.get_indexes("unpack_task")}
+    assert task_indexes["uq_unpack_task_logical_run"]["unique"] == 1
+    assert task_indexes["ix_unpack_task_parent_task_id"]["unique"] == 0
+    task_columns = {column["name"]: column for column in inspector.get_columns("unpack_task")}
+    assert task_columns["parent_task_id"]["nullable"] is True
+    assert task_columns["run_number"]["nullable"] is False
+    history_scan_indexes = {index["name"]: index for index in inspector.get_indexes("history_scan")}
+    assert history_scan_indexes["ix_history_scan_status_updated_at"]["unique"] == 0
+    history_file_indexes = {
+        index["name"]: index for index in inspector.get_indexes("history_scan_file")
+    }
+    assert history_file_indexes["ix_history_scan_file_scan_generation"]["unique"] == 0
+    assert {
+        constraint["name"] for constraint in inspector.get_unique_constraints("history_scan")
+    } == {"uq_history_scan_root_media_kind"}
+    assert {
+        constraint["name"] for constraint in inspector.get_unique_constraints("history_scan_file")
+    } == {"uq_history_scan_file_scan_path"}
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("operation_journal")
     } == {"uq_operation_journal_idempotency_key"}
@@ -92,6 +112,17 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert "credential_kind" in site_columns
     site_checks = {constraint["name"] for constraint in inspector.get_check_constraints("site")}
     assert {"ck_site_type", "ck_site_credential_kind"}.issubset(site_checks)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO site "
+                "(id, name, type, base_url, credential_kind, secret_id, capabilities, "
+                "connection_status, enabled, version, last_test_at, created_at, updated_at) "
+                "VALUES ('hhclub-site', 'hhclub', 'HHCLUB', 'https://hhanclub.net', "
+                "'COOKIE', NULL, "
+                "'{}', 'UNTESTED', 0, 1, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
     outbox_columns = {
         column["name"]: column for column in inspector.get_columns("notification_outbox")
     }
@@ -188,5 +219,13 @@ def test_notification_subject_migration_backfills_existing_task_outbox(tmp_path:
                 "FROM notification_outbox WHERE id = 'outbox-legacy'"
             )
         ).one()
+        task_row = connection.execute(
+            text("SELECT parent_task_id, run_number FROM unpack_task WHERE id = 'task-legacy'")
+        ).one()
+        event_count = connection.scalar(
+            text("SELECT COUNT(*) FROM task_event WHERE id = 'event-legacy'")
+        )
     assert row == ("TASK", "task-legacy", "task-legacy", "event-legacy")
+    assert task_row == (None, 1)
+    assert event_count == 1
     engine.dispose()

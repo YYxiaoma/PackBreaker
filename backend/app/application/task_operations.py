@@ -14,6 +14,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.downloader_operations import (
+    QBITTORRENT_ADD_OPERATION,
+    QBITTORRENT_OPERATION_SCHEMA_VERSION,
     QBITTORRENT_RECONCILABLE_OPERATIONS,
     QbittorrentJournalReconcileResult,
     QbittorrentWriteBindingPort,
@@ -514,7 +516,8 @@ class TaskOperationService:
                     result_status = reconciled_repair.status
                     operation_replayed = reconciled_repair.replayed
                 elif current.operation_type in QBITTORRENT_RECONCILABLE_OPERATIONS:
-                    if current.after_snapshot is None:
+                    missing_after_provable = _qbit_add_missing_after_reconcile_candidate(current)
+                    if current.after_snapshot is None and not missing_after_provable:
                         raise ApplicationError(
                             code="OPERATION_RECONCILE_UNPROVABLE",
                             status=409,
@@ -867,7 +870,42 @@ def _reconcile_supported(
     return (
         OperationStatus(journal.status) is OperationStatus.RECONCILE_REQUIRED
         and journal.operation_type in reconcilable_operation_types
-        and journal.after_snapshot is not None
+        and (
+            journal.after_snapshot is not None
+            or _qbit_add_missing_after_reconcile_candidate(journal)
+        )
+    )
+
+
+def _qbit_add_missing_after_reconcile_candidate(journal: OperationJournal) -> bool:
+    if journal.operation_type != QBITTORRENT_ADD_OPERATION or journal.after_snapshot is not None:
+        return False
+    target = journal.target if isinstance(journal.target, dict) else {}
+    intent = journal.intent if isinstance(journal.intent, dict) else {}
+    before = journal.before_snapshot if isinstance(journal.before_snapshot, dict) else {}
+    downloader_id = target.get("downloader_id")
+    remote_save_path = intent.get("remote_save_path")
+    expected_hashes = intent.get("expected_hashes")
+    ownership_tag = intent.get("ownership_tag")
+    downloader_version = intent.get("downloader_version")
+    checked_hashes = before.get("checked_hashes")
+    return (
+        intent.get("schema_version") == QBITTORRENT_OPERATION_SCHEMA_VERSION
+        and isinstance(downloader_id, str)
+        and bool(downloader_id)
+        and isinstance(downloader_version, int)
+        and not isinstance(downloader_version, bool)
+        and downloader_version >= 1
+        and isinstance(remote_save_path, str)
+        and bool(remote_save_path)
+        and target.get("remote_save_path") == remote_save_path
+        and isinstance(ownership_tag, str)
+        and bool(ownership_tag)
+        and isinstance(expected_hashes, list)
+        and len(expected_hashes) == 1
+        and all(isinstance(item, str) for item in expected_hashes)
+        and before.get("torrent_absent") is True
+        and checked_hashes == expected_hashes
     )
 
 

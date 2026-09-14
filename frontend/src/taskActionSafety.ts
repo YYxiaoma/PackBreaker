@@ -1,6 +1,6 @@
 import type { TaskStatus } from './api/tasks';
 
-export type TaskMutationKind = 'execute' | 'cancel' | 'reconcile' | 'purge';
+export type TaskMutationKind = 'execute' | 'cancel' | 'rerun' | 'release' | 'reconcile' | 'purge';
 
 const PRE_SIDE_EFFECT_CANCELLABLE_STATUSES = new Set<TaskStatus>([
   'PENDING',

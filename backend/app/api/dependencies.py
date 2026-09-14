@@ -7,6 +7,7 @@ from fastapi import Cookie, Header, Request
 from backend.app.application.auth import AuthIdentity, AuthService
 from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.downloaders import DownloaderService
+from backend.app.application.history_scans import HistoryScanService
 from backend.app.application.notifications import NotificationService
 from backend.app.application.sites import SiteService
 from backend.app.application.task_actions import TaskActionService
@@ -42,6 +43,10 @@ def downloader_service(request: Request) -> DownloaderService:
 
 def notification_service(request: Request) -> NotificationService:
     return cast(NotificationService, request.app.state.notification_service)
+
+
+def history_scan_service(request: Request) -> HistoryScanService:
+    return cast(HistoryScanService, request.app.state.history_scan_service)
 
 
 def site_service(request: Request) -> SiteService:

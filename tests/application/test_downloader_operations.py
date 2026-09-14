@@ -441,6 +441,44 @@ async def test_active_torrent_after_paused_add_is_stopped_before_applied(
 
 
 @pytest.mark.asyncio
+async def test_active_torrent_allows_bounded_stop_convergence_before_applied(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    service, factory, task_id = operation_service
+
+    class DelayedStopQbittorrent(_FakeQbittorrent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._pending_stop_hash: str | None = None
+            self._reads_after_stop = 0
+
+        async def stop_torrent(self, torrent_hash: str) -> None:
+            self.stop_calls += 1
+            self._pending_stop_hash = torrent_hash
+
+        async def get_torrents(
+            self, torrent_hashes: tuple[str, ...]
+        ) -> tuple[QbittorrentTorrentState, ...]:
+            if self._pending_stop_hash is not None:
+                self._reads_after_stop += 1
+                if self._reads_after_stop >= 2:
+                    state = self.states[self._pending_stop_hash]
+                    self.states[self._pending_stop_hash] = replace(state, state="stoppedDL")
+                    self._pending_stop_hash = None
+            return await super().get_torrents(torrent_hashes)
+
+    adapter = DelayedStopQbittorrent()
+    adapter.force_active_after_add = True
+
+    result = await service.execute(_request(task_id), _FakeBinding(adapter))
+
+    assert result.state == "stoppedDL"
+    assert adapter.stop_calls == 1
+    assert adapter._reads_after_stop == 2
+    assert _journals(factory)[0].status == OperationStatus.APPLIED.value
+
+
+@pytest.mark.asyncio
 async def test_non_full_verification_cannot_request_skip_checking(
     operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
 ) -> None:
@@ -807,6 +845,52 @@ async def test_remove_stops_active_owned_torrent_before_removing(
 
 
 @pytest.mark.asyncio
+async def test_remove_waits_for_async_stop_convergence_before_removing(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+
+    class _DelayedStopQbittorrent(_FakeQbittorrent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pending_stop_reads = 0
+
+        async def stop_torrent(self, torrent_hash: str) -> None:
+            self.stop_calls += 1
+            self.pending_stop_reads = 2
+
+        async def get_torrents(
+            self, torrent_hashes: tuple[str, ...]
+        ) -> tuple[QbittorrentTorrentState, ...]:
+            if self.pending_stop_reads > 0:
+                self.pending_stop_reads -= 1
+                if self.pending_stop_reads == 0:
+                    for torrent_hash in torrent_hashes:
+                        state = self.states.get(torrent_hash)
+                        if state is not None:
+                            self.states[torrent_hash] = replace(state, state="stoppedUP")
+            return await super().get_torrents(torrent_hashes)
+
+    adapter = _DelayedStopQbittorrent()
+    binding = _FakeBinding(adapter)
+    add_result = await add_service.execute(_request(task_id, skip_checking=True), binding)
+    adapter.states[add_result.torrent_hash] = replace(
+        adapter.states[add_result.torrent_hash],
+        state="stalledUP",
+    )
+
+    result = await QbittorrentRemoveOperationService(factory).execute(
+        _remove_request(task_id, add_result),
+        binding,
+    )
+
+    assert result.removed is True
+    assert adapter.stop_calls == 1
+    assert adapter.remove_calls == 1
+    assert add_result.torrent_hash not in adapter.states
+
+
+@pytest.mark.asyncio
 async def test_remove_response_loss_recovers_from_absence(
     operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
 ) -> None:
@@ -895,6 +979,81 @@ async def test_qb_journal_reconcile_reproves_add_without_external_write(
     assert adapter.recheck_calls == 0
     assert adapter.start_calls == 0
     assert adapter.remove_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_qb_add_reconcile_can_prove_missing_after_snapshot_from_intent_and_current_state(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    adapter.raise_after_apply_once = True
+    binding = _FakeBinding(adapter)
+    request = _request(task_id, skip_checking=True)
+
+    with pytest.raises(ApplicationError) as lost:
+        await add_service.execute(request, binding)
+    assert lost.value.code == "DOWNLOADER_UNAVAILABLE"
+
+    journal = _journals(factory)[0]
+    assert journal.status == OperationStatus.INTENT_RECORDED.value
+    assert journal.after_snapshot is None
+    with factory() as session:
+        OperationJournalRepository(session).transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+        session.commit()
+
+    recovered = await QbittorrentJournalReconcileService(factory).reconcile(journal.id, binding)
+
+    assert recovered.status is OperationStatus.APPLIED
+    assert adapter.add_calls == 1
+    assert adapter.stop_calls == 0
+    assert adapter.recheck_calls == 0
+    assert adapter.start_calls == 0
+    assert adapter.remove_calls == 0
+    stored = _journals(factory)[0]
+    assert stored.after_snapshot is not None
+    assert stored.after_snapshot["torrent_hash"] in stored.intent["expected_hashes"]
+    assert stored.after_snapshot["save_path"] == stored.intent["remote_save_path"]
+    assert stored.intent["ownership_tag"] in stored.after_snapshot["tags"]
+
+
+@pytest.mark.asyncio
+async def test_qb_add_reconcile_missing_after_snapshot_requires_absence_proof(
+    operation_service: tuple[QbittorrentAddOperationService, sessionmaker[Session], str],
+) -> None:
+    add_service, factory, task_id = operation_service
+    adapter = _FakeQbittorrent()
+    adapter.raise_after_apply_once = True
+    binding = _FakeBinding(adapter)
+
+    with pytest.raises(ApplicationError):
+        await add_service.execute(_request(task_id), binding)
+    journal = _journals(factory)[0]
+    with factory() as session:
+        record = session.get(OperationJournal, journal.id)
+        assert record is not None
+        record.before_snapshot = {
+            "torrent_absent": False,
+            "checked_hashes": list(record.intent["expected_hashes"]),
+        }
+        OperationJournalRepository(session).transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+        session.commit()
+
+    with pytest.raises(ApplicationError) as blocked:
+        await QbittorrentJournalReconcileService(factory).reconcile(journal.id, binding)
+
+    assert blocked.value.code == "OPERATION_RECONCILE_UNPROVABLE"
+    assert _journals(factory)[0].status == OperationStatus.RECONCILE_REQUIRED.value
+    assert adapter.add_calls == 1
+    assert adapter.stop_calls == 0
 
 
 @pytest.mark.asyncio

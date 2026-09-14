@@ -8,6 +8,8 @@ import {
   cancelTask,
   createTask,
   listTasks,
+  releaseTask,
+  rerunTask,
   type TaskCreateInput,
   type TaskRecord,
   type TaskStatus,
@@ -31,6 +33,14 @@ const preCancelling = ref(false);
 const preCancelTaskId = ref('');
 const preCancelIdempotencyKey = ref('');
 const preCancelResultUnknown = ref(false);
+const rerunning = ref(false);
+const rerunTaskId = ref('');
+const rerunIdempotencyKey = ref('');
+const rerunResultUnknown = ref(false);
+const releasing = ref(false);
+const releaseTaskId = ref('');
+const releaseIdempotencyKey = ref('');
+const releaseResultUnknown = ref(false);
 const query = ref('');
 const status = ref<TaskStatus | ''>('');
 const creating = ref(false);
@@ -69,6 +79,34 @@ const canPreCancelActive = computed(
 const activeCancellationIsCooperative = computed(
   () => active.value !== null && cancellationIsCooperativeAnalysis(active.value.status),
 );
+const canRerunActive = computed(() => {
+  const task = active.value;
+  if (!task) return false;
+  if (rerunResultUnknown.value && rerunTaskId.value === task.id && rerunIdempotencyKey.value) {
+    return true;
+  }
+  if (!['CANCELLED', 'FAILED', 'DONE'].includes(task.status)) return false;
+  return !tasks.value.some(
+    (item) =>
+      item.type === task.type &&
+      item.source_downloader_id === task.source_downloader_id &&
+      item.source_hash === task.source_hash &&
+      item.normalized_unit_key === task.normalized_unit_key &&
+      item.run_number > task.run_number,
+  );
+});
+const canReleaseActive = computed(() => {
+  const task = active.value;
+  if (!task) return false;
+  if (
+    releaseResultUnknown.value &&
+    releaseTaskId.value === task.id &&
+    releaseIdempotencyKey.value
+  ) {
+    return true;
+  }
+  return task.status === 'DONE';
+});
 
 onMounted(() => void refresh());
 
@@ -119,6 +157,8 @@ async function submitCreate(): Promise<void> {
 
 function open(task: TaskRecord): void {
   if (active.value?.id !== task.id) clearPreCancelState();
+  if (active.value?.id !== task.id) clearRerunState();
+  if (active.value?.id !== task.id) clearReleaseState();
   active.value = task;
   detailVisible.value = true;
 }
@@ -184,6 +224,112 @@ function clearPreCancelState(): void {
   preCancelTaskId.value = '';
   preCancelIdempotencyKey.value = '';
   preCancelResultUnknown.value = false;
+}
+
+function clearRerunState(): void {
+  rerunTaskId.value = '';
+  rerunIdempotencyKey.value = '';
+  rerunResultUnknown.value = false;
+}
+
+function clearReleaseState(): void {
+  releaseTaskId.value = '';
+  releaseIdempotencyKey.value = '';
+  releaseResultUnknown.value = false;
+}
+
+async function rerunActiveTask(): Promise<void> {
+  const task = active.value;
+  if (!task || !canRerunActive.value || rerunning.value) return;
+  const replaying =
+    rerunResultUnknown.value &&
+    rerunTaskId.value === task.id &&
+    rerunIdempotencyKey.value.length > 0;
+  rerunning.value = true;
+  try {
+    if (!replaying) {
+      try {
+        await ElMessageBox.confirm(
+          `Run #${task.run_number} 会保持 ${task.status} 终态；系统只复制来源身份并创建全新的 Run #${task.run_number + 1}。旧 review、gate、plan、checkpoint 和 operation journal 都不会继承。`,
+          '确认重新运行',
+          {
+            confirmButtonText: `创建 Run #${task.run_number + 1}`,
+            cancelButtonText: '返回',
+            type: 'warning',
+          },
+        );
+      } catch {
+        return;
+      }
+      rerunTaskId.value = task.id;
+      rerunIdempotencyKey.value = createTaskActionIdempotencyKey('rerun', task.id);
+    }
+    const result = await rerunTask(task.id, rerunIdempotencyKey.value);
+    const childId = result.task_id;
+    clearRerunState();
+    await refresh();
+    const child = tasks.value.find((item) => item.id === childId);
+    if (child) open(child);
+    ElMessage.success(
+      `新的任务 run 已创建：${child?.run_number ? `Run #${child.run_number}` : childId}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+    );
+  } catch (error) {
+    if (isUnknownMutationResult(error) && rerunIdempotencyKey.value) {
+      rerunResultUnknown.value = true;
+      ElMessage.warning('rerun 响应结果未知；只能使用同一 Idempotency-Key 重试确认结果');
+    } else {
+      clearRerunState();
+    }
+    showError(error);
+  } finally {
+    rerunning.value = false;
+  }
+}
+
+async function releaseActiveTask(): Promise<void> {
+  const task = active.value;
+  if (!task || !canReleaseActive.value || releasing.value) return;
+  const replaying =
+    releaseResultUnknown.value &&
+    releaseTaskId.value === task.id &&
+    releaseIdempotencyKey.value.length > 0;
+  releasing.value = true;
+  try {
+    if (!replaying) {
+      try {
+        await ElMessageBox.confirm(
+          '只允许 DONE 任务执行。服务端会先验证下载器 ownership，再以 keep-files 语义移除辅种任务，然后只回滚 PackBreaker journal-owned hardlink/目录。源媒体不会删除，任务仍保持 DONE。',
+          '确认释放辅种资源',
+          {
+            confirmButtonText: '释放资源',
+            cancelButtonText: '返回',
+            type: 'warning',
+          },
+        );
+      } catch {
+        return;
+      }
+      releaseTaskId.value = task.id;
+      releaseIdempotencyKey.value = createTaskActionIdempotencyKey('release', task.id);
+    }
+    const result = await releaseTask(task.id, releaseIdempotencyKey.value);
+    clearReleaseState();
+    operationRefreshKey.value += 1;
+    await refresh();
+    ElMessage.success(
+      `辅种资源释放已确认：任务仍为 ${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+    );
+  } catch (error) {
+    if (isUnknownMutationResult(error) && releaseIdempotencyKey.value) {
+      releaseResultUnknown.value = true;
+      ElMessage.warning('release 响应结果未知；只能使用同一 Idempotency-Key 重试确认结果');
+    } else {
+      clearReleaseState();
+    }
+    showError(error);
+  } finally {
+    releasing.value = false;
+  }
 }
 
 function isUnknownMutationResult(error: unknown): boolean {
@@ -265,6 +411,7 @@ const statusOptions: TaskStatus[] = [
         <template #default="{ row }">
           <div class="real-task-identity">
             <button @click="open(row)">{{ row.type }}</button>
+            <small>Run #{{ row.run_number }}</small>
             <code>{{ row.id }}</code>
           </div>
         </template>
@@ -328,12 +475,16 @@ const statusOptions: TaskStatus[] = [
     <el-drawer
       v-model="detailVisible"
       size="min(980px, 96vw)"
-      :title="active ? `真实任务 ${active.id}` : '真实任务'"
+      :title="active ? `真实任务 Run #${active.run_number} · ${active.id}` : '真实任务'"
     >
       <template v-if="active">
         <el-descriptions :column="2" border class="real-task-summary">
           <el-descriptions-item label="状态">{{ active.status }}</el-descriptions-item>
           <el-descriptions-item label="版本">v{{ active.version }}</el-descriptions-item>
+          <el-descriptions-item label="Run">#{{ active.run_number }}</el-descriptions-item>
+          <el-descriptions-item label="父任务">{{
+            active.parent_task_id ?? '初始 Run'
+          }}</el-descriptions-item>
           <el-descriptions-item label="来源下载器">{{
             active.source_downloader_id
           }}</el-descriptions-item>
@@ -342,6 +493,46 @@ const statusOptions: TaskStatus[] = [
             active.normalized_unit_key
           }}</el-descriptions-item>
         </el-descriptions>
+        <el-alert
+          v-if="canReleaseActive"
+          :title="releaseResultUnknown ? 'release 结果未知' : '可释放 DONE 任务的辅种资源'"
+          :description="
+            releaseResultUnknown
+              ? '服务端可能已经移除下载器任务或回滚资源；这里只能复用第一次请求的同一 Idempotency-Key 确认结果。'
+              : '任务保持 DONE；只会移除经 ownership 证明的下载器任务，并回滚 PackBreaker journal-owned hardlink/目录，源媒体不会删除。'
+          "
+          type="warning"
+          :closable="false"
+          show-icon
+          class="release-alert"
+        >
+          <template #default>
+            <el-button size="small" type="warning" :loading="releasing" @click="releaseActiveTask">
+              {{ releaseResultUnknown ? '重试确认 release 结果' : '释放辅种资源' }}
+            </el-button>
+          </template>
+        </el-alert>
+        <el-alert
+          v-if="canRerunActive"
+          :title="rerunResultUnknown ? 'rerun 结果未知' : '可创建新的任务 Run'"
+          :description="
+            rerunResultUnknown
+              ? '服务端可能已经创建了新 Run；这里只能复用第一次请求的同一 Idempotency-Key 确认结果。'
+              : `当前 Run #${active.run_number} 保持终态；新 Run 会从 PENDING 重新分析，不继承任何旧执行授权。`
+          "
+          type="info"
+          :closable="false"
+          show-icon
+          class="rerun-alert"
+        >
+          <template #default>
+            <el-button size="small" type="primary" :loading="rerunning" @click="rerunActiveTask">
+              {{
+                rerunResultUnknown ? '重试确认 rerun 结果' : `创建 Run #${active.run_number + 1}`
+              }}
+            </el-button>
+          </template>
+        </el-alert>
         <el-alert
           v-if="canPreCancelActive"
           :title="
@@ -434,6 +625,13 @@ const statusOptions: TaskStatus[] = [
   margin-bottom: 18px;
 }
 .pre-cancel-alert {
+  margin-bottom: 18px;
+}
+.release-alert,
+.rerun-alert {
+  margin-bottom: 18px;
+}
+.rerun-alert {
   margin-bottom: 18px;
 }
 @media (max-width: 800px) {

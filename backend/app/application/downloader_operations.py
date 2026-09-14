@@ -43,6 +43,8 @@ QBITTORRENT_RECONCILABLE_OPERATIONS = frozenset(
         QBITTORRENT_START_OPERATION,
     }
 )
+_QBITTORRENT_STOP_CONFIRM_ATTEMPTS = 10
+_QBITTORRENT_STOP_CONFIRM_INTERVAL_SECONDS = 0.2
 _OPERATION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
@@ -380,22 +382,30 @@ class QbittorrentAddOperationService:
 
         try:
             await adapter.stop_torrent(state.torrent_hash)
-            refreshed = await self._get_states(adapter, (state.torrent_hash,))
         except DownloaderAdapterError as exc:
             self._mark_reconcile(journal.id)
             raise _adapter_application_error(exc, "qBittorrent 未保持停止状态") from exc
-        stopped = tuple(
-            item
-            for item in refreshed
-            if item.torrent_hash == state.torrent_hash
-            and prepared.ownership_tag in item.tags
-            and item.save_path == prepared.remote_save_path
-            and item.stopped
-        )
-        if len(stopped) != 1:
-            self._mark_reconcile(journal.id)
-            raise _state_mismatch("qBittorrent 未按暂停添加约束保持停止状态")
-        return stopped[0]
+        for attempt in range(_QBITTORRENT_STOP_CONFIRM_ATTEMPTS):
+            refreshed = await self._get_states(adapter, (state.torrent_hash,))
+            owned = tuple(
+                item
+                for item in refreshed
+                if item.torrent_hash == state.torrent_hash
+                and prepared.ownership_tag in item.tags
+                and item.save_path == prepared.remote_save_path
+            )
+            if len(refreshed) != 1 or len(owned) != 1:
+                self._mark_reconcile(journal.id)
+                raise _state_mismatch(
+                    "qBittorrent stop 后 torrent 身份、ownership tag 或保存路径发生变化"
+                )
+            if owned[0].stopped:
+                return owned[0]
+            if attempt + 1 < _QBITTORRENT_STOP_CONFIRM_ATTEMPTS:
+                await asyncio.sleep(_QBITTORRENT_STOP_CONFIRM_INTERVAL_SECONDS)
+
+        self._mark_reconcile(journal.id)
+        raise _state_mismatch("qBittorrent 未在有界等待内进入停止状态")
 
     async def _get_states(
         self,
@@ -1027,16 +1037,25 @@ class QbittorrentRemoveOperationService:
                 await adapter.stop_torrent(prepared.torrent_hash)
             except DownloaderAdapterError as exc:
                 raise _adapter_application_error(exc, "qBittorrent stop 结果未知") from exc
-            observed = await self._get_state(adapter, prepared, reconcile_journal_id=journal.id)
-            if observed is None:
-                applied = self._transition(
-                    journal.id,
-                    OperationStatus.INTENT_RECORDED,
-                    OperationStatus.APPLIED,
-                    after_snapshot=_removed_snapshot(prepared),
+            for attempt in range(_QBITTORRENT_STOP_CONFIRM_ATTEMPTS):
+                observed = await self._get_state(
+                    adapter,
+                    prepared,
+                    reconcile_journal_id=journal.id,
                 )
-                return _remove_result(applied, prepared, replayed=replayed, recovered=True)
-            if not observed.stopped:
+                if observed is None:
+                    applied = self._transition(
+                        journal.id,
+                        OperationStatus.INTENT_RECORDED,
+                        OperationStatus.APPLIED,
+                        after_snapshot=_removed_snapshot(prepared),
+                    )
+                    return _remove_result(applied, prepared, replayed=replayed, recovered=True)
+                if observed.stopped:
+                    break
+                if attempt + 1 < _QBITTORRENT_STOP_CONFIRM_ATTEMPTS:
+                    await asyncio.sleep(_QBITTORRENT_STOP_CONFIRM_INTERVAL_SECONDS)
+            else:
                 raise ApplicationError(
                     code="DOWNLOADER_STOP_NOT_CONFIRMED",
                     status=409,
@@ -1241,8 +1260,12 @@ class QbittorrentJournalReconcileService:
                 raise _qbit_reconcile_blocked()
 
             if journal.status is OperationStatus.RECONCILE_REQUIRED:
-                assert journal.after_snapshot is not None
-                journal = self._transition_to_applied(journal, journal.after_snapshot)
+                after_snapshot = journal.after_snapshot
+                if after_snapshot is None:
+                    if journal.operation_type != QBITTORRENT_ADD_OPERATION:
+                        raise _qbit_reconcile_unprovable()
+                    after_snapshot = _state_snapshot(state, prepared.ownership_tag)
+                journal = self._transition_to_applied(journal, after_snapshot)
             return QbittorrentJournalReconcileResult(
                 journal_id=journal.id,
                 operation_type=journal.operation_type,
@@ -1356,17 +1379,13 @@ def _prepare_journal_reconcile(journal: _JournalView) -> _PreparedJournalReconci
         QBITTORRENT_RECHECK_OPERATION: QBITTORRENT_RECHECK_SCHEMA_VERSION,
         QBITTORRENT_START_OPERATION: QBITTORRENT_START_SCHEMA_VERSION,
     }.get(journal.operation_type)
-    if expected_schema is None or journal.after_snapshot is None:
+    if expected_schema is None:
         raise _qbit_reconcile_unprovable()
 
     downloader_id = journal.target.get("downloader_id")
     downloader_version = journal.intent.get("downloader_version")
-    torrent_hash = journal.after_snapshot.get("torrent_hash")
     remote_save_path = journal.intent.get("remote_save_path")
     ownership_tag = journal.intent.get("ownership_tag")
-    snapshot_save_path = journal.after_snapshot.get("save_path")
-    snapshot_ownership_tag = journal.after_snapshot.get("ownership_tag")
-    snapshot_tags = journal.after_snapshot.get("tags")
     if (
         journal.intent.get("schema_version") != expected_schema
         or not isinstance(downloader_id, str)
@@ -1374,14 +1393,43 @@ def _prepare_journal_reconcile(journal: _JournalView) -> _PreparedJournalReconci
         or not isinstance(downloader_version, int)
         or isinstance(downloader_version, bool)
         or downloader_version < 1
-        or not isinstance(torrent_hash, str)
         or not isinstance(remote_save_path, str)
         or not isinstance(ownership_tag, str)
-        or snapshot_save_path != remote_save_path
-        or snapshot_ownership_tag != ownership_tag
-        or not isinstance(snapshot_tags, list)
-        or ownership_tag not in snapshot_tags
+        or not ownership_tag
     ):
+        raise _qbit_reconcile_unprovable()
+
+    if journal.after_snapshot is not None:
+        torrent_hash = journal.after_snapshot.get("torrent_hash")
+        snapshot_save_path = journal.after_snapshot.get("save_path")
+        snapshot_ownership_tag = journal.after_snapshot.get("ownership_tag")
+        snapshot_tags = journal.after_snapshot.get("tags")
+        if (
+            not isinstance(torrent_hash, str)
+            or snapshot_save_path != remote_save_path
+            or snapshot_ownership_tag != ownership_tag
+            or not isinstance(snapshot_tags, list)
+            or ownership_tag not in snapshot_tags
+        ):
+            raise _qbit_reconcile_unprovable()
+    elif journal.operation_type == QBITTORRENT_ADD_OPERATION:
+        expected_hashes = journal.intent.get("expected_hashes")
+        checked_hashes = (
+            journal.before_snapshot.get("checked_hashes") if journal.before_snapshot else None
+        )
+        torrent_absent = (
+            journal.before_snapshot.get("torrent_absent") if journal.before_snapshot else None
+        )
+        if (
+            torrent_absent is not True
+            or not isinstance(expected_hashes, list)
+            or len(expected_hashes) != 1
+            or not all(isinstance(item, str) for item in expected_hashes)
+            or checked_hashes != expected_hashes
+        ):
+            raise _qbit_reconcile_unprovable()
+        torrent_hash = expected_hashes[0]
+    else:
         raise _qbit_reconcile_unprovable()
 
     normalized_hash = torrent_hash.strip().lower()

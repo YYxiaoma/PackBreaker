@@ -159,7 +159,8 @@ def parse_media_name(
     if episode_span is not None:
         working = _blank_span(working, episode_span)
 
-    year_match = _YEAR_RE.search(working)
+    year_matches = tuple(_YEAR_RE.finditer(working))
+    year_match = year_matches[-1] if year_matches else None
     year = int(year_match.group(1)) if year_match is not None else None
     if year_match is not None:
         working = _blank_span(working, year_match.span())

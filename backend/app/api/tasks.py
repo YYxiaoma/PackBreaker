@@ -23,6 +23,8 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.task_actions import (
     CancelTaskAction,
     ExecuteTaskAction,
+    ReleaseTaskAction,
+    RerunTaskAction,
     TaskActionActor,
     TaskMutationActionResult,
 )
@@ -79,6 +81,8 @@ class TaskResponse(BaseModel):
     source_downloader_id: str
     source_hash: str
     normalized_unit_key: str
+    parent_task_id: str | None
+    run_number: int
     status: TaskStatus
     error_code: str | None
     version: int
@@ -270,7 +274,7 @@ TaskActionRequest = Annotated[
 
 
 class TaskMutationActionResponse(BaseModel):
-    action: Literal["execute", "cancel"]
+    action: Literal["execute", "cancel", "rerun", "release"]
     task_id: str
     status: TaskStatus
     task_version: int
@@ -533,6 +537,36 @@ async def get_task(
     _principal: Annotated[AccessPrincipal, Depends(TASKS_READ_ACCESS)],
 ) -> TaskResponse:
     return _task_response(task_analysis_service(request).get_task(task_id))
+
+
+@router.post("/tasks/{task_id}/rerun", response_model=TaskMutationActionResponse)
+async def rerun_task(
+    task_id: str,
+    request: Request,
+    principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> TaskMutationActionResponse:
+    result = await task_action_service(request).rerun(
+        RerunTaskAction(task_id=task_id),
+        actor=TaskActionActor(principal.kind, principal.subject_id),
+        idempotency_key=idempotency_key,
+    )
+    return _task_mutation_action_response(result)
+
+
+@router.post("/tasks/{task_id}/release", response_model=TaskMutationActionResponse)
+async def release_task_resources(
+    task_id: str,
+    request: Request,
+    principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> TaskMutationActionResponse:
+    result = await task_action_service(request).release(
+        ReleaseTaskAction(task_id=task_id),
+        actor=TaskActionActor(principal.kind, principal.subject_id),
+        idempotency_key=idempotency_key,
+    )
+    return _task_mutation_action_response(result)
 
 
 @router.get("/tasks/{task_id}/events", response_model=TaskEventListResponse)
@@ -905,6 +939,8 @@ def _task_response(item: TaskView) -> TaskResponse:
         source_downloader_id=item.source_downloader_id,
         source_hash=item.source_hash,
         normalized_unit_key=item.normalized_unit_key,
+        parent_task_id=item.parent_task_id,
+        run_number=item.run_number,
         status=TaskStatus(item.status),
         error_code=item.error_code,
         version=item.version,

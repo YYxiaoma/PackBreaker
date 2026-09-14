@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Any, Literal, Protocol
+from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -14,6 +15,7 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.task_cancellation import (
     TaskCancellationRequest,
     TaskCancellationResult,
+    TaskResourceReleaseResult,
 )
 from backend.app.application.task_linking import TaskLinkingResult
 from backend.app.domain.errors import DomainViolation, ErrorCode
@@ -76,8 +78,18 @@ class CancelTaskAction:
 
 
 @dataclass(frozen=True, slots=True)
+class RerunTaskAction:
+    task_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseTaskAction:
+    task_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class TaskMutationActionResult:
-    action: Literal["execute", "cancel"]
+    action: Literal["execute", "cancel", "rerun", "release"]
     task_id: str
     status: TaskStatus
     task_version: int
@@ -95,6 +107,10 @@ class CancellationPort(Protocol):
     async def execute(self, request: TaskCancellationRequest) -> TaskCancellationResult: ...
 
 
+class ResourceReleasePort(Protocol):
+    async def release_completed(self, task_id: str) -> TaskResourceReleaseResult: ...
+
+
 class TaskActionService:
     """公开副作用动作的外层鉴权后幂等/审计边界；真实副作用仍由既有 coordinator 承担。"""
 
@@ -103,10 +119,12 @@ class TaskActionService:
         session_factory: sessionmaker[Session],
         linking: LinkingPort,
         cancellation: CancellationPort,
+        resource_release: ResourceReleasePort | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._linking = linking
         self._cancellation = cancellation
+        self._resource_release = resource_release
 
     async def execute(
         self,
@@ -227,6 +245,121 @@ class TaskActionService:
                     )
                 if fault_hook is not None:
                     fault_hook("after_cancellation_applied")
+                self._finalize_success(receipt.id, result)
+                return result
+            except ApplicationError as exc:
+                self._finalize_failure(receipt.id, exc)
+                raise
+            except DomainViolation as exc:
+                error = _domain_application_error(exc)
+                self._finalize_failure(receipt.id, error)
+                raise error from exc
+
+    async def rerun(
+        self,
+        request: RerunTaskAction,
+        *,
+        actor: TaskActionActor,
+        idempotency_key: str | None,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> TaskMutationActionResult:
+        key_digest = _idempotency_key_digest(idempotency_key)
+        request_digest = _request_digest({"action": "rerun", "task_id": request.task_id})
+        lock = _action_lock(actor, key_digest)
+        async with lock:
+            self._require_task(request.task_id)
+            receipt, replayed = self._record_pending(
+                task_id=request.task_id,
+                actor=actor,
+                key_digest=key_digest,
+                action="rerun",
+                request_digest=request_digest,
+            )
+            completed = _completed_receipt(receipt, idempotency_replayed=True)
+            if completed is not None:
+                return completed
+            try:
+                with self._session_factory() as session:
+                    try:
+                        task, created = TaskRepository(session).rerun(
+                            parent_task_id=request.task_id,
+                            actor_kind=actor.kind,
+                            actor_id=actor.subject_id,
+                            idempotency_key_digest=key_digest,
+                            trace_id=str(uuid4()),
+                        )
+                    except DomainViolation as exc:
+                        if exc.code is ErrorCode.INVALID_STATE_TRANSITION:
+                            raise _rerun_state_invalid() from exc
+                        if exc.code is ErrorCode.TASK_VERSION_CONFLICT:
+                            raise _rerun_source_not_latest() from exc
+                        raise
+                    session.commit()
+                result = TaskMutationActionResult(
+                    action="rerun",
+                    task_id=task.id,
+                    status=TaskStatus.PENDING,
+                    task_version=task.version,
+                    execution_plan_id=None,
+                    operation_replayed=not created,
+                    receipt_id=receipt.id,
+                    idempotency_replayed=replayed,
+                )
+                if fault_hook is not None:
+                    fault_hook("after_rerun_created")
+                self._finalize_success(receipt.id, result)
+                return result
+            except ApplicationError as exc:
+                self._finalize_failure(receipt.id, exc)
+                raise
+            except DomainViolation as exc:
+                error = _domain_application_error(exc)
+                self._finalize_failure(receipt.id, error)
+                raise error from exc
+
+    async def release(
+        self,
+        request: ReleaseTaskAction,
+        *,
+        actor: TaskActionActor,
+        idempotency_key: str | None,
+    ) -> TaskMutationActionResult:
+        key_digest = _idempotency_key_digest(idempotency_key)
+        request_digest = _request_digest({"action": "release", "task_id": request.task_id})
+        lock = _action_lock(actor, key_digest)
+        async with lock:
+            self._require_task(request.task_id)
+            receipt, replayed = self._record_pending(
+                task_id=request.task_id,
+                actor=actor,
+                key_digest=key_digest,
+                action="release",
+                request_digest=request_digest,
+            )
+            completed = _completed_receipt(receipt, idempotency_replayed=True)
+            if completed is not None:
+                return completed
+            if self._resource_release is None:
+                error = ApplicationError(
+                    code="RESOURCE_RELEASE_UNAVAILABLE",
+                    status=503,
+                    title="资源释放服务不可用",
+                    detail="当前运行时没有注册 DONE 任务资源释放服务",
+                )
+                self._finalize_failure(receipt.id, error)
+                raise error
+            try:
+                released = await self._resource_release.release_completed(request.task_id)
+                result = TaskMutationActionResult(
+                    action="release",
+                    task_id=released.task_id,
+                    status=released.status,
+                    task_version=released.task_version,
+                    execution_plan_id=released.execution_plan_id,
+                    operation_replayed=released.replayed,
+                    receipt_id=receipt.id,
+                    idempotency_replayed=replayed,
+                )
                 self._finalize_success(receipt.id, result)
                 return result
             except ApplicationError as exc:
@@ -581,7 +714,7 @@ class TaskActionService:
         task_id: str,
         actor: TaskActionActor,
         key_digest: str,
-        action: Literal["execute", "cancel"],
+        action: Literal["execute", "cancel", "rerun", "release"],
         request_digest: str,
     ) -> tuple[_ReceiptView, bool]:
         with self._session_factory() as session:
@@ -607,11 +740,15 @@ class TaskActionService:
                     ) from exc
                 raise
             if created:
+                event_type = {
+                    "execute": "TASK_EXECUTE_REQUESTED",
+                    "cancel": "TASK_CANCEL_REQUESTED",
+                    "rerun": "TASK_RERUN_REQUESTED",
+                    "release": "TASK_RELEASE_REQUESTED",
+                }[action]
                 TaskRepository(session).append_event(
                     task_id=task_id,
-                    event_type=(
-                        "TASK_EXECUTE_REQUESTED" if action == "execute" else "TASK_CANCEL_REQUESTED"
-                    ),
+                    event_type=event_type,
                     reason=f"{actor.kind} 已提交 {action} 动作请求，幂等 receipt 已持久化",
                 )
             session.commit()
@@ -693,7 +830,7 @@ def _result_payload(result: TaskMutationActionResult) -> dict[str, Any]:
 
 def _result_from_payload(receipt_id: str, payload: dict[str, Any]) -> TaskMutationActionResult:
     action = payload.get("action")
-    if action not in {"execute", "cancel"}:
+    if action not in {"execute", "cancel", "rerun", "release"}:
         raise RuntimeError("task action receipt response action 无效")
     task_id = payload.get("task_id")
     task_version = payload.get("task_version")
@@ -751,7 +888,7 @@ def _idempotency_key_digest(value: str | None) -> str:
             code="IDEMPOTENCY_KEY_REQUIRED",
             status=428,
             title="缺少幂等键",
-            detail="execute/cancel 请求必须携带 Idempotency-Key",
+            detail="execute/cancel/rerun/release 请求必须携带 Idempotency-Key",
         )
     if not value or len(value) > 200 or value.strip() != value:
         raise _invalid_idempotency_key()
@@ -822,6 +959,24 @@ def _cancellation_state_invalid(detail: str) -> ApplicationError:
         status=409,
         title="当前任务状态不允许该取消方式",
         detail=detail,
+    )
+
+
+def _rerun_state_invalid() -> ApplicationError:
+    return ApplicationError(
+        code="TASK_RERUN_STATE_INVALID",
+        status=409,
+        title="当前任务状态不允许 rerun",
+        detail="只有最新的 CANCELLED、FAILED 或 DONE run 可以显式创建下一次执行",
+    )
+
+
+def _rerun_source_not_latest() -> ApplicationError:
+    return ApplicationError(
+        code="TASK_RERUN_SOURCE_NOT_LATEST",
+        status=409,
+        title="rerun 来源已经过期",
+        detail="该逻辑任务已经存在更新的 run；请从最新 run 再次发起 rerun",
     )
 
 

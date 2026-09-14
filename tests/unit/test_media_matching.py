@@ -21,6 +21,16 @@ def test_release_name_extracts_known_tokens_without_truncating_title() -> None:
     assert result.release_group == "example"
 
 
+def test_numeric_title_uses_trailing_release_year() -> None:
+    space_odyssey = parse_media_name("2001.A.Space.Odyssey.1968.BluRay.1080p.x265.10bit.MNHD-FRDS")
+    nineteen_seventeen = parse_media_name("1917.2019.BluRay.1080p.x265.10bit.MNHD-FRDS")
+
+    assert space_odyssey.year == 1968
+    assert space_odyssey.title_tokens[:4] == ("2001", "a", "space", "odyssey")
+    assert nineteen_seventeen.year == 2019
+    assert nineteen_seventeen.title_tokens[0] == "1917"
+
+
 def test_episode_forms_are_modeled_separately() -> None:
     single = parse_media_name("Show.S01E02.1080p")
     ranged = parse_media_name("Show.S01E01-E03.1080p")

@@ -51,6 +51,60 @@ async def test_qbittorrent_probe_logs_in_and_reads_versions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_qbittorrent_523_probe_accepts_204_session_cookie_login() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        paths.append(request.url.path)
+        if request.url.path.endswith("/auth/login"):
+            return httpx2.Response(
+                204,
+                headers={"Set-Cookie": "QBT_SID_synthetic=fake; path=/; HttpOnly"},
+            )
+        if request.url.path.endswith("/app/version"):
+            assert "QBT_SID_synthetic=fake" in request.headers.get("Cookie", "")
+            return httpx2.Response(200, text="v5.2.3")
+        if request.url.path.endswith("/app/webapiVersion"):
+            assert "QBT_SID_synthetic=fake" in request.headers.get("Cookie", "")
+            return httpx2.Response(200, text="2.15.1")
+        return httpx2.Response(404)
+
+    adapter = QbittorrentAdapter(
+        "http://qb.invalid:8080",
+        DownloaderCredential(username="admin", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    result = await adapter.test_connection()
+
+    assert paths == [
+        "/api/v2/auth/login",
+        "/api/v2/app/version",
+        "/api/v2/app/webapiVersion",
+    ]
+    assert result.capabilities.version == "v5.2.3"
+    assert result.capabilities.api_version == "2.15.1"
+
+
+@pytest.mark.asyncio
+async def test_qbittorrent_probe_rejects_204_without_session_cookie() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path.endswith("/auth/login")
+        return httpx2.Response(204)
+
+    adapter = QbittorrentAdapter(
+        "http://qb.invalid:8080",
+        DownloaderCredential(username="admin", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    with pytest.raises(DownloaderAdapterError) as failure:
+        await adapter.test_connection()
+
+    assert failure.value.code == "DOWNLOADER_AUTH_FAILED"
+
+
+@pytest.mark.asyncio
 async def test_qbittorrent_api_key_probe_never_calls_auth_endpoint() -> None:
     seen_authorization: list[str | None] = []
 

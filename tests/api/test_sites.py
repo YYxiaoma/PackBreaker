@@ -178,6 +178,19 @@ def test_site_stale_if_match_and_invalid_origin_are_rejected(tmp_path: Path) -> 
         )
         assert invalid.status_code == 422
         assert invalid.json()["code"] == "SITE_BASE_URL_INVALID"
+
+        wrong_mteam_host = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={
+                "name": "错误 M-Team 域名",
+                "type": "MTEAM",
+                "base_url": "https://example.com",
+                "credential": {"kind": "API_KEY", "value": "synthetic"},
+            },
+        )
+        assert wrong_mteam_host.status_code == 422
+        assert wrong_mteam_host.json()["code"] == "SITE_BASE_URL_INVALID"
     finally:
         client.__exit__(None, None, None)
 
@@ -222,6 +235,53 @@ def test_hdtime_cookie_is_encrypted_and_drives_read_only_connection_probe(tmp_pa
         )
         tested = client.post(f"/api/v1/sites/{created['id']}/test", headers=_csrf(client))
         assert tested.status_code == 200
+        assert cookie not in tested.text
+        refreshed = client.get(f"/api/v1/sites/{created['id']}")
+        assert refreshed.json()["connection_status"] == "OK"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_hhclub_cookie_is_encrypted_and_drives_read_only_connection_probe(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    cookie = "uid=123; pass=PACKBREAKER-HHCLUB-COOKIE-CANARY-b72f"
+    try:
+        response = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={
+                "name": "HHClub 主站",
+                "type": "HHCLUB",
+                "base_url": "https://hhanclub.net/",
+                "credential": {"kind": "COOKIE", "value": cookie},
+            },
+        )
+        assert response.status_code == 201
+        created = cast(dict[str, object], response.json())
+        assert created["credential_kind"] == "COOKIE"
+        assert created["credential_configured"] is True
+        assert cookie not in response.text
+
+        with app.state.runtime.session_factory() as session:
+            site = session.scalar(select(Site).where(Site.type == "HHCLUB"))
+            assert site is not None and site.secret_id is not None
+            secret = session.get(SecretRecord, site.secret_id)
+            assert secret is not None
+            assert secret.kind == "SITE_COOKIE"
+            assert cookie not in secret.ciphertext
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            assert request.url.host == "hhanclub.net"
+            assert request.url.path == "/index.php"
+            assert request.headers.get("cookie") == cookie
+            return httpx2.Response(200, text='<a href="usercp.php">profile</a>')
+
+        app.state.site_service._adapter_factory = SiteAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(handler)
+        )
+        tested = client.post(f"/api/v1/sites/{created['id']}/test", headers=_csrf(client))
+        assert tested.status_code == 200
+        assert tested.json()["capabilities"]["supports_imdb_id"] is True
         assert cookie not in tested.text
         refreshed = client.get(f"/api/v1/sites/{created['id']}")
         assert refreshed.json()["connection_status"] == "OK"

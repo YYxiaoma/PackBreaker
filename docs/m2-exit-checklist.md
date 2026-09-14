@@ -27,15 +27,16 @@ M2 execution plan 定向测试覆盖：领域 digest/路径/验证等级不变�
 
 全量 Python pytest、前端 Vitest 与前端 production build 均作为 M2 代码收口门禁执行。CI 仍应作为合并后的最终独立证据。
 
-## 3. 尚未满足的正式 M2 退出条件
+## 3. 正式 M2 退出条件与真实验收结论
 
-以下项目不能用合成代码测试替代，需要用户提供真实但可脱敏的环境信息或验收语料：
+以下项目不能只用合成代码测试替代；截至 2026-09-14，所需真实但可脱敏的环境/语料证据已经形成。候选分数仍不授予自动执行权限，负样本不足只意味着自动阈值继续关闭，不再把“必须算出一个自动阈值”误作 M2 退出条件。
 
-1. **真实大包语料**：已收到一份代表性真实大包原始 torrent，原始文件不入库；脱敏元数据检查确认其为 v1 private torrent，约 3.33 TiB、1400 个文件、16 MiB piece、218111 个 piece，路径未发现空段、`.`/`..`、NUL 或重复项。真实源目录待后续绑定到项目容器后只读扫描，再完成目录映射、piece 验证、preflight 与 execution plan 的端到端验收；必要日志按实际问题再补充。
-2. **7 个失败样例**：当前暂缓预置；后续真实测试遇到失败场景时，按触发现象、必要日志/目录/torrent 摘要和已知归因逐例归档，用于形成编号、稳定错误码、处理策略和回归测试。
-3. **HHClub 信息**：确认实际站点引擎、搜索入口、鉴权方式、取种方式和自动化限制。HHClub 正式适配属于 M4，但该信息也是 M0 基线仍未关闭的输入。
-4. **真实下载器/NAS 矩阵**：首批目标版本已确认为 qBittorrent 5.2.3、Transmission 4.1.3；NAS 文件系统类型、容器内外路径映射和目标目录布局待真实环境挂载/联调时补齐。M2 只用于环境基线确认，不会因此开启写操作。
-5. **候选阈值标定数据**：当前延后到真实候选测试阶段收集正确/错误标签和评分证据，形成误报/召回报告；届时应优先导出脱敏候选 ID、评分组成、硬冲突原因与人工正确/错误标签，不需要提供站点凭证明文。在取得“自动误辅种为 0”的充分证据前，系统继续保持人工确认，不启用基于分数的自动批准。
+1. **真实大包语料（关键链路已验收）**：已收到一份代表性真实大包原始 torrent，原始文件不入库；脱敏元数据检查确认其为 v1 private torrent，约 3.33 TiB、1400 个文件、16 MiB piece、218111 个 piece，路径未发现空段、`.`/`..`、NUL 或重复项。真实源目录已绑定到项目容器并通过 `scan_source_inventory` 完成只读扫描；2026-09-13 已用真实目录完成稳定 TaskUnit 识别、站点候选、精确文件映射、完整 v1 piece 验证、current preflight、review、execution gate 与无副作用 execution plan。后续 M3/M4 还基于同一语料完成了单文件和三文件两条真实 Transmission 写链验收，源内容保持不变，仅预期 hardlink link count 变化。
+2. **7 个失败样例（已完成）**：当前完成 7 / 7，见 `docs/real-failure-samples.md`。除 qBittorrent 5.2.3 登录响应兼容、ADD/remove stop 异步收敛、M-Team 站点/API origin 混用、M-Team torrent CDN 二跳和同状态 execute 审计事件误判 review bridge 外，2026-09-14 的 repair 样本筛选还真实触发了 HHClub torrent 获取 `ReadTimeout`；该故障稳定归类为 `SITE_UNAVAILABLE`，torrent payload 流程不自动重试，冷却后一次新的显式获取成功。7 例均已有稳定错误码或审计证据、明确归因、处理策略和回归测试。
+3. **真实下载器/NAS 矩阵**：首批目标版本已确认为 qBittorrent 5.2.3 / WebAPI 2.15.1、Transmission 4.1.3；真实 `/downloads`、`/downloads2` 映射已进入项目数据根并完成同设备 hardlink 诊断。2026-09-13 qB 登录兼容问题修复后连接与路径映射均为 `OK`，并已完成真实 `FULL_VERIFIED → hardlink → qB ADD(skip-check) → START → DONE`，以及保持 DONE 终态的 `release → qB keep-files remove → journal-owned hardlink/directory rollback` 闭环；最终源文件 device/inode/size/mtime/nlink 恢复到执行前冻结基线。Transmission 也已完成两条真实写链。M2 本身仍只把这些结果作为环境基线，不以此放宽执行安全门。
+4. **候选阈值标定数据（M2 标定条件已完成；自动阈值仍禁用）**：2026-09-14 使用 `scripts/export_candidate_calibration.py` 对真实 SQLite 以只读模式导出脱敏证据。16 条 candidate 记录按 unit/site/torrent 去重后为 14 个候选，其中 12 个 `FULL_VERIFIED` 高置信正确样本、0 个内容错误负样本、0 个 `CLIENT_CHECK_REQUIRED`、2 个未知；正确样本评分范围 53.1818–65.0。现有 review `REJECTED` 不视为内容错误标签，因为早期 2001/M-Team 候选虽因 CDN 获取失败被拒绝，后续已证明与 HHClub torrent 的 746 个 piece hash 全部一致。由于无法估计误报率，`recommended_threshold` 继续为 `null`，系统保持人工确认，不启用基于分数的自动批准。当前报告已经满足“收集真实评分数据并形成标定结论”的 M2 条件；没有高置信负样本意味着不能启用自动批准，而不是要求人为制造负样本。详见 `docs/candidate-threshold-calibration.md`。
+
+HHClub 信息项已于真实环境联调中关闭：确认 NexusPHP + Cookie、当前主站 `https://hhanclub.net`、`torrents.php` 搜索、新版 div 卡片结果布局以及 `details.php` / `download.php` 链路；真实 Cookie 的登录、搜索、详情和真实 `.torrent` 获取均已通过。2026-09-13 还使用 HHClub 同版三文件候选完成 7321 个 v1 piece 的 `FULL_VERIFIED`，随后由后续 M4 写链完成目录创建、3 个 hardlink、Transmission add/verify/start 并收敛到 `DONE`。
 
 ## 4. M2 与 M3 的边界
 
@@ -47,4 +48,4 @@ M2 到此只允许生成证据和无副作用计划。以下能力明确属于 M
 - 进入 LINKING、ADDING、CLIENT_VERIFYING、SEEDING 状态。
 - 取消、回滚、启动对账和下载器副作用幂等恢复。
 
-只有 M2 真实语料与阈值验收完成后，才可正式将里程碑标记为完成；在此之前可继续进行 M3 中不依赖真实环境的领域设计，但不得越过下载器写安全门。
+**M2 关闭判定：已满足。** 真实大包、失败样例、真实下载器/NAS 基线和候选评分标定报告均已有证据。这里的“阈值验收完成”指形成可审查的真实标定结论，并在零误报证据不足时继续关闭自动批准；不要求为了关闭 M2 人为收集错误候选或强行产生数值阈值。M3/M4 后续真实写链已经继续遵守 FULL_VERIFIED、客户端校验、人工确认和源数据保护安全门。

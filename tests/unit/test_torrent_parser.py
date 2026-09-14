@@ -58,6 +58,38 @@ def test_v1_single_file_preserves_raw_info_hash_and_span() -> None:
     assert meta.source == "SYNTHETIC"
     assert meta.files[0].path == "movie.mkv"
     assert meta.files[0].length == len(content)
+    assert meta.metainfo_digest == hashlib.sha256(info_bytes).hexdigest()
+
+
+def test_metainfo_digest_ignores_dynamic_top_level_fields() -> None:
+    content = b"synthetic-media"
+    piece_length = 8
+    info = {
+        b"length": len(content),
+        b"name": b"movie.mkv",
+        b"piece length": piece_length,
+        b"pieces": b"".join(
+            hashlib.sha1(content[offset : offset + piece_length]).digest()
+            for offset in range(0, len(content), piece_length)
+        ),
+        b"private": 1,
+    }
+    first, info_bytes = _torrent(info, {b"comment": b"token-a"})
+    second = _bencode(
+        {
+            b"announce": b"https://tracker.invalid/different-passkey",
+            b"comment": b"token-b",
+            b"info": info,
+        }
+    )
+
+    first_meta = parse_torrent(first)
+    second_meta = parse_torrent(second)
+
+    expected = hashlib.sha256(info_bytes).hexdigest()
+    assert first_meta.metainfo_digest == expected
+    assert second_meta.metainfo_digest == expected
+    assert hashlib.sha256(first).hexdigest() != hashlib.sha256(second).hexdigest()
 
 
 def test_v1_multifile_normalizes_unicode_and_marks_padding() -> None:

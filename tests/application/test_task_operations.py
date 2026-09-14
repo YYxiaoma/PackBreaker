@@ -785,6 +785,96 @@ async def test_qb_unknown_result_without_after_snapshot_stays_manual_only(
 
 
 @pytest.mark.asyncio
+async def test_task_operation_service_reconciles_provable_qb_add_without_after_snapshot(
+    operation_fixture: _OperationFixture,
+) -> None:
+    torrent_hash = "a" * 40
+    ownership_tag = "packbreaker-missing-after"
+    save_path = "/downloads/missing-after"
+    state = QbittorrentTorrentState(
+        torrent_hash=torrent_hash,
+        save_path=save_path,
+        content_path=None,
+        state="stoppedUP",
+        tags=(ownership_tag,),
+        progress=1.0,
+    )
+    adapter = _ReadOnlyQbittorrent(state)
+    binding = _ReadOnlyBinding(adapter)
+    provider = _QbBindings(binding)
+    with operation_fixture.factory() as session:
+        repository = OperationJournalRepository(session)
+        journal, _ = repository.record_intent(
+            OperationIntent(
+                task_id=operation_fixture.task_id,
+                idempotency_key="a" * 64,
+                operation_type="QBITTORRENT_ADD",
+                target={"downloader_id": binding.downloader_id, "remote_save_path": save_path},
+                intent={
+                    "schema_version": "packbreaker-qbittorrent-operation-v1",
+                    "downloader_version": binding.downloader_version,
+                    "execution_plan_id": "plan-qb-missing-after",
+                    "execution_plan_digest": "1" * 64,
+                    "expected_metainfo_digest": "2" * 64,
+                    "torrent_payload_digest": "3" * 64,
+                    "expected_hashes": [torrent_hash],
+                    "remote_save_path": save_path,
+                    "verification_level": "FULL_VERIFIED",
+                    "paused": True,
+                    "skip_checking": True,
+                    "category": None,
+                    "tags": [],
+                    "ownership_tag": ownership_tag,
+                },
+                before_snapshot={"torrent_absent": True, "checked_hashes": [torrent_hash]},
+            )
+        )
+        repository.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.RECONCILE_REQUIRED,
+        )
+        session.commit()
+        journal_id = journal.id
+
+    service = TaskOperationService(
+        operation_fixture.factory,
+        operation_fixture.filesystem,
+        provider,
+        QbittorrentJournalReconcileService(operation_fixture.factory),
+        TransmissionJournalReconcileService(operation_fixture.factory),
+    )
+    summary = next(
+        item for item in service.list_operations(operation_fixture.task_id) if item.id == journal_id
+    )
+    assert summary.kind is OperationKind.QBITTORRENT_ADD
+    assert summary.reconcile_supported is True
+    report = service.maintenance_report(limit=20)
+    repair_item = next(item for item in report.repair_items if item.journal_id == journal_id)
+    assert repair_item.action == "RECONCILE"
+    assert repair_item.manual_required is False
+
+    result = await service.reconcile(
+        task_id=operation_fixture.task_id,
+        journal_id=journal_id,
+        actor=TaskActionActor("admin_session", "qb-missing-after-reconcile"),
+        idempotency_key="qb-missing-after-reconcile-key",
+    )
+
+    assert result.status is OperationStatus.APPLIED
+    assert result.kind is OperationKind.QBITTORRENT_ADD
+    assert provider.requested == [binding.downloader_id]
+    assert adapter.write_calls == 0
+    with operation_fixture.factory() as session:
+        restored = session.get(OperationJournal, journal_id)
+        assert restored is not None
+        assert restored.after_snapshot is not None
+        assert restored.after_snapshot["torrent_hash"] == torrent_hash
+        assert restored.after_snapshot["save_path"] == save_path
+        assert ownership_tag in restored.after_snapshot["tags"]
+
+
+@pytest.mark.asyncio
 async def test_task_operation_service_dispatches_safe_transmission_reconcile(
     operation_fixture: _OperationFixture,
 ) -> None:

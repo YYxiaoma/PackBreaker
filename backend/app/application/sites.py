@@ -507,6 +507,8 @@ class SiteService:
             return "mteam"
         if kind is SiteKind.HDTIME:
             return "hdtime"
+        if kind is SiteKind.HHCLUB:
+            return "hhclub"
         raise ValueError("暂不支持该站点类型")
 
     @staticmethod

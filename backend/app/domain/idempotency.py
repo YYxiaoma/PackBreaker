@@ -30,6 +30,16 @@ def task_idempotency_key(
     )
 
 
+def task_rerun_idempotency_key(
+    *,
+    parent_task_id: str,
+    actor_kind: str,
+    actor_id: str,
+    idempotency_key_digest: str,
+) -> str:
+    return _digest("task-rerun", parent_task_id, actor_kind, actor_id, idempotency_key_digest)
+
+
 def candidate_execution_key(
     *,
     task_key: str,

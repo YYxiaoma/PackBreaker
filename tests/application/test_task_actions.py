@@ -13,12 +13,15 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.task_actions import (
     CancelTaskAction,
     ExecuteTaskAction,
+    ReleaseTaskAction,
+    RerunTaskAction,
     TaskActionActor,
     TaskActionService,
 )
 from backend.app.application.task_cancellation import (
     TaskCancellationRequest,
     TaskCancellationResult,
+    TaskResourceReleaseResult,
 )
 from backend.app.application.task_linking import TaskLinkingResult
 from backend.app.domain.task_state import TaskStatus
@@ -75,6 +78,29 @@ class _Cancellation:
             remove_journal_id=None,
             rolled_back_hardlink_journal_ids=(),
             rolled_back_directory_journal_ids=(),
+            replayed=self.calls > 1,
+        )
+
+
+@dataclass
+class _Release:
+    calls: int = 0
+    error: Exception | None = None
+
+    async def release_completed(self, task_id: str) -> TaskResourceReleaseResult:
+        self.calls += 1
+        if self.error is not None:
+            error = self.error
+            self.error = None
+            raise error
+        return TaskResourceReleaseResult(
+            task_id=task_id,
+            task_version=11,
+            status=TaskStatus.DONE,
+            execution_plan_id="plan-1",
+            remove_journal_id="remove-1",
+            rolled_back_hardlink_journal_ids=("hardlink-1",),
+            rolled_back_directory_journal_ids=("directory-1",),
             replayed=self.calls > 1,
         )
 
@@ -342,6 +368,131 @@ async def test_execute_pending_receipt_recovers_after_task_advanced_without_seco
     assert recovered.task_version == 9
     assert recovered.operation_replayed is True
     assert recovered.idempotency_replayed is True
+
+
+@pytest.mark.asyncio
+async def test_rerun_action_creates_fresh_child_and_replays_receipt(
+    action_fixture: ActionFixture,
+) -> None:
+    factory, parent_id = action_fixture
+    _set_task_status(factory, parent_id, TaskStatus.CANCELLED)
+    service = TaskActionService(factory, _LinkingMustNotRun(), _Cancellation())
+    actor = TaskActionActor("api_token", "rerun-actor")
+    request = RerunTaskAction(parent_id)
+
+    first = await service.rerun(request, actor=actor, idempotency_key="rerun-1")
+    second = await service.rerun(request, actor=actor, idempotency_key="rerun-1")
+
+    assert first.task_id != parent_id
+    assert first.status is TaskStatus.PENDING
+    assert first.execution_plan_id is None
+    assert first.operation_replayed is False
+    assert first.idempotency_replayed is False
+    assert second.task_id == first.task_id
+    assert second.receipt_id == first.receipt_id
+    assert second.idempotency_replayed is True
+
+    with factory() as session:
+        parent = session.get(UnpackTask, parent_id)
+        child = session.get(UnpackTask, first.task_id)
+        assert parent is not None and parent.status == TaskStatus.CANCELLED.value
+        assert child is not None
+        assert child.parent_task_id == parent_id
+        assert child.run_number == 2
+        assert child.status == TaskStatus.PENDING.value
+        assert child.checkpoint == {}
+        assert session.query(UnpackTask).count() == 2
+        assert session.query(TaskUnitRecord).filter_by(task_id=child.id).count() == 0
+        assert session.query(TaskCandidateRecord).filter_by(task_id=child.id).count() == 0
+        assert session.query(TaskReviewRevisionRecord).filter_by(task_id=child.id).count() == 0
+        assert session.query(TaskExecutionGateRecord).filter_by(task_id=child.id).count() == 0
+        assert session.query(TaskExecutionPlanRecord).filter_by(task_id=child.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_rerun_pending_receipt_recovers_same_child_after_response_loss(
+    action_fixture: ActionFixture,
+) -> None:
+    factory, parent_id = action_fixture
+    _set_task_status(factory, parent_id, TaskStatus.CANCELLED)
+    service = TaskActionService(factory, _LinkingMustNotRun(), _Cancellation())
+    actor = TaskActionActor("admin_session", "rerun-response-loss")
+    request = RerunTaskAction(parent_id)
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_rerun_created":
+            raise SimulatedCrash(checkpoint)
+
+    with pytest.raises(SimulatedCrash):
+        await service.rerun(
+            request,
+            actor=actor,
+            idempotency_key="rerun-response-loss",
+            fault_hook=crash,
+        )
+
+    with factory() as session:
+        receipt = session.query(TaskActionReceipt).one()
+        children = session.query(UnpackTask).filter(UnpackTask.id != parent_id).all()
+        assert receipt.state == "PENDING"
+        assert len(children) == 1
+        child_id = children[0].id
+
+    recovered = await service.rerun(
+        request,
+        actor=actor,
+        idempotency_key="rerun-response-loss",
+    )
+    assert recovered.task_id == child_id
+    assert recovered.status is TaskStatus.PENDING
+    assert recovered.operation_replayed is True
+    assert recovered.idempotency_replayed is True
+    with factory() as session:
+        assert session.query(UnpackTask).count() == 2
+        assert session.query(TaskActionReceipt).one().state == "SUCCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_rerun_action_rejects_non_terminal_task(action_fixture: ActionFixture) -> None:
+    factory, task_id = action_fixture
+    service = TaskActionService(factory, _LinkingMustNotRun(), _Cancellation())
+
+    with pytest.raises(ApplicationError) as failure:
+        await service.rerun(
+            RerunTaskAction(task_id),
+            actor=TaskActionActor("admin_session", "rerun-active"),
+            idempotency_key="rerun-active",
+        )
+
+    assert failure.value.code == "TASK_RERUN_STATE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_release_action_keeps_done_and_replays_receipt(action_fixture: ActionFixture) -> None:
+    factory, task_id = action_fixture
+    _set_task_status(factory, task_id, TaskStatus.DONE)
+    release = _Release()
+    service = TaskActionService(factory, _LinkingMustNotRun(), _Cancellation(), release)
+    actor = TaskActionActor("admin_session", "release-done")
+    request = ReleaseTaskAction(task_id)
+
+    first = await service.release(request, actor=actor, idempotency_key="release-done")
+    second = await service.release(request, actor=actor, idempotency_key="release-done")
+
+    assert release.calls == 1
+    assert first.status is TaskStatus.DONE
+    assert first.operation_replayed is False
+    assert first.idempotency_replayed is False
+    assert second.status is TaskStatus.DONE
+    assert second.receipt_id == first.receipt_id
+    assert second.idempotency_replayed is True
+    with factory() as session:
+        task = session.get(UnpackTask, task_id)
+        receipt = session.query(TaskActionReceipt).one()
+        event = session.query(TaskEvent).filter_by(event_type="TASK_RELEASE_REQUESTED").one()
+        assert task is not None and task.status == TaskStatus.DONE.value
+        assert receipt.state == "SUCCEEDED"
+        assert event.task_id == task_id
 
 
 @pytest.mark.asyncio

@@ -52,6 +52,12 @@ describe('公开任务动作 UI 安全门', () => {
     expect(createTaskActionIdempotencyKey('execute', 'task-1', () => 'uuid-1')).toBe(
       'ui-execute-task-1-uuid-1',
     );
+    expect(createTaskActionIdempotencyKey('rerun', 'task-1', () => 'uuid-rerun')).toBe(
+      'ui-rerun-task-1-uuid-rerun',
+    );
+    expect(createTaskActionIdempotencyKey('release', 'task-1', () => 'uuid-release')).toBe(
+      'ui-release-task-1-uuid-release',
+    );
     expect(createTaskActionIdempotencyKey('reconcile', 'task-1', () => 'uuid-2')).toBe(
       'ui-reconcile-task-1-uuid-2',
     );

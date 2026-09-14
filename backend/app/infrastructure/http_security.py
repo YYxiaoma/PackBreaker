@@ -79,7 +79,7 @@ class TrustedProxyPolicy:
 
 
 def apply_security_headers(*, path: str, scheme: str, headers: MutableHeaders) -> None:
-    """对 API 默认使用严格 CSP；交互文档仅放行 FastAPI Swagger 所需 CDN/内联脚本。"""
+    """对 API 默认使用严格 CSP，并只为明确的交互页面开放最小资源集合。"""
 
     headers["X-Content-Type-Options"] = "nosniff"
     headers["Referrer-Policy"] = "no-referrer"
@@ -91,6 +91,12 @@ def apply_security_headers(*, path: str, scheme: str, headers: MutableHeaders) -
             "style-src 'unsafe-inline' https://cdn.jsdelivr.net; "
             "img-src data: https://fastapi.tiangolo.com; connect-src 'self'; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+        )
+    elif path == "/":
+        csp = (
+            "default-src 'none'; script-src 'self'; style-src 'self'; "
+            "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
+            "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
         )
     else:
         csp = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"

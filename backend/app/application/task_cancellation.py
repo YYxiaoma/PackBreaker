@@ -90,6 +90,26 @@ class TaskCancellationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskResourceReleaseResult:
+    task_id: str
+    task_version: int
+    status: TaskStatus
+    execution_plan_id: str
+    remove_journal_id: str | None
+    rolled_back_hardlink_journal_ids: tuple[str, ...]
+    rolled_back_directory_journal_ids: tuple[str, ...]
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ReleasedResources:
+    remove_journal_id: str | None
+    cleanup_repair_target_journal_ids: tuple[str, ...]
+    rolled_back_hardlink_journal_ids: tuple[str, ...]
+    rolled_back_directory_journal_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _RollbackPlan:
     task_id: str
     task_version: int
@@ -135,6 +155,66 @@ class TaskCancellationCoordinator:
         fault_hook: Callable[[str], None] | None = None,
     ) -> TaskCancellationResult:
         plan, replayed = self._reserve_or_load(request)
+        released = await self._release_resources(plan, fault_hook=fault_hook)
+        return self._complete(
+            plan,
+            remove_journal_id=released.remove_journal_id,
+            cleanup_repair_target_journal_ids=released.cleanup_repair_target_journal_ids,
+            rolled_back_hardlink_journal_ids=released.rolled_back_hardlink_journal_ids,
+            rolled_back_directory_journal_ids=released.rolled_back_directory_journal_ids,
+            replayed=replayed,
+        )
+
+    async def release_completed(
+        self,
+        task_id: str,
+        *,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> TaskResourceReleaseResult:
+        """回收 DONE task 的 journal-owned 资源，但保持 DONE 终态不变。"""
+
+        plan = self._load_completed_release_plan(task_id)
+        released = await self._release_resources(plan, fault_hook=fault_hook)
+        with self._session_factory() as session:
+            repository = TaskRepository(session)
+            task = repository.get(task_id)
+            if task is None:
+                raise _cancellation_not_found()
+            if task.status != TaskStatus.DONE.value or task.version != plan.task_version:
+                raise _cancellation_task_changed()
+            latest = repository.latest_event(task_id)
+            replayed = latest is not None and latest.event_type == "TASK_RESOURCES_RELEASED"
+            if not replayed:
+                repository.append_event(
+                    task_id=task_id,
+                    event_type="TASK_RESOURCES_RELEASED",
+                    reason=(
+                        "DONE 任务资源已显式释放；journal-owned 文件回滚确认："
+                        f"{len(released.cleanup_repair_target_journal_ids)} 个 "
+                        "repair target cleanup、"
+                        f"{len(released.rolled_back_hardlink_journal_ids)} 个 hardlink、"
+                        f"{len(released.rolled_back_directory_journal_ids)} 个目录；"
+                        "任务保持 DONE，源媒体不在删除范围"
+                    ),
+                )
+                session.commit()
+            return TaskResourceReleaseResult(
+                task_id=task.id,
+                task_version=task.version,
+                status=TaskStatus.DONE,
+                execution_plan_id=plan.execution_plan_id,
+                remove_journal_id=released.remove_journal_id,
+                rolled_back_hardlink_journal_ids=released.rolled_back_hardlink_journal_ids,
+                rolled_back_directory_journal_ids=released.rolled_back_directory_journal_ids,
+                replayed=replayed,
+            )
+
+    async def _release_resources(
+        self,
+        plan: _RollbackPlan,
+        *,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> _ReleasedResources:
         remove_journal_id: str | None = None
 
         if (
@@ -238,13 +318,11 @@ class TaskCancellationCoordinator:
                 if fault_hook is not None:
                     fault_hook(f"after_directory_rollback:{journal_id}")
 
-        return self._complete(
-            plan,
+        return _ReleasedResources(
             remove_journal_id=remove_journal_id,
             cleanup_repair_target_journal_ids=tuple(cleanup_repair_target_journal_ids),
             rolled_back_hardlink_journal_ids=tuple(rolled_back_hardlinks),
             rolled_back_directory_journal_ids=tuple(rolled_back_directories),
-            replayed=replayed,
         )
 
     async def resume(self, task_id: str) -> TaskCancellationResult:
@@ -337,6 +415,34 @@ class TaskCancellationCoordinator:
                 raise _cancellation_task_changed() from exc
             session.commit()
             return _with_task_version(rollback, task.version), False
+
+    def _load_completed_release_plan(self, task_id: str) -> _RollbackPlan:
+        with self._session_factory() as session:
+            task = TaskRepository(session).get(task_id)
+            if task is None:
+                raise _cancellation_not_found()
+            if task.status != TaskStatus.DONE.value:
+                raise ApplicationError(
+                    code="RESOURCE_RELEASE_STATE_INVALID",
+                    status=409,
+                    title="当前任务状态不允许释放资源",
+                    detail="资源释放只允许对 DONE 任务执行；任务状态不会被改写",
+                )
+            checkpoint = deepcopy(task.checkpoint)
+            plan_id = _required_text(checkpoint, "execution_plan_id")
+            plan = TaskExecutionPlanRepository(session).get(plan_id)
+            if plan is None or plan.task_id != task.id:
+                raise _cancellation_evidence_invalid("DONE 检查点引用的 execution plan 无效")
+            if checkpoint.get("execution_plan_digest") != plan.plan_digest:
+                raise _cancellation_evidence_invalid("DONE 检查点与 execution plan digest 不一致")
+            return self._build_rollback_plan(
+                session,
+                task_id=task.id,
+                task_version=task.version,
+                plan=plan,
+                remove_downloader_task=True,
+                rollback_created_resources=True,
+            )
 
     def _load_reserved(
         self,

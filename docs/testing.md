@@ -30,6 +30,10 @@
 
 站点适配器共享只读契约固定验证 `capabilities/test_connection/search/fetch_details/fetch_torrent`。M-Team 默认测试只使用 `httpx` MockTransport 与合成响应，断言 API Key 仅发送给 API origin、下载第二跳不携带凭证、任意站外下载 URL 被拒绝、torrent payload 大小有界且错误不会回显远端 message/凭证。普通测试不得访问真实 PT 账号。
 
+### 3.1 已完成的真实环境验收证据
+
+真实验收不进入普通 CI，也不保存站点凭证、tracker 或原始 `.torrent`。2026-09-13 已在隔离的真实目录与 Transmission 4.1.3 上完成两条正式任务：M-Team 单文件候选通过 `FULL_VERIFIED → HARDLINK → TRANSMISSION_ADD → TRANSMISSION_VERIFY → TRANSMISSION_START → DONE`；HHClub 三文件候选先完成 7321 个 v1 piece 的全量校验，再通过 `1 CREATE_DIRECTORY + 3 CREATE_HARDLINK + TRANSMISSION_ADD + TRANSMISSION_VERIFY + TRANSMISSION_START` 全部 `APPLIED` 并收敛到 `DONE`。同日 qBittorrent v5.2.3 / WebAPI 2.15.1 的真实认证兼容问题修复后，The Reader 三文件候选经正式 analyze/review/gate/plan 完成 `FULL_VERIFIED → 1 CREATE_DIRECTORY + 3 CREATE_HARDLINK → QBITTORRENT_ADD(skip-check) → QBITTORRENT_START → DONE`；真实 ADD 遇到的异步 stop 收敛阻断通过公开只读 reconcile 恢复，START 已生效但 journal 未确认的窗口又通过真实进程重启安全恢复为 `APPLIED`，没有重复 add/start。三条真实任务最终均处于客户端做种状态，源文件 device/inode/size/mtime 与 preflight 快照一致，仅 hardlink link count 按预期增加。
+
 ## 4. 合成语料
 
 测试运行时生成 torrent 和媒体字节，不把 `.torrent` 或媒体文件提交到仓库。生成器应支持固定随机种子，以便失败可重现。
@@ -67,7 +71,7 @@
 - Transmission execution plan 即使面对 `FULL_VERIFIED` 也必须要求 force verify + verify progress 能力；ADDING 固定进入 `CLIENT_VERIFYING`，不得因已有 piece 证据直接跳到做种。
 - `TRANSMISSION_ADD` 与 `TRANSMISSION_VERIFY` 必须各自先提交 operation journal intent；相同 candidate/downloader 10 路并发只允许一个远端 add/verify 动作，响应丢失不得盲目重发。
 - Transmission 已存在或返回 duplicate 的 torrent 不能仅凭 info-hash 认领；恢复必须同时证明 PackBreaker ownership label、hash 与 save path。verify 未知结果只有 checking 或相对 before snapshot 的可证明变化才能收敛为 APPLIED。
-- 本阶段 Transmission 校验成功后停靠 `SEEDING`；在独立 start/做种确认切片完成前，启动恢复和周期驱动必须保持 WAITING，且不得调用 qBittorrent seeding/start 端口。
+- Transmission 校验成功后必须先以同一 plan 的 APPLIED ADD/VERIFY 证据进入 `SEEDING`，再由独立 `TRANSMISSION_START` journal 启动并确认真实 queued-seed/seeding + `percent_done=1` 后推进 `DONE`；周期 driver 不得因已有 piece 证据或单纯 `percent_done=1` 跳过 verify/start 边界。
 
 ### 5.3 路径与清理
 
@@ -188,7 +192,7 @@ M2 的代码能力、自动化证据与仍依赖真实语料/环境的退出项�
 
 - 真实验收语料中的自动误辅种为 0。
 - qB 与 TR 各完成一条真实端到端任务，包含人工确认和失败回滚。
-- 7 个失败样例完成归因并形成回归测试，其中至少覆盖 3 类失败。
+- 7 个失败样例完成归因并形成回归测试，其中至少覆盖 3 类失败；当前 RF-001～RF-007 已满足，新增真实问题继续追加但不再为数量主动制造失败。
 - 重复触发 10 次结果唯一。
 - LINKING、ADDING、CLIENT_VERIFYING 故障注入后恢复正确。
 - execution plan 必须绑定明确的目标下载器 version/能力摘要/远端 save path；下载器配置、能力或路径映射变化后旧计划必须 stale，不能在 ADDING 时临时换客户端。
@@ -197,16 +201,17 @@ M2 的代码能力、自动化证据与仍依赖真实语料/环境的退出项�
 - SEEDING 必须以独立 start journal 驱动：start intent 前再次确认 source inventory、target root、下载器 binding、add journal 与可选 recheck journal；只允许停止且 `progress=1` 的本系统 torrent 启动，实际进入 `uploading`/`stalledUP`/`queuedUP`/`forcedUP` 且 `progress=1` 后才能 `SEEDING → DONE`。连续或 10 路并发触发只允许一个有效 start；start 响应丢失和“journal 已 APPLIED、task 尚未 DONE”必须无重复副作用恢复，外部停止、删除、save path/tag 漂移必须失败关闭或进入对账。
 - 启动恢复必须有界扫描 `LINKING/ADDING/CLIENT_VERIFYING/SEEDING/ROLLING_BACK`，按最久未更新优先；lifespan 启动调用还可显式扫描遗留 `CANCELLING + COOPERATIVE_ANALYSIS`，但必须同时证明 checkpoint schema/mode/stage、原分析 stage、`analysis_version == task.version - 1`、最近 `CANCELLATION_STARTED` from→to、`remove=false/rollback=false` 与 operation journal 为空，才能收敛到 CANCELLED。资源式/畸形 CANCELLING 或已有 journal 必须 BLOCKED 且状态不变。普通周期 driver 必须保持默认模式并忽略 CANCELLING，避免抢占仍存活的分析协程。同一 stage 未变化时停止本轮，坏 checkpoint/plan 只能阻断对应任务且不能阻断后续任务或 readiness。恢复程序级异常必须让启动失败，同时释放实例锁；limit 截断不得触发未扫描任务的任何副作用。启动后的周期 driver 必须串行复用同一 reconciliation、防止重入；一次 tick 异常不得杀死后续 tick，shutdown 取消正在执行的 tick 后必须依赖 journal 在下次启动恢复。CLIENT_VERIFYING 必须能在不重启应用的情况下由后续周期 tick 收敛。
 - 取消/回滚必须证明 qB 与文件资源都属于当前 task/execution plan：qB remove 必须固定 `deleteFiles=false`，响应丢失后不得盲目重复；若 qB 任务仍存在，文件回滚前必须先移除下载器任务。hardlink 与目录只按 journal ID 逆序撤销，外部替换、非空目录或未决文件 journal 必须阻断自动完成。故障注入覆盖“qB remove 已 APPLIED、task 仍 ROLLING_BACK”，启动恢复不得产生第二次 remove。
+- `DONE` 是不可逆终态，不得为了清理资源改回 `CANCELLED`。完成后资源释放使用独立 `release` 动作：只允许 DONE，要求 `tasks:write` + 管理会话 CSRF（或对应 API Token）+ `Idempotency-Key`；必须复用同一套 journal ownership 证明先 keep-files 移除下载器任务，再回滚 PackBreaker 创建的 hardlink/目录，完成后 task 仍为 DONE，并追加同状态 `TASK_RESOURCES_RELEASED` 审计。qB stop/remove 的状态确认必须允许有界异步收敛，但每次读取仍持续证明 hash/save path/ownership；同一成功 key 重放不得产生第二次 remove 或第二条 release 审计。
 - 副作用开始前取消必须覆盖 `PENDING/PREFLIGHT/AWAITING_CONFIRMATION/PAUSED/RETRY`：请求只能是 `remove=false/rollback=false`，服务端必须再次证明 task 没有任何 operation journal，随后在同一事务中记录 `CANCELLING → CANCELLED`，且 qB/文件系统 coordinator 调用次数为 0。`ANALYZING/SEARCHING/MATCHING/VERIFYING` 必须采用协作式取消而非抢改终态：cancel 先冻结原分析 stage/version 到 `COOPERATIVE_ANALYSIS` checkpoint 并返回 `CANCELLING`，原分析流在下一安全检查点验证零 journal 后完成 `CANCELLED`；四个分析 stage 都要覆盖进程重启后 startup-only 安全收敛，同时验证普通周期 recovery 不会处理该 CANCELLING。至少覆盖站点 await 中并发取消、source inventory 目录遍历取消检查、v1 piece 批次取消检查；大文件 scan/hash 必须在 worker thread 中执行，避免事件循环无法并发接收 cancel。故障注入覆盖稳定任务已 CANCELLED、receipt 仍 PENDING，以及活动分析已 CANCELLING、receipt 仍 PENDING 两类响应丢失窗口；同一 Idempotency-Key 重放不得调用资源回滚 coordinator。
 - 公开 `execute`/`cancel` 必须覆盖管理会话 CSRF 与 API Token `tasks:write`，副作用动作缺少 `Idempotency-Key` 返回 428；键明文不得落库，同 actor/key 同请求只调用一次底层 coordinator，同键不同请求返回 `IDEMPOTENCY_CONFLICT`。可安全归类失败应持久化并重放；未分类异常保持 PENDING。还必须覆盖 receipt PENDING 后 task 已被后台推进到后续 stage 的 execute 重放，确认不会重新进入 LINKING 或倒退状态。
 - 浏览器门禁必须覆盖公开动作 UI：execute 首次网络结果未知后冻结原 execution plan ID 与同一 `Idempotency-Key`，即使 SSE 已推进 task 也只能幂等重放原请求；合成 `TaskEvent` SSE 必须实际出现 `QBITTORRENT_SEEDING_CONFIRMED` 后观察 DONE。稳定零副作用取消必须覆盖响应丢失 + 同 key 确认；活动分析取消必须从 SEARCHING 提交 `remove=false/rollback=false`，先观察公开动作返回 CANCELLING，再由 `CANCELLATION_COMPLETED` SSE 观察 CANCELLED。副作用阶段取消 UI 必须阻断 rollback-only，显式勾选 qB remove + journal-owned rollback 后由 `ROLLBACK_COMPLETED` SSE 观察 `ROLLING_BACK → CANCELLED`，全程不得访问真实后端/qB。
 - 前端公开动作控制必须覆盖：只有 `READY + CURRENT + AWAITING_CONFIRMATION` 才可执行；执行确认展示目标下载器、hardlink/目录/CLIENT_FETCH 数量、下载上界和客户端校验要求；未知结果重试复用原幂等键。取消默认不选择资源动作，回滚 journal-owned 文件时必须同时选择移除 qB 任务，`CANCELLING/ROLLING_BACK` 禁止重新提交不同选项。
 - 任务事件接口必须覆盖历史顺序、`after_event_id` 增量、跨 task 游标拒绝、SSE `Last-Event-ID` 续接、no-cache/no-buffering 与脱敏字段边界。前端优先 EventSource，同源会话 cookie 鉴权；SSE 断线才启用事件增量轮询，不允许把 bearer token 放进 URL 查询参数。
 - operation journal → TaskEvent 投影必须与 journal insert/CAS 同事务：幂等 intent 重放不得重复事件；qB 事件不得包含 downloader ID、torrent hash、save path、ownership tag、target/intent/snapshot 原文；未知 operation type 不得回显。大型文件包的 routine directory/hardlink intent/APPLIED/ROLLED_BACK 必须抑制为 LINKING/ROLLBACK 批次计数摘要，仅 `RECONCILE_REQUIRED`/`ROLLBACK_BLOCKED` 逐 journal 暴露固定资源类别。浏览器 SSE 至少观察 qB add/recheck/start/remove 的 APPLIED 摘要。
-- operation journal 对账接口必须验证响应字段白名单，禁止泄露 target/intent/before/after snapshot、路径、hash、ownership tag、原始 operation type 或 Idempotency-Key。文件系统 reconcile 只允许带 after snapshot 的 `RECONCILE_REQUIRED`，当前资源精确匹配时才 CAS 回 APPLIED，外部替换保持阻断且零文件写入。qB reconcile 只允许已有历史 after snapshot 的 ADD/RECHECK/START：必须复核 downloader ID/version、hash、save path、ownership tag 与对应后置状态，全程只允许 `get_torrents`，测试断言 add/stop/recheck/start/remove 调用计数不增加；binding version、ownership、save path、状态任一漂移都保持阻断。qB REMOVE、无 after snapshot 的未知结果和 `ROLLBACK_BLOCKED` 不得自动 reconcile。还必须覆盖响应丢失窗口（journal 已 APPLIED、receipt 仍 PENDING）同 key 重放只再次验证证据并补 receipt、缺 key=428、管理会话缺 CSRF=403、`tasks:write` bearer 可调用而 `tasks:read` bearer=403。浏览器门禁必须证明 SSE 已显示 APPLIED 后仍只能复用原 journal + 原 key 重试确认。
+- operation journal 对账接口必须验证响应字段白名单，禁止泄露 target/intent/before/after snapshot、路径、hash、ownership tag、原始 operation type 或 Idempotency-Key。文件系统 reconcile 只允许带 after snapshot 的 `RECONCILE_REQUIRED`，当前资源精确匹配时才 CAS 回 APPLIED，外部替换保持阻断且零文件写入。qB RECHECK/START 仍只允许已有历史 after snapshot 的只读重新证明；qB ADD 额外允许一种受限的无-after恢复：原 before snapshot 必须明确记录 torrent 不存在，intent 与 checked hashes 必须只有一个相同的确定 info-hash，downloader ID/version、remote save path、ownership tag 均有效且未变化，当前 `get_torrents` 必须只返回该唯一 owned torrent 并已经 stopped，才允许由当前状态生成 after snapshot 并 CAS 回 APPLIED。整个 reconcile 全程不得调用 add/stop/recheck/start/remove；多 hash、缺 absence 证明、binding/ownership/save path/状态任一漂移都保持阻断。qB REMOVE、其他无 after snapshot 的未知结果和 `ROLLBACK_BLOCKED` 不得自动 reconcile。还必须覆盖响应丢失窗口（journal 已 APPLIED、receipt 仍 PENDING）同 key 重放只再次验证证据并补 receipt、缺 key=428、管理会话缺 CSRF=403、`tasks:write` bearer 可调用而 `tasks:read` bearer=403。浏览器门禁必须证明 SSE 已显示 APPLIED 后仍只能复用原 journal + 原 key 重试确认。
 - operation journal retention 必须覆盖 preview 与写时双重证明：只有 `NOOP` / `ROLLED_BACK`、所属任务终态、task/journal 均超过保留期且 checkpoint、历史 action receipt、同 task 其他 journal 都没有精确 journal-ID 引用时才 eligible。purge 必须与 tombstone 和成功 receipt 同事务提交；提交后 HTTP 响应丢失，同 actor/key 重放返回同一 receipt。tombstone 禁止保存 target/intent/snapshot，只保留最小 ID/type/status/时间/digest，并必须永久阻止被清理 operation 的原幂等键再次 record intent。保留期未到、任务非终态、任一 JSON 引用、以及 `APPLIED/INTENT_RECORDED/RECONCILE_REQUIRED/ROLLBACK_PENDING/ROLLBACK_BLOCKED` 均不得删除。
 - retention 前端门禁必须只把服务端 `retention-plan` 中 `eligible=true` 的单条 journal 暴露为 purge；浏览器只能提交 `action=purge`、`retention_days` 与 `Idempotency-Key`，不得提交任务终态、引用检查或其他安全事实。确认文案必须明确不会删除媒体/下载器资源且保留 tombstone；HTTP 结果未知时必须冻结 task/journal/retention_days/key，并提供同键“重试确认”，不得因刷新计划或候选列表而自动生成新 key，也不得提供批量 purge。
-- 站点管理前端必须直接使用真实 `/sites` 契约而非本地演示状态：PATCH/delete/enable/disable/reset-circuit 必须携带当前 version 的强 `If-Match`；M-Team 仅提交 API Key、HDTime 仅提交 Cookie，已保存凭证永不回显，类型切换时若存在旧凭证必须显式替换或清除。health 获取失败不得伪造 CLOSED/健康状态；reset-circuit 只能表述为清除当前 config version 的进程内熔断状态，不能宣称远端已恢复。HHClub 未确认协议前不得出现在可创建类型中。
+- 站点管理前端必须直接使用真实 `/sites` 契约而非本地演示状态：PATCH/delete/enable/disable/reset-circuit 必须携带当前 version 的强 `If-Match`；M-Team 仅提交 API Key，HDTime/HHClub 仅提交 Cookie，已保存凭证永不回显，类型切换时若存在旧凭证必须显式替换或清除。health 获取失败不得伪造 CLOSED/健康状态；reset-circuit 只能表述为清除当前 config version 的进程内熔断状态，不能宣称远端已恢复。HHClub 必须限制到 `https://hhanclub.net`，契约测试同时覆盖 NexusPHP 新版 div 卡片列表、`cat[]` 分类、详情标题清洗以及 `userdetails.php` 不得误判为 `details.php`。
 - 源文件在所有验收场景中内容与 inode 不变。
 - 数据库、配置导出、日志、通知和诊断包无可用明文凭证。
 - 备份、迁移、升级健康检查和失败回滚演练通过。

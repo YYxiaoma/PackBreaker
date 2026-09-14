@@ -1,4 +1,6 @@
-from backend.app.infrastructure.http_security import TrustedProxyPolicy
+from starlette.datastructures import MutableHeaders
+
+from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
 
 
 def test_untrusted_peer_cannot_spoof_forwarded_headers() -> None:
@@ -43,3 +45,28 @@ def test_invalid_forwarded_chain_falls_back_to_direct_proxy_address() -> None:
 
     assert context.client_source == "10.0.0.5"
     assert context.scheme == "https"
+
+
+def test_frontend_index_csp_allows_only_same_origin_runtime_assets() -> None:
+    headers = MutableHeaders()
+
+    apply_security_headers(path="/", scheme="http", headers=headers)
+
+    csp = headers["Content-Security-Policy"]
+    assert "default-src 'none'" in csp
+    assert "script-src 'self'" in csp
+    assert "style-src 'self'" in csp
+    assert "connect-src 'self'" in csp
+    assert "object-src 'none'" in csp
+    assert "'unsafe-inline'" not in csp
+    assert "https://" not in csp
+
+
+def test_api_csp_remains_default_deny() -> None:
+    headers = MutableHeaders()
+
+    apply_security_headers(path="/api/v1/health/live", scheme="http", headers=headers)
+
+    assert headers["Content-Security-Policy"] == (
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    )

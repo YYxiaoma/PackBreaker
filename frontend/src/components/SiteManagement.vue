@@ -49,7 +49,9 @@ onMounted(() => {
 });
 
 function kindLabel(kind: SiteKind): string {
-  return kind === 'MTEAM' ? 'M-Team' : 'HDTime';
+  if (kind === 'MTEAM') return 'M-Team';
+  if (kind === 'HDTIME') return 'HDTime';
+  return 'HHClub';
 }
 
 function credentialLabel(kind: SiteKind): string {
@@ -435,21 +437,12 @@ async function remove(item: Site) {
       <div>
         <b>M4 站点安全边界</b>
         <p>
-          M-Team 与 HDTime 已接真实只读适配器。凭证只写入加密 secret
+          M-Team、HDTime 与 HHClub 已接真实只读适配器。凭证只写入加密 secret
           store；连接测试、搜索和健康状态不会回显凭证。 reset-circuit
           只重置当前配置版本的进程内熔断状态，不代表远端连接已经恢复。
         </p>
       </div>
     </section>
-
-    <el-alert
-      class="section-space"
-      title="HHClub 适配方式仍待确认"
-      description="在鉴权方式、搜索/详情/取种入口得到真实资料前，HHClub 不出现在可创建站点类型中，也不会用其他 NexusPHP 站点行为进行猜测。"
-      type="info"
-      :closable="false"
-      show-icon
-    />
 
     <el-dialog
       v-model="dialog"
@@ -466,6 +459,7 @@ async function remove(item: Site) {
             <el-select v-model="draft.type">
               <el-option label="M-Team" value="MTEAM" />
               <el-option label="HDTime" value="HDTIME" />
+              <el-option label="HHClub" value="HHCLUB" />
             </el-select>
           </el-form-item>
         </div>
@@ -473,7 +467,13 @@ async function remove(item: Site) {
         <el-form-item label="HTTPS Origin" required>
           <el-input
             v-model="draft.baseUrl"
-            :placeholder="draft.type === 'HDTIME' ? 'https://hdtime.org' : 'https://api.m-team.cc'"
+            :placeholder="
+              draft.type === 'HDTIME'
+                ? 'https://hdtime.org'
+                : draft.type === 'HHCLUB'
+                  ? 'https://hhanclub.net'
+                  : 'https://kp.m-team.cc'
+            "
           />
         </el-form-item>
 
@@ -507,8 +507,14 @@ async function remove(item: Site) {
           :closable="false"
         />
         <el-alert
+          v-else-if="draft.type === 'HHCLUB'"
+          title="HHClub 使用 Cookie 凭证，后端只允许当前主站 https://hhanclub.net origin。"
+          type="info"
+          :closable="false"
+        />
+        <el-alert
           v-else
-          title="M-Team 使用 API Key。站点地址和凭证都会由后端再次规范化与验证。"
+          title="M-Team 使用 API Key。填写站点网页地址（如 https://kp.m-team.cc）；后端会自动切换到 api.m-team.cc 调用 API，并再次规范化与验证。"
           type="info"
           :closable="false"
         />

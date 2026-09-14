@@ -252,6 +252,58 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/history-scans': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List History Scans */
+    get: operations['list_history_scans_api_v1_history_scans_get'];
+    put?: never;
+    /** Create History Scan */
+    post: operations['create_history_scan_api_v1_history_scans_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/history-scans/{scan_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get History Scan */
+    get: operations['get_history_scan_api_v1_history_scans__scan_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/history-scans/{scan_id}/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** History Scan Action */
+    post: operations['history_scan_action_api_v1_history_scans__scan_id__actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/notification-channels': {
     parameters: {
       query?: never;
@@ -754,6 +806,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/tasks/{task_id}/release': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Release Task Resources */
+    post: operations['release_task_resources_api_v1_tasks__task_id__release_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/tasks/{task_id}/rerun': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Rerun Task */
+    post: operations['rerun_task_api_v1_tasks__task_id__rerun_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/tasks/{task_id}/units': {
     parameters: {
       query?: never;
@@ -1051,6 +1137,93 @@ export interface components {
       /** Detail */
       detail?: components['schemas']['ValidationError'][];
     };
+    /**
+     * HistoryMediaKind
+     * @enum {string}
+     */
+    HistoryMediaKind: 'MOVIE' | 'EPISODE';
+    /** HistoryScanActionRequest */
+    HistoryScanActionRequest: {
+      /**
+       * Action
+       * @enum {string}
+       */
+      action: 'start' | 'pause' | 'resume' | 'scan';
+      /**
+       * Limit
+       * @default 100
+       */
+      limit: number;
+    };
+    /** HistoryScanBatchResponse */
+    HistoryScanBatchResponse: {
+      /** Has More */
+      has_more: boolean;
+      /** Processed Count */
+      processed_count: number;
+      scan: components['schemas']['HistoryScanResponse'];
+    };
+    /** HistoryScanCreateRequest */
+    HistoryScanCreateRequest: {
+      /** Exclude Patterns */
+      exclude_patterns?: string[];
+      /** Extensions */
+      extensions: string[];
+      media_kind: components['schemas']['HistoryMediaKind'];
+      /** Root Path */
+      root_path: string;
+    };
+    /** HistoryScanListResponse */
+    HistoryScanListResponse: {
+      /** Items */
+      items: components['schemas']['HistoryScanResponse'][];
+    };
+    /** HistoryScanResponse */
+    HistoryScanResponse: {
+      /** Changed Count */
+      changed_count: number;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Cursor */
+      cursor: string | null;
+      /** Discovered Count */
+      discovered_count: number;
+      /** Exclude Patterns */
+      exclude_patterns: string[];
+      /** Extensions */
+      extensions: string[];
+      /** Generation */
+      generation: number;
+      /** Id */
+      id: string;
+      /** Last Completed At */
+      last_completed_at: string | null;
+      /** Last Started At */
+      last_started_at: string | null;
+      media_kind: components['schemas']['HistoryMediaKind'];
+      /** New Count */
+      new_count: number;
+      /** Root Path */
+      root_path: string;
+      status: components['schemas']['HistoryScanStatus'];
+      /** Unchanged Count */
+      unchanged_count: number;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+      /** Version */
+      version: number;
+    };
+    /**
+     * HistoryScanStatus
+     * @enum {string}
+     */
+    HistoryScanStatus: 'READY' | 'SCANNING' | 'PAUSED' | 'DONE';
     /** LoginResponse */
     LoginResponse: {
       /** Authenticated */
@@ -1623,7 +1796,7 @@ export interface components {
      * SiteKind
      * @enum {string}
      */
-    SiteKind: 'MTEAM' | 'HDTIME';
+    SiteKind: 'MTEAM' | 'HDTIME' | 'HHCLUB';
     /** SiteListResponse */
     SiteListResponse: {
       /** Items */
@@ -1786,7 +1959,7 @@ export interface components {
        * Action
        * @enum {string}
        */
-      action: 'execute' | 'cancel';
+      action: 'execute' | 'cancel' | 'rerun' | 'release';
       /** Execution Plan Id */
       execution_plan_id: string | null;
       /** Idempotency Replayed */
@@ -1903,6 +2076,10 @@ export interface components {
       id: string;
       /** Normalized Unit Key */
       normalized_unit_key: string;
+      /** Parent Task Id */
+      parent_task_id: string | null;
+      /** Run Number */
+      run_number: number;
       /** Source Downloader Id */
       source_downloader_id: string;
       /** Source Hash */
@@ -2683,6 +2860,157 @@ export interface operations {
         };
         content: {
           'application/json': unknown;
+        };
+      };
+    };
+  };
+  list_history_scans_api_v1_history_scans_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HistoryScanListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  create_history_scan_api_v1_history_scans_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['HistoryScanCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HistoryScanResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_history_scan_api_v1_history_scans__scan_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        scan_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HistoryScanResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  history_scan_action_api_v1_history_scans__scan_id__actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        scan_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['HistoryScanActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json':
+            | components['schemas']['HistoryScanResponse']
+            | components['schemas']['HistoryScanBatchResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
         };
       };
     };
@@ -4111,6 +4439,82 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['PreflightCurrentResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  release_task_resources_api_v1_tasks__task_id__release_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'Idempotency-Key'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskMutationActionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  rerun_task_api_v1_tasks__task_id__rerun_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'Idempotency-Key'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskMutationActionResponse'];
         };
       };
       /** @description Validation Error */

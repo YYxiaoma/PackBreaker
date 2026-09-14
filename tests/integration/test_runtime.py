@@ -30,7 +30,7 @@ def test_runtime_migrates_database_and_becomes_ready(tmp_path: Path) -> None:
         assert report.migrations == "ok"
         assert report.secrets == "ok"
         assert report.worker_slot == "ok"
-        assert report.current_revision == report.expected_revision == "0016_operation_retention"
+        assert report.current_revision == report.expected_revision == "0019_history_scans"
         assert runtime.engine is not None
         assert {
             "unpack_task",
@@ -38,6 +38,8 @@ def test_runtime_migrates_database_and_becomes_ready(tmp_path: Path) -> None:
             "operation_journal",
             "notification_channel",
             "notification_outbox",
+            "history_scan",
+            "history_scan_file",
         }.issubset(set(inspect(runtime.engine).get_table_names()))
     finally:
         runtime.stop()

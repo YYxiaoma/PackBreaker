@@ -26,6 +26,8 @@ import {
   reconcileTaskOperation,
   purgeTaskOperation,
   refreshTaskUnitExecutionGate,
+  releaseTask,
+  rerunTask,
   submitTaskUnitDecision,
   taskEventStreamUrl,
 } from './tasks';
@@ -44,6 +46,8 @@ describe('任务分析 API', () => {
           source_downloader_id: 'downloader-1',
           source_hash: 'source-hash',
           normalized_unit_key: 'unit-key',
+          parent_task_id: null,
+          run_number: 1,
           status: 'PENDING',
           error_code: null,
           version: 1,
@@ -70,6 +74,53 @@ describe('任务分析 API', () => {
     });
     expect(result.created).toBe(true);
     expect(result.item.id).toBe('task-1');
+  });
+
+  it('rerun 使用独立 endpoint 并显式携带幂等键', async () => {
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      data: {
+        action: 'rerun',
+        task_id: 'task-2',
+        status: 'PENDING',
+        task_version: 1,
+        execution_plan_id: null,
+        operation_replayed: false,
+        idempotency_replayed: false,
+        receipt_id: 'receipt-rerun',
+      },
+    });
+
+    const result = await rerunTask('task/with slash', 'rerun-key');
+
+    expect(post).toHaveBeenCalledWith('/tasks/task%2Fwith%20slash/rerun', undefined, {
+      headers: { 'Idempotency-Key': 'rerun-key' },
+    });
+    expect(result.task_id).toBe('task-2');
+    expect(result.action).toBe('rerun');
+  });
+
+  it('release 使用独立 endpoint 并显式携带幂等键', async () => {
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      data: {
+        action: 'release',
+        task_id: 'task-1',
+        status: 'DONE',
+        task_version: 11,
+        execution_plan_id: 'plan-1',
+        operation_replayed: false,
+        idempotency_replayed: false,
+        receipt_id: 'receipt-release',
+      },
+    });
+
+    const result = await releaseTask('task/with slash', 'release-key');
+
+    expect(post).toHaveBeenCalledWith('/tasks/task%2Fwith%20slash/release', undefined, {
+      headers: { 'Idempotency-Key': 'release-key' },
+    });
+    expect(result.task_id).toBe('task-1');
+    expect(result.action).toBe('release');
+    expect(result.status).toBe('DONE');
   });
 
   it('使用编码后的 task id 读取 units/candidates/preflight', async () => {

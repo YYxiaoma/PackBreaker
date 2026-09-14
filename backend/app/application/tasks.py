@@ -141,6 +141,8 @@ class TaskView:
     source_downloader_id: str
     source_hash: str
     normalized_unit_key: str
+    parent_task_id: str | None
+    run_number: int
     status: str
     error_code: str | None
     version: int
@@ -595,7 +597,7 @@ class TaskAnalysisService:
             task = task_repository.get(task_id)
             if task is None:
                 raise _task_not_found()
-            latest_event = task_repository.latest_event(task_id)
+            latest_event = task_repository.latest_transition_event(task_id)
             record = PreflightSnapshotRepository(session).latest_for_task(task_id)
             if record is None:
                 raise ApplicationError(
@@ -1670,7 +1672,7 @@ class TaskAnalysisService:
             or not gate.eligible
             or candidate is None
             or candidate.preflight_snapshot_id != snapshot.preflight_snapshot_id
-            or candidate.metainfo_digest != snapshot.metainfo_digest
+            or gate.metainfo_digest != snapshot.metainfo_digest
             or unit is None
             or unit.source_inventory_digest != snapshot.source_inventory_digest
             or target_downloader.downloader_version != snapshot.target_downloader_version
@@ -1884,7 +1886,7 @@ class TaskAnalysisService:
                     title="预演证据已变化",
                     detail="提交审核前已产生新的 preflight，请重新加载",
                 )
-            latest_event = task_repository.latest_event(task_id)
+            latest_event = task_repository.latest_transition_event(task_id)
             bridge_open = (
                 task.status == TaskStatus.PREFLIGHT.value and task.version == snapshot.task_version
             )
@@ -2304,6 +2306,8 @@ class TaskAnalysisService:
             source_downloader_id=record.source_downloader_id,
             source_hash=record.source_hash,
             normalized_unit_key=record.normalized_unit_key,
+            parent_task_id=record.parent_task_id,
+            run_number=record.run_number,
             status=record.status,
             error_code=record.error_code,
             version=record.version,

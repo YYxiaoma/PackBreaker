@@ -210,7 +210,11 @@ def parse_torrent(payload: bytes, *, limits: BencodeLimits | None = None) -> Tor
         private=private_value == 1,
         source=source,
         display_name=display_name,
-        metainfo_digest=hashlib.sha256(payload).hexdigest(),
+        # Tracker/download-token related top-level fields may legitimately vary between
+        # downloads of the same private torrent.  Bind execution evidence to the raw
+        # bencoded info dictionary instead: it is the stable torrent content identity
+        # and is also what BitTorrent v1/v2 info hashes are derived from.
+        metainfo_digest=hashlib.sha256(raw_info).hexdigest(),
         info_span=(info_node.start, info_node.end),
     )
 

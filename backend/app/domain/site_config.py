@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 class SiteKind(StrEnum):
     MTEAM = "MTEAM"
     HDTIME = "HDTIME"
+    HHCLUB = "HHCLUB"
 
 
 class SiteCredentialKind(StrEnum):
@@ -39,8 +40,14 @@ def normalize_site_base_url(kind: SiteKind, value: str) -> str:
     host = parsed.hostname.casefold().rstrip(".")
     if not host or ":" in host:
         raise ValueError("站点 base URL host 无效")
+    if kind is SiteKind.MTEAM and (
+        port not in {None, 443} or not (host == "m-team.cc" or host.endswith(".m-team.cc"))
+    ):
+        raise ValueError("M-Team 站点地址必须位于 https://*.m-team.cc")
     if kind is SiteKind.HDTIME and (host != "hdtime.org" or port not in {None, 443}):
         raise ValueError("HDTime 站点地址必须是 https://hdtime.org")
+    if kind is SiteKind.HHCLUB and (host != "hhanclub.net" or port not in {None, 443}):
+        raise ValueError("HHClub 站点地址必须是 https://hhanclub.net")
     netloc = host if port in {None, 443} else f"{host}:{port}"
     return f"https://{netloc}"
 
@@ -49,6 +56,8 @@ def required_site_credential_kind(kind: SiteKind) -> SiteCredentialKind:
     if kind is SiteKind.MTEAM:
         return SiteCredentialKind.API_KEY
     if kind is SiteKind.HDTIME:
+        return SiteCredentialKind.COOKIE
+    if kind is SiteKind.HHCLUB:
         return SiteCredentialKind.COOKIE
     raise ValueError("暂不支持该站点类型")
 

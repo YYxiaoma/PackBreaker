@@ -13,6 +13,7 @@ from backend.app.api.auth import router as auth_router
 from backend.app.api.automation_access import router as api_token_router
 from backend.app.api.downloaders import router as downloader_router
 from backend.app.api.health import router as health_router
+from backend.app.api.history_scans import router as history_scan_router
 from backend.app.api.notifications import router as notification_router
 from backend.app.api.sites import router as site_router
 from backend.app.api.system import router as system_router
@@ -29,6 +30,7 @@ from backend.app.application.downloader_operations import (
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import FilesystemOperationService
+from backend.app.application.history_scans import HistoryScanService
 from backend.app.application.notification_driver import NotificationDriver
 from backend.app.application.notifications import NotificationService
 from backend.app.application.repair_downloader_operations import RepairDownloadOperationService
@@ -129,6 +131,10 @@ def create_app(
             data_root=resolved_settings.data_dir,
         )
         app.state.downloader_service = downloader_service
+        app.state.history_scan_service = HistoryScanService(
+            resolved_runtime.session_factory,
+            data_root=resolved_settings.data_dir,
+        )
         qbit_operations = QbittorrentAddOperationService(resolved_runtime.session_factory)
         app.state.qbittorrent_add_operation_service = qbit_operations
         qbit_recheck_operations = QbittorrentRecheckOperationService(
@@ -263,6 +269,7 @@ def create_app(
         app.state.task_action_service = TaskActionService(
             resolved_runtime.session_factory,
             task_linking_coordinator,
+            task_cancellation_coordinator,
             task_cancellation_coordinator,
         )
         task_recovery_coordinator = TaskRecoveryCoordinator(
@@ -406,6 +413,7 @@ def create_app(
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(downloader_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(history_scan_router, prefix="/api/v1")
     app.include_router(notification_router, prefix="/api/v1")
     app.include_router(site_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")

@@ -18,9 +18,19 @@ import {
   ArrowUpCircle,
   FileText,
   RotateCcw,
+  Plus,
 } from '@lucide/vue';
 import { ApiProblem } from '../api/client';
 import type { Task } from '../demo';
+import {
+  createHistoryScan,
+  listHistoryScans,
+  pauseHistoryScan,
+  resumeHistoryScan,
+  scanHistoryBatch,
+  startHistoryScan,
+  type HistoryScan,
+} from '../api/historyScans';
 import {
   getOperationMaintenanceReport,
   getOperationRetentionPlan,
@@ -53,67 +63,106 @@ const rules = reactive({
 const savedRules = ref('');
 const scanDialog = ref(false),
   scanPath = ref('/data/movies'),
-  scanKind = ref('影片'),
+  scanKind = ref<'影片' | '剧集'>('影片'),
   scanExclude = ref('sample, trailer, .incomplete'),
   scanTypes = ref('.mkv, .mp4, .m2ts');
-const scans = ref([
-  {
-    id: 'SCAN-001',
-    path: '/data/movies',
-    kind: '影片',
-    status: '已完成',
-    count: 128,
-    added: 12,
-    progress: 100,
-    cursor: 128,
-  },
-  {
-    id: 'SCAN-002',
-    path: '/data/tv',
-    kind: '剧集',
-    status: '已暂停',
-    count: 64,
-    added: 8,
-    progress: 62,
-    cursor: 40,
-  },
-]);
-function startScan() {
-  if (!scanPath.value.startsWith('/data/') || scanPath.value.split('/').includes('..')) {
+const scans = ref<HistoryScan[]>([]);
+const scanLoading = ref(false);
+const scanActionId = ref('');
+function splitScanRules(value: string): string[] {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+function replaceScan(scan: HistoryScan) {
+  const index = scans.value.findIndex((item) => item.id === scan.id);
+  if (index === -1) scans.value.unshift(scan);
+  else scans.value[index] = scan;
+}
+function scanStatusLabel(scan: HistoryScan): string {
+  return { READY: '待开始', SCANNING: '扫描中', PAUSED: '已暂停', DONE: '已完成' }[scan.status];
+}
+async function refreshHistoryScans() {
+  scanLoading.value = true;
+  try {
+    scans.value = await listHistoryScans();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '历史扫描读取失败');
+  } finally {
+    scanLoading.value = false;
+  }
+}
+async function startScan() {
+  if (
+    !(scanPath.value === '/data' || scanPath.value.startsWith('/data/')) ||
+    scanPath.value.split('/').includes('..')
+  ) {
     ElMessage.warning('请选择 /data/ 下的安全目录');
     return;
   }
-  const same = scans.value.find((s) => s.path === scanPath.value && s.status === '扫描中');
-  if (same) {
-    ElMessage.info('该目录已有演示扫描任务');
+  scanLoading.value = true;
+  try {
+    const created = await createHistoryScan({
+      root_path: scanPath.value,
+      media_kind: scanKind.value === '影片' ? 'MOVIE' : 'EPISODE',
+      extensions: splitScanRules(scanTypes.value),
+      exclude_patterns: splitScanRules(scanExclude.value),
+    });
+    const started = await startHistoryScan(created.id, created.version);
+    replaceScan(started);
     scanDialog.value = false;
-    return;
+    ElMessage.success('历史扫描已创建并开始；目录读取只记录元数据，不修改媒体文件');
+  } catch (error) {
+    await refreshHistoryScans();
+    ElMessage.error(error instanceof Error ? error.message : '历史扫描创建失败');
+  } finally {
+    scanLoading.value = false;
   }
-  scans.value.unshift({
-    id: `SCAN-${String(scans.value.length + 1).padStart(3, '0')}`,
-    path: scanPath.value,
-    kind: scanKind.value,
-    status: '扫描中',
-    count: 24,
-    added: 0,
-    progress: 0,
-    cursor: 0,
-  });
-  scanDialog.value = false;
-  ElMessage.success('演示扫描已创建，可点击「推进扫描」体验增量进度');
 }
-function advanceScan(scan: (typeof scans.value)[number]) {
-  scan.progress = Math.min(100, scan.progress + 50);
-  scan.cursor = Math.round((scan.count * scan.progress) / 100);
-  if (scan.progress === 100) {
-    scan.status = '已完成';
-    scan.added = 3;
+async function advanceScan(scan: HistoryScan) {
+  scanActionId.value = scan.id;
+  try {
+    const result = await scanHistoryBatch(scan.id, scan.version, 100);
+    replaceScan(result.scan);
+    ElMessage.success(
+      result.has_more
+        ? `本批处理 ${result.processed_count} 个文件，游标已持久化`
+        : `扫描完成：新增 ${result.scan.new_count}、变化 ${result.scan.changed_count}、未变化 ${result.scan.unchanged_count}`,
+    );
+  } catch (error) {
+    await refreshHistoryScans();
+    ElMessage.error(error instanceof Error ? error.message : '历史扫描推进失败');
+  } finally {
+    scanActionId.value = '';
   }
-  ElMessage.success(
-    scan.progress === 100
-      ? '扫描完成：3 个新增候选，21 个未变化项目已跳过'
-      : '演示扫描检查点已更新',
-  );
+}
+async function toggleScan(scan: HistoryScan) {
+  scanActionId.value = scan.id;
+  try {
+    const updated =
+      scan.status === 'PAUSED'
+        ? await resumeHistoryScan(scan.id, scan.version)
+        : await pauseHistoryScan(scan.id, scan.version);
+    replaceScan(updated);
+  } catch (error) {
+    await refreshHistoryScans();
+    ElMessage.error(error instanceof Error ? error.message : '历史扫描状态更新失败');
+  } finally {
+    scanActionId.value = '';
+  }
+}
+async function restartScan(scan: HistoryScan) {
+  scanActionId.value = scan.id;
+  try {
+    replaceScan(await startHistoryScan(scan.id, scan.version));
+    ElMessage.success('新一轮增量扫描已开始；未变化文件不会重复计为新增');
+  } catch (error) {
+    await refreshHistoryScans();
+    ElMessage.error(error instanceof Error ? error.message : '历史扫描启动失败');
+  } finally {
+    scanActionId.value = '';
+  }
 }
 const maintenanceReport = ref<OperationMaintenanceReport>();
 const maintenanceLoading = ref(false);
@@ -229,6 +278,7 @@ watch(
   () => props.page,
   (page) => {
     if (page === '清理与对账') void refreshMaintenanceCenter();
+    if (page === '历史辅种') void refreshHistoryScans();
   },
   { immediate: true },
 );
@@ -417,16 +467,16 @@ async function update() {
       <div class="stat">
         <div>扫描根目录</div>
         <strong>{{ scans.length }}</strong
-        ><small>合成目录，无真实访问</small>
+        ><small>真实 /data 目录，只读元数据扫描</small>
       </div>
       <div class="stat">
         <div>识别文件</div>
-        <strong>{{ scans.reduce((a, s) => a + s.cursor, 0) }}</strong
-        ><small>记录扫描检查点</small>
+        <strong>{{ scans.reduce((a, s) => a + s.discovered_count, 0) }}</strong
+        ><small>当前轮已处理文件</small>
       </div>
       <div class="stat">
-        <div>新增处理单元</div>
-        <strong>{{ scans.reduce((a, s) => a + s.added, 0) }}</strong
+        <div>新增 / 变化文件</div>
+        <strong>{{ scans.reduce((a, s) => a + s.new_count + s.changed_count, 0) }}</strong
         ><small>未变化文件自动跳过</small>
       </div>
       <div class="stat">
@@ -434,38 +484,50 @@ async function update() {
         <strong class="small-strong">增量扫描</strong><small>支持暂停与断点续扫</small>
       </div>
     </div>
+    <el-skeleton v-if="scanLoading && scans.length === 0" :rows="3" animated />
     <article class="panel scan-card" v-for="scan in scans" :key="scan.id">
       <div class="card-title">
         <FolderSearch :size="26" />
         <div>
-          <h3>{{ scan.path }}</h3>
-          <small>{{ scan.id }} · {{ scan.kind }} · 游标 {{ scan.cursor }} / {{ scan.count }}</small>
+          <h3>{{ scan.root_path }}</h3>
+          <small
+            >{{ scan.id }} · {{ scan.media_kind === 'MOVIE' ? '影片' : '剧集' }} · 第
+            {{ scan.generation }} 轮 · 游标 {{ scan.cursor ?? '未开始' }}</small
+          >
         </div>
-        <el-tag :type="scan.status === '已完成' ? 'success' : 'primary'">{{ scan.status }}</el-tag>
+        <el-tag
+          :type="
+            scan.status === 'DONE' ? 'success' : scan.status === 'PAUSED' ? 'warning' : 'primary'
+          "
+          >{{ scanStatusLabel(scan) }}</el-tag
+        >
       </div>
-      <el-progress :percentage="scan.progress" :stroke-width="5" />
       <div class="scan-bottom">
-        <span>新增 {{ scan.added }} 项 · 只处理新建或变化的内容</span>
+        <span
+          >已处理 {{ scan.discovered_count }} · 新增 {{ scan.new_count }} · 变化
+          {{ scan.changed_count }} · 未变化 {{ scan.unchanged_count }}</span
+        >
         <div>
-          <el-button v-if="scan.status === '扫描中'" size="small" @click="advanceScan(scan)"
+          <el-button
+            v-if="scan.status === 'SCANNING'"
+            size="small"
+            :loading="scanActionId === scan.id"
+            @click="advanceScan(scan)"
             >推进扫描</el-button
           ><el-button
-            v-if="scan.status === '扫描中' || scan.status === '已暂停'"
+            v-if="scan.status === 'SCANNING' || scan.status === 'PAUSED'"
             size="small"
-            @click="scan.status = scan.status === '已暂停' ? '扫描中' : '已暂停'"
-            >{{ scan.status === '已暂停' ? '断点续扫' : '暂停' }}</el-button
+            :disabled="scanActionId === scan.id"
+            @click="toggleScan(scan)"
+            >{{ scan.status === 'PAUSED' ? '断点续扫' : '暂停' }}</el-button
           ><el-button
-            v-if="scan.status === '已完成'"
+            v-if="scan.status === 'READY' || scan.status === 'DONE'"
             size="small"
             type="primary"
             plain
-            @click="
-              emit(
-                'createHistory',
-                scan.kind === '影片' ? '历史影片 · 扫描示例' : '历史剧集 · 扫描示例',
-              )
-            "
-            >生成示例预演</el-button
+            :loading="scanActionId === scan.id"
+            @click="restartScan(scan)"
+            >{{ scan.status === 'DONE' ? '再次增量扫描' : '开始扫描' }}</el-button
           >
         </div>
       </div>
@@ -885,12 +947,14 @@ async function update() {
       ><el-form-item label="文件类型"><el-input v-model="scanTypes" /></el-form-item
       ><el-form-item label="排除规则"><el-input v-model="scanExclude" /></el-form-item
       ><el-alert
-        title="模拟增量扫描，重复触发不重复创建活跃扫描；结果进入人工预演。"
+        title="真实只读增量扫描：仅记录 /data 内普通文件元数据；符号链接会跳过，重复扫描未变化文件不会重复计为新增。"
         type="info"
         :closable="false" /></el-form
     ><template #footer
       ><el-button @click="scanDialog = false">取消</el-button
-      ><el-button type="primary" @click="startScan">开始演示扫描</el-button></template
+      ><el-button type="primary" :loading="scanLoading" @click="startScan"
+        >创建并开始扫描</el-button
+      ></template
     ></el-dialog
   >
   <el-dialog v-model="restore" title="确认恢复范围（演示）" width="min(560px, 94vw)"
