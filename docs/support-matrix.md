@@ -10,7 +10,7 @@
 | Linux 其他架构 | 未声明支持 | 尚无构建、恢复和性能验收矩阵。 |
 | Windows / macOS 原生生产运行 | 未声明支持 | 可用于开发，但 v1.0 生产部署以 Linux 容器为边界。 |
 
-当前开发 Runner 没有 Docker daemon，但 GitHub Actions CI run `34851129257` 已在 `ubuntu-latest` Docker 环境实际完成镜像构建、空配置启动/readiness、preflight、一致性备份、停服务离线 verify/restore 与重启 readiness。正式 release-to-release 的跨镜像升级/回滚仍需在首个正式 tag 之后继续积累证据。
+当前开发 Runner 没有 Docker daemon，但 GitHub Actions CI run `34851129257` 已在 `ubuntu-latest` Docker 环境实际完成镜像构建、空配置启动/readiness、preflight、一致性备份、停服务离线 verify/restore 与重启 readiness。首个正式 `v0.1.0` 已由 Release workflow run `34861933795` 发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:f7a396acb8382af5815081b66956dcb752b1e7abe65b9a52579c94b2c2d91fce`；正式 release-to-release 的跨镜像升级/回滚从下一版本开始积累证据。
 
 ## 2. 下载器
 
@@ -46,7 +46,7 @@
 - 生产升级使用不可变 `<image>@sha256:<digest>`；`stable` 只用于发现，不是部署身份。
 - 数据库升级先创建 `pre-upgrade` 一致性快照，在同文件系统临时副本完成迁移与验证后再原子切换。
 - 生产回滚不依赖 Alembic 原地 downgrade；旧镜像不能读取新 schema 时必须恢复兼容的升级前/离线备份。
-- 首个正式 release 之前不存在“上一正式 release 镜像 → 当前 release 镜像”的跨镜像升级矩阵；该证据只能在首个正式 tag 后开始积累。
+- `v0.1.0` 是首个正式 release，因此没有上一正式镜像可用于真实跨镜像升级/回滚矩阵；从下一正式 release 起，必须加入 `v0.1.0` → 新镜像 → 回滚 `v0.1.0` 的运行级证据。
 
 ## 6. 兼容承诺原则
 

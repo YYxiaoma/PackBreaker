@@ -13,9 +13,9 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 | 升级兼容矩阵 | 🟡 进行中 | 已自动覆盖 22 个历史 Alembic revision（0001～0022）→ `0023_backup_policy`、空配置原子首装、迁移失败不切换和 Runtime 启动安全升级；上一正式 release 跨镜像演练需首个 release 后补证 |
 | 真实依赖健康/仪表盘 | ✅ 代码闭环 | `/system/health` 已聚合 runtime、磁盘、备份、任务/operation 风险、站点/下载器既有证据、通知与后台 driver，前端总览直接消费 typed OpenAPI；读取页面不主动访问外部服务 |
 | 日志与诊断导出 | ✅ 代码闭环 | stdout JSON + `/config/logs` 有界轮转日志、7 天最大查询窗口、查询/导出条数硬限制、typed API 与前端筛选/导出已接通；诊断 ZIP 继续独立且默认不含日志，日志/诊断均有泄漏 canary |
-| 镜像/SBOM/发布产物 | 🟡 进行中 | Dockerfile 基础镜像已精确版本+digest 固定；tag release workflow 生成 linux/amd64 最终 digest、SPDX JSON SBOM、release manifest、SHA256SUMS 与 release notes；真实 tag/registry 运行仍待取得证据 |
+| 镜像/SBOM/发布产物 | ✅ 发布闭环 | `v0.1.0` Release workflow run `34861933795` 已真实发布 linux/amd64 GHCR 镜像、SPDX JSON SBOM、release manifest、SHA256SUMS 与 GitHub Release；公开 `0.1.0`、`stable` 和 manifest 均指向 `sha256:f7a396acb8382af5815081b66956dcb752b1e7abe65b9a52579c94b2c2d91fce` |
 | 运维 runbook/用户手册 | 🟡 进行中 | 已补 Compose 备份/停止/恢复/readiness/回滚步骤；GitHub container 恢复演练已跑绿，升级中心已接真实本地 preflight、升级前备份和不可变 digest 手工 runbook；正式 release-to-release 跨镜像升级/回滚仍需首个正式 tag 后积累 |
-| v1.0 全量验收 | ✅ 验收闭环 | 25 条验收项已建立机器可校验证据索引：21 条自动化/CI 覆盖、4 条现场证据、0 条 `pending_external`；正式 tag 的 registry/SBOM/Release 资产作为发布供应链证据单独收口 |
+| v1.0 全量验收 | ✅ 验收闭环 | 25 条验收项已建立机器可校验证据索引：21 条自动化/CI 覆盖、4 条现场证据、0 条 `pending_external`；首个正式 tag 的 registry/SBOM/Release 供应链证据也已完成 |
 
 ## 3. 一致性备份首批能力
 
@@ -84,4 +84,4 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 
 ## 12. 下一阶段退出证据
 
-当前代码侧已取得备份/计划调度、恢复、安全升级矩阵、真实本地升级中心、统一健康仪表盘、持久日志查询/导出与诊断脱敏证据；GitHub CI run `34851129257` 的 `quality`、`browser-e2e`、`container` 三条门禁已全部跑绿。下一开发小阶段聚焦首个正式 tag 的 GHCR digest、SPDX SBOM、release manifest/资产，以及首个 release 之后才能形成的跨镜像升级/回滚证据。
+当前代码侧已取得备份/计划调度、恢复、安全升级矩阵、真实本地升级中心、统一健康仪表盘、持久日志查询/导出与诊断脱敏证据；GitHub CI run `34851129257` 的 `quality`、`browser-e2e`、`container` 三条门禁已全部跑绿，`v0.1.0` Release workflow run `34861933795` 的镜像、SBOM、manifest、checksums、GitHub Release 与 `stable` 推进也已完成。下一阶段只剩首个正式版本天然无法提供的“上一正式镜像 → 当前镜像 → 回滚上一镜像”运行级证据；该证据从下一正式 release 开始积累。

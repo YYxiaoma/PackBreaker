@@ -44,6 +44,6 @@ Buildx 同时开启 provenance 元数据，但当前 M6 不把它表述为独立
 
 release manifest 不保存凭证、数据库或真实环境路径。SBOM 从已经按 digest 推送的镜像生成，因此其输入与发布清单中的镜像身份一致。
 
-## 5. 当前证据缺口
+## 5. 当前发布证据
 
-代码与 workflow 已完成；GitHub Actions CI run `34851129257` 已实际跑绿 `quality`、`browser-e2e` 与 `container`，其中 container 覆盖镜像构建、空配置启动/readiness、preflight、一致性备份、停服务离线 verify/restore 与恢复后 readiness。当前唯一尚未取得的发布供应链实证来自正式 tag：真实 GHCR registry digest、SPDX SBOM、release manifest、`SHA256SUMS` 和 GitHub Release 资产必须由首次 tag workflow 实际生成并验收。
+代码与 workflow 已完成；GitHub Actions CI run `34851129257` 已实际跑绿 `quality`、`browser-e2e` 与 `container`，其中 container 覆盖镜像构建、空配置启动/readiness、preflight、一致性备份、停服务离线 verify/restore 与恢复后 readiness。`v0.1.0` Release workflow run `34861933795` 已真实生成并发布 GHCR registry digest、SPDX SBOM、release manifest、`SHA256SUMS` 与 GitHub Release 资产；独立下载复核确认 manifest commit 为 `2783718c3f531d3ac39af9e40344c1af492d3e18`，SBOM SHA-256 与 manifest/`SHA256SUMS` 一致，公开 `0.1.0`、`stable` 与不可变引用均解析到 `sha256:f7a396acb8382af5815081b66956dcb752b1e7abe65b9a52579c94b2c2d91fce`。

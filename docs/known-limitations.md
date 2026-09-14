@@ -11,9 +11,9 @@
 ## 2. 发布与容器证据
 
 - 正式发布目标当前只有 `linux/amd64`。
-- 当前开发 Runner 无 Docker daemon；GitHub Actions CI run `34851129257` 已取得空配置启动、离线 verify/restore 与重启 readiness 的真实 Docker 证据。仍未取得“上一正式 release 镜像 → 当前正式 release 镜像”的跨镜像升级/回滚实证，因为首个正式 tag 尚未发布。
-- 尚未创建首个正式 `v<version>` tag，所以真实 GHCR image digest、SPDX SBOM、`SHA256SUMS` 和 GitHub Release 资产还没有发布级实证。
-- 首个正式 release 之前没有上一正式镜像可用于跨镜像升级/回滚矩阵。当前 Alembic 历史 revision 矩阵只能证明数据库 schema 路径和原子回滚机制。
+- 当前开发 Runner 无 Docker daemon；GitHub Actions CI run `34851129257` 已取得空配置启动、离线 verify/restore 与重启 readiness 的真实 Docker 证据。
+- `v0.1.0` 已作为首个正式版本由 Release workflow run `34861933795` 发布；公开 GHCR `0.1.0`、`stable` 与 release manifest 均指向 `sha256:f7a396acb8382af5815081b66956dcb752b1e7abe65b9a52579c94b2c2d91fce`，SPDX SBOM、`SHA256SUMS` 和 GitHub Release 资产已完成独立校验。
+- `v0.1.0` 是首个正式镜像，因此仍不存在“上一正式 release 镜像 → 当前正式 release 镜像”的真实跨镜像升级/回滚样本。该矩阵只能从下一正式 release 开始积累；当前 Alembic 历史 revision、临时副本迁移和失败回滚测试继续覆盖数据库级安全边界。
 
 ## 3. 升级与 Docker 权限
 
