@@ -15,8 +15,6 @@ import {
   Server,
   Bell,
   LockKeyhole,
-  ArrowUpCircle,
-  FileText,
   RotateCcw,
   Plus,
 } from '@lucide/vue';
@@ -48,7 +46,10 @@ import DownloaderManagement from './DownloaderManagement.vue';
 import SiteManagement from './SiteManagement.vue';
 import ApiTokenManagement from './AutomationAccessManagement.vue';
 import NotificationManagement from './NotificationManagement.vue';
-const props = defineProps<{ page: string; tasks: Task[] }>();
+import OperationalLogs from './OperationalLogs.vue';
+import BackupManagement from './BackupManagement.vue';
+import UpgradeCenter from './UpgradeCenter.vue';
+const props = defineProps<{ page: string }>();
 const emit = defineEmits<{
   export: [unknown, string];
   open: [Task];
@@ -490,73 +491,6 @@ watch(
 onUnmounted(() => {
   if (historyRefreshTimer !== undefined) clearInterval(historyRefreshTimer);
 });
-const logLevel = ref(''),
-  logQuery = ref(''),
-  logTask = ref(''),
-  logTime = ref('全部时间');
-const baseLogs = [
-  {
-    level: 'INFO',
-    time: '14:32:08',
-    task: 'PB-248',
-    stage: 'VERIFYING',
-    message: '候选 piece 校验进度 72%，源文件快照一致',
-  },
-  {
-    level: 'WARN',
-    time: '14:28:32',
-    task: 'PB-245',
-    stage: 'MATCHING',
-    message: 'FILE_MAPPING_AMBIGUOUS：源文件映射存在歧义，等待人工确认',
-  },
-  {
-    level: 'INFO',
-    time: '14:25:16',
-    task: 'PB-247',
-    stage: 'PREFLIGHT',
-    message: '预演已生成，FULL_VERIFIED；等待用户确认',
-  },
-  {
-    level: 'ERROR',
-    time: '14:12:01',
-    task: 'PB-241',
-    stage: 'PREFLIGHT',
-    message: 'CROSS_DEVICE_LINK：设备 ID 不一致，阻断硬链接',
-  },
-  {
-    level: 'INFO',
-    time: '14:09:26',
-    task: 'PB-244',
-    stage: 'SEEDING',
-    message: '客户端校验 100%，模拟确认辅种完成',
-  },
-  {
-    level: 'DEBUG',
-    time: '14:08:00',
-    task: 'PB-248',
-    stage: 'SEARCHING',
-    message: '站点缓存命中；鉴权字段已省略',
-  },
-];
-const logs = computed(() =>
-  [
-    ...props.tasks.flatMap((t) =>
-      t.events
-        .slice(2)
-        .map((e) => ({ level: 'INFO', time: '14:35:00', task: t.id, stage: t.state, message: e })),
-    ),
-    ...baseLogs,
-  ].filter(
-    (l) =>
-      (!logLevel.value || l.level === logLevel.value) &&
-      (!logTask.value || l.task === logTask.value) &&
-      (!logQuery.value ||
-        `${l.message} demo-${l.task} ${l.stage}`
-          .toLowerCase()
-          .includes(logQuery.value.toLowerCase())) &&
-      (logTime.value !== '最近 15 分钟' || l.time >= '14:20:00'),
-  ),
-);
 const settingTab = ref('常规'),
   settings = reactive({
     timezone: 'Asia/Shanghai',
@@ -565,29 +499,10 @@ const settingTab = ref('常规'),
     notification: '任务完成与失败',
     port: 8000,
   });
-const backupReady = ref(false),
-  restore = ref(false),
-  restoreConfirmed = ref(false),
-  updateChecked = ref(false),
-  docker = ref(false),
-  updated = ref(false),
-  failUpdate = ref(false);
-async function update() {
-  try {
-    await ElMessageBox.confirm(
-      '模拟从 v0.1.0 升级到 v0.1.1：创建备份 → 更新 → 健康检查；失败将展示回滚。不会访问 Docker 或重建容器。',
-      '确认升级演示',
-      { confirmButtonText: '开始演示', cancelButtonText: '取消', type: 'warning' },
-    );
-    updated.value = true;
-    ElMessage.info(
-      failUpdate.value ? '演示健康检查失败，已模拟回滚至 v0.1.0' : '演示升级完成，健康检查通过',
-    );
-  } catch {}
-}
 </script>
 <template>
-  <DownloaderManagement v-if="page === '下载器'" />
+  <OperationalLogs v-if="page === '日志'" />
+  <DownloaderManagement v-else-if="page === '下载器'" />
   <SiteManagement v-else-if="page === '站点管理'" />
   <div v-else-if="page === '规则配置'" class="settings-layout">
     <div class="panel">
@@ -1090,50 +1005,6 @@ async function update() {
       </div>
     </section>
   </div>
-  <div v-else-if="page === '日志'">
-    <div class="section-heading">
-      <h2>运行日志 <small>合成日志 · 凭证字段不进入日志</small></h2>
-      <el-button @click="emit('export', logs, 'PackBreaker-日志示例.json')"
-        ><Download :size="15" />导出当前结果</el-button
-      >
-    </div>
-    <div class="filters log-filters">
-      <el-input v-model="logQuery" placeholder="搜索内容、错误码、trace_id" clearable
-        ><template #prefix><Search :size="16" /></template></el-input
-      ><el-select v-model="logLevel" placeholder="全部级别" clearable
-        ><el-option
-          v-for="l in ['DEBUG', 'INFO', 'WARN', 'ERROR']"
-          :key="l"
-          :value="l" /></el-select
-      ><el-select v-model="logTask" placeholder="全部任务" clearable
-        ><el-option v-for="t in tasks" :key="t.id" :value="t.id" /></el-select
-      ><el-select v-model="logTime"
-        ><el-option value="全部时间" /><el-option value="最近 15 分钟"
-      /></el-select>
-    </div>
-    <div class="panel log-panel">
-      <article v-for="(l, i) in logs" :key="i" class="log-line">
-        <time>{{ l.time }}</time
-        ><el-tag
-          :type="
-            l.level === 'ERROR'
-              ? 'danger'
-              : l.level === 'WARN'
-                ? 'warning'
-                : l.level === 'DEBUG'
-                  ? 'info'
-                  : 'primary'
-          "
-          >{{ l.level }}</el-tag
-        >
-        <div>
-          <b>{{ l.message }}</b
-          ><small>{{ l.task }} · {{ l.stage }} · trace_id: demo-{{ l.task }}</small>
-        </div>
-      </article>
-      <el-empty v-if="!logs.length" description="没有符合条件的日志" />
-    </div>
-  </div>
   <div v-else-if="page === '系统设置'" class="panel">
     <el-tabs v-model="settingTab"
       ><el-tab-pane
@@ -1206,90 +1077,10 @@ async function update() {
     </div>
     <div v-else class="settings-content">
       <h3>备份与恢复</h3>
-      <el-alert
-        title="演示导出仅含合成配置，不是可用于生产恢复的数据库备份。"
-        type="info"
-        :closable="false"
-      />
-      <div class="backup-card">
-        <FileText :size="28" />
-        <div>
-          <b>演示配置快照</b>
-          <p>规则、非敏感设置 · 不含凭证</p>
-        </div>
-        <el-button
-          type="primary"
-          @click="
-            backupReady = true;
-            emit('export', { mode: 'prototype', rules, settings }, 'PackBreaker-演示配置.json');
-          "
-          >导出示例</el-button
-        >
-      </div>
-      <el-button
-        @click="
-          restore = true;
-          restoreConfirmed = false;
-        "
-        >体验恢复确认</el-button
-      >
-      <p v-if="backupReady" class="green">演示配置已导出。</p>
-      <h3 class="detail-section-title">正式恢复流程（计划）</h3>
-      <p class="muted">
-        验证备份可读 → 检查数据库版本 → 暂停任务 → 恢复一致性快照 → 健康检查 →
-        失败回滚。包含凭证的备份须再次加密，主密钥独立保管。
-      </p>
+      <BackupManagement />
     </div>
   </div>
-  <div v-else-if="page === '升级中心'" class="settings-layout">
-    <section class="panel">
-      <div class="version-icon"><BoxIcon /></div>
-      <h3>
-        PackBreaker
-        <span class="version-number">v{{ updated && !failUpdate ? '0.1.1' : '0.1.0' }}</span>
-      </h3>
-      <p class="muted">交互原型 · 演示版本</p>
-      <div class="setting-row">
-        <div>
-          <b>启用 Docker 管理入口</b>
-          <p>生产环境需显式挂载 docker.sock，具有 Docker 管理权限。</p>
-        </div>
-        <el-switch v-model="docker" />
-      </div>
-      <el-button
-        @click="
-          updateChecked = true;
-          ElMessage.success('演示发现 v0.1.1');
-        "
-        ><RefreshCw :size="15" />模拟检查更新</el-button
-      >
-      <div v-if="updateChecked" class="update-release">
-        <h3>v0.1.1 · 演示更新</h3>
-        <p>改善任务审核体验与日志筛选；数据库版本兼容。</p>
-        <el-checkbox v-model="failUpdate">模拟健康检查失败，体验回滚</el-checkbox>
-        <div class="section-space">
-          <el-button type="primary" :disabled="!docker" @click="update">模拟升级</el-button>
-          <p v-if="!docker" class="muted">请先显式启用上方演示管理入口。</p>
-        </div>
-      </div>
-    </section>
-    <section class="panel">
-      <h3>升级流程</h3>
-      <el-steps
-        direction="vertical"
-        :active="updated ? 4 : 0"
-        finish-status="success"
-        class="update-steps"
-        ><el-step title="创建并校验备份" description="数据库与非敏感配置" /><el-step
-          title="更新应用"
-          description="检查镜像与数据库版本" /><el-step
-          title="健康检查"
-          :description="updated && failUpdate ? '演示检查失败' : '存活、就绪与迁移状态'" /><el-step
-          :title="updated && failUpdate ? '回滚至原版本' : '完成更新'"
-          :description="updated ? '演示操作完成' : '保留可恢复备份'"
-      /></el-steps>
-    </section>
-  </div>
+  <UpgradeCenter v-else-if="page === '升级中心'" />
   <el-dialog v-model="scanDialog" title="新建历史扫描" width="min(560px, 94vw)"
     ><el-form label-position="top"
       ><el-form-item label="扫描根目录"><el-input v-model="scanPath" /></el-form-item
@@ -1309,31 +1100,4 @@ async function update() {
       ></template
     ></el-dialog
   >
-  <el-dialog v-model="restore" title="确认恢复范围（演示）" width="min(560px, 94vw)"
-    ><el-alert
-      title="将模拟替换演示配置并暂停活动任务；不修改真实配置或数据库。"
-      type="warning"
-      :closable="false"
-    />
-    <p>备份：packbreaker-demo-v0.1 · 完整性检查通过（合成结果）。</p>
-    <el-checkbox v-model="restoreConfirmed">我已了解恢复范围及备份要求</el-checkbox
-    ><template #footer
-      ><el-button @click="restore = false">取消</el-button
-      ><el-button
-        :disabled="!restoreConfirmed"
-        type="primary"
-        @click="
-          restore = false;
-          ElMessage.success('已完成恢复确认演示；未实际替换配置');
-        "
-        >模拟恢复</el-button
-      ></template
-    ></el-dialog
-  >
 </template>
-
-<script lang="ts">
-import { defineComponent, h } from 'vue';
-import { Box } from '@lucide/vue';
-const BoxIcon = defineComponent({ setup: () => () => h(Box, { size: 35 }) });
-</script>

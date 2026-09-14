@@ -33,6 +33,12 @@ class MasterKeyFile:
         return MasterKeyFile._read(path)
 
     @staticmethod
+    def load_existing(path: Path) -> bytes:
+        """只读取并验证现有主密钥；发布预检不得隐式创建新密钥。"""
+
+        return MasterKeyFile._read(path)
+
+    @staticmethod
     def _create(path: Path) -> None:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         flags |= getattr(os, "O_CLOEXEC", 0)

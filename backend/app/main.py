@@ -20,6 +20,7 @@ from backend.app.api.system import router as system_router
 from backend.app.api.tasks import router as task_router
 from backend.app.application.auth import AuthService
 from backend.app.application.automation_access import ApiTokenService
+from backend.app.application.backup_schedule import BackupDriver, BackupScheduleService
 from backend.app.application.downloader_operations import (
     QbittorrentAddOperationService,
     QbittorrentJournalReconcileService,
@@ -330,9 +331,19 @@ def create_app(
         )
         app.state.notification_driver = notification_driver
         notification_driver.start()
+        backup_schedule_service = BackupScheduleService(resolved_runtime.session_factory)
+        app.state.backup_schedule_service = backup_schedule_service
+        backup_driver = BackupDriver(
+            backup_schedule_service,
+            settings=resolved_settings,
+            interval_seconds=resolved_settings.backup_driver_interval_seconds,
+        )
+        app.state.backup_driver = backup_driver
+        backup_driver.start()
         try:
             yield
         finally:
+            await backup_driver.stop()
             await notification_driver.stop()
             await history_scan_driver.stop()
             await task_driver.stop()

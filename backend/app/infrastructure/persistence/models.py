@@ -57,6 +57,29 @@ _HISTORY_MATERIALIZATION_STATUS_SQL = ", ".join(
 )
 
 
+class BackupPolicy(Base):
+    __tablename__ = "backup_policy"
+    __table_args__ = (
+        CheckConstraint("id = 'default'", name="singleton"),
+        CheckConstraint("interval_hours BETWEEN 1 AND 168", name="interval_hours"),
+        CheckConstraint("retention_days BETWEEN 1 AND 3650", name="retention_days"),
+        CheckConstraint("keep_latest BETWEEN 1 AND 100", name="keep_latest"),
+        CheckConstraint("version >= 1", name="version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default="default")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    interval_hours: Mapped[int] = mapped_column(nullable=False, default=24)
+    retention_days: Mapped[int] = mapped_column(nullable=False, default=30)
+    keep_latest: Mapped[int] = mapped_column(nullable=False, default=3)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class Administrator(Base):
     __tablename__ = "administrator"
     __table_args__ = (CheckConstraint("id = 'admin'", name="singleton"),)

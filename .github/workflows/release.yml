@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install uv
+        run: python -m pip install "uv==0.12.11"
+      - name: Enable pinned pnpm
+        run: corepack enable && corepack install --global pnpm@10.34.5
+      - name: Install project dependencies
+        run: |
+          uv sync --frozen --all-groups
+          corepack pnpm --dir frontend install --frozen-lockfile
+      - name: Validate release tag
+        run: uv run python scripts/release_manifest.py --tag "$GITHUB_REF_NAME" --validate-tag-only
+      - name: Refuse an existing GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::GitHub Release already exists for $GITHUB_REF_NAME"
+            exit 1
+          fi
+      - name: Run release quality gates
+        run: |
+          uv run python scripts/check.py
+          uv run python scripts/test.py
+      - name: Prepare immutable image name and build timestamp
+        id: release_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME#v}"
+          created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p release
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "created=$created" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse an existing immutable version image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ steps.release_meta.outputs.image }}"
+          version="${{ steps.release_meta.outputs.version }}"
+          if docker buildx imagetools inspect "$image:$version" >/dev/null 2>&1; then
+            echo "::error::release image already exists: $image:$version"
+            exit 1
+          fi
+      - name: Build and publish linux/amd64 image
+        id: build
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          tags: |
+            ${{ steps.release_meta.outputs.image }}:${{ steps.release_meta.outputs.version }}
+          build-args: |
+            VERSION=${{ steps.release_meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.release_meta.outputs.created }}
+      - name: Generate SPDX SBOM from immutable image digest
+        uses: anchore/sbom-action@v0.24.2
+        with:
+          image: ${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: spdx-json
+          output-file: release/packbreaker-${{ steps.release_meta.outputs.version }}.spdx.json
+          artifact-name: packbreaker-${{ steps.release_meta.outputs.version }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate release manifest and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python scripts/release_manifest.py \
+            --tag "$GITHUB_REF_NAME" \
+            --image "${{ steps.release_meta.outputs.image }}" \
+            --image-digest "${{ steps.build.outputs.digest }}" \
+            --commit "$GITHUB_SHA" \
+            --sbom "release/packbreaker-${{ steps.release_meta.outputs.version }}.spdx.json" \
+            --output "release/packbreaker-${{ steps.release_meta.outputs.version }}.release.json" \
+            --generated-at "${{ steps.release_meta.outputs.created }}"
+          (cd release && sha256sum *.json > SHA256SUMS)
+      - name: Upload release evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packbreaker-${{ steps.release_meta.outputs.version }}-release-evidence
+          path: release/
+          if-no-files-found: error
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --verify-tag \
+            --title "PackBreaker $GITHUB_REF_NAME" \
+            --generate-notes
+      - name: Advance stable channel only after release evidence is published
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${{ steps.release_meta.outputs.image }}:stable" \
+            "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"

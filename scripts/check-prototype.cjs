@@ -1,16 +1,27 @@
-// 使用已安装的 Playwright，默认检查本机 5173，不连接外部站点。
+// 使用已安装的 Playwright bundled Chromium；可用 PB_BROWSER 覆盖，不连接外部站点。
 const { chromium } = require(process.env.PB_PLAYWRIGHT || '../frontend/node_modules/playwright');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
 (async()=>{
-  const requestedBrowser=process.env.PB_BROWSER||'msedge';
+  const requestedBrowser=process.env.PB_BROWSER||'bundled';
   const launchOptions={headless:true};
   if(requestedBrowser!=='bundled') launchOptions.channel=requestedBrowser;
   const browser=await chromium.launch(launchOptions);
   const page=await browser.newPage({viewport:{width:1440,height:1050}});
   const errors=[];
+  const unmockedApiCalls=[];
+  await page.route('**/api/v1/**',route=>{
+    const request=route.request();
+    const url=new URL(request.url());
+    unmockedApiCalls.push(`${request.method()} ${url.pathname}`);
+    return route.fulfill({
+      status:501,
+      contentType:'application/problem+json',
+      body:JSON.stringify({code:'E2E_UNMOCKED_API',detail:'浏览器门禁禁止访问未显式 mock 的 API'}),
+    });
+  });
   page.on('pageerror',e=>errors.push(e.message));
   const output=path.resolve(__dirname,'../frontend/test-results');fs.mkdirSync(output,{recursive:true});
   try {
@@ -183,6 +194,76 @@ const path = require('node:path');
       verification_level:id==='task-e2e-execute'?'CLIENT_CHECK_REQUIRED':'FULL_VERIFIED',
     });
     const fulfillJson=(route,body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
+    await page.route('**/api/v1/system/health',route=>fulfillJson(route,{
+      status:'ok',generated_at:now(),version:'0.1.0',checks:[],
+    }));
+    await page.route('**/api/v1/system/release/preflight',route=>fulfillJson(route,{
+      status:'ready',app_version:'0.1.0',checks:[
+        {name:'config_dir',status:'ok',code:'CONFIG_DIR_OK',detail:'配置目录权限与可写性通过'},
+        {name:'database',status:'ok',code:'DATABASE_OK',detail:'SQLite integrity_check 与 migration head 通过（0023_backup_policy）'},
+        {name:'secret_key',status:'ok',code:'SECRET_KEY_OK',detail:'主密钥存在且安全自检通过'},
+        {name:'data_root',status:'ok',code:'DATA_ROOT_OK',detail:'数据根目录可见；预检未遍历或修改任何媒体文件'},
+        {name:'docker_socket',status:'ok',code:'DOCKER_SOCKET_ABSENT',detail:'未检测到 docker.sock，符合默认最小权限部署'},
+        {name:'backup_exercise',status:'warning',code:'BACKUP_EXERCISE_SKIPPED',detail:'页面只读预检显式跳过一致性备份创建/验证演练'},
+      ],
+    }));
+    await page.route('**/api/v1/system/logs**',route=>fulfillJson(route,{
+      window_minutes:60,limit:200,count:0,truncated:false,max_file_bytes:2097152,backup_count:4,approximate_capacity_bytes:10485760,items:[],
+    }));
+    let backupRuns=0;
+    let backupPolicy={
+      enabled:false,interval_hours:24,retention_days:30,keep_latest:3,version:1,last_attempt_at:null,last_success_at:null,last_error_code:null,driver_running:true,driver_consecutive_errors:0,
+    };
+    await page.route('**/api/v1/system/backups/policy',route=>{
+      const request=route.request();
+      if(request.method()==='GET')return route.fulfill({status:200,contentType:'application/json',headers:{ETag:`\"${backupPolicy.version}\"`},body:JSON.stringify(backupPolicy)});
+      if(request.method()==='PUT'){
+        assert.equal(request.headers()['if-match'],`\"${backupPolicy.version}\"`,'备份策略更新必须绑定当前强 If-Match');
+        backupPolicy={...backupPolicy,...request.postDataJSON(),version:backupPolicy.version+1};
+        return route.fulfill({status:200,contentType:'application/json',headers:{ETag:`\"${backupPolicy.version}\"`},body:JSON.stringify(backupPolicy)});
+      }
+      return fulfillJson(route,{code:'METHOD_NOT_ALLOWED',detail:'E2E backup policy method'},405);
+    });
+    await page.route('**/api/v1/system/backups/actions',route=>{
+      const request=route.request();
+      assert.equal(request.method(),'POST');
+      assert.deepEqual(request.postDataJSON(),{action:'run_now'});
+      backupRuns+=1;
+      const createdAt=now();
+      backupPolicy={...backupPolicy,last_attempt_at:createdAt,last_success_at:createdAt,last_error_code:null};
+      return fulfillJson(route,{created:true,created_at:createdAt,database_file:'packbreaker-e2e.db',database_size_bytes:4096,retention_deleted_count:0,retention_blocked_count:0,retention_error_code:null,skipped_reason:null});
+    });
+    let historyScan;
+    let historyBatchCount=0;
+    const scanView=(overrides={})=>({
+      id:'history-e2e',root_path:'/data/movies',media_kind:'MOVIE',extensions:['.mkv'],exclude_patterns:['sample'],status:'READY',generation:0,cursor:null,discovered_count:0,new_count:0,changed_count:0,unchanged_count:0,version:1,last_started_at:null,last_completed_at:null,created_at:now(),updated_at:now(),...overrides,
+    });
+    await page.route('**/api/v1/history-scans**',route=>{
+      const request=route.request();
+      const url=new URL(request.url());
+      if(url.pathname==='/api/v1/history-scans'&&request.method()==='GET')return fulfillJson(route,{items:historyScan?[historyScan]:[]});
+      if(url.pathname==='/api/v1/history-scans'&&request.method()==='POST'){
+        const body=request.postDataJSON();
+        historyScan=scanView({root_path:body.root_path,media_kind:body.media_kind,extensions:body.extensions,exclude_patterns:body.exclude_patterns??[]});
+        return fulfillJson(route,historyScan,201);
+      }
+      if(url.pathname==='/api/v1/history-scans/history-e2e/actions'&&request.method()==='POST'){
+        assert.ok(historyScan,'历史扫描动作前必须先创建扫描');
+        assert.equal(request.headers()['if-match'],`\"${historyScan.version}\"`,'历史扫描动作必须绑定当前强 If-Match');
+        const body=request.postDataJSON();
+        if(body.action==='start'){
+          historyScan={...historyScan,status:'SCANNING',generation:1,version:historyScan.version+1,last_started_at:now(),updated_at:now()};
+          return fulfillJson(route,historyScan);
+        }
+        if(body.action==='scan'){
+          historyBatchCount+=1;
+          const done=historyBatchCount>=2;
+          historyScan={...historyScan,status:done?'DONE':'SCANNING',cursor:done?'movie-002.mkv':'movie-001.mkv',discovered_count:historyBatchCount,new_count:historyBatchCount,version:historyScan.version+1,last_completed_at:done?now():null,updated_at:now()};
+          return fulfillJson(route,{scan:historyScan,processed_count:1,has_more:!done});
+        }
+      }
+      return fulfillJson(route,{code:'NOT_FOUND',detail:'E2E history route not found'},404);
+    });
     const e2eDownloader={
       id:'qb-e2e',name:'qB E2E',type:'QBITTORRENT',base_url:'http://qb-e2e.local',credential_configured:true,
       monitor_rules:{category:'packbreaker'},path_mappings:[{remote_prefix:'/downloads',container_prefix:'/data'}],
@@ -487,9 +568,27 @@ const path = require('node:path');
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
       assert.equal(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`${name} 桌面溢出`);
     }
+    await page.locator('nav').getByRole('button',{name:'系统设置',exact:true}).click();
+    await page.getByRole('tab',{name:'备份恢复',exact:true}).click();
+    await page.getByText('SQLite 一致性备份',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'立即备份',exact:true}).click();
+    await page.locator('.el-message-box').getByRole('button',{name:'创建一致性备份',exact:true}).click();
+    await page.getByText('一致性备份已创建：packbreaker-e2e.db',{exact:true}).waitFor();
+    assert.equal(backupRuns,1,'备份管理页立即备份只应提交一次');
+    assert.equal(await page.getByRole('button',{name:/恢复/}).count(),0,'在线管理页不得提供数据库恢复按钮');
+
+    await page.locator('nav').getByRole('button',{name:'升级中心',exact:true}).click();
+    await page.getByText('DOCKER_SOCKET_ABSENT',{exact:true}).waitFor();
+    await page.getByText('<registry>/<image>@sha256:<digest>',{exact:true}).waitFor();
+    assert.equal(await page.getByText(/模拟升级|模拟检查更新/).count(),0,'升级中心不得保留模拟更新入口');
+    await page.getByRole('button',{name:'创建升级前备份',exact:true}).click();
+    await page.locator('.el-message-box').getByRole('button',{name:'创建一致性备份',exact:true}).click();
+    await page.getByText('升级前一致性备份已创建：packbreaker-e2e.db',{exact:true}).waitFor();
+    assert.equal(backupRuns,2,'备份管理页与升级中心应各提交一次一致性备份');
+
     await page.locator('nav').getByRole('button',{name:'历史辅种',exact:true}).click();
     await page.getByRole('button',{name:'新建扫描',exact:true}).click();
-    await page.getByRole('button',{name:'开始演示扫描',exact:true}).click();
+    await page.getByRole('button',{name:'创建并开始扫描',exact:true}).click();
     await page.getByRole('button',{name:'推进扫描',exact:true}).click();
     await page.getByRole('button',{name:'推进扫描',exact:true}).click();
     await page.locator('nav').getByRole('button',{name:'清理与对账',exact:true}).click();
@@ -530,7 +629,8 @@ const path = require('node:path');
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,`${name} 移动页溢出`);
     }
+    assert.deepEqual(unmockedApiCalls,[],'浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端');
     assert.deepEqual(errors,[]);
-    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、真实站点 health/reset/启用、状态自动刷新、11 页导航、历史扫描、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题。');
+    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、真实站点 health/reset/启用、状态自动刷新、11 页导航、计划备份管理、真实本地升级预检/手工 digest runbook、历史扫描、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题；未显式 mock 的 API 请求全部失败关闭。');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -17,9 +17,9 @@ from backend.app.config import AppSettings
 from backend.app.infrastructure.persistence.database import (
     create_session_factory,
     create_sqlite_engine,
-    sqlite_database_url,
 )
 from backend.app.infrastructure.security import MasterKeyFile, SecretCipher
+from backend.app.versioning import app_version
 
 
 class InstanceLockUnavailable(RuntimeError):
@@ -169,8 +169,14 @@ class RuntimeManager:
             self._secret_cipher = SecretCipher(master_key)
             if not self._secret_cipher.self_test():
                 raise RuntimeError("secret 加解密自检失败")
-            database_url = sqlite_database_url(self.settings.database_path)
-            migrate_database(database_url)
+            from backend.app.infrastructure.upgrades import upgrade_database_safely
+
+            upgrade_database_safely(
+                self.settings.database_path,
+                instance_lock=self.instance_lock,
+                safety_backup_dir=self.settings.config_dir / "backups" / "pre-upgrade",
+                app_version=app_version(),
+            )
             self.engine = create_sqlite_engine(self.settings.database_path)
             self._session_factory = create_session_factory(self.engine)
             self._started = True

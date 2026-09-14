@@ -530,6 +530,141 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/system/backups/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Backup Action */
+    post: operations['backup_action_api_v1_system_backups_actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/system/backups/policy': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Backup Policy */
+    get: operations['get_backup_policy_api_v1_system_backups_policy_get'];
+    /** Update Backup Policy */
+    put: operations['update_backup_policy_api_v1_system_backups_policy_put'];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/system/diagnostics/export': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Export System Diagnostics
+     * @description 导出白名单聚合指标 ZIP；不包含日志、URL、路径、ID、hash 或凭证。
+     */
+    get: operations['export_system_diagnostics_api_v1_system_diagnostics_export_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/system/health': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * System Health
+     * @description 聚合已有本地/依赖证据；不会主动访问 PT、下载器或通知渠道。
+     */
+    get: operations['system_health_api_v1_system_health_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/system/logs': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List System Logs
+     * @description 查询有界、持久、已脱敏的本地运行日志；不读取 Docker daemon 日志。
+     */
+    get: operations['list_system_logs_api_v1_system_logs_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/system/logs/export': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Export System Logs
+     * @description 导出同一受控查询结果；硬上限 2000 条并再次经过读取端脱敏。
+     */
+    get: operations['export_system_logs_api_v1_system_logs_export_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/system/release/preflight': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Release Preflight
+     * @description 只做本地发布预检；不连接外部服务，也不创建备份演练文件。
+     */
+    get: operations['release_preflight_api_v1_system_release_preflight_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/system/status': {
     parameters: {
       query?: never;
@@ -979,6 +1114,67 @@ export interface components {
       expires_at?: string | null;
       /** Permissions */
       permissions: string[];
+    };
+    /** BackupActionRequest */
+    BackupActionRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'run_now';
+    };
+    /** BackupPolicyResponse */
+    BackupPolicyResponse: {
+      /** Driver Consecutive Errors */
+      driver_consecutive_errors: number;
+      /** Driver Running */
+      driver_running: boolean;
+      /** Enabled */
+      enabled: boolean;
+      /** Interval Hours */
+      interval_hours: number;
+      /** Keep Latest */
+      keep_latest: number;
+      /** Last Attempt At */
+      last_attempt_at: string | null;
+      /** Last Error Code */
+      last_error_code: string | null;
+      /** Last Success At */
+      last_success_at: string | null;
+      /** Retention Days */
+      retention_days: number;
+      /** Version */
+      version: number;
+    };
+    /** BackupPolicyUpdateRequest */
+    BackupPolicyUpdateRequest: {
+      /** Enabled */
+      enabled: boolean;
+      /** Interval Hours */
+      interval_hours: number;
+      /** Keep Latest */
+      keep_latest: number;
+      /** Retention Days */
+      retention_days: number;
+    };
+    /** BackupRunResponse */
+    BackupRunResponse: {
+      /** Created */
+      created: boolean;
+      /** Created At */
+      created_at: string | null;
+      /** Database File */
+      database_file: string | null;
+      /** Database Size Bytes */
+      database_size_bytes: number | null;
+      /** Retention Blocked Count */
+      retention_blocked_count: number;
+      /** Retention Deleted Count */
+      retention_deleted_count: number;
+      /** Retention Error Code */
+      retention_error_code: string | null;
+      /** Skipped Reason */
+      skipped_reason: ('DISABLED' | 'NOT_DUE') | null;
     };
     /** CancelTaskActionRequest */
     CancelTaskActionRequest: {
@@ -1659,6 +1855,48 @@ export interface components {
       | 'ROLLED_BACK'
       | 'RECONCILE_REQUIRED'
       | 'ROLLBACK_BLOCKED';
+    /** OperationalLogEntryResponse */
+    OperationalLogEntryResponse: {
+      /** Exception */
+      exception: string | null;
+      /** Fields */
+      fields: {
+        [key: string]: unknown;
+      };
+      /**
+       * Level
+       * @enum {string}
+       */
+      level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL';
+      /** Logger */
+      logger: string;
+      /** Message */
+      message: string;
+      /**
+       * Timestamp
+       * Format: date-time
+       */
+      timestamp: string;
+    };
+    /** OperationalLogListResponse */
+    OperationalLogListResponse: {
+      /** Approximate Capacity Bytes */
+      approximate_capacity_bytes: number;
+      /** Backup Count */
+      backup_count: number;
+      /** Count */
+      count: number;
+      /** Items */
+      items: components['schemas']['OperationalLogEntryResponse'][];
+      /** Limit */
+      limit: number;
+      /** Max File Bytes */
+      max_file_bytes: number;
+      /** Truncated */
+      truncated: boolean;
+      /** Window Minutes */
+      window_minutes: number;
+    };
     /** PasswordRequest */
     PasswordRequest: {
       /**
@@ -1719,6 +1957,32 @@ export interface components {
       snapshot_digest: string;
       /** Stale Reasons */
       stale_reasons: string[];
+    };
+    /** ReleasePreflightCheckResponse */
+    ReleasePreflightCheckResponse: {
+      /** Code */
+      code: string;
+      /** Detail */
+      detail: string;
+      /** Name */
+      name: string;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'ok' | 'warning' | 'blocked';
+    };
+    /** ReleasePreflightResponse */
+    ReleasePreflightResponse: {
+      /** App Version */
+      app_version: string;
+      /** Checks */
+      checks: components['schemas']['ReleasePreflightCheckResponse'][];
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'ready' | 'blocked';
     };
     /**
      * RepairActionKind
@@ -2045,6 +2309,41 @@ export interface components {
       updated_at: string;
       /** Version */
       version: number;
+    };
+    /** SystemHealthCheckResponse */
+    SystemHealthCheckResponse: {
+      /** Code */
+      code: string;
+      /** Detail */
+      detail: string;
+      /** Metrics */
+      metrics: {
+        [key: string]: string | number | boolean | null;
+      };
+      /** Name */
+      name: string;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'ok' | 'warning' | 'blocked';
+    };
+    /** SystemHealthResponse */
+    SystemHealthResponse: {
+      /** Checks */
+      checks: components['schemas']['SystemHealthCheckResponse'][];
+      /**
+       * Generated At
+       * Format: date-time
+       */
+      generated_at: string;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'ok' | 'warning' | 'blocked';
+      /** Version */
+      version: string;
     };
     /** TaskCandidateListResponse */
     TaskCandidateListResponse: {
@@ -3866,6 +4165,293 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['SiteProbeResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  backup_action_api_v1_system_backups_actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['BackupActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['BackupRunResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_backup_policy_api_v1_system_backups_policy_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['BackupPolicyResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  update_backup_policy_api_v1_system_backups_policy_put: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['BackupPolicyUpdateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['BackupPolicyResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  export_system_diagnostics_api_v1_system_diagnostics_export_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  system_health_api_v1_system_health_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SystemHealthResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_system_logs_api_v1_system_logs_get: {
+    parameters: {
+      query?: {
+        window_minutes?: number;
+        limit?: number;
+        level?: ('DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL') | null;
+        q?: string | null;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['OperationalLogListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  export_system_logs_api_v1_system_logs_export_get: {
+    parameters: {
+      query?: {
+        window_minutes?: number;
+        limit?: number;
+        level?: ('DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL') | null;
+        q?: string | null;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  release_preflight_api_v1_system_release_preflight_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ReleasePreflightResponse'];
         };
       };
       /** @description Validation Error */

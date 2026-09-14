@@ -55,7 +55,7 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 - 管理员可通过受 CSRF 保护的管理会话生成具备名称、范围和过期时间的 API Token；创建响应只显示一次 `pbk_` 前缀明文，数据库仅保存 SHA-256 摘要。
 - 使用 `Authorization: Bearer <token>`；范围首版包含 `tasks:read`、`tasks:write`、`config:read`、`config:write`。范围不足返回 `403 API_TOKEN_SCOPE_FORBIDDEN`，过期或已撤销返回 `401 API_TOKEN_INVALID`。
 - `GET /api-tokens` 只返回元数据，不返回明文或摘要；`DELETE /api-tokens/{id}` 持久化撤销且重复撤销幂等。
-- `/system/status` 允许管理员会话或具备 `config:read` 的 API Token 访问，用于统一认证/授权链路的首个只读端点。
+- `/system/status`、`/system/health`、`/system/release/preflight`、`/system/diagnostics/export`、`/system/logs`、`/system/logs/export` 与备份策略 GET 允许管理员会话或具备 `config:read` 的 API Token 访问。备份策略 PUT/立即备份动作要求受 CSRF 保护的管理员会话或 `config:write` API Token；策略写入还要求强 `If-Match`。发布预检 API 只检查本地配置、数据库、现有主密钥、`/data` 根和 docker.sock 风险，并显式跳过会产生临时文件的备份演练；健康聚合只读已有证据，不主动触发外部探测；诊断 ZIP 只含白名单聚合字段；日志查询/导出有窗口、条数和容量边界并再次脱敏。
 - Webhook 不使用管理会话或 API Token，按第 8 节独立验签。
 
 ## 4. 幂等、并发与分页
@@ -75,7 +75,15 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 | --- | --- | --- |
 | GET | `/health/live` | 进程存活，不检查外部依赖 |
 | GET | `/health/ready` | 数据库、迁移和 worker 就绪状态 |
-| GET | `/system/status` | 版本、任务统计、脱敏依赖状态与后台活动任务 driver 计数/最近 tick 状态 |
+| GET | `/system/status` | 版本、任务统计、本地 readiness 与后台 driver 计数/最近 tick 状态 |
+| GET | `/system/health` | 统一运维健康聚合；读取时不主动访问 PT、下载器或通知服务 |
+| GET | `/system/release/preflight` | 升级中心本地只读预检；检查配置/数据库/主密钥/数据根/docker.sock，跳过备份演练且不访问外部服务 |
+| GET | `/system/diagnostics/export` | 下载脱敏诊断 ZIP；只含聚合 health/manifest，不含日志、路径、URL、ID、业务 hash 或凭证 |
+| GET | `/system/logs` | 查询应用自身有界轮转日志；默认 60 分钟/200 条，最大 7 天/500 条，可按级别和安全关键词过滤 |
+| GET | `/system/logs/export` | 导出同一受控日志窗口，最多 2000 条；JSON 附件返回 SHA-256 与 `no-store` |
+| GET | `/system/backups/policy` | 读取计划备份策略、最近执行状态和 BackupDriver 状态；返回强 ETag |
+| PUT | `/system/backups/policy` | 更新计划备份开关/周期/保留策略；要求 `config:write`、CSRF（会话方式）和强 `If-Match` |
+| POST | `/system/backups/actions` | `run_now` 立即创建一致性备份并应用当前保留策略；与计划任务互斥 |
 | POST | `/auth/setup` | 首次设置管理员口令 |
 | POST | `/auth/login` | 创建管理会话 |
 | POST | `/auth/logout` | 注销当前会话 |

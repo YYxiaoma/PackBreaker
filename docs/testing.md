@@ -180,13 +180,26 @@ M2 使用合成 1 万文件 torrent 和跨文件 piece 测试内存上界与流�
 当前 GitHub Actions 每个 Pull Request 执行三条主门禁，并在 `quality` 最前执行独立仓库安全扫描：
 
 1. `quality`：Python 3.11 + `uv sync --frozen --all-groups`，运行统一静态检查、OpenAPI/生成类型漂移检查、pytest、Vitest 与 production build。
-2. `browser-e2e`：安装 Playwright bundled Chromium，启动本地 Vite；认证状态只使用合成 `/auth/me`，不需要真实后端或凭证。
-3. `container`：构建三阶段 runtime 镜像，以临时空 `/config`、`/data` 启动，验证 readiness、同源前端首页和镜像默认非 root 用户。
+2. `browser-e2e`：安装 Playwright bundled Chromium，启动本地 Vite；认证与所有业务 API 均使用显式合成 mock，最外层 `/api/v1/**` catch-all 对任何未 mock 请求返回 501 并记录失败，因此门禁不会穿透到本机 8000、真实后端或凭证。
+3. `container`：构建三阶段 runtime 镜像，以临时空 `/config`、`/data` 启动，验证 readiness、同源前端首页和镜像默认非 root 用户；随后在同一隔离配置卷执行 release preflight 与一致性备份，停止主容器，用一次性容器离线 verify/restore，再重启原容器并重新证明 readiness。
 
-`scripts/repository_scan.py` 扫描 Git 已跟踪文件以及未被 `.gitignore` 排除的工作区候选，阻断真实 `.torrent`、媒体、数据库/日志/密钥类制品、明显私钥/常见 Token 形态以及超过 5 MiB 的单个候选文件；该扫描也被 `scripts/check.py` 本地入口复用。普通 CI 永不连接真实 PT 或下载器。任何安全不变量、迁移、契约、仓库扫描、容器 smoke 或端到端测试失败都应阻止合并。
+pytest 另外把 Alembic 历史链作为 M6 升级矩阵：当前 22 个历史 revision（`0001`～`0022`）分别构造独立合成数据库并升级到 `0023_backup_policy`，验证自定义业务探针、升级前备份和最终 revision；同时覆盖迁移失败不切换当前数据库、空配置失败不遗留半成品以及 RuntimeManager 自动升级。
+
+正式 `v<version>` tag 另触发 `release.yml`：先重复全量质量门禁，再构建/推送 `linux/amd64` 镜像，按最终 registry digest 生成 SPDX JSON SBOM、release manifest、SHA256SUMS 和 GitHub Release notes。tag 必须与 `pyproject.toml` 版本完全一致。
+
+M6 统一健康/诊断测试使用纯合成 canary：底层 Site/Downloader/Task/Operation 记录故意包含伪 URL、账号片段、路径、source hash、任务 ID 与 `api_key=` 字符串，然后请求 `/system/health` 与 `/system/diagnostics/export`。验收要求异常计数/状态仍可观察，但所有 canary 原值均不得出现在 JSON 或 ZIP；同时确认读取健康状态不会调用任何真实 PT、下载器或通知探测。
+
+M6 持久日志门禁另覆盖真实临时轮转文件：写入带 userinfo/path/query 的伪 URL、伪 token/password 与结构化字段，证明 stdout/file 共用 formatter、文件/目录权限为 0600/0700、容量轮转生效、读写端都不跟随 symlink，查询只保留 URL origin 且再次脱敏。API 测试同时验证 7 天窗口、500 条查询与 2000 条导出硬上限，日志 JSON/导出均不得回显 canary；前端 API 测试证明总览/日志使用生成类型与受控筛选参数。
+
+M6 计划备份门禁验证默认关闭、启用后到期执行/未到期跳过、手动 force 备份、计划与手动运行互斥、retention 复用、运行状态不递增策略 version，以及 API 的 CSRF、`config:write`、强 `If-Match`/412 冲突。所有数据库和备份目录均为 pytest 临时目录，不连接 PT/qB/TR 或媒体目录。
+
+M6 升级中心门禁验证 typed `/system/release/preflight` 只做本地读取且不创建备份演练文件、不遍历或修改媒体 canary；浏览器必须展示当前真实版本、preflight code、不可变 `<registry>/<image>@sha256:<digest>` 手工 runbook 和升级前一致性备份入口，同时不得出现“模拟检查更新/模拟升级”或任何 Web Docker 执行动作。
+
+`scripts/repository_scan.py` 扫描 Git 已跟踪文件以及未被 `.gitignore` 排除的工作区候选，阻断真实 `.torrent`、媒体、数据库/日志/密钥类制品、明显私钥/常见 Token 形态以及超过 5 MiB 的单个候选文件；该扫描也被 `scripts/check.py` 本地入口复用。普通 CI 永不连接真实 PT 或下载器。容器恢复门禁也只使用 CI 临时目录，不挂载真实媒体或生产配置。任何安全不变量、迁移、契约、仓库扫描、容器 smoke/恢复或端到端测试失败都应阻止合并。
 
 M1 的逐项退出证据见 [`m1-exit-checklist.md`](./m1-exit-checklist.md)。
 M2 的代码能力、自动化证据与仍依赖真实语料/环境的退出项见 [`m2-exit-checklist.md`](./m2-exit-checklist.md)。
+M6 的 25 条 v1.0 验收项使用 [`v1-acceptance-evidence.json`](./v1-acceptance-evidence.json) 逐项绑定测试/现场证据；`scripts/check.py` 会运行 `validate_acceptance_evidence.py`，证据文件或锚点漂移直接失败。发布支持边界与明确遗留分别见 [`support-matrix.md`](./support-matrix.md) 和 [`known-limitations.md`](./known-limitations.md)。
 
 ## 12. v1.0 验收清单
 

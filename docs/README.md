@@ -25,6 +25,12 @@
 | [匹配验证与文件安全](./matching-and-filesystem-safety.md) | 规定候选评分、piece 校验、硬链接及回滚算法 | M2-M4 |
 | [测试与验收](./testing.md) | 建立测试分层、合成语料和发布门禁 | M1-M6 |
 | [M2 退出清单](./m2-exit-checklist.md) | 区分 M2 已完成代码能力、自动化证据与真实语料/环境验收缺口 | M2 |
+| [M6 退出清单](./m6-exit-checklist.md) | 跟踪发布、备份恢复、升级、诊断与 v1.0 发布门禁 | M6 |
+| [数据库升级兼容矩阵](./upgrade-compatibility.md) | 定义 revision 升级、原子切换与备份回滚支持边界 | M6 |
+| [发布流程与供应链证据](./release-process.md) | 定义镜像 digest、SBOM、发布清单和 tag 发布门禁 | M6 |
+| [v1.0 验收证据索引](./v1-acceptance-evidence.json) | 逐项绑定 25 条 v1.0 验收要求与自动化/现场/外部证据 | M6 |
+| [v1.0 支持矩阵](./support-matrix.md) | 发布平台、下载器、站点、文件系统与升级支持边界 | M6 |
+| [v1.0 已知限制](./known-limitations.md) | 明确尚未闭环的发布证据与安全边界 | M6 |
 | [部署、运维与安全](./deployment.md) | 约定容器、卷、备份、升级和密钥管理 | M1/M6 |
 | [本地开发指南](./local-development.md) | 统一工具链、命令、配置和日常工作流 | M1 |
 | [研发路线图](./development-roadmap.md) | 将 M0-M6 拆成可交付工作包与退出条件 | 全阶段 |

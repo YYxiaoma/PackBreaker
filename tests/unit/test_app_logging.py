@@ -27,12 +27,14 @@ def test_structured_log_fields_redact_sensitive_values() -> None:
 def test_log_message_redacts_assignments_and_url_query() -> None:
     canary = "PACKBREAKER-LOG-CANARY-7c11"
     message = sanitize_message(
-        f"password={canary} url=https://example.invalid/path?token={canary}#fragment"
+        f"password={canary} url=https://user:{canary}@example.invalid/private/{canary}?token={canary}#fragment"
     )
 
     assert canary not in message
     assert "password=[REDACTED]" in message
-    assert "https://example.invalid/path" in message
+    assert "https://example.invalid" in message
+    assert "user:" not in message
+    assert "/private/" not in message
     assert "?" not in message
 
 

@@ -9,7 +9,12 @@ from backend.app.main import create_app
 
 def main() -> None:
     settings = AppSettings()
-    configure_logging(settings.log_level)
+    configure_logging(
+        settings.log_level,
+        log_dir=settings.log_dir,
+        max_bytes=settings.log_file_max_bytes,
+        backup_count=settings.log_file_backup_count,
+    )
     uvicorn.run(
         create_app(settings=settings),
         host=settings.host,

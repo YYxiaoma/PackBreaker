@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   Box,
   LayoutDashboard,
@@ -14,39 +14,22 @@ import {
   Settings,
   ArrowUpCircle,
   Plus,
-  Search,
-  Folder,
-  Clapperboard,
   ChevronRight,
-  ChevronLeft,
   Bell,
   CircleHelp,
   Sun,
   Moon,
   Menu,
-  RefreshCw,
-  Download,
-  Activity,
-  Layers,
   ArrowUpRight,
   X,
-  Check,
-  MoreHorizontal,
   LogOut,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import {
-  seedTasks,
-  stateNames,
-  levelNames,
-  filterTasks,
-  pauseTask,
-  resumeTask,
-  type Task,
-} from './demo';
+import { seedTasks, type Task } from './demo';
 import TaskDetail from './components/TaskDetail.vue';
 import TaskCenter from './components/TaskCenter.vue';
 import PreflightReviewCenter from './components/PreflightReviewCenter.vue';
+import OperationalOverview from './components/OperationalOverview.vue';
 import Management from './components/Management.vue';
 import AuthGate from './components/AuthGate.vue';
 import { AUTH_REQUIRED_EVENT } from './api/client';
@@ -79,12 +62,6 @@ const nav = [
 ];
 const route = ref(location.hash.slice(1) ? decodeURIComponent(location.hash.slice(1)) : '任务中心');
 const tasks = ref(seedTasks()),
-  tab = ref('全部任务'),
-  query = ref(''),
-  site = ref(''),
-  client = ref(''),
-  page = ref(1),
-  selected = ref<Task[]>([]),
   dark = ref(localStorage.getItem('pb-theme') === 'dark'),
   mobile = ref(false);
 const active = ref<Task>(),
@@ -97,28 +74,6 @@ const form = ref({
   source: 'qBittorrent',
   client: 'qBittorrent',
   site: 'M-Team',
-});
-const filtered = computed(() =>
-  filterTasks(
-    tasks.value,
-    route.value === '预演与确认' ? '待确认' : tab.value,
-    query.value,
-    site.value,
-    client.value,
-  ),
-);
-const displayed = computed(() => filtered.value.slice((page.value - 1) * 6, page.value * 6));
-const waiting = computed(
-  () => tasks.value.filter((t) => t.state === 'AWAITING_CONFIRMATION').length,
-);
-const running = computed(
-  () =>
-    tasks.value.filter((t) => ['VERIFYING', 'SEARCHING', 'CLIENT_VERIFYING'].includes(t.state))
-      .length,
-);
-watch([tab, query, site, client, route], () => {
-  page.value = 1;
-  selected.value = [];
 });
 watch(route, (v) => {
   location.hash = encodeURIComponent(v);
@@ -137,16 +92,6 @@ watch(
   },
   { immediate: true },
 );
-const tone = (t: Task) =>
-  t.level === 'BLOCKED'
-    ? 'danger'
-    : t.state === 'AWAITING_CONFIRMATION'
-      ? 'warning'
-      : ['SEEDING', 'DONE'].includes(t.state)
-        ? 'success'
-        : ['PAUSED', 'CANCELLED'].includes(t.state)
-          ? 'info'
-          : 'primary';
 function open(t: Task) {
   active.value = t;
   drawer.value = true;
@@ -194,18 +139,8 @@ function createTask() {
   tasks.value.unshift(task);
   create.value = false;
   route.value = '任务中心';
-  tab.value = '全部任务';
   open(task);
   ElMessage.success('演示预演已生成');
-}
-function batch() {
-  const n = selected.value.filter(pauseTask).length;
-  ElMessage.info(n ? `已暂停 ${n} 个演示任务` : '所选任务没有可暂停的活动任务');
-}
-function toggleSelected(t: Task) {
-  selected.value = selected.value.includes(t)
-    ? selected.value.filter((v) => v !== t)
-    : [...selected.value, t];
 }
 function historyTask(name: string) {
   form.value = {
@@ -226,19 +161,6 @@ async function logout(): Promise<void> {
     });
     await auth.logout();
     ElMessage.success('管理员会话已退出');
-  } catch {}
-}
-
-async function cancel(t: Task) {
-  try {
-    await ElMessageBox.confirm(
-      `取消 ${t.id}「${t.name}」的演示任务。模拟移除其下载器任务，并回滚操作日志登记的链接；源文件不在影响范围内。`,
-      '确认取消与回滚',
-      { confirmButtonText: '确认取消', cancelButtonText: '保留任务', type: 'warning' },
-    );
-    t.state = 'CANCELLED';
-    t.events.push('模拟回滚本系统登记资源，源数据保持不变');
-    ElMessage.success('演示任务已取消');
   } catch {}
 }
 </script>
@@ -281,7 +203,7 @@ async function cancel(t: Task) {
           ><span>工作空间</span><ChevronRight :size="15" /><b>{{ route }}</b>
         </div>
         <div class="top-actions">
-          <span class="demo-tag">v0.1 · M1 开发</span
+          <span class="demo-tag">v0.1 · M6 开发</span
           ><button
             class="icon-button"
             :aria-label="dark ? '切换浅色主题' : '切换深色主题'"
@@ -323,300 +245,16 @@ async function cancel(t: Task) {
         <div class="demo-notice">
           <span class="dot"></span>混合研发模式
           <span
-            >「任务中心」和「预演与确认」已接入真实 SQLite/API 数据；总览仍为合成样例。任务
-            Analyze、下载器、管理员认证与 API Token 已接入真实后端。</span
+            >「任务中心」「预演与确认」「总览」和「日志」已接入真实 SQLite/API 或本地运维数据；
+            其余仍在逐步移除合成演示。</span
           ><button @click="help = true">体验指南 <ArrowUpRight :size="13" /></button>
         </div>
         <TaskCenter v-if="route === '任务中心'" />
         <PreflightReviewCenter v-else-if="route === '预演与确认'" />
-        <template v-else-if="route === '总览'">
-          <div class="stats">
-            <div class="stat">
-              <div>演示任务<Layers :size="20" /></div>
-              <strong>{{ String(tasks.length).padStart(2, '0') }}</strong
-              ><small>电影 / 剧集 / 历史扫描</small>
-            </div>
-            <div class="stat">
-              <div>正在处理<Activity :size="20" /></div>
-              <strong>{{ String(running).padStart(2, '0') }}</strong
-              ><small>搜索与完整校验进行中</small>
-            </div>
-            <div class="stat">
-              <div>待人工确认<GitBranch :size="20" /></div>
-              <strong>{{ String(waiting).padStart(2, '0') }}</strong
-              ><small>执行确认 · 文件映射 · 安全修复</small>
-            </div>
-            <div class="stat">
-              <div>数据复用示例<HardDrive :size="20" /></div>
-              <strong>2.86 <em>TB</em></strong
-              ><small>预计新增占用 128 MB</small>
-            </div>
-          </div>
-          <div v-if="route === '总览'" class="overview-grid">
-            <section class="panel">
-              <h3>近 7 日辅种趋势 <small>演示统计</small></h3>
-              <div class="bar-chart">
-                <div v-for="(n, i) in [32, 50, 38, 70, 55, 86, 64]" :key="i">
-                  <span>{{ n }}</span
-                  ><i :style="{ height: n + 'px' }"></i
-                  ><small>09/{{ String(i + 1).padStart(2, '0') }}</small>
-                </div>
-              </div>
-            </section>
-            <section class="panel">
-              <h3>需要您的关注</h3>
-              <button class="attention" @click="route = '预演与确认'">
-                <GitBranch :size="21" />
-                <div>
-                  <b>{{ waiting }} 个任务等待审核</b>
-                  <p>含 1 个文件映射歧义</p>
-                </div>
-                <ChevronRight :size="18" /></button
-              ><button class="attention" @click="route = '清理与对账'">
-                <ShieldCheck :size="21" />
-                <div>
-                  <b>1 项恢复检查待处理</b>
-                  <p>查看资源登记与对账结果</p>
-                </div>
-                <ChevronRight :size="18" />
-              </button>
-            </section>
-          </div>
-          <section class="task-section">
-            <div class="section-heading">
-              <h2>拆包与辅种<small>电影 / 剧集 / 历史扫描</small></h2>
-              <div>
-                <button
-                  class="icon-button"
-                  aria-label="刷新演示列表"
-                  @click="ElMessage.success('演示列表已刷新')"
-                >
-                  <RefreshCw :size="18" /></button
-                ><button
-                  class="icon-button"
-                  aria-label="导出演示任务"
-                  @click="download(filtered, 'PackBreaker-演示任务.json')"
-                >
-                  <Download :size="18" />
-                </button>
-              </div>
-            </div>
-            <div class="tabs">
-              <button
-                v-for="name in ['全部任务', '进行中', '待确认', '已完成', '异常 / 暂停']"
-                :key="name"
-                :class="{ chosen: tab === name }"
-                @click="tab = name"
-              >
-                {{ name }}<small>{{ filterTasks(tasks, name, '', '', '').length }}</small>
-              </button>
-            </div>
-            <div class="filters">
-              <el-input
-                v-model="query"
-                placeholder="搜索任务名称、ID…"
-                clearable
-                aria-label="搜索任务"
-                ><template #prefix><Search :size="17" /></template></el-input
-              ><el-select v-model="site" placeholder="全部站点" clearable aria-label="筛选站点"
-                ><el-option
-                  v-for="s in ['M-Team', 'HDTime', 'HHClub']"
-                  :key="s"
-                  :value="s" /></el-select
-              ><el-select
-                v-model="client"
-                placeholder="全部下载器"
-                clearable
-                aria-label="筛选下载器"
-                ><el-option
-                  v-for="c in ['qBittorrent', 'Transmission']"
-                  :key="c"
-                  :value="c" /></el-select
-              ><el-button :disabled="!selected.length" @click="batch"
-                ><ListChecks :size="16" />批量暂停<span v-if="selected.length"
-                  >({{ selected.length }})</span
-                ></el-button
-              >
-            </div>
-            <div class="task-table">
-              <el-table
-                :data="displayed"
-                row-key="id"
-                @selection-change="(rows: Task[]) => (selected = rows)"
-                empty-text="没有符合条件的任务，请调整筛选或新建任务。"
-                ><el-table-column type="selection" width="43" /><el-table-column
-                  label="任务名称 / 来源"
-                  min-width="285"
-                  ><template #default="{ row }"
-                    ><div class="task-title">
-                      <span :class="['file-icon', tone(row)]"
-                        ><Clapperboard v-if="row.kind === '剧集拆包'" :size="21" /><Folder
-                          v-else
-                          :size="21"
-                      /></span>
-                      <div>
-                        <button @click="open(row)">{{ row.name }}</button
-                        ><small>{{ row.id }} · {{ row.size }} · {{ row.kind }}</small>
-                      </div>
-                    </div></template
-                  ></el-table-column
-                ><el-table-column prop="site" label="站点" min-width="108" /><el-table-column
-                  prop="client"
-                  label="目标下载器"
-                  min-width="138"
-                /><el-table-column label="当前状态" min-width="154"
-                  ><template #default="{ row }"
-                    ><el-tag :type="tone(row)" effect="light"
-                      ><span class="status-dot">●</span
-                      >{{
-                        row.error === 'FILE_MAPPING_AMBIGUOUS'
-                          ? '待文件映射'
-                          : stateNames[row.state as keyof typeof stateNames]
-                      }}</el-tag
-                    ><small class="cell-note">{{
-                      levelNames[row.level as keyof typeof levelNames]
-                    }}</small></template
-                  ></el-table-column
-                ><el-table-column label="处理进度" min-width="145"
-                  ><template #default="{ row }"
-                    ><div class="progress-cell">
-                      <span>{{ row.level === 'BLOCKED' ? '已阻断' : row.progress + '%' }}</span
-                      ><el-progress
-                        :percentage="row.progress"
-                        :show-text="false"
-                        :stroke-width="4"
-                        :color="
-                          tone(row) === 'success'
-                            ? '#168765'
-                            : tone(row) === 'warning'
-                              ? '#b87a0b'
-                              : '#246ee9'
-                        "
-                      /></div></template></el-table-column
-                ><el-table-column label="更新 / 操作" min-width="148"
-                  ><template #default="{ row }"
-                    ><div class="row-actions">
-                      <small>14:{{ String(32 - tasks.indexOf(row) * 2).padStart(2, '0') }}</small
-                      ><el-button link type="primary" @click="open(row)">{{
-                        row.state === 'AWAITING_CONFIRMATION' ? '审核' : '详情'
-                      }}</el-button
-                      ><el-dropdown trigger="click"
-                        ><button class="icon-button" :aria-label="`${row.id}更多操作`">
-                          <MoreHorizontal :size="18" /></button
-                        ><template #dropdown
-                          ><el-dropdown-menu
-                            ><el-dropdown-item
-                              :disabled="
-                                !['SEARCHING', 'VERIFYING', 'CLIENT_VERIFYING'].includes(row.state)
-                              "
-                              @click="pauseTask(row)"
-                              >暂停任务</el-dropdown-item
-                            ><el-dropdown-item
-                              :disabled="row.state !== 'PAUSED'"
-                              @click="resumeTask(row)"
-                              >恢复任务</el-dropdown-item
-                            ><el-dropdown-item
-                              :disabled="row.state === 'CANCELLED'"
-                              @click="cancel(row)"
-                              >取消与回滚</el-dropdown-item
-                            ></el-dropdown-menu
-                          ></template
-                        ></el-dropdown
-                      >
-                    </div></template
-                  ></el-table-column
-                ></el-table
-              >
-            </div>
-            <div class="mobile-task-list">
-              <article v-for="t in displayed" :key="t.id" class="mobile-task">
-                <div class="mobile-task-heading">
-                  <el-checkbox
-                    :model-value="selected.includes(t)"
-                    :aria-label="'选择' + t.id"
-                    @change="toggleSelected(t)"
-                  /><span :class="['file-icon', tone(t)]"><Folder :size="20" /></span>
-                  <div>
-                    <button @click="open(t)">{{ t.name }}</button
-                    ><small>{{ t.id }} · {{ t.size }} · {{ t.kind }}</small>
-                  </div>
-                </div>
-                <div class="mobile-task-meta">
-                  <span>{{ t.site }} · {{ t.client }}</span
-                  ><el-tag :type="tone(t)">{{ stateNames[t.state] }}</el-tag>
-                </div>
-                <el-progress :percentage="t.progress" :stroke-width="4" />
-                <div class="mobile-task-bottom">
-                  <span>{{ levelNames[t.level] }}</span
-                  ><el-button v-if="t.state === 'PAUSED'" link @click="resumeTask(t)"
-                    >恢复</el-button
-                  ><el-button
-                    v-else-if="['VERIFYING', 'SEARCHING', 'CLIENT_VERIFYING'].includes(t.state)"
-                    link
-                    @click="pauseTask(t)"
-                    >暂停</el-button
-                  ><el-button type="primary" link @click="open(t)"
-                    >{{ t.state === 'AWAITING_CONFIRMATION' ? '审核计划' : '查看详情' }}
-                    <ChevronRight :size="14"
-                  /></el-button>
-                </div>
-              </article>
-              <el-empty v-if="!displayed.length" description="没有符合条件的任务" />
-            </div>
-            <div class="pagination">
-              <span
-                >显示 {{ filtered.length ? (page - 1) * 6 + 1 : 0 }}–{{
-                  Math.min(page * 6, filtered.length)
-                }}
-                条 / 共 {{ filtered.length }} 个任务</span
-              >
-              <div>
-                <span>第 {{ page }} 页</span
-                ><button
-                  class="icon-button"
-                  :disabled="page === 1"
-                  aria-label="上一页"
-                  @click="page--"
-                >
-                  <ChevronLeft :size="17" /></button
-                ><b>{{ page }}</b
-                ><button
-                  class="icon-button"
-                  :disabled="page * 6 >= filtered.length"
-                  aria-label="下一页"
-                  @click="page++"
-                >
-                  <ChevronRight :size="17" />
-                </button>
-              </div>
-            </div>
-          </section>
-          <div class="connection-strip">
-            <section>
-              <h3>
-                站点连接
-                <button @click="route = '站点管理'">管理站点 <ArrowUpRight :size="14" /></button>
-              </h3>
-              <div class="connections">
-                <span class="mini-logo">MT</span>M-Team <i class="dot"></i
-                ><span class="mini-logo">HD</span>HDTime <i class="dot"></i
-                ><span class="mini-logo muted">HH</span><span class="muted">HHClub · 待确认</span>
-              </div>
-            </section>
-            <section>
-              <h3>下载器状态 <el-tag type="success">2 / 2 演示在线</el-tag></h3>
-              <div class="connections">
-                <HardDrive :size="18" />qBittorrent <span class="green">在线</span
-                ><small>156 做种</small><HardDrive :size="18" />Transmission
-                <span class="green">在线</span><small>92 做种</small>
-              </div>
-            </section>
-          </div>
-        </template>
+        <OperationalOverview v-else-if="route === '总览'" />
         <Management
           v-show="!['任务中心', '预演与确认', '总览'].includes(route)"
           :page="route"
-          :tasks="tasks"
           @export="download"
           @open="open"
           @create-history="historyTask"

@@ -23,6 +23,8 @@ class AppSettings(BaseSettings):
     frontend_dir: Path | None = None
     secret_key_file: Path | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_file_max_bytes: int = Field(default=2 * 1024 * 1024, ge=64 * 1024, le=64 * 1024 * 1024)
+    log_file_backup_count: int = Field(default=4, ge=1, le=20)
     timezone: str = "Asia/Shanghai"
     trusted_proxies: str = ""
     task_driver_interval_seconds: float = Field(default=15.0, ge=1.0, le=3600.0)
@@ -34,6 +36,7 @@ class AppSettings(BaseSettings):
     notification_driver_interval_seconds: float = Field(default=5.0, ge=1.0, le=3600.0)
     notification_driver_limit: int = Field(default=50, ge=1, le=500)
     notification_max_attempts: int = Field(default=5, ge=1, le=20)
+    backup_driver_interval_seconds: float = Field(default=60.0, ge=1.0, le=3600.0)
 
     @field_validator("config_dir", "data_dir")
     @classmethod
@@ -81,6 +84,10 @@ class AppSettings(BaseSettings):
     @property
     def instance_lock_path(self) -> Path:
         return self.config_dir / "packbreaker.lock"
+
+    @property
+    def log_dir(self) -> Path:
+        return self.config_dir / "logs"
 
     @property
     def resolved_secret_key_file(self) -> Path:

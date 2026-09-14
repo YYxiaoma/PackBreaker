@@ -44,7 +44,7 @@ pnpm --dir frontend dev
 | 六：下载器管理 | 真实 CRUD、加密凭证只写、qB/TR 版本/认证探测、多映射路径/权限/设备/hardlink 诊断、启停安全门、`If-Match` 并发控制；后端具备 qB 完整安全执行链，TR 4.1.3 也已把暂停添加、强制校验、start/做种确认和保留数据的取消/回滚接入 operation journal，并支持 ADD/VERIFY/START/REMOVE 的只读安全对账，响应丢失/并发重放均按真实状态与所有权证据恢复 | UI 下载器页仍不直接提供任务写操作；qB/TR 真实端到端验收已经完成，任务写动作统一留在任务/审核安全门中 |
 | 七：可靠性 | 重复批准无额外状态推进、取消确认；任务详情具备真实脱敏 operation journal 列表/只读对账，全局“清理与对账”页已接真实维护报告、人工修复清单、retention-plan 与单 journal purge；UI 仅对当前 `eligible=true` 项开放清理，未知结果冻结原请求同键确认，后端以 receipt+tombstone 维持幂等与审计 | 尚未提供批量 purge；崩溃恢复、失败重试与回滚继续按后端实现推进 |
 | 十一、十二：扩展辅种 | 历史根目录、类型/排除表单、真实 `/data` 增量文件发现、文件快照、扫描游标、暂停续扫；显式启动后由独立只读 HistoryScanDriver 自动分批推进，扫描器按稳定全路径字典序做 cursor-aware 有界读取并跳过旧 cursor 前整棵子树，支持保留游标/统计的 cancel 与新 generation 重启，driver 不自动 materialize；扫描完成后可把当前快照幂等转换为普通 `PENDING` task/task_unit，重复/并发转换不会重复建任务；剧集历史目录已支持 SxxExx、范围集、S00/Specials、EP/ABS 和 `Season 01/01.mkv` 目录上下文，并以 episode group/variant key 归组同集多版本；历史页轮询活动扫描，可按任务状态/转换结果/关键词做服务端筛选、查看同集版本数、最多 10 条批量 Analyze，并可一键重试当前扫描的 RETRY 任务，source_root 由服务端来源证据派生，已有 preflight 的任务继续进入现有人工审核中心；这些入口都不会自动批准候选或执行下载器写操作 | 真实影片/剧集扫描到辅种 E2E 已完成，M5 已关闭；后续大规模长期运行与更多现场样本纳入 M6 验收 |
-| 八、十：运维 | 总览趋势、依赖状态、日志多维筛选与导出、升级/回滚演示 | 一致性备份、镜像升级、数据库迁移、真实健康检查与生产恢复 |
+| 八、十：运维 | “总览”使用真实 typed `/system/health`；“日志”使用 `/config/logs` 有界轮转 + 受控查询/导出；“系统设置 → 备份恢复”已切换真实默认关闭计划策略、强 `If-Match` 管理、BackupDriver 状态与手动一致性备份；“升级中心”已移除模拟版本/模拟升级，改用真实当前版本、typed 本地 release preflight、升级前一致性备份与不可变 image digest 手工升级/回滚 runbook。诊断 ZIP 独立默认不带日志；Web UI 不操作 Docker 或在线恢复数据库 | CI/目标 Docker 恢复与升级实跑、首次真实 tag release 供应链实证、v1.0 最终验收 |
 | 九：认证与集成 | 管理员首次初始化/登录/退出、全局认证门、CSRF、API Token 创建/一次性明文展示/撤销与 secret store 已接入真实后端 | Webhook HMAC/防重放仍待实现 |
 | 十：通知与界面 | 中文、桌面/移动布局、深浅主题；Telegram/Server酱已接真实加密配置、测试发送、启停和脱敏状态 | 更多通知事件偏好与移动端专项打磨 |
 

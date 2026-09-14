@@ -1,0 +1,242 @@
+{
+  "format_version": 1,
+  "source": "docs/testing.md#12-v10-验收清单",
+  "requirements": [
+    {
+      "id": "V1-001",
+      "criterion": "真实验收语料中的自动误辅种为 0。",
+      "status": "field_evidence",
+      "evidence": [
+        {"path": "docs/candidate-threshold-calibration.md", "contains": "recommended_threshold"},
+        {"path": "docs/README.md", "contains": "自动批准保持关闭"}
+      ]
+    },
+    {
+      "id": "V1-002",
+      "criterion": "qB 与 TR 各完成一条真实端到端任务，包含人工确认和失败回滚。",
+      "status": "field_evidence",
+      "evidence": [
+        {"path": "docs/testing.md", "contains": "qBittorrent v5.2.3 / WebAPI 2.15.1"},
+        {"path": "docs/m2-exit-checklist.md", "contains": "Transmission 也已完成两条真实写链"}
+      ]
+    },
+    {
+      "id": "V1-003",
+      "criterion": "7 个失败样例完成归因并形成回归测试",
+      "status": "field_evidence",
+      "evidence": [
+        {"path": "docs/real-failure-samples.md", "contains": "已正式归档：7 / 7"},
+        {"path": "tests/application/test_downloader_operations.py", "contains": "test_response_lost_recovers_by_hash_save_path_and_ownership_tag_without_second_add"}
+      ]
+    },
+    {
+      "id": "V1-004",
+      "criterion": "重复触发 10 次结果唯一。",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/integration/test_persistence.py", "contains": "test_task_create_replayed_ten_times_is_unique"},
+        {"path": "tests/application/test_downloader_operations.py", "contains": "test_ten_concurrent_adds_are_serialized_to_one_external_add"}
+      ]
+    },
+    {
+      "id": "V1-005",
+      "criterion": "LINKING、ADDING、CLIENT_VERIFYING 故障注入后恢复正确。",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/application/test_task_linking.py", "contains": "LINKING_SOURCE_CHANGED"},
+        {"path": "tests/application/test_task_adding.py", "contains": "test_qb_response_lost_recovers_without_second_add"},
+        {"path": "tests/application/test_task_adding.py", "contains": "test_client_verifying_crash_after_recheck_applied_recovers_without_second_recheck"}
+      ]
+    },
+    {
+      "id": "V1-006",
+      "criterion": "execution plan 必须绑定明确的目标下载器 version/能力摘要/远端 save path",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/application/test_task_adding.py", "contains": "test_downloader_binding_change_blocks_before_qb_write"},
+        {"path": "tests/api/test_tasks.py", "contains": "test_transmission_plan_binding_is_allowed_and_requires_verify_capabilities"}
+      ]
+    },
+    {
+      "id": "V1-007",
+      "criterion": "ADDING 覆盖 qB 响应丢失与“journal 已 APPLIED、task 状态尚未提交”两个崩溃点",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/application/test_task_adding.py", "contains": "test_qb_response_lost_recovers_without_second_add"},
+        {"path": "tests/application/test_task_adding.py", "contains": "test_crash_after_qb_applied_only_finishes_task_transition_on_replay"},
+        {"path": "tests/application/test_task_adding.py", "contains": "test_client_check_required_transitions_to_client_verifying_without_skip"}
+      ]
+    },
+    {
+      "id": "V1-008",
+      "criterion": "CLIENT_VERIFYING 必须以独立 recheck journal + 单步状态 tick 工作",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/application/test_task_adding.py", "contains": "test_client_verifying_tracks_check_progress_then_enters_seeding"},
+        {"path": "tests/application/test_task_adding.py", "contains": "test_client_verifying_incomplete_check_transitions_to_retry"},
+        {"path": "tests/application/test_downloader_operations.py", "contains": "test_recheck_response_lost_with_unchanged_state_requires_reconciliation"}
+      ]
+    },
+    {
+      "id": "V1-009",
+      "criterion": "SEEDING 必须以独立 start journal 驱动",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/application/test_task_adding.py", "contains": "test_seeding_start_response_loss_recovers_without_second_start"},
+        {"path": "tests/application/test_task_adding.py", "contains": "test_seeding_crash_after_start_applied_only_finishes_task_on_replay"},
+        {"path": "tests/application/test_downloader_operations.py", "contains": "test_ten_concurrent_starts_are_serialized_to_one_external_start"}
+      ]
+    },
+    {
+      "id": "V1-010",
+      "criterion": "启动恢复必须有界扫描",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/application/test_task_adding.py", "contains": "test_startup_recovery_step_limit_is_bounded"},
+        {"path": "tests/application/test_task_adding.py", "contains": "test_startup_recovery_blocked_task_does_not_prevent_later_task"},
+        {"path": "tests/application/test_analysis_cancellation.py", "contains": "COOPERATIVE_ANALYSIS"}
+      ]
+    },
+    {
+      "id": "V1-011",
+      "criterion": "取消/回滚必须证明 qB 与文件资源都属于当前 task/execution plan",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/application/test_task_adding.py", "contains": "test_cancellation_removes_qb_and_rolls_back_only_journal_owned_files"},
+        {"path": "tests/application/test_task_adding.py", "contains": "test_startup_recovery_resumes_rolling_back_without_second_qb_remove"}
+      ]
+    },
+    {
+      "id": "V1-012",
+      "criterion": "`DONE` 是不可逆终态",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/application/test_task_actions.py", "contains": "test_release_action_keeps_done_and_replays_receipt"},
+        {"path": "tests/api/test_tasks.py", "contains": "test_task_release_requires_csrf_and_idempotency"}
+      ]
+    },
+    {
+      "id": "V1-013",
+      "criterion": "副作用开始前取消必须覆盖",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/application/test_task_actions.py", "contains": "test_pre_side_effect_cancel_finishes_without_resource_coordinator"},
+        {"path": "tests/application/test_analysis_cancellation.py", "contains": "COOPERATIVE_ANALYSIS"}
+      ]
+    },
+    {
+      "id": "V1-014",
+      "criterion": "公开 `execute`/`cancel` 必须覆盖管理会话 CSRF 与 API Token `tasks:write`",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/api/test_tasks.py", "contains": "test_public_execute_cancel_actions_enforce_csrf_idempotency_and_explicit_options"},
+        {"path": "tests/application/test_task_actions.py", "contains": "test_execute_pending_receipt_recovers_after_task_advanced_without_second_linking"}
+      ]
+    },
+    {
+      "id": "V1-015",
+      "criterion": "浏览器门禁必须覆盖公开动作 UI",
+      "status": "covered",
+      "evidence": [
+        {"path": "scripts/check-prototype.cjs", "contains": "QBITTORRENT_SEEDING_CONFIRMED"},
+        {"path": "scripts/check-prototype.cjs", "contains": "浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端"}
+      ]
+    },
+    {
+      "id": "V1-016",
+      "criterion": "前端公开动作控制必须覆盖",
+      "status": "covered",
+      "evidence": [
+        {"path": "scripts/check-prototype.cjs", "contains": "rollback-only 必须阻断"},
+        {"path": "frontend/src/taskActionSafety.test.ts", "contains": "describe"}
+      ]
+    },
+    {
+      "id": "V1-017",
+      "criterion": "任务事件接口必须覆盖历史顺序",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/api/test_tasks.py", "contains": "test_task_events_support_history_cursor_and_sse_resume"},
+        {"path": "frontend/src/components/TaskEventTimeline.vue", "contains": "new EventSource"}
+      ]
+    },
+    {
+      "id": "V1-018",
+      "criterion": "operation journal → TaskEvent 投影必须与 journal insert/CAS 同事务",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/integration/test_persistence.py", "contains": "test_operation_journal_projects_qb_events_without_target_or_snapshot_payload"},
+        {"path": "scripts/check-prototype.cjs", "contains": "QBITTORRENT_REMOVE_APPLIED"}
+      ]
+    },
+    {
+      "id": "V1-019",
+      "criterion": "operation journal 对账接口必须验证响应字段白名单",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/api/test_tasks.py", "contains": "test_task_operation_api_redacts_journal_and_reconciles_idempotently"},
+        {"path": "tests/application/test_downloader_operations.py", "contains": "test_qb_add_reconcile_can_prove_missing_after_snapshot_from_intent_and_current_state"}
+      ]
+    },
+    {
+      "id": "V1-020",
+      "criterion": "operation journal retention 必须覆盖 preview 与写时双重证明",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/api/test_tasks.py", "contains": "test_operation_retention_plan_and_purge_api_are_redacted_and_idempotent"},
+        {"path": "backend/app/infrastructure/persistence/models.py", "contains": "OperationJournalTombstone"}
+      ]
+    },
+    {
+      "id": "V1-021",
+      "criterion": "retention 前端门禁必须只把服务端 `retention-plan` 中 `eligible=true` 的单条 journal 暴露为 purge",
+      "status": "covered",
+      "evidence": [
+        {"path": "scripts/check-prototype.cjs", "contains": "只有 retention-plan eligible journal 才显示 purge 按钮"},
+        {"path": "scripts/check-prototype.cjs", "contains": "retention purge 必须复用相同 Idempotency-Key"}
+      ]
+    },
+    {
+      "id": "V1-022",
+      "criterion": "站点管理前端必须直接使用真实 `/sites` 契约而非本地演示状态",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/api/test_sites.py", "contains": "test_site_credential_is_encrypted_write_only_and_clearable"},
+        {"path": "tests/unit/test_nexusphp_adapters.py", "contains": "test_hhclub_card_layout_search_and_download_use_exact_script_names"},
+        {"path": "scripts/check-prototype.cjs", "contains": "reset-circuit 不得伪造远端连接恢复文案"}
+      ]
+    },
+    {
+      "id": "V1-023",
+      "criterion": "源文件在所有验收场景中内容与 inode 不变。",
+      "status": "field_evidence",
+      "evidence": [
+        {"path": "tests/application/test_m2_corpus_acceptance.py", "contains": "before.st_ino"},
+        {"path": "tests/application/test_filesystem_operations.py", "contains": "source_before.st_ino"},
+        {"path": "docs/testing.md", "contains": "源文件 device/inode/size/mtime 与 preflight 快照一致"}
+      ]
+    },
+    {
+      "id": "V1-024",
+      "criterion": "数据库、配置导出、日志、通知和诊断包无可用明文凭证。",
+      "status": "covered",
+      "evidence": [
+        {"path": "tests/api/test_downloaders.py", "contains": "test_downloader_credential_is_encrypted_and_never_returned"},
+        {"path": "tests/api/test_system_health.py", "contains": "test_diagnostic_export_contains_only_whitelisted_aggregate_health"},
+        {"path": "tests/unit/test_operational_logs.py", "contains": "test_rotating_operational_log_is_bounded_persistent_and_redacted"},
+        {"path": "tests/unit/test_repository_scan.py", "contains": "test_repository_scan_detects_private_key_and_known_token_shapes"}
+      ]
+    },
+    {
+      "id": "V1-025",
+      "criterion": "备份、迁移、升级健康检查和失败回滚演练通过。",
+      "status": "pending_external",
+      "external_blocker": "代码与临时目录自动化已覆盖；仍需 GitHub/目标 linux/amd64 Docker 环境实际运行 container 恢复/升级门禁。",
+      "evidence": [
+        {"path": "tests/integration/test_backups.py", "contains": "test_restore_rolls_back_current_database_when_post_switch_validation_fails"},
+        {"path": "tests/integration/test_upgrade_matrix.py", "contains": "test_post_switch_validation_failure_restores_pre_upgrade_snapshot"},
+        {"path": ".github/workflows/ci.yml", "contains": "restore-backup"}
+      ]
+    }
+  ]
+}
