@@ -8,14 +8,14 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 
 | 工作包 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
-| 一致性数据库备份 | ✅ 代码闭环 | SQLite Backup API、SHA-256 manifest、完整性/revision 验证、CLI、preview-first 保留、默认关闭的计划调度、强 `If-Match` 管理 API 与真实 UI 已接通；仍待目标 Docker 环境取得运行级证据 |
+| 一致性数据库备份 | ✅ CI 闭环 | SQLite Backup API、SHA-256 manifest、完整性/revision 验证、CLI、preview-first 保留、默认关闭的计划调度、强 `If-Match` 管理 API 与真实 UI 已接通；GitHub Actions run `34851129257` 已在 linux/amd64 Docker 环境完成真实备份与离线 verify/restore 演练 |
 | 恢复与失败回滚 | ✅ CI 闭环 | 已实现实例锁停止门禁、恢复前安全快照、临时迁移预检、原子切换与切换后失败自动回滚；GitHub Actions run `34851129257` 已在 linux/amd64 Docker 环境完成空配置启动、preflight、备份、离线 verify/restore 与重启 readiness |
 | 升级兼容矩阵 | 🟡 进行中 | 已自动覆盖 22 个历史 Alembic revision（0001～0022）→ `0023_backup_policy`、空配置原子首装、迁移失败不切换和 Runtime 启动安全升级；上一正式 release 跨镜像演练需首个 release 后补证 |
 | 真实依赖健康/仪表盘 | ✅ 代码闭环 | `/system/health` 已聚合 runtime、磁盘、备份、任务/operation 风险、站点/下载器既有证据、通知与后台 driver，前端总览直接消费 typed OpenAPI；读取页面不主动访问外部服务 |
 | 日志与诊断导出 | ✅ 代码闭环 | stdout JSON + `/config/logs` 有界轮转日志、7 天最大查询窗口、查询/导出条数硬限制、typed API 与前端筛选/导出已接通；诊断 ZIP 继续独立且默认不含日志，日志/诊断均有泄漏 canary |
 | 镜像/SBOM/发布产物 | 🟡 进行中 | Dockerfile 基础镜像已精确版本+digest 固定；tag release workflow 生成 linux/amd64 最终 digest、SPDX JSON SBOM、release manifest、SHA256SUMS 与 release notes；真实 tag/registry 运行仍待取得证据 |
 | 运维 runbook/用户手册 | 🟡 进行中 | 已补 Compose 备份/停止/恢复/readiness/回滚步骤；GitHub container 恢复演练已跑绿，升级中心已接真实本地 preflight、升级前备份和不可变 digest 手工 runbook；正式 release-to-release 跨镜像升级/回滚仍需首个正式 tag 后积累 |
-| v1.0 全量验收 | 🟡 进行中 | 25 条验收项已建立机器可校验证据索引：20 条自动化覆盖、4 条现场证据、1 条保留外部 Docker blocker；正式 tag 与目标 Docker 证据仍待完成 |
+| v1.0 全量验收 | ✅ 验收闭环 | 25 条验收项已建立机器可校验证据索引：21 条自动化/CI 覆盖、4 条现场证据、0 条 `pending_external`；正式 tag 的 registry/SBOM/Release 资产作为发布供应链证据单独收口 |
 
 ## 3. 一致性备份首批能力
 

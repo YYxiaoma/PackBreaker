@@ -46,4 +46,4 @@ release manifest 不保存凭证、数据库或真实环境路径。SBOM 从已�
 
 ## 5. 当前证据缺口
 
-代码与 workflow 已完成，静态/单元门禁已验证配置关系；当前开发 Runner 没有 Docker daemon，且本轮没有创建正式 tag，所以尚未产生真实 registry digest、SBOM 和 GitHub Release 资产。该项只有在 GitHub Actions/目标发布环境实际跑绿后才能从“已实现”升级为“发布实证完成”。
+代码与 workflow 已完成；GitHub Actions CI run `34851129257` 已实际跑绿 `quality`、`browser-e2e` 与 `container`，其中 container 覆盖镜像构建、空配置启动/readiness、preflight、一致性备份、停服务离线 verify/restore 与恢复后 readiness。当前唯一尚未取得的发布供应链实证来自正式 tag：真实 GHCR registry digest、SPDX SBOM、release manifest、`SHA256SUMS` 和 GitHub Release 资产必须由首次 tag workflow 实际生成并验收。
