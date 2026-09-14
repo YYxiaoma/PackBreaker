@@ -9,12 +9,12 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 | 工作包 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
 | 一致性数据库备份 | ✅ 代码闭环 | SQLite Backup API、SHA-256 manifest、完整性/revision 验证、CLI、preview-first 保留、默认关闭的计划调度、强 `If-Match` 管理 API 与真实 UI 已接通；仍待目标 Docker 环境取得运行级证据 |
-| 恢复与失败回滚 | 🟡 进行中 | 已实现实例锁停止门禁、恢复前安全快照、临时迁移预检、原子切换与切换后失败自动回滚；CI container 恢复门禁已定义，当前 Runner 无 Docker，仍待 GitHub/目标 Docker 环境实跑 |
+| 恢复与失败回滚 | ✅ CI 闭环 | 已实现实例锁停止门禁、恢复前安全快照、临时迁移预检、原子切换与切换后失败自动回滚；GitHub Actions run `34851129257` 已在 linux/amd64 Docker 环境完成空配置启动、preflight、备份、离线 verify/restore 与重启 readiness |
 | 升级兼容矩阵 | 🟡 进行中 | 已自动覆盖 22 个历史 Alembic revision（0001～0022）→ `0023_backup_policy`、空配置原子首装、迁移失败不切换和 Runtime 启动安全升级；上一正式 release 跨镜像演练需首个 release 后补证 |
 | 真实依赖健康/仪表盘 | ✅ 代码闭环 | `/system/health` 已聚合 runtime、磁盘、备份、任务/operation 风险、站点/下载器既有证据、通知与后台 driver，前端总览直接消费 typed OpenAPI；读取页面不主动访问外部服务 |
 | 日志与诊断导出 | ✅ 代码闭环 | stdout JSON + `/config/logs` 有界轮转日志、7 天最大查询窗口、查询/导出条数硬限制、typed API 与前端筛选/导出已接通；诊断 ZIP 继续独立且默认不含日志，日志/诊断均有泄漏 canary |
 | 镜像/SBOM/发布产物 | 🟡 进行中 | Dockerfile 基础镜像已精确版本+digest 固定；tag release workflow 生成 linux/amd64 最终 digest、SPDX JSON SBOM、release manifest、SHA256SUMS 与 release notes；真实 tag/registry 运行仍待取得证据 |
-| 运维 runbook/用户手册 | 🟡 进行中 | 已补 Compose 备份/停止/恢复/readiness/回滚步骤；升级中心已接真实本地 preflight、升级前备份和不可变 digest 手工 runbook，但仍需 GitHub/目标 Docker 环境实机演练 |
+| 运维 runbook/用户手册 | 🟡 进行中 | 已补 Compose 备份/停止/恢复/readiness/回滚步骤；GitHub container 恢复演练已跑绿，升级中心已接真实本地 preflight、升级前备份和不可变 digest 手工 runbook；正式 release-to-release 跨镜像升级/回滚仍需首个正式 tag 后积累 |
 | v1.0 全量验收 | 🟡 进行中 | 25 条验收项已建立机器可校验证据索引：20 条自动化覆盖、4 条现场证据、1 条保留外部 Docker blocker；正式 tag 与目标 Docker 证据仍待完成 |
 
 ## 3. 一致性备份首批能力
@@ -79,9 +79,9 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 
 - `docs/v1-acceptance-evidence.json` 按 `V1-001`～`V1-025` 逐项绑定 `docs/testing.md` 的正式验收要求，并记录 `covered`、`field_evidence` 或 `pending_external`。
 - `scripts/validate_acceptance_evidence.py` 已进入 `scripts/check.py`；缺失条目、失效文件/锚点、与验收原文脱节的 criterion 或没有 blocker 说明的外部项都会阻断静态门禁。
-- 当前只有 `V1-025` 保持 `pending_external`：代码与临时目录内的备份/迁移/回滚测试已覆盖，但目标 `linux/amd64` Docker 的空配置安装、离线 restore、升级/回滚仍须取得运行级证据。
+- `V1-025` 已由数据库备份/升级失败回滚自动化矩阵与 GitHub Actions run `34851129257` 的真实 Docker 空配置启动、离线 restore、重启 readiness 共同闭环；当前验收索引不再有 `pending_external` 条目。
 - `docs/support-matrix.md` 与 `docs/known-limitations.md` 已独立发布版本边界与明确遗留，补齐路线图要求的支持版本/已知限制文档。
 
 ## 12. 下一阶段退出证据
 
-当前代码侧已取得备份/计划调度、恢复、安全升级矩阵、真实本地升级中心、统一健康仪表盘、持久日志查询/导出与诊断脱敏证据；container 恢复/升级门禁和 tag release workflow 仍因本地 Runner 无 Docker、且尚未创建正式 tag，需要在 GitHub/目标 Docker 环境实际跑绿。下一开发小阶段继续按 `docs/testing.md` 对照 v1.0 清单收口自动化证据，并准备目标 Docker 实机验收。
+当前代码侧已取得备份/计划调度、恢复、安全升级矩阵、真实本地升级中心、统一健康仪表盘、持久日志查询/导出与诊断脱敏证据；GitHub CI run `34851129257` 的 `quality`、`browser-e2e`、`container` 三条门禁已全部跑绿。下一开发小阶段聚焦首个正式 tag 的 GHCR digest、SPDX SBOM、release manifest/资产，以及首个 release 之后才能形成的跨镜像升级/回滚证据。

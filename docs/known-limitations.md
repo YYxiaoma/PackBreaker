@@ -11,7 +11,7 @@
 ## 2. 发布与容器证据
 
 - 正式发布目标当前只有 `linux/amd64`。
-- 当前开发 Runner 无 Docker daemon，因此 CI 中定义的空配置启动、离线 restore、重启 readiness 和后续目标升级/回滚流程尚缺本地实跑证据；必须在 GitHub/目标 Docker 环境补齐。
+- 当前开发 Runner 无 Docker daemon；GitHub Actions CI run `34851129257` 已取得空配置启动、离线 verify/restore 与重启 readiness 的真实 Docker 证据。仍未取得“上一正式 release 镜像 → 当前正式 release 镜像”的跨镜像升级/回滚实证，因为首个正式 tag 尚未发布。
 - 尚未创建首个正式 `v<version>` tag，所以真实 GHCR image digest、SPDX SBOM、`SHA256SUMS` 和 GitHub Release 资产还没有发布级实证。
 - 首个正式 release 之前没有上一正式镜像可用于跨镜像升级/回滚矩阵。当前 Alembic 历史 revision 矩阵只能证明数据库 schema 路径和原子回滚机制。
 

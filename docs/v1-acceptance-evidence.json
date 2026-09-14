@@ -230,12 +230,12 @@
     {
       "id": "V1-025",
       "criterion": "备份、迁移、升级健康检查和失败回滚演练通过。",
-      "status": "pending_external",
-      "external_blocker": "代码与临时目录自动化已覆盖；仍需 GitHub/目标 linux/amd64 Docker 环境实际运行 container 恢复/升级门禁。",
+      "status": "covered",
       "evidence": [
         {"path": "tests/integration/test_backups.py", "contains": "test_restore_rolls_back_current_database_when_post_switch_validation_fails"},
         {"path": "tests/integration/test_upgrade_matrix.py", "contains": "test_post_switch_validation_failure_restores_pre_upgrade_snapshot"},
-        {"path": ".github/workflows/ci.yml", "contains": "restore-backup"}
+        {"path": ".github/workflows/ci.yml", "contains": "restore-backup"},
+        {"path": "docs/m6-exit-checklist.md", "contains": "34851129257"}
       ]
     }
   ]

@@ -10,7 +10,7 @@
 | Linux 其他架构 | 未声明支持 | 尚无构建、恢复和性能验收矩阵。 |
 | Windows / macOS 原生生产运行 | 未声明支持 | 可用于开发，但 v1.0 生产部署以 Linux 容器为边界。 |
 
-当前开发 Runner 没有 Docker daemon，因此容器恢复/升级门禁虽然已写入 CI，仍需 GitHub/目标 Docker 环境实际跑绿后才能形成发布级证据。
+当前开发 Runner 没有 Docker daemon，但 GitHub Actions CI run `34851129257` 已在 `ubuntu-latest` Docker 环境实际完成镜像构建、空配置启动/readiness、preflight、一致性备份、停服务离线 verify/restore 与重启 readiness。正式 release-to-release 的跨镜像升级/回滚仍需在首个正式 tag 之后继续积累证据。
 
 ## 2. 下载器
 

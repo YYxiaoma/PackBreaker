@@ -14,8 +14,9 @@ def test_repository_v1_acceptance_evidence_manifest_is_complete_and_resolvable()
     assert validate_manifest(ROOT, manifest) == []
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     statuses = [item["status"] for item in payload["requirements"]]
-    assert statuses.count("pending_external") == 1
+    assert statuses.count("pending_external") == 0
     assert payload["requirements"][-1]["id"] == "V1-025"
+    assert payload["requirements"][-1]["status"] == "covered"
 
 
 def test_acceptance_evidence_validator_rejects_stale_anchor(tmp_path: Path) -> None:
