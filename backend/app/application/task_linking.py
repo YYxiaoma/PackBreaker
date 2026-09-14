@@ -97,7 +97,12 @@ class TaskLinkingCoordinator:
         self._session_factory = session_factory
         self._plan_provider = plan_provider
         self._filesystem_operations = filesystem_operations
-        self._data_root = data_root
+        # source_inventory_digest 会绑定 SourceFileCandidate.source_path。
+        # 调用方即使传入相对 data_root，也必须与 Analyze 阶段产生相同的绝对路径表示，
+        # 否则相同 inode/mtime/size 会被误判为 source inventory 已变化。
+        # absolute() 只规范化路径表示，不解析/跟随符号链接；后续安全检查仍由
+        # SafeFilesystemGateway 和 no-follow inventory 扫描负责。
+        self._data_root = data_root.absolute()
 
     def execute(self, unit_id: str, *, execution_plan_id: str) -> TaskLinkingResult:
         status = self._load_task_status(unit_id, execution_plan_id)

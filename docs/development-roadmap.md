@@ -140,11 +140,15 @@ qBittorrent 写侧现已落地 5.2.3/WebAPI 2.15.1 内部主链切片：executio
 - 实现电视剧季/集、范围集、Specials 和多版本识别。
 - 提供批量预演、筛选、人工确认和失败重试。
 
+当前实现进度：历史扫描已从原型切换为真实 `/data` 只读增量扫描，持久化根目录、媒体类型、扩展名/排除规则、generation、cursor 与文件 `device/inode/size/mtime` 快照，支持分批推进、暂停/续扫和 new/changed/unchanged 统计；扫描器现按全路径稳定字典序做 cursor-aware 有界遍历，只获取当前批次加一条前瞻记录，并在目录层跳过 cursor 之前整棵子树，不再为每个 batch 重建全量文件快照，同时所有中间目录仍逐段 `O_NOFOLLOW` 打开。显式 `start/resume` 后由独立 HistoryScanDriver 自动推进 `SCANNING` 扫描，driver 只读 `/data`、不自动 materialize、不搜站也不触发下载器写操作；`pause/cancel` 与 driver 通过版本竞争安全收敛，`CANCELLED` 会保留当前 cursor、统计和已发现文件证据，并允许用户显式开始新的 generation。扫描 `DONE` 后的 `materialize` 动作把当前 generation 中尚未处理的文件快照按批次转换为普通 `PENDING` task/task_unit：转换前重新 no-follow 验证父目录与文件快照，并使用当前 source inventory 重新执行既有影片/剧集单元识别；同一 `scan_file + snapshot_digest` 通过追加式 `history_scan_materialization` 唯一约束只处理一次，10 路并发转换也通过 SQLite `BEGIN IMMEDIATE` 写临界区收敛为一套 task/task_unit/materialization，文件快照变化后则生成新的历史来源任务。无法识别或与扫描媒体类型不符的文件以固定 `SKIPPED` 原因记录，不伪造成任务。历史任务在普通 Analyze 前还会重新核对 materialization 与当前文件快照，源被替换则保持原任务并要求重新扫描。历史剧集识别现已支持文件名中的 SxxExx/范围集/S00/EP/ABS/Specials，以及 `剧名/Season 01/01.mkv`、`剧名/Specials/01.mkv` 等目录上下文；上下文只补齐缺失的剧名、年份和季集身份，不改变普通大包默认的保守识别。每个剧集 materialization 额外冻结 episode kind/season/start/end/label，并生成稳定 episode group key 与逐文件 variant key，使同一集的 1080p/2160p 等版本可归组展示而仍保持独立任务。当前还提供扫描级任务结果列表、服务端 `task_status/materialization_status/query` 筛选和最多 10 条的批量 Analyze：客户端只提交 task ID，`source_root` 由服务端 materialization 证据派生；批处理顺序复用现有只读搜站/验证/preflight 安全门并返回逐任务成功/失败/跳过结果，不自动批准候选、不生成 execution plan、不创建硬链接，也不调用 qB/TR 写接口。前端“历史辅种”页会轮询活动扫描进度，可暂停/取消、查看季集标签与同集版本数、按任务状态/转换结果/关键词做服务端筛选、勾选可分析任务并批量 Analyze；“重试 RETRY”会从当前扫描服务端结果中取最新最多 10 条 RETRY 任务重新走同一 Analyze 安全链，已有 preflight 的任务继续进入现有“预演与确认”人工审核中心。2026-09-14 已完成真实影片与真实剧集两条 `HistoryScan → materialize → Analyze → review/gate/plan → hardlink → qB DONE` 现场验收；动态 Jubilee 下载目录还真实触发 `ANALYSIS_SOURCE_CHANGED` 并保持 0 journal，证明 source-change 失败关闭。M5 已满足正式退出条件，详见 `docs/m5-exit-checklist.md`。
+
 ### 退出条件
 
 - 大目录重复扫描只处理新增或变化内容，不重复创建任务。
 - 影片和剧集各完成扫描到辅种闭环。
 - 暂停、重启和取消不丢游标，不影响已完成任务。
+
+**M5 关闭判定（2026-09-14）：已满足上述三项正式退出条件，可以进入 M6。** 真实影片/剧集任务均已保留 `DONE`、hardlink inode 与 qB operation journal 证据；动态源变化样本也已证明 Analyze 会在任何副作用前失败关闭。详见 `docs/m5-exit-checklist.md`。
 
 ## 8. M6：发布与运维闭环
 

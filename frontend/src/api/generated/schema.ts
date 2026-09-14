@@ -304,6 +304,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/history-scans/{scan_id}/tasks': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List History Scan Tasks */
+    get: operations['list_history_scan_tasks_api_v1_history_scans__scan_id__tasks_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/history-scans/{scan_id}/tasks/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** History Scan Task Action */
+    post: operations['history_scan_task_action_api_v1_history_scans__scan_id__tasks_actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/notification-channels': {
     parameters: {
       query?: never;
@@ -1015,6 +1049,11 @@ export interface components {
       path_mappings?: components['schemas']['PathMappingInput'][] | null;
       type?: components['schemas']['DownloaderKind'] | null;
     };
+    /**
+     * EpisodeKind
+     * @enum {string}
+     */
+    EpisodeKind: 'SEASON_EPISODE' | 'SEASON_RANGE' | 'EPISODE' | 'ABSOLUTE' | 'SPECIALS';
     /** ExecuteTaskActionRequest */
     ExecuteTaskActionRequest: {
       /**
@@ -1137,6 +1176,31 @@ export interface components {
       /** Detail */
       detail?: components['schemas']['ValidationError'][];
     };
+    /** HistoryMaterializationItemResponse */
+    HistoryMaterializationItemResponse: {
+      /** Materialization Id */
+      materialization_id: string;
+      /** Normalized Unit Key */
+      normalized_unit_key: string | null;
+      /** Reason Code */
+      reason_code: string | null;
+      /** Scan File Id */
+      scan_file_id: string;
+      /** Source Root */
+      source_root: string | null;
+      status: components['schemas']['HistoryMaterializationStatus'];
+      /** Task Created */
+      task_created: boolean;
+      /** Task Id */
+      task_id: string | null;
+      /** Unit Kind */
+      unit_kind: string | null;
+    };
+    /**
+     * HistoryMaterializationStatus
+     * @enum {string}
+     */
+    HistoryMaterializationStatus: 'MATERIALIZED' | 'SKIPPED';
     /**
      * HistoryMediaKind
      * @enum {string}
@@ -1148,7 +1212,7 @@ export interface components {
        * Action
        * @enum {string}
        */
-      action: 'start' | 'pause' | 'resume' | 'scan';
+      action: 'start' | 'pause' | 'resume' | 'cancel' | 'scan' | 'materialize';
       /**
        * Limit
        * @default 100
@@ -1177,6 +1241,22 @@ export interface components {
     HistoryScanListResponse: {
       /** Items */
       items: components['schemas']['HistoryScanResponse'][];
+    };
+    /** HistoryScanMaterializeResponse */
+    HistoryScanMaterializeResponse: {
+      /** Items */
+      items: components['schemas']['HistoryMaterializationItemResponse'][];
+      /** Processed Count */
+      processed_count: number;
+      /** Remaining Count */
+      remaining_count: number;
+      scan: components['schemas']['HistoryScanResponse'];
+      /** Skipped Count */
+      skipped_count: number;
+      /** Task Created Count */
+      task_created_count: number;
+      /** Task Reused Count */
+      task_reused_count: number;
     };
     /** HistoryScanResponse */
     HistoryScanResponse: {
@@ -1223,7 +1303,106 @@ export interface components {
      * HistoryScanStatus
      * @enum {string}
      */
-    HistoryScanStatus: 'READY' | 'SCANNING' | 'PAUSED' | 'DONE';
+    HistoryScanStatus: 'READY' | 'SCANNING' | 'PAUSED' | 'CANCELLED' | 'DONE';
+    /** HistoryTaskBatchActionRequest */
+    HistoryTaskBatchActionRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'analyze';
+      /** Task Ids */
+      task_ids: string[];
+    };
+    /** HistoryTaskBatchAnalyzeItemResponse */
+    HistoryTaskBatchAnalyzeItemResponse: {
+      /** Attempted */
+      attempted: boolean;
+      /** Error Code */
+      error_code: string | null;
+      /** Source Root */
+      source_root: string;
+      /** Succeeded */
+      succeeded: boolean;
+      /** Task Id */
+      task_id: string;
+      task_status: components['schemas']['TaskStatus'];
+    };
+    /** HistoryTaskBatchAnalyzeResponse */
+    HistoryTaskBatchAnalyzeResponse: {
+      /**
+       * Action
+       * @default analyze
+       * @constant
+       */
+      action: 'analyze';
+      /** Attempted Count */
+      attempted_count: number;
+      /** Failed Count */
+      failed_count: number;
+      /** Items */
+      items: components['schemas']['HistoryTaskBatchAnalyzeItemResponse'][];
+      /** Skipped Count */
+      skipped_count: number;
+      /** Succeeded Count */
+      succeeded_count: number;
+    };
+    /** HistoryTaskResultListResponse */
+    HistoryTaskResultListResponse: {
+      /** Items */
+      items: components['schemas']['HistoryTaskResultResponse'][];
+    };
+    /** HistoryTaskResultResponse */
+    HistoryTaskResultResponse: {
+      /** Analysis Eligible */
+      analysis_eligible: boolean;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Episode End */
+      episode_end: number | null;
+      /** Episode Group Key */
+      episode_group_key: string | null;
+      episode_kind: components['schemas']['EpisodeKind'] | null;
+      /** Episode Label */
+      episode_label: string | null;
+      /** Episode Season */
+      episode_season: number | null;
+      /** Episode Start */
+      episode_start: number | null;
+      /** Episode Variant Key */
+      episode_variant_key: string | null;
+      /** Has Preflight */
+      has_preflight: boolean;
+      /** Materialization Id */
+      materialization_id: string;
+      materialization_status: components['schemas']['HistoryMaterializationStatus'];
+      /** Normalized Unit Key */
+      normalized_unit_key: string | null;
+      /** Reason Code */
+      reason_code: string | null;
+      /** Relative Path */
+      relative_path: string;
+      /** Scan File Id */
+      scan_file_id: string;
+      /** Snapshot Digest */
+      snapshot_digest: string;
+      /** Source Root */
+      source_root: string | null;
+      /** Task Error Code */
+      task_error_code: string | null;
+      /** Task Id */
+      task_id: string | null;
+      task_status: components['schemas']['TaskStatus'] | null;
+      /** Task Version */
+      task_version: number | null;
+      /** Unit Kind */
+      unit_kind: string | null;
+      /** Variant Count */
+      variant_count: number;
+    };
     /** LoginResponse */
     LoginResponse: {
       /** Authenticated */
@@ -3001,7 +3180,89 @@ export interface operations {
         content: {
           'application/json':
             | components['schemas']['HistoryScanResponse']
-            | components['schemas']['HistoryScanBatchResponse'];
+            | components['schemas']['HistoryScanBatchResponse']
+            | components['schemas']['HistoryScanMaterializeResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_history_scan_tasks_api_v1_history_scans__scan_id__tasks_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+        task_status?: components['schemas']['TaskStatus'] | null;
+        materialization_status?: components['schemas']['HistoryMaterializationStatus'] | null;
+        query?: string | null;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        scan_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HistoryTaskResultListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  history_scan_task_action_api_v1_history_scans__scan_id__tasks_actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        scan_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['HistoryTaskBatchActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HistoryTaskBatchAnalyzeResponse'];
         };
       };
       /** @description Validation Error */

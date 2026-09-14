@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onUnmounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   HardDrive,
@@ -23,13 +23,18 @@ import {
 import { ApiProblem } from '../api/client';
 import type { Task } from '../demo';
 import {
+  analyzeHistoryScanTasks,
+  cancelHistoryScan,
   createHistoryScan,
   listHistoryScans,
+  listHistoryScanTasks,
+  materializeHistoryScan,
   pauseHistoryScan,
   resumeHistoryScan,
   scanHistoryBatch,
   startHistoryScan,
   type HistoryScan,
+  type HistoryTaskResult,
 } from '../api/historyScans';
 import {
   getOperationMaintenanceReport,
@@ -44,7 +49,12 @@ import SiteManagement from './SiteManagement.vue';
 import ApiTokenManagement from './AutomationAccessManagement.vue';
 import NotificationManagement from './NotificationManagement.vue';
 const props = defineProps<{ page: string; tasks: Task[] }>();
-const emit = defineEmits<{ export: [unknown, string]; open: [Task]; createHistory: [string] }>();
+const emit = defineEmits<{
+  export: [unknown, string];
+  open: [Task];
+  createHistory: [string];
+  navigate: [string];
+}>();
 const rules = reactive({
   automation: false,
   skip: false,
@@ -69,6 +79,18 @@ const scanDialog = ref(false),
 const scans = ref<HistoryScan[]>([]);
 const scanLoading = ref(false);
 const scanActionId = ref('');
+const historyTaskResults = ref<Record<string, HistoryTaskResult[]>>({});
+const historyTaskSelections = ref<Record<string, HistoryTaskResult[]>>({});
+const historyTaskQueries = ref<Record<string, string>>({});
+const historyTaskStatusFilters = ref<
+  Record<string, '' | NonNullable<HistoryTaskResult['task_status']>>
+>({});
+const historyMaterializationFilters = ref<
+  Record<string, '' | HistoryTaskResult['materialization_status']>
+>({});
+const historyTaskLoadingId = ref('');
+const historyAnalyzeId = ref('');
+let historyRefreshTimer: ReturnType<typeof setInterval> | undefined;
 function splitScanRules(value: string): string[] {
   return value
     .split(',')
@@ -81,7 +103,13 @@ function replaceScan(scan: HistoryScan) {
   else scans.value[index] = scan;
 }
 function scanStatusLabel(scan: HistoryScan): string {
-  return { READY: '待开始', SCANNING: '扫描中', PAUSED: '已暂停', DONE: '已完成' }[scan.status];
+  return {
+    READY: '待开始',
+    SCANNING: '扫描中',
+    PAUSED: '已暂停',
+    CANCELLED: '已取消',
+    DONE: '已完成',
+  }[scan.status];
 }
 async function refreshHistoryScans() {
   scanLoading.value = true;
@@ -152,6 +180,30 @@ async function toggleScan(scan: HistoryScan) {
     scanActionId.value = '';
   }
 }
+
+async function cancelScan(scan: HistoryScan) {
+  try {
+    await ElMessageBox.confirm(
+      '取消当前历史扫描？已持久化的游标、文件快照和已生成任务都会保留；不会删除媒体文件或已有任务。',
+      '取消历史扫描',
+      { confirmButtonText: '取消扫描', cancelButtonText: '继续扫描', type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  scanActionId.value = scan.id;
+  try {
+    const cancelled = await cancelHistoryScan(scan.id, scan.version);
+    replaceScan(cancelled);
+    ElMessage.success(`扫描已取消，游标保留在 ${cancelled.cursor ?? '起点'}`);
+  } catch (error) {
+    await refreshHistoryScans();
+    ElMessage.error(error instanceof Error ? error.message : '历史扫描取消失败');
+  } finally {
+    scanActionId.value = '';
+  }
+}
+
 async function restartScan(scan: HistoryScan) {
   scanActionId.value = scan.id;
   try {
@@ -162,6 +214,148 @@ async function restartScan(scan: HistoryScan) {
     ElMessage.error(error instanceof Error ? error.message : '历史扫描启动失败');
   } finally {
     scanActionId.value = '';
+  }
+}
+
+async function materializeScan(scan: HistoryScan) {
+  scanActionId.value = scan.id;
+  try {
+    const result = await materializeHistoryScan(scan.id, scan.version, 100);
+    replaceScan(result.scan);
+    ElMessage.success(
+      result.processed_count === 0
+        ? '当前扫描快照已全部转换；没有重复创建任务'
+        : `已处理 ${result.processed_count} 个快照：新建任务 ${result.task_created_count}、复用 ${result.task_reused_count}、跳过 ${result.skipped_count}${result.remaining_count ? `，剩余 ${result.remaining_count}` : ''}`,
+    );
+    if (historyTaskResults.value[scan.id]) await loadHistoryTasks(result.scan);
+  } catch (error) {
+    await refreshHistoryScans();
+    ElMessage.error(error instanceof Error ? error.message : '历史扫描任务转换失败');
+  } finally {
+    scanActionId.value = '';
+  }
+}
+
+async function loadHistoryTasks(scan: HistoryScan) {
+  historyTaskLoadingId.value = scan.id;
+  try {
+    const taskStatus = historyTaskStatusFilters.value[scan.id] || undefined;
+    const materializationStatus = historyMaterializationFilters.value[scan.id] || undefined;
+    const query = (historyTaskQueries.value[scan.id] ?? '').trim() || undefined;
+    historyTaskResults.value[scan.id] = await listHistoryScanTasks(scan.id, 500, {
+      taskStatus,
+      materializationStatus,
+      query,
+    });
+    historyTaskSelections.value[scan.id] = [];
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '历史任务结果读取失败');
+  } finally {
+    historyTaskLoadingId.value = '';
+  }
+}
+
+function setHistoryTaskSelection(scanId: string, rows: HistoryTaskResult[]) {
+  historyTaskSelections.value[scanId] = rows;
+}
+
+function historyTaskSelectable(row: HistoryTaskResult): boolean {
+  return row.analysis_eligible && row.task_id !== null;
+}
+
+function filteredHistoryTaskResults(scanId: string): HistoryTaskResult[] {
+  const rows = historyTaskResults.value[scanId] ?? [];
+  const needle = (historyTaskQueries.value[scanId] ?? '').trim().toLowerCase();
+  const taskStatus = historyTaskStatusFilters.value[scanId] ?? '';
+  const materializationStatus = historyMaterializationFilters.value[scanId] ?? '';
+  return rows.filter((row) => {
+    if (taskStatus && row.task_status !== taskStatus) return false;
+    if (materializationStatus && row.materialization_status !== materializationStatus) return false;
+    if (!needle) return true;
+    return [
+      row.relative_path,
+      row.episode_label ?? '',
+      row.episode_kind ?? '',
+      row.task_id ?? '',
+      row.task_status ?? '',
+      row.task_error_code ?? '',
+    ]
+      .join(' ')
+      .toLowerCase()
+      .includes(needle);
+  });
+}
+
+function historyTaskStatusType(
+  status: HistoryTaskResult['task_status'],
+): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
+  if (status === 'DONE') return 'success';
+  if (status === 'RETRY' || status === 'PAUSED') return 'warning';
+  if (status === 'FAILED' || status === 'CANCELLED') return 'danger';
+  if (status === null) return 'info';
+  return 'primary';
+}
+
+async function analyzeHistoryTaskIds(scan: HistoryScan, taskIds: string[], actionLabel: string) {
+  if (taskIds.length > 10) {
+    ElMessage.warning('单次批量 Analyze 最多 10 个任务，以避免站点请求风暴');
+    return;
+  }
+  historyAnalyzeId.value = scan.id;
+  try {
+    const result = await analyzeHistoryScanTasks(scan.id, taskIds);
+    const failures = result.items
+      .filter((item) => !item.succeeded)
+      .map((item) => item.error_code)
+      .filter((code): code is string => code !== null);
+    if (result.failed_count || result.skipped_count) {
+      ElMessage.warning(
+        `${actionLabel}完成：成功 ${result.succeeded_count}、失败 ${result.failed_count}、跳过 ${result.skipped_count}${failures.length ? `；${[...new Set(failures)].join(' / ')}` : ''}`,
+      );
+    } else {
+      ElMessage.success(`${actionLabel}完成：${result.succeeded_count} 个任务已进入预演证据流程`);
+    }
+    await loadHistoryTasks(scan);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '历史任务批量 Analyze 失败');
+  } finally {
+    historyAnalyzeId.value = '';
+  }
+}
+
+async function analyzeSelectedHistoryTasks(scan: HistoryScan) {
+  const taskIds = (historyTaskSelections.value[scan.id] ?? [])
+    .filter(historyTaskSelectable)
+    .map((item) => item.task_id)
+    .filter((taskId): taskId is string => taskId !== null);
+  if (!taskIds.length) {
+    ElMessage.warning('请选择 1 到 10 个处于 PENDING / RETRY / PAUSED 的历史任务');
+    return;
+  }
+  await analyzeHistoryTaskIds(scan, taskIds, '批量 Analyze ');
+}
+
+async function retryHistoryTasks(scan: HistoryScan) {
+  try {
+    const retryable = await listHistoryScanTasks(scan.id, 11, {
+      taskStatus: 'RETRY',
+      materializationStatus: 'MATERIALIZED',
+    });
+    const taskIds = retryable
+      .filter(historyTaskSelectable)
+      .map((item) => item.task_id)
+      .filter((taskId): taskId is string => taskId !== null)
+      .slice(0, 10);
+    if (!taskIds.length) {
+      ElMessage.info('当前扫描没有可重试的 RETRY 历史任务');
+      return;
+    }
+    if (retryable.length > 10) {
+      ElMessage.info('RETRY 任务超过 10 个，本轮先处理最新 10 个；完成后可再次重试');
+    }
+    await analyzeHistoryTaskIds(scan, taskIds, 'RETRY 重试 ');
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '历史 RETRY 任务读取失败');
   }
 }
 const maintenanceReport = ref<OperationMaintenanceReport>();
@@ -278,10 +472,24 @@ watch(
   () => props.page,
   (page) => {
     if (page === '清理与对账') void refreshMaintenanceCenter();
-    if (page === '历史辅种') void refreshHistoryScans();
+    if (historyRefreshTimer !== undefined) {
+      clearInterval(historyRefreshTimer);
+      historyRefreshTimer = undefined;
+    }
+    if (page === '历史辅种') {
+      void refreshHistoryScans();
+      historyRefreshTimer = setInterval(() => {
+        if (scans.value.some((scan) => scan.status === 'SCANNING') && !scanActionId.value) {
+          void refreshHistoryScans();
+        }
+      }, 5000);
+    }
   },
   { immediate: true },
 );
+onUnmounted(() => {
+  if (historyRefreshTimer !== undefined) clearInterval(historyRefreshTimer);
+});
 const logLevel = ref(''),
   logQuery = ref(''),
   logTask = ref(''),
@@ -521,15 +729,159 @@ async function update() {
             @click="toggleScan(scan)"
             >{{ scan.status === 'PAUSED' ? '断点续扫' : '暂停' }}</el-button
           ><el-button
-            v-if="scan.status === 'READY' || scan.status === 'DONE'"
+            v-if="scan.status === 'SCANNING' || scan.status === 'PAUSED'"
+            size="small"
+            type="danger"
+            plain
+            :disabled="scanActionId === scan.id"
+            @click="cancelScan(scan)"
+            >取消扫描</el-button
+          ><el-button
+            v-if="scan.status === 'DONE'"
+            size="small"
+            type="success"
+            plain
+            :loading="scanActionId === scan.id"
+            @click="materializeScan(scan)"
+            >生成 / 同步任务</el-button
+          ><el-button
+            size="small"
+            :loading="historyTaskLoadingId === scan.id"
+            @click="loadHistoryTasks(scan)"
+            >任务结果</el-button
+          ><el-button
+            v-if="['READY', 'DONE', 'CANCELLED'].includes(scan.status)"
             size="small"
             type="primary"
             plain
             :loading="scanActionId === scan.id"
             @click="restartScan(scan)"
-            >{{ scan.status === 'DONE' ? '再次增量扫描' : '开始扫描' }}</el-button
+            >{{ scan.status === 'READY' ? '开始扫描' : '开始新一轮扫描' }}</el-button
           >
         </div>
+      </div>
+      <div v-if="historyTaskResults[scan.id]" class="section-space">
+        <el-alert
+          title="批量 Analyze 仅复用现有只读搜站 / 验证 / preflight 流程；source_root 由服务端扫描证据派生。这里不会自动批准候选，也不会创建硬链接或调用下载器写接口。"
+          type="info"
+          :closable="false"
+        />
+        <div class="filters section-space">
+          <el-input
+            v-model="historyTaskQueries[scan.id]"
+            clearable
+            placeholder="筛选路径、S01E01、任务 ID、错误码…"
+            @keyup.enter="loadHistoryTasks(scan)"
+          >
+            <template #prefix><Search :size="15" /></template>
+          </el-input>
+          <el-select v-model="historyTaskStatusFilters[scan.id]" placeholder="任务状态" clearable>
+            <el-option label="PENDING" value="PENDING" />
+            <el-option label="RETRY" value="RETRY" />
+            <el-option label="PAUSED" value="PAUSED" />
+            <el-option label="DONE" value="DONE" />
+            <el-option label="FAILED" value="FAILED" />
+            <el-option label="CANCELLED" value="CANCELLED" />
+          </el-select>
+          <el-select
+            v-model="historyMaterializationFilters[scan.id]"
+            placeholder="转换结果"
+            clearable
+          >
+            <el-option label="MATERIALIZED" value="MATERIALIZED" />
+            <el-option label="SKIPPED" value="SKIPPED" />
+          </el-select>
+          <el-button :loading="historyTaskLoadingId === scan.id" @click="loadHistoryTasks(scan)"
+            >应用筛选</el-button
+          >
+          <el-button
+            type="primary"
+            :loading="historyAnalyzeId === scan.id"
+            :disabled="!(historyTaskSelections[scan.id]?.length ?? 0)"
+            @click="analyzeSelectedHistoryTasks(scan)"
+            ><Search :size="15" />批量 Analyze
+            <span v-if="historyTaskSelections[scan.id]?.length"
+              >({{ historyTaskSelections[scan.id]?.length }})</span
+            ></el-button
+          >
+          <el-button
+            type="warning"
+            plain
+            :loading="historyAnalyzeId === scan.id"
+            @click="retryHistoryTasks(scan)"
+            >重试 RETRY</el-button
+          >
+          <el-button @click="emit('navigate', '预演与确认')">打开审核中心</el-button>
+          <span class="muted"
+            >筛选由服务端执行，不受当前 500 条视图限制；Analyze / RETRY 每批最多 10 个任务。</span
+          >
+        </div>
+        <el-table
+          :data="filteredHistoryTaskResults(scan.id)"
+          row-key="materialization_id"
+          @selection-change="setHistoryTaskSelection(scan.id, $event)"
+          empty-text="当前扫描尚未生成任务转换记录"
+        >
+          <el-table-column type="selection" width="44" :selectable="historyTaskSelectable" />
+          <el-table-column label="文件 / 单元" min-width="260">
+            <template #default="{ row }">
+              <div class="task-title">
+                <div>
+                  <b>{{ row.relative_path }}</b>
+                  <span v-if="row.episode_label">
+                    <el-tag size="small" type="info">{{ row.episode_label }}</el-tag>
+                    <small v-if="row.variant_count > 1">同集 {{ row.variant_count }} 个版本</small>
+                  </span>
+                  <small
+                    >{{ row.unit_kind ?? '未识别单元' }} ·
+                    {{ row.normalized_unit_key ?? '—' }}</small
+                  >
+                </div>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="转换结果" width="180">
+            <template #default="{ row }">
+              <el-tag :type="row.materialization_status === 'MATERIALIZED' ? 'success' : 'info'">
+                {{ row.materialization_status }}
+              </el-tag>
+              <small v-if="row.reason_code" class="cell-note">{{ row.reason_code }}</small>
+            </template>
+          </el-table-column>
+          <el-table-column label="普通任务" min-width="250">
+            <template #default="{ row }">
+              <div v-if="row.task_id" class="review-identity">
+                <code>{{ row.task_id }}</code>
+                <el-tag size="small" :type="historyTaskStatusType(row.task_status)">
+                  {{ row.task_status }}
+                </el-tag>
+                <small v-if="row.task_error_code">{{ row.task_error_code }}</small>
+              </div>
+              <span v-else class="muted">未创建 Task</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="证据 / 操作" min-width="190">
+            <template #default="{ row }">
+              <div class="row-actions">
+                <el-tag v-if="row.has_preflight" type="success" size="small">有 Preflight</el-tag>
+                <el-button
+                  v-if="row.has_preflight"
+                  link
+                  type="primary"
+                  @click="emit('navigate', '预演与确认')"
+                  >审核</el-button
+                >
+                <el-button
+                  v-else-if="row.task_id"
+                  link
+                  type="primary"
+                  @click="emit('navigate', '任务中心')"
+                  >任务中心</el-button
+                >
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
       </div>
     </article>
   </div>
@@ -947,7 +1299,7 @@ async function update() {
       ><el-form-item label="文件类型"><el-input v-model="scanTypes" /></el-form-item
       ><el-form-item label="排除规则"><el-input v-model="scanExclude" /></el-form-item
       ><el-alert
-        title="真实只读增量扫描：仅记录 /data 内普通文件元数据；符号链接会跳过，重复扫描未变化文件不会重复计为新增。"
+        title="真实只读增量扫描：仅记录 /data 内普通文件元数据；完成后可将当前快照幂等转换为 PENDING 任务，不会自动搜站、执行硬链接或写入下载器。"
         type="info"
         :closable="false" /></el-form
     ><template #footer

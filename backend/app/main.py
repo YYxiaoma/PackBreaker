@@ -30,6 +30,7 @@ from backend.app.application.downloader_operations import (
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import FilesystemOperationService
+from backend.app.application.history_scan_driver import HistoryScanDriver
 from backend.app.application.history_scans import HistoryScanService
 from backend.app.application.notification_driver import NotificationDriver
 from backend.app.application.notifications import NotificationService
@@ -131,10 +132,11 @@ def create_app(
             data_root=resolved_settings.data_dir,
         )
         app.state.downloader_service = downloader_service
-        app.state.history_scan_service = HistoryScanService(
+        history_scan_service = HistoryScanService(
             resolved_runtime.session_factory,
             data_root=resolved_settings.data_dir,
         )
+        app.state.history_scan_service = history_scan_service
         qbit_operations = QbittorrentAddOperationService(resolved_runtime.session_factory)
         app.state.qbittorrent_add_operation_service = qbit_operations
         qbit_recheck_operations = QbittorrentRecheckOperationService(
@@ -312,6 +314,14 @@ def create_app(
         )
         app.state.task_driver = task_driver
         task_driver.start()
+        history_scan_driver = HistoryScanDriver(
+            history_scan_service,
+            interval_seconds=resolved_settings.history_scan_driver_interval_seconds,
+            scan_limit=resolved_settings.history_scan_driver_limit,
+            batch_size=resolved_settings.history_scan_driver_batch_size,
+        )
+        app.state.history_scan_driver = history_scan_driver
+        history_scan_driver.start()
         notification_driver = NotificationDriver(
             notification_service,
             interval_seconds=resolved_settings.notification_driver_interval_seconds,
@@ -324,6 +334,7 @@ def create_app(
             yield
         finally:
             await notification_driver.stop()
+            await history_scan_driver.stop()
             await task_driver.stop()
             resolved_runtime.stop()
 

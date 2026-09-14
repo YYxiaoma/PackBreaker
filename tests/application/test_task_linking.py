@@ -351,6 +351,33 @@ def test_linking_reserves_checkpoint_and_replays_without_new_side_effects(
         assert session.scalar(select(func.count()).select_from(OperationJournal)) == 2
 
 
+def test_linking_normalizes_relative_data_root_before_inventory_digest(
+    linking_fixture: _LinkingFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(linking_fixture.data_root.parent)
+    filesystem_operations = FilesystemOperationService(
+        linking_fixture.factory,
+        SafeFilesystemGateway(linking_fixture.data_root),
+    )
+    coordinator = TaskLinkingCoordinator(
+        linking_fixture.factory,
+        linking_fixture.provider,
+        filesystem_operations,
+        data_root=Path("data"),
+    )
+
+    result = coordinator.execute(
+        linking_fixture.unit_id,
+        execution_plan_id=linking_fixture.plan_id,
+    )
+
+    assert result.linked_file_count == 1
+    source_stat = linking_fixture.source_file.stat(follow_symlinks=False)
+    target_stat = linking_fixture.target_file.stat(follow_symlinks=False)
+    assert (source_stat.st_dev, source_stat.st_ino) == (target_stat.st_dev, target_stat.st_ino)
+
+
 def test_stale_plan_is_rejected_before_task_transition_or_file_write(
     linking_fixture: _LinkingFixture,
 ) -> None:

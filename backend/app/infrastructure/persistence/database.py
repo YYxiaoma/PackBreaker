@@ -47,3 +47,11 @@ def create_sqlite_engine(database_path: Path, *, echo: bool = False) -> Engine:
 
 def create_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, class_=Session, autoflush=False, expire_on_commit=False)
+
+
+def begin_immediate_write(session: Session) -> None:
+    """SQLite 写临界区：在任何读取前取得 RESERVED lock，避免读后升级竞态。"""
+
+    connection = session.connection()
+    if connection.dialect.name == "sqlite":
+        connection.exec_driver_sql("BEGIN IMMEDIATE")

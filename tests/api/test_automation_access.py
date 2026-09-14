@@ -98,6 +98,7 @@ def test_api_token_scope_is_enforced_on_system_status(tmp_path: Path) -> None:
         assert response.status_code == 200
         assert response.json()["authenticated_via"] == "api_token"
         assert response.json()["worker"]["running"] is True
+        assert response.json()["history_scan_worker"]["running"] is True
 
         response = client.get(
             "/api/v1/system/status",

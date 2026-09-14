@@ -39,6 +39,7 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
         "notification_outbox",
         "history_scan",
         "history_scan_file",
+        "history_scan_materialization",
     }.issubset(set(inspector.get_table_names()))
     task_unique_names = {
         constraint["name"] for constraint in inspector.get_unique_constraints("unpack_task")
@@ -62,6 +63,48 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("history_scan_file")
     } == {"uq_history_scan_file_scan_path"}
+    history_scan_checks = {
+        constraint["name"]: constraint["sqltext"]
+        for constraint in inspector.get_check_constraints("history_scan")
+    }
+    assert "CANCELLED" in str(history_scan_checks["ck_history_scan_status"])
+    history_materialization_indexes = {
+        index["name"]: index for index in inspector.get_indexes("history_scan_materialization")
+    }
+    assert (
+        history_materialization_indexes["ix_history_scan_materialization_scan_created_at"]["unique"]
+        == 0
+    )
+    assert (
+        history_materialization_indexes["ix_history_scan_materialization_scan_episode_group"][
+            "unique"
+        ]
+        == 0
+    )
+    history_materialization_columns = {
+        column["name"] for column in inspector.get_columns("history_scan_materialization")
+    }
+    assert {
+        "episode_kind",
+        "episode_season",
+        "episode_start",
+        "episode_end",
+        "episode_label",
+        "episode_group_key",
+        "episode_variant_key",
+    }.issubset(history_materialization_columns)
+    assert {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("history_scan_materialization")
+    } == {"uq_history_scan_materialization_file_snapshot"}
+    history_materialization_checks = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("history_scan_materialization")
+    }
+    assert {
+        "ck_history_scan_materialization_status",
+        "ck_history_scan_materialization_task_consistency",
+    }.issubset(history_materialization_checks)
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("operation_journal")
     } == {"uq_operation_journal_idempotency_key"}

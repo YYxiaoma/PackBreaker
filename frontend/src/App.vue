@@ -620,6 +620,7 @@ async function cancel(t: Task) {
           @export="download"
           @open="open"
           @create-history="historyTask"
+          @navigate="route = $event"
         />
         <footer>
           <span><ShieldCheck :size="15" />源数据只读 <i>·</i> 自动修复关闭</span

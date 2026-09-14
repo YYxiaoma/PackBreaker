@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 
 from backend.app.api.dependencies import AccessPrincipal, require_admin_or_scope
+from backend.app.application.history_scan_driver import HistoryScanDriver
 from backend.app.application.task_driver import ActiveTaskDriver
 from backend.app.domain.auth import ApiScope
 from backend.app.infrastructure.persistence.models import UnpackTask
@@ -20,7 +21,9 @@ async def system_status(
 ) -> dict[str, object]:
     runtime = cast(RuntimeManager, request.app.state.runtime)
     task_driver = cast(ActiveTaskDriver, request.app.state.task_driver)
+    history_scan_driver = cast(HistoryScanDriver, request.app.state.history_scan_driver)
     driver_state = task_driver.state
+    history_driver_state = history_scan_driver.state
     with runtime.session_factory() as session:
         rows = session.execute(
             select(UnpackTask.status, func.count()).group_by(UnpackTask.status)
@@ -53,5 +56,20 @@ async def system_status(
             "last_waiting_count": driver_state.last_waiting_count,
             "last_blocked_count": driver_state.last_blocked_count,
             "last_truncated": driver_state.last_truncated,
+        },
+        "history_scan_worker": {
+            "running": history_driver_state.running,
+            "ticks_started": history_driver_state.ticks_started,
+            "ticks_completed": history_driver_state.ticks_completed,
+            "ticks_skipped": history_driver_state.ticks_skipped,
+            "consecutive_errors": history_driver_state.consecutive_errors,
+            "last_error_type": history_driver_state.last_error_type,
+            "last_inspected_count": history_driver_state.last_inspected_count,
+            "last_advanced_count": history_driver_state.last_advanced_count,
+            "last_processed_file_count": history_driver_state.last_processed_file_count,
+            "last_completed_count": history_driver_state.last_completed_count,
+            "last_raced_count": history_driver_state.last_raced_count,
+            "last_failed_count": history_driver_state.last_failed_count,
+            "last_truncated": history_driver_state.last_truncated,
         },
     }

@@ -6,10 +6,11 @@ import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.analysis import (
@@ -44,6 +45,10 @@ from backend.app.domain.file_mapping import (
     SourceFileCandidate,
     auto_map_files,
 )
+from backend.app.domain.history_scan import (
+    HistoryMaterializationStatus,
+    history_file_snapshot_digest,
+)
 from backend.app.domain.preflight import PreflightSnapshot
 from backend.app.domain.review import (
     ManualReviewMapping,
@@ -67,8 +72,11 @@ from backend.app.domain.verification import (
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.persistence.downloader_repositories import DownloaderRepository
 from backend.app.infrastructure.persistence.models import (
+    HistoryScanFile,
+    HistoryScanMaterialization,
     PreflightSnapshotRecord,
     TaskEvent,
+    UnpackTask,
 )
 from backend.app.infrastructure.persistence.preflight_repositories import (
     PreflightSnapshotRepository,
@@ -87,6 +95,7 @@ from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskUnitRepository,
 )
 from backend.app.infrastructure.source_inventory import (
+    current_file_snapshot,
     scan_source_inventory,
     source_inventory_digest,
 )
@@ -515,7 +524,14 @@ class TaskAnalysisService:
                     title="任务状态不允许分析",
                     detail="手动 Analyze 只允许从 PENDING、RETRY 或 PAUSED 开始",
                 )
+            self._assert_history_task_source_current(
+                session,
+                task=task,
+                normalized_root=normalized_root,
+                resolved_root=resolved_root,
+            )
             task_key = task.normalized_unit_key
+            episode_context = normalized_root if task.type == "HISTORY_EPISODE" else None
             lifecycle = _TaskAnalysisLifecycle(
                 self._session_factory,
                 task_id=task_id,
@@ -539,7 +555,8 @@ class TaskAnalysisService:
         lifecycle.check_cancel_requested()
         inventory_digest = source_inventory_digest(inventory)
         units = identify_task_units(
-            tuple(SourceTaskFile(item.relative_path, item.length) for item in inventory)
+            tuple(SourceTaskFile(item.relative_path, item.length) for item in inventory),
+            episode_context=episode_context,
         )
         selected = next((item for item in units if item.normalized_unit_key == task_key), None)
         if selected is None:
@@ -2041,6 +2058,78 @@ class TaskAnalysisService:
 
     def _require_task(self, task_id: str) -> None:
         self._task_version(task_id)
+
+    @staticmethod
+    def _assert_history_task_source_current(
+        session: Session,
+        *,
+        task: UnpackTask,
+        normalized_root: str,
+        resolved_root: Path,
+    ) -> None:
+        if task.type not in {"HISTORY_MOVIE", "HISTORY_EPISODE"}:
+            return
+        materializations = tuple(
+            session.scalars(
+                select(HistoryScanMaterialization)
+                .where(
+                    HistoryScanMaterialization.task_id == task.id,
+                    HistoryScanMaterialization.status
+                    == HistoryMaterializationStatus.MATERIALIZED.value,
+                )
+                .limit(2)
+            )
+        )
+        if len(materializations) != 1:
+            raise ApplicationError(
+                code="HISTORY_TASK_PROVENANCE_INVALID",
+                status=409,
+                title="历史任务来源证据无效",
+                detail="历史任务必须唯一绑定到一次成功的扫描快照转换记录",
+            )
+        materialization = materializations[0]
+        if (
+            materialization.scan_id != task.source_downloader_id
+            or materialization.normalized_unit_key != task.normalized_unit_key
+            or materialization.source_root != normalized_root
+        ):
+            raise ApplicationError(
+                code="HISTORY_TASK_PROVENANCE_INVALID",
+                status=409,
+                title="历史任务来源证据无效",
+                detail="历史任务身份与扫描转换证据不一致",
+            )
+        scan_file = session.get(HistoryScanFile, materialization.scan_file_id)
+        if scan_file is None or scan_file.scan_id != materialization.scan_id:
+            raise ApplicationError(
+                code="HISTORY_TASK_PROVENANCE_INVALID",
+                status=409,
+                title="历史任务来源证据无效",
+                detail="历史任务引用的扫描文件快照不存在或归属不一致",
+            )
+        source_name = PurePosixPath(scan_file.relative_path).name
+        try:
+            observed = current_file_snapshot(resolved_root / source_name)
+        except DomainViolation as exc:
+            raise ApplicationError(
+                code="HISTORY_TASK_SOURCE_CHANGED",
+                status=409,
+                title="历史任务源文件已变化",
+                detail="历史任务对应的源文件已不可证明为生成任务时的扫描快照，请重新扫描并同步任务",
+            ) from exc
+        observed_digest = history_file_snapshot_digest(
+            device=observed.device,
+            inode=observed.inode,
+            size=observed.size,
+            mtime_ns=observed.mtime_ns,
+        )
+        if observed_digest != materialization.snapshot_digest:
+            raise ApplicationError(
+                code="HISTORY_TASK_SOURCE_CHANGED",
+                status=409,
+                title="历史任务源文件已变化",
+                detail="历史任务对应的源文件已不是生成任务时的扫描快照，请重新扫描并同步任务",
+            )
 
     def _resolve_source_root(self, value: str) -> tuple[str, Path]:
         normalized = unicodedata.normalize("NFC", value.strip())

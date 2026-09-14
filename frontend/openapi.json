@@ -442,6 +442,17 @@
         "title": "DownloaderPatchRequest",
         "type": "object"
       },
+      "EpisodeKind": {
+        "enum": [
+          "SEASON_EPISODE",
+          "SEASON_RANGE",
+          "EPISODE",
+          "ABSOLUTE",
+          "SPECIALS"
+        ],
+        "title": "EpisodeKind",
+        "type": "string"
+      },
       "ExecuteTaskActionRequest": {
         "properties": {
           "action": {
@@ -806,6 +817,101 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HistoryMaterializationItemResponse": {
+        "properties": {
+          "materialization_id": {
+            "title": "Materialization Id",
+            "type": "string"
+          },
+          "normalized_unit_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Normalized Unit Key"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "scan_file_id": {
+            "title": "Scan File Id",
+            "type": "string"
+          },
+          "source_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Root"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HistoryMaterializationStatus"
+          },
+          "task_created": {
+            "title": "Task Created",
+            "type": "boolean"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "unit_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Kind"
+          }
+        },
+        "required": [
+          "materialization_id",
+          "scan_file_id",
+          "status",
+          "reason_code",
+          "task_id",
+          "task_created",
+          "source_root",
+          "normalized_unit_key",
+          "unit_kind"
+        ],
+        "title": "HistoryMaterializationItemResponse",
+        "type": "object"
+      },
+      "HistoryMaterializationStatus": {
+        "enum": [
+          "MATERIALIZED",
+          "SKIPPED"
+        ],
+        "title": "HistoryMaterializationStatus",
+        "type": "string"
+      },
       "HistoryMediaKind": {
         "enum": [
           "MOVIE",
@@ -821,7 +927,9 @@
               "start",
               "pause",
               "resume",
-              "scan"
+              "cancel",
+              "scan",
+              "materialize"
             ],
             "title": "Action",
             "type": "string"
@@ -913,6 +1021,51 @@
           "items"
         ],
         "title": "HistoryScanListResponse",
+        "type": "object"
+      },
+      "HistoryScanMaterializeResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryMaterializationItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "processed_count": {
+            "title": "Processed Count",
+            "type": "integer"
+          },
+          "remaining_count": {
+            "title": "Remaining Count",
+            "type": "integer"
+          },
+          "scan": {
+            "$ref": "#/components/schemas/HistoryScanResponse"
+          },
+          "skipped_count": {
+            "title": "Skipped Count",
+            "type": "integer"
+          },
+          "task_created_count": {
+            "title": "Task Created Count",
+            "type": "integer"
+          },
+          "task_reused_count": {
+            "title": "Task Reused Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "scan",
+          "processed_count",
+          "task_created_count",
+          "task_reused_count",
+          "skipped_count",
+          "remaining_count",
+          "items"
+        ],
+        "title": "HistoryScanMaterializeResponse",
         "type": "object"
       },
       "HistoryScanResponse": {
@@ -1042,10 +1195,368 @@
           "READY",
           "SCANNING",
           "PAUSED",
+          "CANCELLED",
           "DONE"
         ],
         "title": "HistoryScanStatus",
         "type": "string"
+      },
+      "HistoryTaskBatchActionRequest": {
+        "properties": {
+          "action": {
+            "const": "analyze",
+            "title": "Action",
+            "type": "string"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Task Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "action",
+          "task_ids"
+        ],
+        "title": "HistoryTaskBatchActionRequest",
+        "type": "object"
+      },
+      "HistoryTaskBatchAnalyzeItemResponse": {
+        "properties": {
+          "attempted": {
+            "title": "Attempted",
+            "type": "boolean"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "source_root": {
+            "title": "Source Root",
+            "type": "string"
+          },
+          "succeeded": {
+            "title": "Succeeded",
+            "type": "boolean"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          }
+        },
+        "required": [
+          "task_id",
+          "source_root",
+          "attempted",
+          "succeeded",
+          "task_status",
+          "error_code"
+        ],
+        "title": "HistoryTaskBatchAnalyzeItemResponse",
+        "type": "object"
+      },
+      "HistoryTaskBatchAnalyzeResponse": {
+        "properties": {
+          "action": {
+            "const": "analyze",
+            "default": "analyze",
+            "title": "Action",
+            "type": "string"
+          },
+          "attempted_count": {
+            "title": "Attempted Count",
+            "type": "integer"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryTaskBatchAnalyzeItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "skipped_count": {
+            "title": "Skipped Count",
+            "type": "integer"
+          },
+          "succeeded_count": {
+            "title": "Succeeded Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempted_count",
+          "succeeded_count",
+          "failed_count",
+          "skipped_count",
+          "items"
+        ],
+        "title": "HistoryTaskBatchAnalyzeResponse",
+        "type": "object"
+      },
+      "HistoryTaskResultListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryTaskResultResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "HistoryTaskResultListResponse",
+        "type": "object"
+      },
+      "HistoryTaskResultResponse": {
+        "properties": {
+          "analysis_eligible": {
+            "title": "Analysis Eligible",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "episode_end": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode End"
+          },
+          "episode_group_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Group Key"
+          },
+          "episode_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EpisodeKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "episode_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Label"
+          },
+          "episode_season": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Season"
+          },
+          "episode_start": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Start"
+          },
+          "episode_variant_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Variant Key"
+          },
+          "has_preflight": {
+            "title": "Has Preflight",
+            "type": "boolean"
+          },
+          "materialization_id": {
+            "title": "Materialization Id",
+            "type": "string"
+          },
+          "materialization_status": {
+            "$ref": "#/components/schemas/HistoryMaterializationStatus"
+          },
+          "normalized_unit_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Normalized Unit Key"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "relative_path": {
+            "title": "Relative Path",
+            "type": "string"
+          },
+          "scan_file_id": {
+            "title": "Scan File Id",
+            "type": "string"
+          },
+          "snapshot_digest": {
+            "title": "Snapshot Digest",
+            "type": "string"
+          },
+          "source_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Root"
+          },
+          "task_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Error Code"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "task_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Version"
+          },
+          "unit_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Kind"
+          },
+          "variant_count": {
+            "title": "Variant Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "materialization_id",
+          "scan_file_id",
+          "relative_path",
+          "snapshot_digest",
+          "materialization_status",
+          "reason_code",
+          "task_id",
+          "source_root",
+          "normalized_unit_key",
+          "unit_kind",
+          "episode_kind",
+          "episode_season",
+          "episode_start",
+          "episode_end",
+          "episode_label",
+          "episode_group_key",
+          "episode_variant_key",
+          "variant_count",
+          "task_status",
+          "task_version",
+          "task_error_code",
+          "analysis_eligible",
+          "has_preflight",
+          "created_at"
+        ],
+        "title": "HistoryTaskResultResponse",
+        "type": "object"
       },
       "LoginResponse": {
         "properties": {
@@ -5260,6 +5771,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/HistoryScanBatchResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HistoryScanMaterializeResponse"
                     }
                   ],
                   "title": "Response History Scan Action Api V1 History Scans  Scan Id  Actions Post"
@@ -5280,6 +5794,257 @@
           }
         },
         "summary": "History Scan Action",
+        "tags": [
+          "history-scans"
+        ]
+      }
+    },
+    "/api/v1/history-scans/{scan_id}/tasks": {
+      "get": {
+        "operationId": "list_history_scan_tasks_api_v1_history_scans__scan_id__tasks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scan_id",
+            "required": true,
+            "schema": {
+              "title": "Scan Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TaskStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "materialization_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/HistoryMaterializationStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Materialization Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Query"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryTaskResultListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List History Scan Tasks",
+        "tags": [
+          "history-scans"
+        ]
+      }
+    },
+    "/api/v1/history-scans/{scan_id}/tasks/actions": {
+      "post": {
+        "operationId": "history_scan_task_action_api_v1_history_scans__scan_id__tasks_actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scan_id",
+            "required": true,
+            "schema": {
+              "title": "Scan Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HistoryTaskBatchActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryTaskBatchAnalyzeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "History Scan Task Action",
         "tags": [
           "history-scans"
         ]

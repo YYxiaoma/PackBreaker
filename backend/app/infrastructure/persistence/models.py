@@ -14,7 +14,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.app.domain.history_scan import HistoryMediaKind, HistoryScanStatus
+from backend.app.domain.history_scan import (
+    HistoryMaterializationStatus,
+    HistoryMediaKind,
+    HistoryScanStatus,
+)
 from backend.app.domain.notification import (
     NotificationChannelKind,
     NotificationDeliveryState,
@@ -48,6 +52,9 @@ _NOTIFICATION_DELIVERY_STATE_SQL = ", ".join(
 _NOTIFICATION_SEVERITY_SQL = ", ".join(f"'{severity.value}'" for severity in NotificationSeverity)
 _HISTORY_MEDIA_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in HistoryMediaKind)
 _HISTORY_SCAN_STATUS_SQL = ", ".join(f"'{status.value}'" for status in HistoryScanStatus)
+_HISTORY_MATERIALIZATION_STATUS_SQL = ", ".join(
+    f"'{status.value}'" for status in HistoryMaterializationStatus
+)
 
 
 class Administrator(Base):
@@ -248,6 +255,61 @@ class HistoryScanFile(Base):
     last_seen_generation: Mapped[int] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class HistoryScanMaterialization(Base):
+    __tablename__ = "history_scan_materialization"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN ({_HISTORY_MATERIALIZATION_STATUS_SQL})",
+            name="status",
+        ),
+        CheckConstraint(
+            "(status = 'MATERIALIZED' AND task_id IS NOT NULL) OR "
+            "(status = 'SKIPPED' AND task_id IS NULL)",
+            name="task_consistency",
+        ),
+        UniqueConstraint(
+            "scan_file_id",
+            "snapshot_digest",
+            name="uq_history_scan_materialization_file_snapshot",
+        ),
+        Index(
+            "ix_history_scan_materialization_scan_created_at",
+            "scan_id",
+            "created_at",
+        ),
+        Index(
+            "ix_history_scan_materialization_scan_episode_group",
+            "scan_id",
+            "episode_group_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    scan_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("history_scan.id", ondelete="RESTRICT"), nullable=False
+    )
+    scan_file_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("history_scan_file.id", ondelete="RESTRICT"), nullable=False
+    )
+    snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="RESTRICT"), nullable=True
+    )
+    source_root: Mapped[str | None] = mapped_column(Text, nullable=True)
+    normalized_unit_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unit_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    episode_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    episode_season: Mapped[int | None] = mapped_column(nullable=True)
+    episode_start: Mapped[int | None] = mapped_column(nullable=True)
+    episode_end: Mapped[int | None] = mapped_column(nullable=True)
+    episode_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    episode_group_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    episode_variant_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
 class UnpackTask(Base):

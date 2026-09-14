@@ -1,7 +1,13 @@
 import pytest
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
-from backend.app.domain.task_units import SourceTaskFile, TaskUnitKind, identify_task_units
+from backend.app.domain.media_matching import EpisodeKind
+from backend.app.domain.task_units import (
+    SourceTaskFile,
+    TaskUnitKind,
+    episode_unit_metadata,
+    identify_task_units,
+)
 
 
 def test_file_pack_is_split_into_movie_and_episode_units_deterministically() -> None:
@@ -91,3 +97,79 @@ def test_zero_length_and_unrecognized_disc_segments_are_not_guessed_as_units() -
     )
 
     assert units == ()
+
+
+def test_episode_directory_context_is_opt_in_and_infers_numeric_episode() -> None:
+    source = (SourceTaskFile("01.1080p.WEB-DL.mkv", 100),)
+
+    generic = identify_task_units(source)[0]
+    contextual = identify_task_units(
+        source,
+        episode_context="shows/Example Show 2024/Season 01",
+    )[0]
+
+    assert generic.kind is TaskUnitKind.MOVIE
+    assert contextual.kind is TaskUnitKind.EPISODE
+    assert contextual.descriptor.title_tokens == ("example", "show")
+    assert contextual.descriptor.year == 2024
+    assert contextual.descriptor.episode is not None
+    assert contextual.descriptor.episode.kind is EpisodeKind.SEASON_EPISODE
+    assert contextual.descriptor.episode.season == 1
+    assert contextual.descriptor.episode.start == 1
+
+
+def test_episode_directory_context_supports_ranges_and_specials() -> None:
+    ranged = identify_task_units(
+        (SourceTaskFile("E02-E04.1080p.mkv", 100),),
+        episode_context="shows/Example Show/S01",
+    )[0]
+    special = identify_task_units(
+        (SourceTaskFile("01.1080p.mkv", 100),),
+        episode_context="shows/Example Show/Specials",
+    )[0]
+
+    assert ranged.descriptor.episode is not None
+    assert ranged.descriptor.episode.kind is EpisodeKind.SEASON_RANGE
+    assert (
+        ranged.descriptor.episode.season,
+        ranged.descriptor.episode.start,
+        ranged.descriptor.episode.end,
+    ) == (
+        1,
+        2,
+        4,
+    )
+    assert special.descriptor.episode is not None
+    assert special.descriptor.episode.kind is EpisodeKind.SPECIALS
+    assert (special.descriptor.episode.season, special.descriptor.episode.start) == (0, 1)
+
+
+def test_episode_group_key_coalesces_versions_but_variant_key_stays_distinct() -> None:
+    units = identify_task_units(
+        (
+            SourceTaskFile("01.1080p.WEB-DL.H265.mkv", 100),
+            SourceTaskFile("01.2160p.BluRay.H265.mkv", 200),
+        ),
+        episode_context="shows/Example Show/Season 01",
+    )
+    metadata = tuple(episode_unit_metadata(unit) for unit in units)
+
+    assert all(item is not None for item in metadata)
+    first, second = metadata
+    assert first is not None and second is not None
+    assert first.label == second.label == "S01E01"
+    assert first.group_key == second.group_key
+    assert first.variant_key != second.variant_key
+
+
+def test_explicit_episode_name_keeps_identity_and_gets_missing_parent_title() -> None:
+    unit = identify_task_units(
+        (SourceTaskFile("S01E03.1080p.mkv", 100),),
+        episode_context="shows/Example Show/Season 01",
+    )[0]
+
+    assert unit.kind is TaskUnitKind.EPISODE
+    assert unit.descriptor.title_tokens == ("example", "show")
+    assert unit.descriptor.episode is not None
+    assert unit.descriptor.episode.kind is EpisodeKind.SEASON_EPISODE
+    assert unit.descriptor.episode.start == 3

@@ -19,9 +19,9 @@ PackBreaker 是一个面向 PT 场景的自动拆包辅种系统。它以“大�
 
 ## 项目状态
 
-项目当前已完成 M1 安全骨架，并进入 M2「解析、匹配与预演」代码级收口。后端已经具备安全 bencode 与 v1/v2/hybrid torrent 解析、TaskUnit 识别、媒体 token 规范化、候选排序、M-Team/HDTime 只读站点适配、唯一文件映射、流式 piece 验证、验证缓存、不可变 preflight、版本化人工审核与重验证、pre-execution gate，以及无副作用 `execution-plan` 预览。执行计划会重新绑定 current+eligible gate、metainfo digest、源 inventory 和目标树状态，生成 HARDLINK/CLIENT_FETCH/PADDING/ZERO_LENGTH 动作并在目标冲突、父目录异常或跨设备时失败关闭；当前响应始终保持 `execution_allowed=false`、`side_effects_started=false`，不会进入 LINKING 或调用下载器写接口。前端任务中心、真实 Analyze、预演审核、人工映射、重验证、执行门与执行计划预览均已接入真实后端；M2 代码门与外部验收缺口见 `docs/m2-exit-checklist.md`。
+项目已完成 M5「历史影片与电视剧」正式退出条件，当前进入 M6「发布与运维闭环」。qBittorrent 5.2.3 与 Transmission 4.1.3 均已完成真实辅种端到端主链；M-Team、HDTime、HHClub 站点适配、v1/v2/hybrid 解析与 piece 验证、人工审核、execution gate/plan、journal-backed 硬链接与下载器执行、取消/回滚/release、站点可靠性、通知、99% repair 安全链和清理/对账均已接入真实后端。M5 已完成真实 `/data` 只读增量历史扫描、HistoryScanDriver、暂停/取消/游标恢复、并发幂等 materialize、扫描级筛选与批量 Analyze/RETRY 重试，以及电视剧单集、范围集、S00/Specials、EP/ABS、Season 目录上下文和 episode group/variant 多版本归组。2026-09-14 的真实影片与真实剧集现场任务均完成 `HistoryScan → materialize → Analyze → 人工审核 → execution gate/plan → hardlink → qB DONE`；动态下载目录也真实触发 `ANALYSIS_SOURCE_CHANGED` 并在 0 journal 状态失败关闭。M4/M5 关闭证据分别见 `docs/m4-exit-checklist.md`、`docs/m5-exit-checklist.md`，M6 剩余工作见 `docs/development-roadmap.md`。
 
-界面遵循 `PackBreaker-01-浅色控制台.png` 的设计风格，包含任务中心、预演审核、历史扫描、站点、下载器、规则、对账、日志、设置与升级页面。管理员认证、API Token、下载器、站点配置以及 M2 任务分析/审核主流程已经接入本地 PackBreaker 后端；总览、规则、历史扫描、对账和多数 M4-M6 运维能力仍包含合成示例或原型交互，主题偏好保存在浏览器。
+界面遵循 `PackBreaker-01-浅色控制台.png` 的设计风格，包含任务中心、预演审核、历史辅种、站点、下载器、规则、对账、日志、设置与升级页面。管理员认证、API Token、下载器、站点、任务分析/审核/执行、清理对账、通知，以及历史后台增量扫描/暂停取消/任务转换/季集归组/服务端结果筛选/批量 Analyze/RETRY 重试已接入本地 PackBreaker 后端；总览、规则以及多数 M6 发布运维能力仍包含合成示例或原型交互，主题偏好保存在浏览器。
 
 ### 体验原型
 
