@@ -33,7 +33,7 @@ jobs:
       - name: Static checks and generated-contract drift
         run: uv run python scripts/check.py
       - name: Backend unit and integration tests
-        run: uv run python -m pytest
+        run: uv run python scripts/ci_pytest.py
       - name: Frontend unit tests
         working-directory: frontend
         run: corepack pnpm test
