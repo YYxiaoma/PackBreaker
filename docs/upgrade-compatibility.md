@@ -29,6 +29,10 @@ PackBreaker 启动取得 `/config` 单实例锁并完成主密钥自检后，数
 
 因此迁移代码异常不会在当前生产数据库上“迁到一半”。主服务只有升级与 readiness 都通过后才进入工作状态。
 
-## 4. 尚未取得的发布级证据
+## 4. 正式镜像升级基线与跨镜像门禁
 
-仓库目前尚无早于 `0.1.0` 的正式 PackBreaker 发布镜像，因此“上一正式 release 镜像 + 该 release 真实匿名化数据库 → 新 release 镜像”的跨镜像矩阵还没有历史对象可测。首个正式发布后，每次发布必须保留前一 release 的匿名化/合成兼容数据库夹具或可重建脚本，并在目标 Docker 环境执行升级、readiness、失败恢复旧备份与旧镜像的完整演练。
+`v0.1.0` 已成为仓库首个不可变升级基线。`release-baseline.json` 固定其 tag、发布 commit、Alembic revision 和公开 GHCR digest；`scripts/validate_release_baseline.py` 已进入静态门禁，禁止把基线退化成可移动 tag、错误 digest、未来版本或与 tag 不一致的身份。正式 tag workflow 还会通过 GitHub Releases API 要求 baseline tag 必须等于当前最新正式 Release，因此发布 `v0.1.2` 前若没有先把基线更新到 `v0.1.1`，发布会失败关闭。
+
+CI/container 与未来 tag release 都执行 `scripts/check-release-upgrade.sh`：先按基线 digest 启动上一正式镜像，在隔离 `/config` 写入合成兼容探针并创建一致性升级前备份；随后让当前候选镜像直接接管同一 config 并通过 readiness/探针校验；最后停止候选镜像，用**上一正式镜像自己的维护工具**恢复升级前备份，再启动同一基线 digest 并重新证明 readiness、Alembic revision 与探针数据。门禁明确禁止以 `alembic downgrade` 代替生产回滚。
+
+当前项目版本仍为 `0.1.0`，所以这条门禁现阶段主要证明基线锁定、候选接管和恢复旧镜像机制本身。第一次真正的跨**版本**证据将在项目版本推进到 `0.1.1`（或后续正式版本）后产生：届时候选必须通过 `v0.1.0@sha256:f7a396ac...d91fce → 新候选 → 恢复 v0.1.0`，发布 workflow 在该门禁通过前不会推送新正式镜像。

@@ -20,14 +20,15 @@ Dockerfile 的三个 `FROM` 都使用“精确补丁版本 + sha256 digest”固
 
 推送 `v*.*.*` tag 后，`.github/workflows/release.yml` 按以下顺序执行：
 
-1. 安装冻结的 Python/Node 依赖，验证 tag 与项目版本一致。
-2. 运行 `scripts/check.py` 和 `scripts/test.py` 全量质量门禁。
-3. 使用 Buildx 构建并推送单平台 `linux/amd64` GHCR 镜像，记录 registry 返回的最终 image digest。
-4. 只按 `<image>@<digest>` 扫描镜像并生成 SPDX JSON SBOM。
-5. 生成 `packbreaker-<version>.release.json`，绑定 version/tag/commit/platform/image digest/SBOM 文件名与 SBOM SHA-256。
-6. 为 release JSON 与 SBOM 生成 `SHA256SUMS`，同时上传 GitHub Actions artifact。
-7. 创建同 tag 的 GitHub Release，并上传 SBOM、release manifest 与 checksums，使用自动生成的 release notes；若同版本 Release 已存在则在构建前失败关闭。
-8. 只有 Release 资产全部发布成功后，才把 `stable` 通道移动到本次已经记录的不可变 image digest；中途失败不会推进稳定通道。
+1. 安装冻结的 Python/Node 依赖，验证 tag 与项目版本一致，并拒绝已经存在的同 tag GitHub Release。
+2. 校验 `release-baseline.json`，并通过 GitHub Releases API 强制其 tag 必须等于当前最新正式 Release；这样后续版本不能跳过直接上一正式版本的兼容门禁。
+3. 运行 `scripts/check.py` 和 `scripts/test.py` 全量质量门禁。
+4. 本地构建 release candidate，执行“上一正式 release 不可变 digest → 当前候选 → 恢复升级前备份并回滚上一正式 digest”的 Docker 门禁；该门禁通过前不推送新正式镜像。
+5. 使用 Buildx 构建并推送单平台 `linux/amd64` GHCR 镜像，记录 registry 返回的最终 image digest。
+6. 只按 `<image>@<digest>` 扫描镜像并生成 SPDX JSON SBOM。
+7. 生成 `packbreaker-<version>.release.json`，绑定 version/tag/commit/platform/image digest/SBOM 文件名与 SBOM SHA-256，并为 release JSON 与 SBOM 生成 `SHA256SUMS`。
+8. 上传 GitHub Actions evidence artifact，创建同 tag 的 GitHub Release，并发布 SBOM、release manifest、checksums 与自动 release notes。
+9. 只有 Release 资产全部发布成功后，才把 `stable` 通道移动到本次已经记录的不可变 image digest；中途失败不会推进稳定通道。
 
 Buildx 同时开启 provenance 元数据，但当前 M6 不把它表述为独立签名或 artifact attestation；若后续启用签名/attestation，必须另行定义密钥、身份与验证策略。
 

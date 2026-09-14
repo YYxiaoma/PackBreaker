@@ -31,6 +31,19 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
     assert "sha256sum *.json > SHA256SUMS" in workflow
     assert "Refuse an existing immutable version image" in workflow
     assert "Refuse an existing GitHub Release" in workflow
+    assert "Require baseline to be the latest published release" in workflow
+    assert "repos/$GITHUB_REPOSITORY/releases/latest" in workflow
     assert "imagetools create" in workflow
     assert ":stable" in workflow
     assert "--generate-notes" in workflow
+    assert "check-release-upgrade.sh packbreaker:release-candidate" in workflow
+
+
+def test_ci_container_gate_exercises_immutable_previous_release() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert '--build-arg VERSION="$version"' in workflow
+    assert "check-release-upgrade.sh packbreaker:ci" in workflow
+    assert "release-baseline.json" in (ROOT / "scripts" / "validate_release_baseline.py").read_text(
+        encoding="utf-8"
+    )

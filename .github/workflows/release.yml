@@ -40,10 +40,35 @@ jobs:
             echo "::error::GitHub Release already exists for $GITHUB_REF_NAME"
             exit 1
           fi
+      - name: Require baseline to be the latest published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_tag="$(python scripts/validate_release_baseline.py --json | python -c 'import json,sys; print(json.load(sys.stdin)["tag"])')"
+          latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          if [ "$baseline_tag" != "$latest_tag" ]; then
+            echo "::error::release baseline $baseline_tag is not latest published release $latest_tag"
+            exit 1
+          fi
       - name: Run release quality gates
         run: |
           uv run python scripts/check.py
           uv run python scripts/test.py
+      - name: Build candidate for previous-release upgrade gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          docker build \
+            --build-arg VERSION="$version" \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --tag packbreaker:release-candidate \
+            .
+      - name: Exercise previous-release upgrade and rollback
+        run: bash scripts/check-release-upgrade.sh packbreaker:release-candidate
       - name: Prepare immutable image name and build timestamp
         id: release_meta
         shell: bash

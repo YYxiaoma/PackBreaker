@@ -91,7 +91,7 @@ Compose 使用 `packbreaker-config` named volume 保存 SQLite、主密钥和锁
 - 主密钥不默认打包；包含凭证的可迁移导出必须由用户提供独立口令再次加密。
 - 备份先写临时文件、fsync 后原子重命名，并按保留策略清理。
 
-当前 M6 已覆盖一致性数据库快照、离线验证、下述离线恢复底座和普通备份保留策略；计划备份调度、管理界面和真实容器恢复演练仍待完成，不能把“CLI 可恢复”视为已经完成生产恢复闭环。
+当前 M6 已覆盖一致性数据库快照、离线验证、下述离线恢复底座、普通备份保留策略、默认关闭的计划备份调度与管理界面；GitHub Actions container 门禁也已完成停止服务、离线 verify/restore、重启 readiness 的真实 Docker 演练。
 
 普通备份保留默认只预览：
 
@@ -114,7 +114,7 @@ python -m backend.app.maintenance restore-backup /config/backups/<backup>.db \
   --confirm-replace-current-database
 ```
 
-恢复命令与主服务复用同一实例锁；只要活动 PackBreaker 仍持有 `/config/packbreaker.lock` 就会失败关闭。恢复前会自动创建 `backups/pre-restore` 一致性安全快照，待恢复副本在临时文件上执行 Alembic `upgrade head`、完整性检查和 journal 规范化后才原子切换；切换后验证失败会自动从安全快照回滚。正式发布前仍需在目标 Docker 部署方式上完成停止服务、一次性恢复容器/命令、重启与 readiness 的实机 runbook 演练。
+恢复命令与主服务复用同一实例锁；只要活动 PackBreaker 仍持有 `/config/packbreaker.lock` 就会失败关闭。恢复前会自动创建 `backups/pre-restore` 一致性安全快照，待恢复副本在临时文件上执行 Alembic `upgrade head`、完整性检查和 journal 规范化后才原子切换；切换后验证失败会自动从安全快照回滚。GitHub Actions run `34851129257` 已在目标 linux/amd64 Docker 方式完成停止服务、一次性恢复、重启与 readiness 实机演练。
 
 主密钥丢失时，密文凭证不可恢复；任务和非敏感配置仍应可读，但所有依赖凭证的适配器必须禁用并要求重新录入。
 
@@ -183,6 +183,8 @@ flowchart LR
 当前 RuntimeManager 的数据库启动升级已经使用安全切换底座：取得实例锁后，若数据库落后于代码 head，先创建 `/config/backups/pre-upgrade` 一致性安全快照，再把快照复制到同文件系统临时文件执行 Alembic `upgrade head`、journal 规范化、`integrity_check` 与 head 校验；全部通过后才原子替换当前数据库。迁移副本失败时当前数据库不发生切换，切换后校验失败会自动恢复安全快照。空配置首次安装同样先迁移临时数据库，通过后才原子安装，因此迁移异常不会留下半完成目标数据库。
 
 当前自动化兼容矩阵已覆盖仓库全部 22 个历史 revision（`0001`～`0022`）升级到 `0023_backup_policy`。生产回滚不依赖 Alembic 原地 downgrade：若旧镜像不能读取新 schema，必须恢复 `pre-upgrade`/升级前备份后再启动旧镜像。完整矩阵见 `docs/upgrade-compatibility.md`。
+
+从 `v0.1.0` 开始，仓库还固定 `release-baseline.json` 作为上一正式镜像的不可变升级输入。普通 CI container gate 与正式 tag release 在发布新镜像前都会运行 `scripts/check-release-upgrade.sh`：真实启动基线 digest、创建合成状态和升级前备份、让当前候选接管并 readiness，然后用基线镜像恢复旧备份并重新启动旧镜像。该门禁只操作 CI 临时目录，不连接 PT、下载器或真实媒体；当项目版本进入 `0.1.1+` 后，它即构成正式 release-to-release 升级/回滚证据。
 
 - 版本与目标镜像只信任正式 release manifest、`SHA256SUMS` 和 registry 返回的不可变 digest；不能仅依赖可变 `latest` 或版本 tag。
 - 升级中心的 `GET /system/release/preflight` 只做本地只读检查，并固定跳过临时备份演练；正式切换镜像前仍需运行 `python -m backend.app.maintenance preflight` 完成一致性备份演练。

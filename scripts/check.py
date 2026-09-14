@@ -67,6 +67,7 @@ def _check_generated_contract() -> None:
 def main() -> None:
     _run([sys.executable, str(ROOT / "scripts" / "repository_scan.py")])
     _run([sys.executable, str(ROOT / "scripts" / "validate_acceptance_evidence.py")])
+    _run([sys.executable, str(ROOT / "scripts" / "validate_release_baseline.py")])
     _run([_tool("ruff"), "format", "--check", "."])
     _run([_tool("ruff"), "check", "."])
     _run([_tool("mypy"), "backend", "tests", "scripts"])
