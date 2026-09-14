@@ -35,4 +35,4 @@ PackBreaker 启动取得 `/config` 单实例锁并完成主密钥自检后，数
 
 CI/container 与未来 tag release 都执行 `scripts/check-release-upgrade.sh`：先按基线 digest 启动上一正式镜像，在隔离 `/config` 写入合成兼容探针并创建一致性升级前备份；随后让当前候选镜像直接接管同一 config 并通过 readiness/探针校验；最后停止候选镜像，用**上一正式镜像自己的维护工具**恢复升级前备份，再启动同一基线 digest 并重新证明 readiness、Alembic revision 与探针数据。门禁明确禁止以 `alembic downgrade` 代替生产回滚。
 
-当前项目版本仍为 `0.1.0`，所以这条门禁现阶段主要证明基线锁定、候选接管和恢复旧镜像机制本身。第一次真正的跨**版本**证据将在项目版本推进到 `0.1.1`（或后续正式版本）后产生：届时候选必须通过 `v0.1.0@sha256:f7a396ac...d91fce → 新候选 → 恢复 v0.1.0`，发布 workflow 在该门禁通过前不会推送新正式镜像。
+GitHub Actions run `34874413071` 已在真实 `ubuntu-latest` Docker runner 上完成这条门禁的首次运行：正式 `v0.1.0` digest 启动并创建合成探针/备份，当前候选镜像接管同一 `/config` 后通过 readiness，随后用基线镜像恢复旧备份并再次通过 readiness/revision/探针校验。当前项目版本仍为 `0.1.0`，因此这次实证证明的是跨镜像机制，而不是跨**版本**兼容；第一次真正的跨版本证据将在项目版本推进到 `0.1.1`（或后续正式版本）后产生，届时候选必须通过 `v0.1.0@sha256:f7a396ac...d91fce → 新候选 → 恢复 v0.1.0`，发布 workflow 在该门禁通过前不会推送新正式镜像。

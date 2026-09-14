@@ -47,7 +47,7 @@
 - 数据库升级先创建 `pre-upgrade` 一致性快照，在同文件系统临时副本完成迁移与验证后再原子切换。
 - 生产回滚不依赖 Alembic 原地 downgrade；旧镜像不能读取新 schema 时必须恢复兼容的升级前/离线备份。
 - `v0.1.0` 是首个正式 release，因此没有上一正式镜像可用于真实跨镜像升级/回滚矩阵；从下一正式 release 起，必须加入 `v0.1.0` → 新镜像 → 回滚 `v0.1.0` 的运行级证据。
-- `release-baseline.json` 已把 `v0.1.0` 固定为不可变基线 digest；CI 与未来 release workflow 会在隔离 Docker `/config` 上自动执行“基线启动/备份 → 当前候选接管/readiness → 用基线镜像恢复旧备份 → 基线再次 readiness”。当前候选仍是 0.1.0，因此真正的跨版本兼容结论要等 0.1.1+ 候选实际跑过该门禁后才扩大。
+- `release-baseline.json` 已把 `v0.1.0` 固定为不可变基线 digest；GitHub Actions run `34874413071` 已在隔离 Docker `/config` 上实际跑绿“基线启动/备份 → 当前候选接管/readiness → 用基线镜像恢复旧备份 → 基线再次 readiness”。当前候选仍是 0.1.0，因此该结果证明跨镜像回滚机制已可运行；真正的跨版本兼容结论仍要等 0.1.1+ 候选实际跑过同一门禁后才扩大。
 
 ## 6. 兼容承诺原则
 
