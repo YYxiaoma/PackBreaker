@@ -12,13 +12,15 @@
 
 - 正式发布目标当前只有 `linux/amd64`。
 - 当前开发 Runner 无 Docker daemon；GitHub Actions CI run `34851129257` 已取得空配置启动、离线 verify/restore 与重启 readiness 的真实 Docker 证据。
-- `v0.1.0` 已作为首个正式版本由 Release workflow run `34861933795` 发布；公开 GHCR `0.1.0`、`stable` 与 release manifest 均指向 `sha256:f7a396acb8382af5815081b66956dcb752b1e7abe65b9a52579c94b2c2d91fce`，SPDX SBOM、`SHA256SUMS` 和 GitHub Release 资产已完成独立校验。
-- `v0.1.0` 仍是当前最新正式镜像；`0.1.1` 已进入候选版本，但尚未经过 GitHub CI / release workflow 的正式跨版本 Docker 门禁，因此暂不宣称已有 `v0.1.0 → v0.1.1` 发布级升级/回滚证据。当前 Alembic 历史 revision、临时副本迁移和失败回滚测试继续覆盖数据库级安全边界。
+- `v0.1.1` 已由 Release workflow run `34924614659` 正式发布；公开 GHCR `0.1.1` 与 `stable` 均指向 `sha256:76f4c041d1acecbb573cdbd49c45aec936bfd8cf3b263bc09153f7741f18e30d`，SPDX SBOM、release manifest、`SHA256SUMS` 和 GitHub Release 资产均已发布。
+- 该 Release 已真实通过 `v0.1.0 → v0.1.1 候选 → 恢复 v0.1.0` Docker 升级/回滚门禁。当前源码已进入 `0.1.2` 候选开发线，`release-baseline.json` 已推进到正式 `v0.1.1`，因此未来发布 `v0.1.2` 前会强制验证 `v0.1.1 → v0.1.2 → 恢复 v0.1.1`。
 
 ## 3. 升级与 Docker 权限
 
-- Web “升级中心”不会直接操作 Docker，也不会因为检测到 docker.sock 就获得容器写能力；它只提供当前版本、本地 release preflight、升级前备份和不可变 digest 手工 runbook。
-- 容器拉取、替换、失败回滚和离线数据库恢复仍由宿主机管理员显式执行。默认部署不要求挂载 docker.sock。
+- 当前 `0.1.2` 候选已实现 Web 一键 Docker 升级，但要求额外运行独立 `packbreaker-updater` helper；主 PackBreaker 本身禁止挂载 docker.sock。没有 helper 时升级中心仍可做版本/预检/备份诊断，但不能自动切换容器。
+- helper 只支持能够安全重建的单容器部署：必须存在唯一可写 `/config` 挂载，当前镜像必须来自官方 GHCR；Docker Compose 管理标签、`AutoRemove`、`container:<id>` network/PID/IPC namespace、多网络、显式静态 IP/MAC 等配置会阻断自动升级。Compose/Swarm/Kubernetes 拓扑仍需宿主机管理员按 runbook 手工升级。
+- helper 持有 `/var/run/docker.sock`，等价于 Docker 主机级管理权限；该权限被隔离在 helper，但仍应只在受信宿主机上启用。
+- 自动回滚依赖旧镜像仍可启动且 `/config` 可写；若 Docker daemon、卷、旧镜像或离线恢复本身不可用，helper 会进入 `manual_recovery_required`，不会继续覆盖现场。
 - `stable` 是可移动发现通道，不能作为生产安装、升级或回滚的唯一身份；运维记录必须保存完整 image digest。
 
 ## 4. 下载器与站点版本范围

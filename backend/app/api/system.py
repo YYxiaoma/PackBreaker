@@ -28,6 +28,11 @@ from backend.app.application.system_health import (
     SystemHealthReport,
     SystemHealthService,
 )
+from backend.app.application.system_upgrades import (
+    SystemUpgradeActionResult,
+    SystemUpgradeService,
+    SystemUpgradeStatus,
+)
 from backend.app.application.task_driver import ActiveTaskDriver
 from backend.app.domain.auth import ApiScope
 from backend.app.infrastructure.backups import BackupError
@@ -49,6 +54,7 @@ from backend.app.infrastructure.release_preflight import (
 )
 from backend.app.infrastructure.runtime import RuntimeManager
 from backend.app.infrastructure.site_reliability import SiteReliabilityRegistry
+from backend.app.infrastructure.updater_protocol import UpdaterStatus
 from backend.app.versioning import app_version
 
 router = APIRouter(tags=["system"])
@@ -139,6 +145,65 @@ class ReleasePreflightResponse(BaseModel):
     checks: list[ReleasePreflightCheckResponse]
 
 
+class UpdaterStatusResponse(BaseModel):
+    protocol_version: int
+    helper_version: str
+    phase: Literal[
+        "idle",
+        "accepted",
+        "pulling",
+        "stopping",
+        "starting",
+        "verifying",
+        "succeeded",
+        "rolling_back",
+        "rolled_back",
+        "failed",
+        "manual_recovery_required",
+    ]
+    message: str
+    request_id: str | None
+    current_version: str | None
+    target_version: str | None
+    target_image: str | None
+    backup_database_file: str | None
+    started_at: str | None
+    updated_at: str | None
+    finished_at: str | None
+    rollback_performed: bool
+
+
+class SystemUpgradeStatusResponse(BaseModel):
+    current_version: str
+    latest_version: str | None
+    update_available: bool
+    target_tag: str | None
+    target_image_digest: str | None
+    immutable_image: str | None
+    platform: str | None
+    release_error_code: str | None
+    helper_available: bool
+    helper_status: UpdaterStatusResponse | None
+    can_upgrade: bool
+    blocked_reasons: list[str]
+
+
+class SystemUpgradeActionRequest(BaseModel):
+    action: Literal["upgrade"]
+    target_version: str = Field(pattern=r"^\d+\.\d+\.\d+$", max_length=32)
+    target_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$", max_length=71)
+
+
+class SystemUpgradeActionResponse(BaseModel):
+    request_id: str
+    current_version: str
+    target_version: str
+    target_image: str
+    backup_database_file: str | None
+    helper_status: UpdaterStatusResponse
+    idempotency_replayed: bool
+
+
 def _backup_policy_response(
     policy: BackupPolicyView,
     driver: BackupDriver,
@@ -187,12 +252,67 @@ def _release_preflight_response(report: ReleasePreflightReport) -> ReleasePrefli
     )
 
 
+def _updater_status_response(status: UpdaterStatus) -> UpdaterStatusResponse:
+    return UpdaterStatusResponse(
+        protocol_version=status.protocol_version,
+        helper_version=status.helper_version,
+        phase=status.phase,
+        message=status.message,
+        request_id=status.request_id,
+        current_version=status.current_version,
+        target_version=status.target_version,
+        target_image=status.target_image,
+        backup_database_file=status.backup_database_file,
+        started_at=status.started_at,
+        updated_at=status.updated_at,
+        finished_at=status.finished_at,
+        rollback_performed=status.rollback_performed,
+    )
+
+
+def _system_upgrade_status_response(status: SystemUpgradeStatus) -> SystemUpgradeStatusResponse:
+    return SystemUpgradeStatusResponse(
+        current_version=status.current_version,
+        latest_version=status.latest_version,
+        update_available=status.update_available,
+        target_tag=status.target_tag,
+        target_image_digest=status.target_image_digest,
+        immutable_image=status.immutable_image,
+        platform=status.platform,
+        release_error_code=status.release_error_code,
+        helper_available=status.helper_available,
+        helper_status=(
+            None if status.helper_status is None else _updater_status_response(status.helper_status)
+        ),
+        can_upgrade=status.can_upgrade,
+        blocked_reasons=list(status.blocked_reasons),
+    )
+
+
+def _system_upgrade_action_response(
+    result: SystemUpgradeActionResult,
+) -> SystemUpgradeActionResponse:
+    return SystemUpgradeActionResponse(
+        request_id=result.request_id,
+        current_version=result.current_version,
+        target_version=result.target_version,
+        target_image=result.target_image,
+        backup_database_file=result.backup_database_file,
+        helper_status=_updater_status_response(result.helper_status),
+        idempotency_replayed=result.idempotency_replayed,
+    )
+
+
 def _backup_service(request: Request) -> BackupScheduleService:
     return cast(BackupScheduleService, request.app.state.backup_schedule_service)
 
 
 def _backup_driver(request: Request) -> BackupDriver:
     return cast(BackupDriver, request.app.state.backup_driver)
+
+
+def _system_upgrade_service(request: Request) -> SystemUpgradeService:
+    return cast(SystemUpgradeService, request.app.state.system_upgrade_service)
 
 
 def _expected_backup_policy_version(value: str | None) -> int:
@@ -397,6 +517,36 @@ def release_preflight(
     )
     response = _release_preflight_response(report)
     return JSONResponse(response.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/system/upgrade", response_model=SystemUpgradeStatusResponse)
+async def system_upgrade_status(
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> JSONResponse:
+    status = await _system_upgrade_service(request).status()
+    response = _system_upgrade_status_response(status)
+    return JSONResponse(response.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+
+@router.post(
+    "/system/upgrade/actions",
+    response_model=SystemUpgradeActionResponse,
+    status_code=202,
+)
+async def system_upgrade_action(
+    request: Request,
+    payload: SystemUpgradeActionRequest,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> SystemUpgradeActionResponse:
+    result = await _system_upgrade_service(request).execute(
+        target_version=payload.target_version,
+        target_image_digest=payload.target_image_digest,
+        idempotency_key=idempotency_key,
+        backup_driver=_backup_driver(request),
+    )
+    return _system_upgrade_action_response(result)
 
 
 @router.get("/system/backups/policy", response_model=BackupPolicyResponse)

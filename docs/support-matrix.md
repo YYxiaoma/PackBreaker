@@ -10,7 +10,7 @@
 | Linux 其他架构 | 未声明支持 | 尚无构建、恢复和性能验收矩阵。 |
 | Windows / macOS 原生生产运行 | 未声明支持 | 可用于开发，但 v1.0 生产部署以 Linux 容器为边界。 |
 
-当前开发 Runner 没有 Docker daemon，但 GitHub Actions CI run `34851129257` 已在 `ubuntu-latest` Docker 环境实际完成镜像构建、空配置启动/readiness、preflight、一致性备份、停服务离线 verify/restore 与重启 readiness。首个正式 `v0.1.0` 已由 Release workflow run `34861933795` 发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:f7a396acb8382af5815081b66956dcb752b1e7abe65b9a52579c94b2c2d91fce`；正式 release-to-release 的跨镜像升级/回滚从下一版本开始积累证据。
+当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。正式 `v0.1.1` 已由 Release workflow run `34924614659` 发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:76f4c041d1acecbb573cdbd49c45aec936bfd8cf3b263bc09153f7741f18e30d`；该 workflow 已真实完成 `v0.1.0 → v0.1.1 候选 → 恢复 v0.1.0` 的跨版本升级/回滚演练。当前源码进入 `0.1.2` 候选开发线。
 
 ## 2. 下载器
 
@@ -46,8 +46,9 @@
 - 生产升级使用不可变 `<image>@sha256:<digest>`；`stable` 只用于发现，不是部署身份。
 - 数据库升级先创建 `pre-upgrade` 一致性快照，在同文件系统临时副本完成迁移与验证后再原子切换。
 - 生产回滚不依赖 Alembic 原地 downgrade；旧镜像不能读取新 schema 时必须恢复兼容的升级前/离线备份。
-- `v0.1.0` 是首个正式 release，因此没有上一正式镜像可用于真实跨镜像升级/回滚矩阵；从下一正式 release 起，必须加入 `v0.1.0` → 新镜像 → 回滚 `v0.1.0` 的运行级证据。
-- `release-baseline.json` 已把 `v0.1.0` 固定为不可变基线 digest；GitHub Actions run `34874413071` 已在隔离 Docker `/config` 上实际跑绿“基线启动/备份 → 同版本候选接管/readiness → 用基线镜像恢复旧备份 → 基线再次 readiness”。当前 `0.1.1` 候选将在 CI / release workflow 中首次执行真正的跨版本门禁；门禁通过并形成发布证据前，不扩大正式兼容承诺。
+- `v0.1.1` Release workflow run `34924614659` 已真实跑绿 `v0.1.0` 基线启动/备份 → `v0.1.1` 候选接管/readiness → 用 `v0.1.0` 镜像恢复旧备份 → `v0.1.0` 再次 readiness。
+- `release-baseline.json` 当前固定正式 `v0.1.1` digest；未来发布 `v0.1.2` 时，release workflow 必须先完成 `v0.1.1 → v0.1.2 候选 → 恢复 v0.1.1` 才允许推送正式版本。
+- `0.1.2` 候选新增独立 updater helper 的 Web 一键升级链路。自动容器替换只承诺单个 PackBreaker 容器、唯一可写 `/config`、官方 GHCR 镜像、可安全重建的端口/环境/挂载/restart policy 和单网络配置；Docker Compose 管理标签、复杂 namespace、多网络、显式静态 IP/MAC 或 AutoRemove 容器失败关闭。
 
 ## 6. 兼容承诺原则
 

@@ -1,5 +1,7 @@
 # 交互原型体验与需求覆盖
 
+> **历史文档。** 本页记录早期 UI 原型阶段，不再描述当前产品能力。当前实现、部署和验收请以 `README.md`、`docs/deployment.md`、`docs/api.md`、`docs/testing.md` 与各阶段退出清单为准；正式界面中的原型/演示入口已经移除。
+
 ## 本轮交付
 
 已实现可运行的 Vue 3 + Vite + Element Plus + TypeScript strict 前端原型，采用《PackBreaker-01-浅色控制台.png》的浅色侧栏、浅灰工作区、蓝色操作按钮与高密度任务列表。桌面任务表、移动任务卡片与深色主题共享同一交互模型。

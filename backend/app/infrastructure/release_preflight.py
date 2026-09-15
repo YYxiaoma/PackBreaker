@@ -169,7 +169,10 @@ def _check_docker_socket(checks: list[PreflightCheck]) -> None:
                 "docker_socket",
                 "warning",
                 "DOCKER_SOCKET_PRESENT",
-                "检测到 docker.sock；应仅在明确启用升级能力时保留",
+                (
+                    "主服务检测到 docker.sock；自动升级应只由独立 updater helper 持有，"
+                    "建议移除主容器挂载"
+                ),
             )
         )
         return
@@ -178,7 +181,7 @@ def _check_docker_socket(checks: list[PreflightCheck]) -> None:
             "docker_socket",
             "ok",
             "DOCKER_SOCKET_ABSENT",
-            "未检测到 docker.sock，符合默认最小权限部署",
+            "主服务未挂载 docker.sock；自动升级可由独立 updater helper 安全接管",
         )
     )
 

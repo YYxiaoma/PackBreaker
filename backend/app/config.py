@@ -90,6 +90,14 @@ class AppSettings(BaseSettings):
         return self.config_dir / "logs"
 
     @property
+    def updater_socket_path(self) -> Path:
+        return self.config_dir / "updater" / "updater.sock"
+
+    @property
+    def updater_token_path(self) -> Path:
+        return self.config_dir / "updater" / "token"
+
+    @property
     def resolved_secret_key_file(self) -> Path:
         return self.secret_key_file or self.config_dir / "secret.key"
 

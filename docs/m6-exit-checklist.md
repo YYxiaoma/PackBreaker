@@ -10,11 +10,11 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 | --- | --- | --- |
 | 一致性数据库备份 | ✅ CI 闭环 | SQLite Backup API、SHA-256 manifest、完整性/revision 验证、CLI、preview-first 保留、默认关闭的计划调度、强 `If-Match` 管理 API 与真实 UI 已接通；GitHub Actions run `34851129257` 已在 linux/amd64 Docker 环境完成真实备份与离线 verify/restore 演练 |
 | 恢复与失败回滚 | ✅ CI 闭环 | 已实现实例锁停止门禁、恢复前安全快照、临时迁移预检、原子切换与切换后失败自动回滚；GitHub Actions run `34851129257` 已在 linux/amd64 Docker 环境完成空配置启动、preflight、备份、离线 verify/restore 与重启 readiness |
-| 升级兼容矩阵 | 🟡 门禁已实跑 | 已自动覆盖 22 个历史 Alembic revision（0001～0022）→ `0023_backup_policy`、空配置原子首装、迁移失败不切换和 Runtime 启动安全升级；`v0.1.0` 不可变 digest 已固化为 `release-baseline.json`，GitHub Actions run `34874413071` 已真实跑绿同版本“基线 → 候选 → 恢复基线”Docker 门禁；当前 `0.1.1` 候选待 CI / release workflow 产出首个真正跨版本结果 |
+| 升级兼容矩阵 | ✅ 跨版本门禁闭环 | 已自动覆盖 22 个历史 Alembic revision（0001～0022）→ `0023_backup_policy`、空配置原子首装、迁移失败不切换和 Runtime 启动安全升级；正式 `v0.1.1` Release workflow run `34924614659` 已真实跑绿 `v0.1.0 → v0.1.1 → 恢复 v0.1.0`，当前 `release-baseline.json` 已推进到 `v0.1.1` |
 | 真实依赖健康/仪表盘 | ✅ 代码闭环 | `/system/health` 已聚合 runtime、磁盘、备份、任务/operation 风险、站点/下载器既有证据、通知与后台 driver，前端总览直接消费 typed OpenAPI；读取页面不主动访问外部服务 |
 | 日志与诊断导出 | ✅ 代码闭环 | stdout JSON + `/config/logs` 有界轮转日志、7 天最大查询窗口、查询/导出条数硬限制、typed API 与前端筛选/导出已接通；诊断 ZIP 继续独立且默认不含日志，日志/诊断均有泄漏 canary |
-| 镜像/SBOM/发布产物 | ✅ 发布闭环 | `v0.1.0` Release workflow run `34861933795` 已真实发布 linux/amd64 GHCR 镜像、SPDX JSON SBOM、release manifest、SHA256SUMS 与 GitHub Release；公开 `0.1.0`、`stable` 和 manifest 均指向 `sha256:f7a396acb8382af5815081b66956dcb752b1e7abe65b9a52579c94b2c2d91fce` |
-| 运维 runbook/用户手册 | ✅ 闭环 | 已补 Compose 备份/停止/恢复/readiness/回滚步骤；GitHub container 恢复演练已跑绿，升级中心已接真实本地 preflight、升级前备份和不可变 digest 手工 runbook；release-to-release Docker 门禁也已固化，后续正式版本只需持续提供实际运行证据 |
+| 镜像/SBOM/发布产物 | ✅ 发布闭环 | `v0.1.1` Release workflow run `34924614659` 已真实发布 linux/amd64 GHCR 镜像、SPDX JSON SBOM、release manifest、SHA256SUMS 与 GitHub Release；公开 `0.1.1`、`stable` 和 manifest 均指向 `sha256:76f4c041d1acecbb573cdbd49c45aec936bfd8cf3b263bc09153f7741f18e30d` |
+| 运维 runbook/用户手册 | ✅ 闭环 | 已补 Compose 备份/停止/恢复/readiness/回滚步骤；`0.1.2` 候选新增独立 updater helper 的 Web 一键升级、安全容器重建、healthcheck 与失败自动回滚；无 helper 或复杂拓扑仍保留手工 digest runbook |
 | v1.0 全量验收 | ✅ 验收闭环 | 25 条验收项已建立机器可校验证据索引：21 条自动化/CI 覆盖、4 条现场证据、0 条 `pending_external`；首个正式 tag 的 registry/SBOM/Release 供应链证据也已完成 |
 
 ## 3. 一致性备份首批能力
@@ -72,8 +72,9 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 ## 10. 升级中心安全入口
 
 - `GET /api/v1/system/release/preflight` 复用 release preflight 的本地检查，但固定 `exercise_backup=false`，因此页面刷新不会创建/删除备份演练文件；返回配置目录、SQLite head/integrity、现有主密钥、`/data` 根与 docker.sock 风险，不访问 PT/下载器/通知，也不遍历媒体树。
-- “升级中心”展示真实运行版本和预检 code，提供升级前一致性备份入口，并只给出 `<registry>/<image>@sha256:<digest>` 手工升级/回滚 runbook。旧的模拟 v0.1.1、模拟检查更新和模拟升级已移除。
-- 即使检测到 docker.sock，Web UI 也不会调用 Docker API；容器拉取/替换、离线数据库恢复和失败回滚必须由宿主机管理员按部署 runbook 显式执行。
+- `GET /api/v1/system/upgrade` 展示当前版本、最新正式 Release/digest、独立 updater helper phase 与自动升级阻断原因；`POST /api/v1/system/upgrade/actions` 要求 `config:write`、管理会话 CSRF（如适用）和 `Idempotency-Key`，并在交给 helper 前重新确认 Release、跑完整 preflight、创建一致性备份。
+- `packbreaker-updater` 独占 docker.sock，通过 `/config/updater/updater.sock` + 随机 token 接受主服务请求。主 PackBreaker 自身检测到 docker.sock 时拒绝自动升级。helper 会创建切换瞬间静止数据库备份、按 allowlist 重建容器配置、等待 Docker healthcheck，并在失败时恢复旧数据库/旧容器；无法收敛则进入 `manual_recovery_required`。
+- 自动升级当前只支持可安全重建的单容器/单网络拓扑；Docker Compose 管理标签、AutoRemove、container namespace、多网络、显式静态 IP/MAC 等失败关闭。没有 helper 时仍可按不可变 digest runbook 手工升级/回滚。
 
 ## 11. v1.0 验收证据索引与发布边界
 
@@ -84,4 +85,4 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 
 ## 12. 下一阶段退出证据
 
-当前代码侧已取得备份/计划调度、恢复、安全升级矩阵、真实本地升级中心、统一健康仪表盘、持久日志查询/导出与诊断脱敏证据；GitHub CI run `34851129257` 的 `quality`、`browser-e2e`、`container` 三条门禁已全部跑绿，`v0.1.0` Release workflow run `34861933795` 的镜像、SBOM、manifest、checksums、GitHub Release 与 `stable` 推进也已完成。`v0.1.0` 已固化为后续 release 的不可变升级基线，新增跨镜像门禁又由 GitHub Actions run `34874413071` 在真实 Docker runner 上成功验证。当前项目已进入 `0.1.1` 候选，下一项外部证据是让该候选在 GitHub CI / release workflow 中形成首个真实跨版本运行结果。
+当前代码侧已取得备份/计划调度、恢复、安全升级矩阵、统一健康仪表盘、持久日志查询/导出与诊断脱敏证据；正式 `v0.1.1` Release workflow run `34924614659` 的镜像、SBOM、manifest、checksums、GitHub Release、`stable` 推进以及 `v0.1.0 → v0.1.1 → 恢复 v0.1.0` 跨版本门禁均已完成。当前项目进入 `0.1.2` 候选开发线，并新增独立 updater helper 的现场一键升级/自动回滚能力；下一项发布级外部证据是让 `v0.1.2` 候选在 GitHub CI / release workflow 中完成 `v0.1.1 → v0.1.2 → 恢复 v0.1.1`。

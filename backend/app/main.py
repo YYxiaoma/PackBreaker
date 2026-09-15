@@ -38,6 +38,7 @@ from backend.app.application.notifications import NotificationService
 from backend.app.application.repair_downloader_operations import RepairDownloadOperationService
 from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
+from backend.app.application.system_upgrades import SystemUpgradeService
 from backend.app.application.task_actions import TaskActionService
 from backend.app.application.task_adding import TaskAddingCoordinator
 from backend.app.application.task_cancellation import TaskCancellationCoordinator
@@ -340,6 +341,7 @@ def create_app(
             interval_seconds=resolved_settings.backup_driver_interval_seconds,
         )
         app.state.backup_driver = backup_driver
+        app.state.system_upgrade_service = SystemUpgradeService(resolved_settings)
         backup_driver.start()
         try:
             yield

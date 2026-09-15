@@ -19,30 +19,32 @@ PackBreaker 是一个面向 PT 场景的自动拆包辅种系统。它以“大�
 
 ## 项目状态
 
-项目已完成 M5「历史影片与电视剧」正式退出条件，当前进入 M6「发布与运维闭环」。qBittorrent 5.2.3 与 Transmission 4.1.3 均已完成真实辅种端到端主链；M-Team、HDTime、HHClub 站点适配、v1/v2/hybrid 解析与 piece 验证、人工审核、execution gate/plan、journal-backed 硬链接与下载器执行、取消/回滚/release、站点可靠性、通知、99% repair 安全链和清理/对账均已接入真实后端。M5 已完成真实 `/data` 只读增量历史扫描、HistoryScanDriver、暂停/取消/游标恢复、并发幂等 materialize、扫描级筛选与批量 Analyze/RETRY 重试，以及电视剧单集、范围集、S00/Specials、EP/ABS、Season 目录上下文和 episode group/variant 多版本归组。2026-09-14 的真实影片与真实剧集现场任务均完成 `HistoryScan → materialize → Analyze → 人工审核 → execution gate/plan → hardlink → qB DONE`；动态下载目录也真实触发 `ANALYSIS_SOURCE_CHANGED` 并在 0 journal 状态失败关闭。M4/M5 关闭证据分别见 `docs/m4-exit-checklist.md`、`docs/m5-exit-checklist.md`，M6 剩余工作见 `docs/development-roadmap.md`。
+PackBreaker 已完成 M6 发布与运维闭环的主要能力，并已正式发布 `v0.1.1`。该版本的 linux/amd64 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:76f4c041d1acecbb573cdbd49c45aec936bfd8cf3b263bc09153f7741f18e30d`；Release workflow run `34924614659` 已真实通过 `v0.1.0 → v0.1.1 → 恢复 v0.1.0` 的跨版本 Docker 门禁。
 
-界面遵循 `PackBreaker-01-浅色控制台.png` 的设计风格，包含任务中心、预演审核、历史辅种、站点、下载器、规则、对账、日志、设置与升级页面。管理员认证、API Token、下载器、站点、任务分析/审核/执行、清理对账、通知，以及历史后台增量扫描/暂停取消/任务转换/季集归组/服务端结果筛选/批量 Analyze/RETRY 重试已接入本地 PackBreaker 后端；总览、规则以及多数 M6 发布运维能力仍包含合成示例或原型交互，主题偏好保存在浏览器。
+当前源码进入 `0.1.2` 候选开发线。除既有 qBittorrent/Transmission 主链、M-Team/HDTime/HHClub、v1/v2/hybrid piece 验证、人工审核、journal-backed 执行/取消/回滚、历史扫描、repair、备份恢复、健康/日志/诊断等能力外，升级中心正在加入独立 `packbreaker-updater` helper：主 PackBreaker 不持有 docker.sock，helper 负责按正式 Release 的不可变 digest 拉取镜像、重建容器、等待 healthcheck，并在失败时恢复切换瞬间数据库备份与旧容器。
 
-### 体验原型
+发布、升级与支持边界见 `docs/deployment.md`、`docs/upgrade-compatibility.md`、`docs/support-matrix.md` 与 `docs/known-limitations.md`。
 
-准备 Node.js 22.12+、pnpm 10.34.5：
+### 本地开发
 
-```powershell
-pnpm --dir frontend install --frozen-lockfile
-pnpm --dir frontend dev
+准备 Python 3.11、Node.js 22.12+ 与 pnpm 10.34.5：
+
+```bash
+corepack pnpm --dir frontend install --frozen-lockfile
+corepack pnpm --dir frontend dev
 ```
 
-浏览器访问 `http://127.0.0.1:5173/`。Windows 也可在依赖安装后运行 `./scripts/start-prototype.ps1`，脚本会优先使用本机 Node.js，其次使用 Codex 已提供的运行时。
+浏览器访问 `http://127.0.0.1:5173/`。安装完整开发依赖后，可运行 `uv run python scripts/check.py` 执行静态检查与 OpenAPI 生成漂移检查，运行 `uv run python scripts/test.py` 执行后端/前端测试和生产构建。
 
-安装完整开发依赖后，可用 `uv run python scripts/check.py` 执行静态检查与 OpenAPI 生成漂移检查，用 `uv run python scripts/test.py` 执行后端/前端测试和生产构建。Docker 环境可直接运行 `docker compose up --build`，默认把 PackBreaker 暴露在 `http://127.0.0.1:8000/`。
+Docker 环境可直接运行：
 
-建议先审核「深空纪事」，再查看「远山回声」的映射歧义，以及第二页「森林之境」的安全修复。
+```bash
+docker compose up --build -d
+```
 
-原型功能范围、验证结果和待确认项见[原型体验与需求覆盖](./docs/prototype.md)。现有「核心能力」列表为产品计划，不代表已实现生产能力。
+生产环境应把 `PACKBREAKER_IMAGE` 固定为正式 Release manifest 给出的完整 `@sha256:` digest，而不是依赖可移动 tag。Compose 管理的主容器继续采用宿主机显式更新 digest；Web 一键升级只支持独立 `docker run --name packbreaker` 部署，并需要另行启动只持有 Docker socket 的 `packbreaker-updater` helper，完整命令见 `docs/deployment.md`。
 
-完整需求请参阅[需求基线 v0.3](./自动拆包辅种系统-需求基线-v0.3.html)。历史版本保留在[需求基线 v0.2](./自动拆包辅种系统-需求基线-v0.2.html)。
-
-研发设计、接口规范、测试计划和实施路线请参阅[研发文档索引](./docs/README.md)。
+完整需求请参阅[需求基线 v0.3](./自动拆包辅种系统-需求基线-v0.3.html)。历史版本保留在[需求基线 v0.2](./自动拆包辅种系统-需求基线-v0.2.html)。研发设计、接口规范、测试计划和实施路线请参阅[研发文档索引](./docs/README.md)。
 
 ## 许可证
 

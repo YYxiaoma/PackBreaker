@@ -3581,6 +3581,202 @@
         "title": "SystemHealthResponse",
         "type": "object"
       },
+      "SystemUpgradeActionRequest": {
+        "properties": {
+          "action": {
+            "const": "upgrade",
+            "title": "Action",
+            "type": "string"
+          },
+          "target_image_digest": {
+            "maxLength": 71,
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Target Image Digest",
+            "type": "string"
+          },
+          "target_version": {
+            "maxLength": 32,
+            "pattern": "^\\d+\\.\\d+\\.\\d+$",
+            "title": "Target Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "target_version",
+          "target_image_digest"
+        ],
+        "title": "SystemUpgradeActionRequest",
+        "type": "object"
+      },
+      "SystemUpgradeActionResponse": {
+        "properties": {
+          "backup_database_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup Database File"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "string"
+          },
+          "helper_status": {
+            "$ref": "#/components/schemas/UpdaterStatusResponse"
+          },
+          "idempotency_replayed": {
+            "title": "Idempotency Replayed",
+            "type": "boolean"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "target_image": {
+            "title": "Target Image",
+            "type": "string"
+          },
+          "target_version": {
+            "title": "Target Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "current_version",
+          "target_version",
+          "target_image",
+          "backup_database_file",
+          "helper_status",
+          "idempotency_replayed"
+        ],
+        "title": "SystemUpgradeActionResponse",
+        "type": "object"
+      },
+      "SystemUpgradeStatusResponse": {
+        "properties": {
+          "blocked_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocked Reasons",
+            "type": "array"
+          },
+          "can_upgrade": {
+            "title": "Can Upgrade",
+            "type": "boolean"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "string"
+          },
+          "helper_available": {
+            "title": "Helper Available",
+            "type": "boolean"
+          },
+          "helper_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UpdaterStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "immutable_image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Immutable Image"
+          },
+          "latest_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Version"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "release_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Error Code"
+          },
+          "target_image_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Image Digest"
+          },
+          "target_tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Tag"
+          },
+          "update_available": {
+            "title": "Update Available",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "current_version",
+          "latest_version",
+          "update_available",
+          "target_tag",
+          "target_image_digest",
+          "immutable_image",
+          "platform",
+          "release_error_code",
+          "helper_available",
+          "helper_status",
+          "can_upgrade",
+          "blocked_reasons"
+        ],
+        "title": "SystemUpgradeStatusResponse",
+        "type": "object"
+      },
       "TaskCandidateListResponse": {
         "properties": {
           "items": {
@@ -4456,6 +4652,148 @@
         "title": "TorrentKind",
         "type": "string"
       },
+      "UpdaterStatusResponse": {
+        "properties": {
+          "backup_database_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup Database File"
+          },
+          "current_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "helper_version": {
+            "title": "Helper Version",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "phase": {
+            "enum": [
+              "idle",
+              "accepted",
+              "pulling",
+              "stopping",
+              "starting",
+              "verifying",
+              "succeeded",
+              "rolling_back",
+              "rolled_back",
+              "failed",
+              "manual_recovery_required"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "protocol_version": {
+            "title": "Protocol Version",
+            "type": "integer"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "rollback_performed": {
+            "title": "Rollback Performed",
+            "type": "boolean"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "target_image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Image"
+          },
+          "target_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Version"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "helper_version",
+          "phase",
+          "message",
+          "request_id",
+          "current_version",
+          "target_version",
+          "target_image",
+          "backup_database_file",
+          "started_at",
+          "updated_at",
+          "finished_at",
+          "rollback_performed"
+        ],
+        "title": "UpdaterStatusResponse",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -4500,7 +4838,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "0.1.1"
+    "version": "0.1.2"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -8952,6 +9290,194 @@
           }
         },
         "summary": "System Status",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/system/upgrade": {
+      "get": {
+        "operationId": "system_upgrade_status_api_v1_system_upgrade_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemUpgradeStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "System Upgrade Status",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/system/upgrade/actions": {
+      "post": {
+        "operationId": "system_upgrade_action_api_v1_system_upgrade_actions_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemUpgradeActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemUpgradeActionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "System Upgrade Action",
         "tags": [
           "system"
         ]

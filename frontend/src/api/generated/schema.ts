@@ -682,6 +682,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/system/upgrade': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** System Upgrade Status */
+    get: operations['system_upgrade_status_api_v1_system_upgrade_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/system/upgrade/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** System Upgrade Action */
+    post: operations['system_upgrade_action_api_v1_system_upgrade_actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/task-units/{unit_id}/decision': {
     parameters: {
       query?: never;
@@ -2345,6 +2379,60 @@ export interface components {
       /** Version */
       version: string;
     };
+    /** SystemUpgradeActionRequest */
+    SystemUpgradeActionRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'upgrade';
+      /** Target Image Digest */
+      target_image_digest: string;
+      /** Target Version */
+      target_version: string;
+    };
+    /** SystemUpgradeActionResponse */
+    SystemUpgradeActionResponse: {
+      /** Backup Database File */
+      backup_database_file: string | null;
+      /** Current Version */
+      current_version: string;
+      helper_status: components['schemas']['UpdaterStatusResponse'];
+      /** Idempotency Replayed */
+      idempotency_replayed: boolean;
+      /** Request Id */
+      request_id: string;
+      /** Target Image */
+      target_image: string;
+      /** Target Version */
+      target_version: string;
+    };
+    /** SystemUpgradeStatusResponse */
+    SystemUpgradeStatusResponse: {
+      /** Blocked Reasons */
+      blocked_reasons: string[];
+      /** Can Upgrade */
+      can_upgrade: boolean;
+      /** Current Version */
+      current_version: string;
+      /** Helper Available */
+      helper_available: boolean;
+      helper_status: components['schemas']['UpdaterStatusResponse'] | null;
+      /** Immutable Image */
+      immutable_image: string | null;
+      /** Latest Version */
+      latest_version: string | null;
+      /** Platform */
+      platform: string | null;
+      /** Release Error Code */
+      release_error_code: string | null;
+      /** Target Image Digest */
+      target_image_digest: string | null;
+      /** Target Tag */
+      target_tag: string | null;
+      /** Update Available */
+      update_available: boolean;
+    };
     /** TaskCandidateListResponse */
     TaskCandidateListResponse: {
       /** Items */
@@ -2698,6 +2786,49 @@ export interface components {
      * @enum {string}
      */
     TorrentKind: 'V1' | 'V2' | 'HYBRID';
+    /** UpdaterStatusResponse */
+    UpdaterStatusResponse: {
+      /** Backup Database File */
+      backup_database_file: string | null;
+      /** Current Version */
+      current_version: string | null;
+      /** Finished At */
+      finished_at: string | null;
+      /** Helper Version */
+      helper_version: string;
+      /** Message */
+      message: string;
+      /**
+       * Phase
+       * @enum {string}
+       */
+      phase:
+        | 'idle'
+        | 'accepted'
+        | 'pulling'
+        | 'stopping'
+        | 'starting'
+        | 'verifying'
+        | 'succeeded'
+        | 'rolling_back'
+        | 'rolled_back'
+        | 'failed'
+        | 'manual_recovery_required';
+      /** Protocol Version */
+      protocol_version: number;
+      /** Request Id */
+      request_id: string | null;
+      /** Rollback Performed */
+      rollback_performed: boolean;
+      /** Started At */
+      started_at: string | null;
+      /** Target Image */
+      target_image: string | null;
+      /** Target Version */
+      target_version: string | null;
+      /** Updated At */
+      updated_at: string | null;
+    };
     /** ValidationError */
     ValidationError: {
       /** Context */
@@ -4487,6 +4618,79 @@ export interface operations {
           'application/json': {
             [key: string]: unknown;
           };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  system_upgrade_status_api_v1_system_upgrade_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SystemUpgradeStatusResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  system_upgrade_action_api_v1_system_upgrade_actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'Idempotency-Key'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SystemUpgradeActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SystemUpgradeActionResponse'];
         };
       };
       /** @description Validation Error */

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       target: runtime
-    image: packbreaker:local
+    image: "${PACKBREAKER_IMAGE:-packbreaker:local}"
     container_name: packbreaker
     restart: unless-stopped
     user: "0:0"

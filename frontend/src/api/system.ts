@@ -11,6 +11,10 @@ export type BackupPolicyUpdate = components['schemas']['BackupPolicyUpdateReques
 export type BackupRun = components['schemas']['BackupRunResponse'];
 export type ReleasePreflight = components['schemas']['ReleasePreflightResponse'];
 export type ReleasePreflightCheck = components['schemas']['ReleasePreflightCheckResponse'];
+export type SystemUpgradeStatus = components['schemas']['SystemUpgradeStatusResponse'];
+export type SystemUpgradeActionRequest = components['schemas']['SystemUpgradeActionRequest'];
+export type SystemUpgradeActionResponse = components['schemas']['SystemUpgradeActionResponse'];
+export type UpdaterStatus = components['schemas']['UpdaterStatusResponse'];
 
 export interface OperationalLogQuery {
   window_minutes?: number;
@@ -32,6 +36,23 @@ function attachmentFilename(contentDisposition: unknown, fallback: string): stri
 
 export async function getReleasePreflight(): Promise<ReleasePreflight> {
   const response = await apiClient.get<ReleasePreflight>('/system/release/preflight');
+  return response.data;
+}
+
+export async function getSystemUpgradeStatus(): Promise<SystemUpgradeStatus> {
+  const response = await apiClient.get<SystemUpgradeStatus>('/system/upgrade');
+  return response.data;
+}
+
+export async function startSystemUpgrade(
+  payload: SystemUpgradeActionRequest,
+  idempotencyKey: string,
+): Promise<SystemUpgradeActionResponse> {
+  const response = await apiClient.post<SystemUpgradeActionResponse>(
+    '/system/upgrade/actions',
+    payload,
+    { headers: { 'Idempotency-Key': idempotencyKey } },
+  );
   return response.data;
 }
 

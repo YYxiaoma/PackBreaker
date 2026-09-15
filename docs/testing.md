@@ -193,7 +193,7 @@ M6 持久日志门禁另覆盖真实临时轮转文件：写入带 userinfo/path
 
 M6 计划备份门禁验证默认关闭、启用后到期执行/未到期跳过、手动 force 备份、计划与手动运行互斥、retention 复用、运行状态不递增策略 version，以及 API 的 CSRF、`config:write`、强 `If-Match`/412 冲突。所有数据库和备份目录均为 pytest 临时目录，不连接 PT/qB/TR 或媒体目录。
 
-M6 升级中心门禁验证 typed `/system/release/preflight` 只做本地读取且不创建备份演练文件、不遍历或修改媒体 canary；浏览器必须展示当前真实版本、preflight code、不可变 `<registry>/<image>@sha256:<digest>` 手工 runbook 和升级前一致性备份入口，同时不得出现“模拟检查更新/模拟升级”或任何 Web Docker 执行动作。
+M6 升级中心门禁验证 typed `/system/release/preflight` 只做本地读取且不创建备份演练文件、不遍历或修改媒体 canary；`/system/upgrade` 使用合成正式 Release/helper 状态验证版本与不可变 digest 展示，`/system/upgrade/actions` 必须携带 `Idempotency-Key`。浏览器 E2E 覆盖“发现新版本 → 用户确认 → 同键提交 → 独立 helper 接管”并保持所有未显式 mock API 失败关闭。后端专项测试使用纯 Fake Docker backend 覆盖容器配置重建、docker.sock 剥离、静止数据库备份、健康失败恢复旧容器/旧数据库、helper 状态损坏/重启失败关闭；默认测试不会连接真实 Docker daemon。
 
 `scripts/repository_scan.py` 扫描 Git 已跟踪文件以及未被 `.gitignore` 排除的工作区候选，阻断真实 `.torrent`、媒体、数据库/日志/密钥类制品、明显私钥/常见 Token 形态以及超过 5 MiB 的单个候选文件；该扫描也被 `scripts/check.py` 本地入口复用。普通 CI 永不连接真实 PT 或下载器。容器恢复门禁也只使用 CI 临时目录，不挂载真实媒体或生产配置。任何安全不变量、迁移、契约、仓库扫描、容器 smoke/恢复或端到端测试失败都应阻止合并。
 

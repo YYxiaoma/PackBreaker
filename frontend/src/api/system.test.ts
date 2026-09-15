@@ -5,10 +5,12 @@ import {
   exportSystemDiagnostics,
   exportSystemLogs,
   getSystemHealth,
+  getSystemUpgradeStatus,
   getReleasePreflight,
   getBackupPolicy,
   listSystemLogs,
   runBackupNow,
+  startSystemUpgrade,
   updateBackupPolicy,
 } from './system';
 
@@ -19,7 +21,7 @@ describe('系统运维 API', () => {
     const health = {
       status: 'ok' as const,
       generated_at: '2026-09-14T09:00:00Z',
-      version: '0.1.1',
+      version: '0.1.2',
       checks: [],
     };
     const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: health, headers: {} });
@@ -31,7 +33,7 @@ describe('系统运维 API', () => {
   it('发布预检读取真实本地只读报告', async () => {
     const report = {
       status: 'ready' as const,
-      app_version: '0.1.1',
+      app_version: '0.1.2',
       checks: [
         {
           name: 'database',
@@ -45,6 +47,64 @@ describe('系统运维 API', () => {
 
     await expect(getReleasePreflight()).resolves.toEqual(report);
     expect(get).toHaveBeenCalledWith('/system/release/preflight');
+  });
+
+  it('Docker 升级状态读取正式 digest，写动作携带幂等键', async () => {
+    const digest = `sha256:${'8'.repeat(64)}`;
+    const status = {
+      current_version: '0.1.2',
+      latest_version: '0.1.3',
+      update_available: true,
+      target_tag: 'v0.1.3',
+      target_image_digest: digest,
+      immutable_image: `ghcr.io/yyxiaoma/packbreaker@${digest}`,
+      platform: 'linux/amd64',
+      release_error_code: null,
+      helper_available: true,
+      helper_status: null,
+      can_upgrade: true,
+      blocked_reasons: [],
+    };
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: status, headers: {} });
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      data: {
+        request_id: 'upgrade-001',
+        current_version: '0.1.2',
+        target_version: '0.1.3',
+        target_image: status.immutable_image,
+        backup_database_file: 'packbreaker-test.db',
+        helper_status: {
+          protocol_version: 1,
+          helper_version: '0.1.2',
+          phase: 'accepted',
+          message: 'accepted',
+          request_id: 'upgrade-001',
+          current_version: '0.1.2',
+          target_version: '0.1.3',
+          target_image: status.immutable_image,
+          backup_database_file: 'packbreaker-test.db',
+          started_at: null,
+          updated_at: null,
+          finished_at: null,
+          rollback_performed: false,
+        },
+        idempotency_replayed: false,
+      },
+      headers: {},
+    });
+
+    await expect(getSystemUpgradeStatus()).resolves.toEqual(status);
+    await startSystemUpgrade(
+      { action: 'upgrade', target_version: '0.1.3', target_image_digest: digest },
+      'upgrade-001',
+    );
+
+    expect(get).toHaveBeenCalledWith('/system/upgrade');
+    expect(post).toHaveBeenCalledWith(
+      '/system/upgrade/actions',
+      { action: 'upgrade', target_version: '0.1.3', target_image_digest: digest },
+      { headers: { 'Idempotency-Key': 'upgrade-001' } },
+    );
   });
 
   it('备份策略更新使用强 If-Match，立即备份只提交动作枚举', async () => {

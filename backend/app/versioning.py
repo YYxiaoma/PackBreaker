@@ -7,4 +7,4 @@ def app_version() -> str:
     try:
         return version("packbreaker")
     except PackageNotFoundError:
-        return "0.1.1"
+        return "0.1.2"
