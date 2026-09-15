@@ -153,10 +153,11 @@ jobs:
             --verify-tag \
             --title "PackBreaker $GITHUB_REF_NAME" \
             --generate-notes
-      - name: Advance stable channel only after release evidence is published
+      - name: Advance stable and latest channels only after release evidence is published
         shell: bash
         run: |
           set -euo pipefail
           docker buildx imagetools create \
             --tag "${{ steps.release_meta.outputs.image }}:stable" \
+            --tag "${{ steps.release_meta.outputs.image }}:latest" \
             "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"

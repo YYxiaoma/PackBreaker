@@ -28,9 +28,11 @@ Dockerfile 的三个 `FROM` 都使用“精确补丁版本 + sha256 digest”固
 6. 只按 `<image>@<digest>` 扫描镜像并生成 SPDX JSON SBOM。
 7. 生成 `packbreaker-<version>.release.json`，绑定 version/tag/commit/platform/image digest/SBOM 文件名与 SBOM SHA-256，并为 release JSON 与 SBOM 生成 `SHA256SUMS`。
 8. 上传 GitHub Actions evidence artifact，创建同 tag 的 GitHub Release，并发布 SBOM、release manifest、checksums 与自动 release notes。
-9. 只有 Release 资产全部发布成功后，才把 `stable` 通道移动到本次已经记录的不可变 image digest；中途失败不会推进稳定通道。
+9. 只有 Release 资产全部发布成功后，才把 `stable` 与兼容 Docker 默认习惯的 `latest` 通道一起移动到本次已经记录的不可变 image digest；中途失败不会推进这两个可移动通道。
 
 Buildx 同时开启 provenance 元数据，但当前 M6 不把它表述为独立签名或 artifact attestation；若后续启用签名/attestation，必须另行定义密钥、身份与验证策略。
+
+若历史版本缺少 `stable`/`latest` 或可移动通道需要修复，可手工运行 `Sync Release Channels` workflow。该 workflow 只读取 `release-baseline.json`，并在确认 baseline tag 仍等于 GitHub 最新正式 Release 后，把两个通道同步到 baseline 的不可变 digest；它不会构建或重发镜像内容。
 
 ## 4. 发布产物
 
@@ -47,4 +49,4 @@ release manifest 不保存凭证、数据库或真实环境路径。SBOM 从已�
 
 ## 5. 当前发布证据
 
-正式 `v0.1.2` Release workflow run `34937718889` 已真实生成并发布 linux/amd64 GHCR 镜像、SPDX SBOM、release manifest、`SHA256SUMS` 与 GitHub Release 资产；发布前同时跑绿 `v0.1.1 → v0.1.2 候选 → 恢复 v0.1.1` 跨镜像兼容门禁，以及独立 updater helper 的真实 digest pull、成功容器替换和“故障候选修改数据库后自动恢复旧数据库/旧容器”E2E。release manifest 绑定 commit `bee69945702b20318232ec73d66d580f394a125f` 和不可变 digest `sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`；独立下载复核确认 release JSON 与 SPDX SBOM 都与 `SHA256SUMS` 一致，SBOM SHA-256 与 manifest 一致，公开 `0.1.2` 与 `stable` 也都解析到该 digest。
+正式 `v0.1.2` Release workflow run `34937718889` 已真实生成并发布 linux/amd64 GHCR 镜像、SPDX SBOM、release manifest、`SHA256SUMS` 与 GitHub Release 资产；发布前同时跑绿 `v0.1.1 → v0.1.2 候选 → 恢复 v0.1.1` 跨镜像兼容门禁，以及独立 updater helper 的真实 digest pull、成功容器替换和“故障候选修改数据库后自动恢复旧数据库/旧容器”E2E。release manifest 绑定 commit `bee69945702b20318232ec73d66d580f394a125f` 和不可变 digest `sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`；独立下载复核确认 release JSON 与 SPDX SBOM 都与 `SHA256SUMS` 一致，SBOM SHA-256 与 manifest 一致，公开 `0.1.2`、`stable` 与 `latest` 均应解析到该 digest；`latest`/`stable` 都只是可移动发现通道，生产升级与回滚仍以 release manifest 中的完整不可变 digest 为准。
