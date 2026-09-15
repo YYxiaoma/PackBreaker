@@ -177,11 +177,12 @@ M2 使用合成 1 万文件 torrent 和跨文件 piece 测试内存上界与流�
 
 ## 11. CI 门禁
 
-当前 GitHub Actions 每个 Pull Request 执行三条主门禁，并在 `quality` 最前执行独立仓库安全扫描：
+当前 GitHub Actions 每个 Pull Request 执行四条主门禁，并在 `quality` 最前执行独立仓库安全扫描：
 
 1. `quality`：Python 3.11 + `uv sync --frozen --all-groups`，运行统一静态检查、OpenAPI/生成类型漂移检查、pytest、Vitest 与 production build。
 2. `browser-e2e`：安装 Playwright bundled Chromium，启动本地 Vite；认证与所有业务 API 均使用显式合成 mock，最外层 `/api/v1/**` catch-all 对任何未 mock 请求返回 501 并记录失败，因此门禁不会穿透到本机 8000、真实后端或凭证。
 3. `container`：构建三阶段 runtime 镜像，以临时空 `/config`、`/data` 启动，验证 readiness、同源前端首页和镜像默认非 root 用户；随后在同一隔离配置卷执行 release preflight 与一致性备份，停止主容器，用一次性容器离线 verify/restore，再重启原容器并重新证明 readiness。
+4. `updater-e2e`：在独立 `ubuntu-latest` Docker VM 中按 `release-baseline.json` 拉取上一正式版本的不可变 digest，并把该确切 baseline 与当前候选镜像镜像到 Runner 内临时 registry。第一条真实链由独立 helper 通过 docker.sock 执行 baseline → candidate 容器替换、healthcheck、配置/端口/数据探针保留和主容器 docker.sock 剥离；第二条故障链使用会先修改合成数据库、随后故意 healthcheck 失败的候选镜像，要求 helper 自动恢复切换瞬间数据库和旧容器，同时验证恢复前 safety backup 确实保留了候选写入值。整个 job 只使用 Runner 临时目录和合成 SQLite 探针，不连接 PT、下载器或真实媒体。
 
 pytest 另外把 Alembic 历史链作为 M6 升级矩阵：当前 22 个历史 revision（`0001`～`0022`）分别构造独立合成数据库并升级到 `0023_backup_policy`，验证自定义业务探针、升级前备份和最终 revision；同时覆盖迁移失败不切换当前数据库、空配置失败不遗留半成品以及 RuntimeManager 自动升级。
 

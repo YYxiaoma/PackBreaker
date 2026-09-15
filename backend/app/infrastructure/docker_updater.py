@@ -15,7 +15,11 @@ import httpx2
 from backend.app.infrastructure.backups import BackupArtifact, create_consistent_backup
 from backend.app.infrastructure.updater_protocol import UpgradeHelperRequest
 
-_DOCKER_DIGEST_IMAGE = re.compile(r"^(?P<repo>[a-z0-9._/-]+)@sha256:[0-9a-f]{64}$")
+_IMAGE_REPOSITORY_PATTERN = (
+    r"(?:(?:localhost|[a-z0-9.-]+)(?::[0-9]{1,5})?/)?[a-z0-9._-]+(?:/[a-z0-9._-]+)*"
+)
+_DOCKER_DIGEST_IMAGE = re.compile(rf"^(?P<repo>{_IMAGE_REPOSITORY_PATTERN})@sha256:[0-9a-f]{{64}}$")
+_IMAGE_REPOSITORY = re.compile(rf"^{_IMAGE_REPOSITORY_PATTERN}$")
 _HOST_CONFIG_KEYS = (
     "Binds",
     "Mounts",
@@ -309,6 +313,32 @@ class DockerEngineClient:
         raise DockerUpdaterError(code, message)
 
 
+def image_repository_is_valid(value: str) -> bool:
+    """验证不带 tag/digest 的 Docker repository；允许私有 registry 的显式端口。"""
+
+    normalized = value.lower()
+    if _IMAGE_REPOSITORY.fullmatch(normalized) is None:
+        return False
+    first_component = normalized.split("/", 1)[0]
+    if ":" not in first_component:
+        return True
+    _host, separator, port_text = first_component.rpartition(":")
+    if not separator or not port_text.isdigit():
+        return False
+    port = int(port_text)
+    return 1 <= port <= 65535
+
+
+def digest_image_repository(value: str) -> str | None:
+    """返回合法不可变镜像引用中的 repository，否则返回 None。"""
+
+    match = _DOCKER_DIGEST_IMAGE.fullmatch(value.lower())
+    if match is None:
+        return None
+    repository = match.group("repo")
+    return repository if image_repository_is_valid(repository) else None
+
+
 def build_replacement_plan(
     container: Mapping[str, Any],
     old_image: Mapping[str, Any],
@@ -316,8 +346,8 @@ def build_replacement_plan(
     target_image: str,
     allowed_image: str,
 ) -> ReplacementPlan:
-    match = _DOCKER_DIGEST_IMAGE.fullmatch(target_image.lower())
-    if match is None or match.group("repo") != allowed_image.lower():
+    target_repository = digest_image_repository(target_image)
+    if target_repository is None or target_repository != allowed_image.lower():
         raise DockerUpdaterError(
             "UPGRADE_TARGET_IMAGE_UNTRUSTED", "目标镜像必须是官方不可变 digest"
         )

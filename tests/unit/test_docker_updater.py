@@ -132,6 +132,39 @@ def test_replacement_plan_preserves_deployment_overrides_and_strips_docker_socke
     assert plan.config_bind == "/root/packbreaker/config:/config"
 
 
+def test_replacement_plan_accepts_private_registry_with_port_for_isolated_e2e() -> None:
+    repository = "127.0.0.1:5000/packbreaker"
+    container = _container()
+    container["Config"]["Image"] = f"{repository}:baseline"
+    target = repository + "@sha256:" + "8" * 64
+
+    plan = build_replacement_plan(
+        container,
+        _old_image(),
+        target_image=target,
+        allowed_image=repository,
+    )
+
+    assert plan.create_payload["Image"] == target
+
+
+def test_replacement_plan_rejects_invalid_private_registry_port() -> None:
+    repository = "127.0.0.1:99999/packbreaker"
+    container = _container()
+    container["Config"]["Image"] = f"{repository}:baseline"
+    target = repository + "@sha256:" + "8" * 64
+
+    with pytest.raises(DockerUpdaterError) as exc_info:
+        build_replacement_plan(
+            container,
+            _old_image(),
+            target_image=target,
+            allowed_image=repository,
+        )
+
+    assert exc_info.value.code == "UPGRADE_TARGET_IMAGE_UNTRUSTED"
+
+
 @pytest.mark.parametrize(
     ("mutation", "code"),
     [

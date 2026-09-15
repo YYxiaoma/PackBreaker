@@ -75,6 +75,7 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 - `GET /api/v1/system/upgrade` 展示当前版本、最新正式 Release/digest、独立 updater helper phase 与自动升级阻断原因；`POST /api/v1/system/upgrade/actions` 要求 `config:write`、管理会话 CSRF（如适用）和 `Idempotency-Key`，并在交给 helper 前重新确认 Release、跑完整 preflight、创建一致性备份。
 - `packbreaker-updater` 独占 docker.sock，通过 `/config/updater/updater.sock` + 随机 token 接受主服务请求。主 PackBreaker 自身检测到 docker.sock 时拒绝自动升级。helper 会创建切换瞬间静止数据库备份、按 allowlist 重建容器配置、等待 Docker healthcheck，并在失败时恢复旧数据库/旧容器；无法收敛则进入 `manual_recovery_required`。
 - 自动升级当前只支持可安全重建的单容器/单网络拓扑；Docker Compose 管理标签、AutoRemove、container namespace、多网络、显式静态 IP/MAC 等失败关闭。没有 helper 时仍可按不可变 digest runbook 手工升级/回滚。
+- CI 新增 `updater-e2e` 真实 Docker 门禁：从 `release-baseline.json` 的正式不可变 baseline 出发，通过 Runner 内临时 registry 给 helper 提供真实 digest pull，分别验证成功替换和“候选修改数据库后 healthcheck 失败”的自动容器/数据库回滚。该门禁不使用生产 `/config`、PT、下载器或媒体目录。
 
 ## 11. v1.0 验收证据索引与发布边界
 

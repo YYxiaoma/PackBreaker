@@ -16,6 +16,8 @@ from backend.app.infrastructure.docker_updater import (
     DockerEngineClient,
     DockerUpdaterError,
     DockerUpgradeExecutor,
+    digest_image_repository,
+    image_repository_is_valid,
 )
 from backend.app.infrastructure.updater_protocol import (
     MAX_UPDATER_MESSAGE_BYTES,
@@ -28,7 +30,6 @@ from backend.app.infrastructure.updater_protocol import (
 from backend.app.versioning import app_version
 
 _BACKUP_DB = re.compile(r"^packbreaker-\d{8}T\d{6}Z-[0-9a-f]{8}\.db$")
-_DIGEST_IMAGE = re.compile(r"^(?P<repo>[a-z0-9._/-]+)@sha256:[0-9a-f]{64}$")
 _CONTAINER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
@@ -321,7 +322,7 @@ def main() -> None:
     )
     if _CONTAINER_NAME.fullmatch(target_container) is None:
         raise SystemExit("PACKBREAKER_UPDATER_TARGET_CONTAINER 格式无效")
-    if re.fullmatch(r"[a-z0-9._/-]+", allowed_image) is None:
+    if not image_repository_is_valid(allowed_image):
         raise SystemExit("PACKBREAKER_UPDATER_ALLOWED_IMAGE 格式无效")
     if not docker_socket.exists():
         raise SystemExit("未检测到 Docker socket，升级 helper 无法启动")
@@ -367,7 +368,7 @@ def _parse_upgrade_request(value: object) -> UpgradeHelperRequest:
     current_version = _version(value, "current_version")
     target_version = _version(value, "target_version")
     target_image = _request_string(value, "target_image").lower()
-    if _DIGEST_IMAGE.fullmatch(target_image) is None:
+    if digest_image_repository(target_image) is None:
         raise HelperRequestError("UPDATER_TARGET_INVALID", "目标镜像必须使用不可变 sha256 digest")
     backup_database_file = _request_string(value, "backup_database_file")
     if _BACKUP_DB.fullmatch(backup_database_file) is None:
