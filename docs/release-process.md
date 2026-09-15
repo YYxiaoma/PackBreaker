@@ -23,7 +23,7 @@ Dockerfile 的三个 `FROM` 都使用“精确补丁版本 + sha256 digest”固
 1. 安装冻结的 Python/Node 依赖，验证 tag 与项目版本一致，并拒绝已经存在的同 tag GitHub Release。
 2. 校验 `release-baseline.json`，并通过 GitHub Releases API 强制其 tag 必须等于当前最新正式 Release；这样后续版本不能跳过直接上一正式版本的兼容门禁。
 3. 运行 `scripts/check.py` 和 `scripts/test.py` 全量质量门禁。
-4. 本地构建 release candidate，执行“上一正式 release 不可变 digest → 当前候选 → 恢复升级前备份并回滚上一正式 digest”的 Docker 门禁；该门禁通过前不推送新正式镜像。
+4. 本地构建 release candidate，先执行“上一正式 release 不可变 digest → 当前候选 → 恢复升级前备份并回滚上一正式 digest”的兼容门禁，再执行独立 updater helper 的真实 Docker 成功升级与故障候选自动数据库/容器回滚 E2E；两条门禁都通过前不推送新正式镜像。
 5. 使用 Buildx 构建并推送单平台 `linux/amd64` GHCR 镜像，记录 registry 返回的最终 image digest。
 6. 只按 `<image>@<digest>` 扫描镜像并生成 SPDX JSON SBOM。
 7. 生成 `packbreaker-<version>.release.json`，绑定 version/tag/commit/platform/image digest/SBOM 文件名与 SBOM SHA-256，并为 release JSON 与 SBOM 生成 `SHA256SUMS`。
@@ -47,4 +47,4 @@ release manifest 不保存凭证、数据库或真实环境路径。SBOM 从已�
 
 ## 5. 当前发布证据
 
-代码与 workflow 已完成；GitHub Actions CI run `34851129257` 已实际跑绿 `quality`、`browser-e2e` 与 `container`，其中 container 覆盖镜像构建、空配置启动/readiness、preflight、一致性备份、停服务离线 verify/restore 与恢复后 readiness。`v0.1.0` Release workflow run `34861933795` 已真实生成并发布 GHCR registry digest、SPDX SBOM、release manifest、`SHA256SUMS` 与 GitHub Release 资产；独立下载复核确认 manifest commit 为 `2783718c3f531d3ac39af9e40344c1af492d3e18`，SBOM SHA-256 与 manifest/`SHA256SUMS` 一致，公开 `0.1.0`、`stable` 与不可变引用均解析到 `sha256:f7a396acb8382af5815081b66956dcb752b1e7abe65b9a52579c94b2c2d91fce`。
+正式 `v0.1.1` Release workflow run `34924614659` 已真实生成并发布 linux/amd64 GHCR 镜像、SPDX SBOM、release manifest、`SHA256SUMS` 与 GitHub Release 资产，并完成上一正式版本升级/回滚门禁；公开 `0.1.1`、`stable` 与 manifest 均绑定不可变 digest `sha256:76f4c041d1acecbb573cdbd49c45aec936bfd8cf3b263bc09153f7741f18e30d`。当前 `0.1.2` 候选在 GitHub Actions CI run `34935252571` 已跑绿 `quality`、`browser-e2e`、`container` 与新增 `updater-e2e`；其中 `updater-e2e` 使用正式 v0.1.1 baseline、Runner 内临时 registry 和真实 Docker socket，分别证明独立 helper 成功替换主容器，以及故障候选实际修改数据库后由 helper 自动恢复旧数据库与旧容器。正式 `v0.1.2` 发布将在 tag workflow 中重复这些发布级门禁后才允许推送新不可变镜像并推进 `stable`。

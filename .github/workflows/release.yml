@@ -69,6 +69,8 @@ jobs:
             .
       - name: Exercise previous-release upgrade and rollback
         run: bash scripts/check-release-upgrade.sh packbreaker:release-candidate
+      - name: Exercise real updater helper upgrade and automatic rollback
+        run: bash scripts/check-updater-e2e.sh packbreaker:release-candidate
       - name: Prepare immutable image name and build timestamp
         id: release_meta
         shell: bash
