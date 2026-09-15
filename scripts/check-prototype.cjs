@@ -210,6 +210,7 @@ const path = require('node:path');
     await page.route('**/api/v1/system/logs**',route=>fulfillJson(route,{
       window_minutes:60,limit:200,count:0,truncated:false,max_file_bytes:2097152,backup_count:4,approximate_capacity_bytes:10485760,items:[],
     }));
+    await page.route('**/api/v1/notification-channels',route=>fulfillJson(route,{items:[]}));
     let backupRuns=0;
     let backupPolicy={
       enabled:false,interval_hours:24,retention_days:30,keep_latest:3,version:1,last_attempt_at:null,last_success_at:null,last_error_code:null,driver_running:true,driver_consecutive_errors:0,
@@ -446,10 +447,10 @@ const path = require('node:path');
       return fulfillJson(route,{code:'NOT_FOUND',detail:'E2E route not found'},404);
     });
     await page.goto('http://127.0.0.1:5173/',{waitUntil:'networkidle'});
-    await page.getByRole('heading',{name:'任务中心',exact:true}).waitFor();
+    await page.getByRole('heading',{name:'任务中心',exact:true,level:1}).waitFor();
     await page.screenshot({path:path.join(output,'desktop.png'),fullPage:true});
     await page.getByPlaceholder('搜索 UUID、source hash、unit key…').fill('不存在');
-    await page.getByText('数据库中暂无真实任务').waitFor();
+    await page.getByText('暂无任务').waitFor();
     await page.getByPlaceholder('搜索 UUID、source hash、unit key…').fill('');
     await page.getByText('task-e2e-execute',{exact:true}).waitFor();
 
@@ -528,7 +529,7 @@ const path = require('node:path');
     await page.getByRole('heading',{name:'阻断 / 对账操作中心',exact:true}).waitFor();
     assert.equal(await page.getByText('/private/reconcile/movie.mkv',{exact:true}).count(),0,'operation 摘要不得暴露路径');
     await page.getByText('qB 添加',{exact:true}).waitFor();
-    const fsReconcileButton=page.getByRole('button',{name:'重新验证证据',exact:true});
+    const fsReconcileButton=page.getByRole('button',{name:'重新检查',exact:true});
     assert.equal(await fsReconcileButton.count(),1,'只有支持安全快照重验的 journal 才显示对账按钮');
     await fsReconcileButton.click();
     await page.locator('.el-message-box').getByRole('button',{name:'重新验证证据',exact:true}).click();
@@ -549,7 +550,7 @@ const path = require('node:path');
     assert.equal(await page.getByRole('button',{name:/HHClub/}).count(),0,'HHClub 未确认前不得出现可执行创建动作');
     await page.getByRole('button',{name:'重置熔断器',exact:true}).click();
     await page.locator('.el-message-box').getByRole('button',{name:'仅重置熔断器',exact:true}).click();
-    await page.getByText('熔断器已重置；站点是否恢复仍以之后真实请求/连接测试为准',{exact:true}).waitFor();
+    await page.getByText('熔断器已重置；站点是否恢复以之后的请求或连接测试为准',{exact:true}).waitFor();
     assert.equal(siteResetCalls,1,'reset-circuit 应只调用一次');
     await siteCard.getByText('熔断 关闭',{exact:true}).waitFor();
     const siteSwitch=siteCard.getByRole('switch',{name:'启用M-Team E2E',exact:true});
@@ -563,7 +564,7 @@ const path = require('node:path');
     assert.equal(siteTestCalls,1,'站点连接测试应只调用一次');
     assert.equal(await page.getByText(/连接恢复/).count(),0,'reset-circuit 不得伪造远端连接恢复文案');
 
-    for(const name of ['总览','预演与确认','历史辅种','站点管理','下载器','规则配置','清理与对账','日志','系统设置','升级中心']){
+    for(const name of ['总览','预演与确认','历史辅种','站点管理','下载器','清理与对账','日志','系统设置','升级中心']){
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
       assert.equal(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`${name} 桌面溢出`);
@@ -579,7 +580,7 @@ const path = require('node:path');
 
     await page.locator('nav').getByRole('button',{name:'升级中心',exact:true}).click();
     await page.getByText('DOCKER_SOCKET_ABSENT',{exact:true}).waitFor();
-    await page.getByText('<registry>/<image>@sha256:<digest>',{exact:true}).waitFor();
+    await page.getByText('执行升级前请确认备份与部署环境。',{exact:true}).waitFor();
     assert.equal(await page.getByText(/模拟升级|模拟检查更新/).count(),0,'升级中心不得保留模拟更新入口');
     await page.getByRole('button',{name:'创建升级前备份',exact:true}).click();
     await page.locator('.el-message-box').getByRole('button',{name:'创建一致性备份',exact:true}).click();
@@ -597,9 +598,9 @@ const path = require('node:path');
     await page.getByText('缺少可安全自动证明的完成证据，或该操作类型没有自动对账器。',{exact:true}).waitFor();
     const retentionPreview=page.locator('section.panel').filter({has:page.getByRole('heading',{name:'保留期安全预览',exact:true})});
     await retentionPreview.getByText('journal-maintenance-noop',{exact:false}).waitFor();
-    await page.getByText('候选概览',{exact:true}).waitFor();
+    await page.getByText('维护报告候选概览',{exact:true}).waitFor();
     await retentionPreview.getByText('journal-maintenance-blocked',{exact:false}).waitFor();
-    await retentionPreview.getByText('任务检查点仍引用',{exact:true}).first().waitFor();
+    await retentionPreview.getByText('任务仍在使用该记录',{exact:true}).first().waitFor();
     const retentionPurgeButton=retentionPreview.getByRole('button',{name:'清理 payload',exact:true});
     assert.equal(await retentionPurgeButton.count(),1,'只有 retention-plan eligible journal 才显示 purge 按钮');
     assert.equal(await page.getByText('/private/maintenance/secret',{exact:true}).count(),0,'维护报告不得暴露私有路径');
@@ -623,7 +624,7 @@ const path = require('node:path');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'移动配置页横向溢出');
     await page.getByRole('button',{name:'切换深色主题',exact:true}).click();
     await page.screenshot({path:path.join(output,'mobile-dark.png'),fullPage:true});
-    for(const name of ['总览','任务中心','预演与确认','历史辅种','下载器','规则配置','清理与对账','日志','系统设置','升级中心']){
+    for(const name of ['总览','任务中心','预演与确认','历史辅种','下载器','清理与对账','日志','系统设置','升级中心']){
       await page.getByRole('button',{name:'展开导航',exact:true}).click();
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
@@ -631,6 +632,6 @@ const path = require('node:path');
     }
     assert.deepEqual(unmockedApiCalls,[],'浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端');
     assert.deepEqual(errors,[]);
-    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、真实站点 health/reset/启用、状态自动刷新、11 页导航、计划备份管理、真实本地升级预检/手工 digest runbook、历史扫描、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题；未显式 mock 的 API 请求全部失败关闭。');
+    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、真实站点 health/reset/启用、状态自动刷新、10 页导航、计划备份管理、真实本地升级预检/手工 digest runbook、历史扫描、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题；未显式 mock 的 API 请求全部失败关闭。');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1});
