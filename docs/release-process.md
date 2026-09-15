@@ -47,4 +47,4 @@ release manifest 不保存凭证、数据库或真实环境路径。SBOM 从已�
 
 ## 5. 当前发布证据
 
-正式 `v0.1.1` Release workflow run `34924614659` 已真实生成并发布 linux/amd64 GHCR 镜像、SPDX SBOM、release manifest、`SHA256SUMS` 与 GitHub Release 资产，并完成上一正式版本升级/回滚门禁；公开 `0.1.1`、`stable` 与 manifest 均绑定不可变 digest `sha256:76f4c041d1acecbb573cdbd49c45aec936bfd8cf3b263bc09153f7741f18e30d`。当前 `0.1.2` 候选在 GitHub Actions CI run `34935252571` 已跑绿 `quality`、`browser-e2e`、`container` 与新增 `updater-e2e`；其中 `updater-e2e` 使用正式 v0.1.1 baseline、Runner 内临时 registry 和真实 Docker socket，分别证明独立 helper 成功替换主容器，以及故障候选实际修改数据库后由 helper 自动恢复旧数据库与旧容器。正式 `v0.1.2` 发布将在 tag workflow 中重复这些发布级门禁后才允许推送新不可变镜像并推进 `stable`。
+正式 `v0.1.2` Release workflow run `34937718889` 已真实生成并发布 linux/amd64 GHCR 镜像、SPDX SBOM、release manifest、`SHA256SUMS` 与 GitHub Release 资产；发布前同时跑绿 `v0.1.1 → v0.1.2 候选 → 恢复 v0.1.1` 跨镜像兼容门禁，以及独立 updater helper 的真实 digest pull、成功容器替换和“故障候选修改数据库后自动恢复旧数据库/旧容器”E2E。release manifest 绑定 commit `bee69945702b20318232ec73d66d580f394a125f` 和不可变 digest `sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`；独立下载复核确认 release JSON 与 SPDX SBOM 都与 `SHA256SUMS` 一致，SBOM SHA-256 与 manifest 一致，公开 `0.1.2` 与 `stable` 也都解析到该 digest。

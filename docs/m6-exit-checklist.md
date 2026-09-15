@@ -10,11 +10,11 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 | --- | --- | --- |
 | 一致性数据库备份 | ✅ CI 闭环 | SQLite Backup API、SHA-256 manifest、完整性/revision 验证、CLI、preview-first 保留、默认关闭的计划调度、强 `If-Match` 管理 API 与真实 UI 已接通；GitHub Actions run `34851129257` 已在 linux/amd64 Docker 环境完成真实备份与离线 verify/restore 演练 |
 | 恢复与失败回滚 | ✅ CI 闭环 | 已实现实例锁停止门禁、恢复前安全快照、临时迁移预检、原子切换与切换后失败自动回滚；GitHub Actions run `34851129257` 已在 linux/amd64 Docker 环境完成空配置启动、preflight、备份、离线 verify/restore 与重启 readiness |
-| 升级兼容矩阵 | ✅ 跨版本门禁闭环 | 已自动覆盖 22 个历史 Alembic revision（0001～0022）→ `0023_backup_policy`、空配置原子首装、迁移失败不切换和 Runtime 启动安全升级；正式 `v0.1.1` Release workflow run `34924614659` 已真实跑绿 `v0.1.0 → v0.1.1 → 恢复 v0.1.0`，当前 `release-baseline.json` 已推进到 `v0.1.1` |
+| 升级兼容矩阵 | ✅ 跨版本门禁闭环 | 已自动覆盖 22 个历史 Alembic revision（0001～0022）→ `0023_backup_policy`、空配置原子首装、迁移失败不切换和 Runtime 启动安全升级；正式 `v0.1.2` Release workflow run `34937718889` 已真实跑绿 `v0.1.1 → v0.1.2 → 恢复 v0.1.1` 及独立 updater helper 自动回滚 E2E，当前 `release-baseline.json` 已推进到 `v0.1.2` |
 | 真实依赖健康/仪表盘 | ✅ 代码闭环 | `/system/health` 已聚合 runtime、磁盘、备份、任务/operation 风险、站点/下载器既有证据、通知与后台 driver，前端总览直接消费 typed OpenAPI；读取页面不主动访问外部服务 |
 | 日志与诊断导出 | ✅ 代码闭环 | stdout JSON + `/config/logs` 有界轮转日志、7 天最大查询窗口、查询/导出条数硬限制、typed API 与前端筛选/导出已接通；诊断 ZIP 继续独立且默认不含日志，日志/诊断均有泄漏 canary |
-| 镜像/SBOM/发布产物 | ✅ 发布闭环 | `v0.1.1` Release workflow run `34924614659` 已真实发布 linux/amd64 GHCR 镜像、SPDX JSON SBOM、release manifest、SHA256SUMS 与 GitHub Release；公开 `0.1.1`、`stable` 和 manifest 均指向 `sha256:76f4c041d1acecbb573cdbd49c45aec936bfd8cf3b263bc09153f7741f18e30d` |
-| 运维 runbook/用户手册 | ✅ 闭环 | 已补 Compose 备份/停止/恢复/readiness/回滚步骤；`0.1.2` 候选新增独立 updater helper 的 Web 一键升级、安全容器重建、healthcheck 与失败自动回滚；无 helper 或复杂拓扑仍保留手工 digest runbook |
+| 镜像/SBOM/发布产物 | ✅ 发布闭环 | `v0.1.2` Release workflow run `34937718889` 已真实发布 linux/amd64 GHCR 镜像、SPDX JSON SBOM、release manifest、SHA256SUMS 与 GitHub Release；公开 `0.1.2`、`stable` 和 manifest 均指向 `sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`，发布资产校验和已独立复核 |
+| 运维 runbook/用户手册 | ✅ 闭环 | 已补 Compose 备份/停止/恢复/readiness/回滚步骤；正式 `v0.1.2` 提供独立 updater helper 的 Web 一键升级、安全容器重建、healthcheck 与失败自动回滚；无 helper 或复杂拓扑仍保留手工 digest runbook |
 | v1.0 全量验收 | ✅ 验收闭环 | 25 条验收项已建立机器可校验证据索引：21 条自动化/CI 覆盖、4 条现场证据、0 条 `pending_external`；首个正式 tag 的 registry/SBOM/Release 供应链证据也已完成 |
 
 ## 3. 一致性备份首批能力
@@ -86,4 +86,4 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 
 ## 12. 下一阶段退出证据
 
-当前代码侧已取得备份/计划调度、恢复、安全升级矩阵、统一健康仪表盘、持久日志查询/导出与诊断脱敏证据；正式 `v0.1.1` Release workflow run `34924614659` 的镜像、SBOM、manifest、checksums、GitHub Release、`stable` 推进以及 `v0.1.0 → v0.1.1 → 恢复 v0.1.0` 跨版本门禁均已完成。当前项目进入 `0.1.2` 候选开发线，并新增独立 updater helper 的现场一键升级/自动回滚能力；下一项发布级外部证据是让 `v0.1.2` 候选在 GitHub CI / release workflow 中完成 `v0.1.1 → v0.1.2 → 恢复 v0.1.1`。
+当前代码侧已取得备份/计划调度、恢复、安全升级矩阵、统一健康仪表盘、持久日志查询/导出与诊断脱敏证据；正式 `v0.1.2` Release workflow run `34937718889` 的镜像、SBOM、manifest、checksums、GitHub Release、`stable` 推进、`v0.1.1 → v0.1.2 → 恢复 v0.1.1` 跨版本门禁以及独立 updater helper 的现场成功升级/自动回滚 E2E 均已完成。M6 的本轮发布级外部证据已经闭环，后续版本以正式 `v0.1.2` 不可变 digest 作为新的相邻版本 baseline。

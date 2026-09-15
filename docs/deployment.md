@@ -206,7 +206,7 @@ flowchart LR
 
 当前自动化兼容矩阵已覆盖仓库全部 22 个历史 revision（`0001`～`0022`）升级到 `0023_backup_policy`。生产回滚不依赖 Alembic 原地 downgrade：若旧镜像不能读取新 schema，必须恢复 `pre-upgrade`/升级前备份后再启动旧镜像。完整矩阵见 `docs/upgrade-compatibility.md`。
 
-仓库固定 `release-baseline.json` 作为上一正式镜像的不可变升级输入。当前开发线为 `0.1.2` 候选，baseline 已推进到正式 `v0.1.1`：`ghcr.io/yyxiaoma/packbreaker@sha256:76f4c041d1acecbb573cdbd49c45aec936bfd8cf3b263bc09153f7741f18e30d`。普通 CI container gate 与正式 tag release 在发布新镜像前都会运行 `scripts/check-release-upgrade.sh`，真实验证上一正式 release → 当前候选 → 恢复上一正式 release。
+仓库固定 `release-baseline.json` 作为上一正式镜像的不可变升级输入。当前 baseline 已推进到最新正式 `v0.1.2`：`ghcr.io/yyxiaoma/packbreaker@sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`。普通 CI container gate 与正式 tag release 在发布后续镜像前都会运行 `scripts/check-release-upgrade.sh`，真实验证上一正式 release → 当前候选 → 恢复上一正式 release；正式 tag workflow 还会运行独立 updater helper 的真实 Docker 自动升级/回滚 E2E。
 
 - 版本与目标镜像只信任正式 GitHub Release manifest 中的官方 `ghcr.io/yyxiaoma/packbreaker@sha256:<digest>`；`stable` 和版本 tag 只用于发现/导航。
 - `GET /system/upgrade` 会读取当前正式 Release、目标 digest 和 updater helper 状态；`POST /system/upgrade/actions` 要求 `config:write`、管理员 CSRF（会话模式）和 `Idempotency-Key`。

@@ -11,13 +11,13 @@
 ## 2. 发布与容器证据
 
 - 正式发布目标当前只有 `linux/amd64`。
-- 当前开发 Runner 无 Docker daemon；GitHub Actions CI run `34851129257` 已取得空配置启动、离线 verify/restore 与重启 readiness 的真实 Docker 证据。
-- `v0.1.1` 已由 Release workflow run `34924614659` 正式发布；公开 GHCR `0.1.1` 与 `stable` 均指向 `sha256:76f4c041d1acecbb573cdbd49c45aec936bfd8cf3b263bc09153f7741f18e30d`，SPDX SBOM、release manifest、`SHA256SUMS` 和 GitHub Release 资产均已发布。
-- 该 Release 已真实通过 `v0.1.0 → v0.1.1 候选 → 恢复 v0.1.0` Docker 升级/回滚门禁。当前源码已进入 `0.1.2` 候选开发线，`release-baseline.json` 已推进到正式 `v0.1.1`，因此未来发布 `v0.1.2` 前会强制验证 `v0.1.1 → v0.1.2 → 恢复 v0.1.1`。
+- 当前开发 Runner 无 Docker daemon；GitHub Actions CI run `34937287040` 已跑绿 `quality`、`browser-e2e`、`container` 与真实 `updater-e2e`，持续承担容器、备份/恢复和独立 helper 的真实 Docker 门禁。
+- `v0.1.2` 已由 Release workflow run `34937718889` 正式发布；公开 GHCR `0.1.2` 与 `stable` 均指向 `sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`，SPDX SBOM、release manifest、`SHA256SUMS` 和 GitHub Release 资产均已发布并独立复核。
+- 该 Release 已真实通过 `v0.1.1 → v0.1.2 候选 → 恢复 v0.1.1` Docker 升级/回滚门禁，并通过独立 updater helper 的成功升级与故障候选自动数据库/容器回滚 E2E。`release-baseline.json` 已推进到正式 `v0.1.2`，供下一版本继续做相邻正式版本兼容门禁。
 
 ## 3. 升级与 Docker 权限
 
-- 当前 `0.1.2` 候选已实现 Web 一键 Docker 升级，但要求额外运行独立 `packbreaker-updater` helper；主 PackBreaker 本身禁止挂载 docker.sock。没有 helper 时升级中心仍可做版本/预检/备份诊断，但不能自动切换容器。
+- 正式 `v0.1.2` 已实现 Web 一键 Docker 升级，但要求额外运行独立 `packbreaker-updater` helper；主 PackBreaker 本身禁止挂载 docker.sock。没有 helper 时升级中心仍可做版本/预检/备份诊断，但不能自动切换容器。
 - helper 只支持能够安全重建的单容器部署：必须存在唯一可写 `/config` 挂载，当前镜像必须来自官方 GHCR；Docker Compose 管理标签、`AutoRemove`、`container:<id>` network/PID/IPC namespace、多网络、显式静态 IP/MAC 等配置会阻断自动升级。Compose/Swarm/Kubernetes 拓扑仍需宿主机管理员按 runbook 手工升级。
 - helper 持有 `/var/run/docker.sock`，等价于 Docker 主机级管理权限；该权限被隔离在 helper，但仍应只在受信宿主机上启用。
 - 自动回滚依赖旧镜像仍可启动且 `/config` 可写；若 Docker daemon、卷、旧镜像或离线恢复本身不可用，helper 会进入 `manual_recovery_required`，不会继续覆盖现场。

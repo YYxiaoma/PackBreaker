@@ -19,9 +19,9 @@ PackBreaker 是一个面向 PT 场景的自动拆包辅种系统。它以“大�
 
 ## 项目状态
 
-PackBreaker 已完成 M6 发布与运维闭环的主要能力，并已正式发布 `v0.1.1`。该版本的 linux/amd64 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:76f4c041d1acecbb573cdbd49c45aec936bfd8cf3b263bc09153f7741f18e30d`；Release workflow run `34924614659` 已真实通过 `v0.1.0 → v0.1.1 → 恢复 v0.1.0` 的跨版本 Docker 门禁。
+PackBreaker 已完成 M6 发布与运维闭环的主要能力，并已正式发布 `v0.1.2`。该版本的 linux/amd64 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`；Release workflow run `34937718889` 已真实通过 `v0.1.1 → v0.1.2 → 恢复 v0.1.1` 的跨版本 Docker 门禁，以及独立 updater helper 的成功升级与故障候选自动数据库/容器回滚 E2E。
 
-当前源码进入 `0.1.2` 候选开发线。除既有 qBittorrent/Transmission 主链、M-Team/HDTime/HHClub、v1/v2/hybrid piece 验证、人工审核、journal-backed 执行/取消/回滚、历史扫描、repair、备份恢复、健康/日志/诊断等能力外，升级中心正在加入独立 `packbreaker-updater` helper：主 PackBreaker 不持有 docker.sock，helper 负责按正式 Release 的不可变 digest 拉取镜像、重建容器、等待 healthcheck，并在失败时恢复切换瞬间数据库备份与旧容器。
+当前源码与正式 `v0.1.2` 对齐。除既有 qBittorrent/Transmission 主链、M-Team/HDTime/HHClub、v1/v2/hybrid piece 验证、人工审核、journal-backed 执行/取消/回滚、历史扫描、repair、备份恢复、健康/日志/诊断等能力外，升级中心已提供独立 `packbreaker-updater` helper：主 PackBreaker 不持有 docker.sock，helper 负责按正式 Release 的不可变 digest 拉取镜像、重建容器、等待 healthcheck，并在失败时恢复切换瞬间数据库备份与旧容器。
 
 发布、升级与支持边界见 `docs/deployment.md`、`docs/upgrade-compatibility.md`、`docs/support-matrix.md` 与 `docs/known-limitations.md`。
 
