@@ -154,14 +154,14 @@ class ActiveTaskDriver:
                 raise
             except Exception:
                 self._logger.exception(
-                    "active task driver tick failed error_type=%s consecutive_errors=%s",
+                    "活动任务驱动执行失败 error_type=%s consecutive_errors=%s",
                     self._last_error_type,
                     self._consecutive_errors,
                 )
                 continue
             if report is not None and report.blocked_count:
                 self._logger.warning(
-                    "active task driver blocked tasks=%s scanned=%s truncated=%s",
+                    "活动任务驱动发现阻断任务 blocked_tasks=%s scanned=%s truncated=%s",
                     report.blocked_count,
                     report.scanned_count,
                     report.truncated,

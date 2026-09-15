@@ -99,7 +99,7 @@ onMounted(() => void refresh());
   <div class="operational-logs">
     <div class="section-heading">
       <div>
-        <h2>运行日志 <small>持久轮转 · 默认脱敏 · 查询窗口受控</small></h2>
+        <h2>运行日志</h2>
         <p v-if="result" class="log-policy">
           <ShieldCheck :size="14" /> `/config/logs` 近似容量上限
           {{ formatBytes(result.approximate_capacity_bytes) }} ·
@@ -112,19 +112,12 @@ onMounted(() => void refresh());
       </el-button>
     </div>
 
-    <el-alert
-      title="这里只读取 PackBreaker 自身的有界 JSONL 日志，不读取 Docker daemon 日志。写入和读取都会经过脱敏；URL 只保留 origin，异常只记录类型。"
-      type="info"
-      :closable="false"
-      show-icon
-    />
-
     <div class="filters log-controls">
       <el-input
         v-model="filters.q"
         maxlength="128"
         clearable
-        placeholder="搜索 message、logger、trace_id 或安全字段"
+        placeholder="搜索日志内容、logger 或 trace_id"
         @keyup.enter="refresh"
       >
         <template #prefix><Search :size="16" /></template>

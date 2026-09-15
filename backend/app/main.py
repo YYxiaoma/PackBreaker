@@ -67,6 +67,7 @@ from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_s
 from backend.app.infrastructure.runtime import RuntimeManager
 from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 from backend.app.infrastructure.site_reliability import SiteReliabilityRegistry
+from backend.app.versioning import app_version
 
 _request_logger = logging.getLogger("packbreaker.http")
 _recovery_logger = logging.getLogger("packbreaker.recovery")
@@ -294,14 +295,14 @@ def create_app(
         app.state.task_recovery_report = recovery_report
         if recovery_report.blocked_count:
             _recovery_logger.warning(
-                "startup recovery blocked tasks=%s scanned=%s truncated=%s",
+                "启动恢复发现阻断任务 blocked_tasks=%s scanned=%s truncated=%s",
                 recovery_report.blocked_count,
                 recovery_report.scanned_count,
                 recovery_report.truncated,
             )
         elif recovery_report.scanned_count:
             _recovery_logger.info(
-                "startup recovery scanned=%s completed=%s waiting=%s truncated=%s",
+                "启动恢复完成 scanned=%s completed=%s waiting=%s truncated=%s",
                 recovery_report.scanned_count,
                 recovery_report.completed_count,
                 recovery_report.waiting_count,
@@ -351,7 +352,7 @@ def create_app(
 
     app = FastAPI(
         title="PackBreaker",
-        version="0.1.0",
+        version=app_version(),
         openapi_url="/api/openapi.json",
         docs_url="/api/docs",
         redoc_url=None,
@@ -399,7 +400,7 @@ def create_app(
             response = await call_next(request)
         except Exception:
             _request_logger.error(
-                "request.failed",
+                "请求处理失败",
                 extra={
                     "fields": {
                         "trace_id": str(trace_id),
@@ -417,7 +418,7 @@ def create_app(
             path=request.url.path, scheme=network.scheme, headers=response.headers
         )
         _request_logger.info(
-            "request.complete",
+            "请求处理完成",
             extra={
                 "fields": {
                     "trace_id": str(trace_id),

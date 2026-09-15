@@ -124,9 +124,9 @@ function stopLiveUpdates(): void {
 }
 
 function statusLabel(): string {
-  if (streamState.value === 'LIVE') return 'SSE LIVE';
+  if (streamState.value === 'LIVE') return '实时更新';
   if (streamState.value === 'FALLBACK') return '增量轮询';
-  if (streamState.value === 'CONNECTING') return 'SSE 连接中';
+  if (streamState.value === 'CONNECTING') return '连接中';
   return '已停止';
 }
 
@@ -158,15 +158,15 @@ function eventSeverity(eventType: string): 'success' | 'warning' | 'danger' | 'i
   <section class="task-event-timeline">
     <div class="task-event-heading">
       <div>
-        <h3>真实任务时间线</h3>
-        <small>仅展示持久化 TaskEvent 审计字段，不包含 checkpoint、下载器响应或凭证。</small>
+        <h3>任务时间线</h3>
+        <small>展示任务状态变化和关键操作记录。</small>
       </div>
       <el-tag :type="statusType()">{{ statusLabel() }}</el-tag>
     </div>
     <el-alert
       v-if="errorCode"
       :title="`事件流暂不可用：${errorCode}`"
-      description="页面会保留已加载事件；SSE 断开时自动使用当前任务的事件增量轮询。"
+      description="页面会保留已加载事件，并自动尝试继续获取最新记录。"
       type="warning"
       :closable="false"
       show-icon

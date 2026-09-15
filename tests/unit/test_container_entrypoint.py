@@ -6,16 +6,22 @@ import pytest
 from backend.app.container_entrypoint import _chown_config_tree, _numeric_id
 
 
-def test_numeric_ids_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_numeric_ids_allow_root_and_reject_negative_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PUID", "1234")
     assert _numeric_id("PUID", 1000) == 1234
 
     monkeypatch.setenv("PUID", "0")
-    with pytest.raises(RuntimeError, match="正整数"):
+    assert _numeric_id("PUID", 1000) == 0
+
+    monkeypatch.setenv("PGID", "0")
+    assert _numeric_id("PGID", 1000) == 0
+
+    monkeypatch.setenv("PUID", "-1")
+    with pytest.raises(RuntimeError, match="非负整数"):
         _numeric_id("PUID", 1000)
 
     monkeypatch.setenv("PUID", "not-a-number")
-    with pytest.raises(RuntimeError, match="正整数"):
+    with pytest.raises(RuntimeError, match="非负整数"):
         _numeric_id("PUID", 1000)
 
 

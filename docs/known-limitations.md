@@ -13,7 +13,7 @@
 - 正式发布目标当前只有 `linux/amd64`。
 - 当前开发 Runner 无 Docker daemon；GitHub Actions CI run `34851129257` 已取得空配置启动、离线 verify/restore 与重启 readiness 的真实 Docker 证据。
 - `v0.1.0` 已作为首个正式版本由 Release workflow run `34861933795` 发布；公开 GHCR `0.1.0`、`stable` 与 release manifest 均指向 `sha256:f7a396acb8382af5815081b66956dcb752b1e7abe65b9a52579c94b2c2d91fce`，SPDX SBOM、`SHA256SUMS` 和 GitHub Release 资产已完成独立校验。
-- `v0.1.0` 是首个正式镜像，因此仍不存在“上一正式 release 镜像 → 当前正式 release 镜像”的真实跨镜像升级/回滚样本。该矩阵只能从下一正式 release 开始积累；当前 Alembic 历史 revision、临时副本迁移和失败回滚测试继续覆盖数据库级安全边界。
+- `v0.1.0` 仍是当前最新正式镜像；`0.1.1` 已进入候选版本，但尚未经过 GitHub CI / release workflow 的正式跨版本 Docker 门禁，因此暂不宣称已有 `v0.1.0 → v0.1.1` 发布级升级/回滚证据。当前 Alembic 历史 revision、临时副本迁移和失败回滚测试继续覆盖数据库级安全边界。
 
 ## 3. 升级与 Docker 权限
 

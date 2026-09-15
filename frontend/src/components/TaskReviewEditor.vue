@@ -273,7 +273,7 @@ async function save(): Promise<void> {
     verification.value = null;
     executionGate.value = null;
     executionPlan.value = null;
-    ElMessage.success(`审核 revision v${result.version} 已保存；未执行任何下载器写操作`);
+    ElMessage.success(`审核结果 v${result.version} 已保存`);
     emit('saved');
   } catch (error) {
     showError(error);
@@ -289,9 +289,7 @@ async function reverify(): Promise<void> {
     verification.value = await reverifyTaskUnitDecision(unit.value.id);
     executionGate.value = null;
     executionPlan.value = null;
-    ElMessage.success(
-      `重验证完成：${verification.value.verification_level}；结果仅作为不可变证据保存`,
-    );
+    ElMessage.success(`重验证完成：${verification.value.verification_level}`);
     emit('saved');
   } catch (error) {
     showError(error);
@@ -308,8 +306,8 @@ async function checkExecutionGate(): Promise<void> {
     executionPlan.value = null;
     ElMessage.success(
       executionGate.value.eligible
-        ? 'Pre-execution gate 已通过；本页仍不会启动任何副作用'
-        : `Pre-execution gate 已阻断：${executionGate.value.blocked_reasons.join(', ')}`,
+        ? '执行条件已通过'
+        : `执行条件已阻断：${executionGate.value.blocked_reasons.join(', ')}`,
     );
   } catch (error) {
     showError(error);
@@ -330,7 +328,7 @@ async function createExecutionPlan(): Promise<void> {
     clearExecuteReplayState();
     ElMessage.success(
       executionPlan.value.ready
-        ? '无副作用执行计划已生成；尚未启动任何文件或下载器操作'
+        ? '执行计划已生成'
         : `执行计划已生成但被阻断：${executionPlan.value.blocked_reasons.join(', ')}`,
     );
   } catch (error) {
@@ -365,22 +363,22 @@ async function executeExecutionPlan(): Promise<void> {
     targetRoot.value = latest.target_root;
     targetDownloaderId.value = latest.target_downloader_id ?? '';
     if (!latest.ready || !latest.current || props.item.task.status !== 'AWAITING_CONFIRMATION') {
-      ElMessage.warning('当前 execution plan 已不满足 READY + CURRENT + AWAITING_CONFIRMATION');
+      ElMessage.warning('当前执行计划已失效或任务状态已变化');
       return;
     }
     const downloader = targetDownloaders.value.find(
       (item) => item.id === latest.target_downloader_id,
     );
     if (!downloader) {
-      ElMessage.warning('计划绑定的目标 qBittorrent 当前不再满足启用/连接/路径安全门');
+      ElMessage.warning('目标下载器当前不可用或路径配置已变化');
       return;
     }
     const verificationNote = latest.client_check_required
-      ? '添加后必须执行完整 qBittorrent 客户端校验，不允许跳过。'
-      : '仅 FULL_VERIFIED 且目标客户端能力仍允许时才可能跳过客户端校验。';
+      ? '执行后需要完整客户端校验。'
+      : '当前计划可按验证结果决定是否需要客户端校验。';
     try {
       await ElMessageBox.confirm(
-        `将执行不可变计划 ${latest.plan_digest.slice(0, 20)}…。目标：${downloader.name} v${downloader.version}；${latest.hardlink_count} 个 hardlink、${latest.create_directory_count} 个目录、${latest.client_fetch_count} 个客户端补齐，预计客户端下载上界 ${formatByteUpperBound(latest.estimated_download_bytes_upper_bound)}。${verificationNote} 源文件保持只读；真实副作用由 operation journal 驱动并可恢复。`,
+        `目标：${downloader.name}；将创建 ${latest.hardlink_count} 个硬链接、${latest.create_directory_count} 个目录，并补齐 ${latest.client_fetch_count} 个文件，预计下载上界 ${formatByteUpperBound(latest.estimated_download_bytes_upper_bound)}。${verificationNote} 源文件保持只读。`,
         '确认执行当前计划',
         {
           confirmButtonText: '执行当前计划',
@@ -409,9 +407,7 @@ async function executeExecutionPlan(): Promise<void> {
       executeReplayPlanId.value
     ) {
       executeResultUnknown.value = true;
-      ElMessage.warning(
-        '执行响应结果未知；只能使用已冻结的 plan 与同一 Idempotency-Key 重试确认结果',
-      );
+      ElMessage.warning('执行结果未知，请使用重试确认原请求结果');
     }
     showError(error);
   } finally {
@@ -432,8 +428,8 @@ async function cancelAndRollback(): Promise<void> {
         try {
           await ElMessageBox.confirm(
             cooperativeAnalysisCancellation.value
-              ? '当前只读分析会先登记 CANCELLING，再由原分析流在下一个安全检查点自行停止并确认 CANCELLED。不会创建或删除文件、不会调用 qBittorrent，也不会修改源媒体。'
-              : '当前任务尚未进入 LINKING。取消只会把任务状态安全收敛到 CANCELLED；不会创建或删除文件、不会调用 qBittorrent，也不会修改源媒体。',
+              ? '将停止当前分析，已有媒体文件不会被修改。'
+              : '将取消当前任务，已有媒体文件不会被修改。',
             cooperativeAnalysisCancellation.value ? '确认停止只读分析' : '确认取消未执行任务',
             {
               confirmButtonText: cooperativeAnalysisCancellation.value
@@ -448,11 +444,11 @@ async function cancelAndRollback(): Promise<void> {
         }
       } else {
         const downloaderChoice = removeDownloaderTask.value
-          ? '移除当前任务对应的 PackBreaker qBittorrent 任务，固定 deleteFiles=false，不删除磁盘数据'
+          ? '移除 PackBreaker 创建的下载器任务并保留磁盘数据'
           : '保留下载器任务';
         const resourceChoice = rollbackCreatedResources.value
-          ? '仅回滚 operation journal 明确拥有的 hardlink 与空目录；证据变化时失败关闭'
-          : '保留 PackBreaker 已创建的 hardlink/目录';
+          ? '清理 PackBreaker 创建的硬链接与空目录'
+          : '保留 PackBreaker 创建的硬链接与目录';
         try {
           await ElMessageBox.confirm(
             `${downloaderChoice}；${resourceChoice}。源媒体不在删除范围内，也不会被打开写入。`,
@@ -488,7 +484,7 @@ async function cancelAndRollback(): Promise<void> {
   } catch (error) {
     if (isUnknownMutationResult(error) && cancelIdempotencyKey.value) {
       cancelResultUnknown.value = true;
-      ElMessage.warning('取消响应结果未知；只能使用同一选项与同一 Idempotency-Key 重试确认结果');
+      ElMessage.warning('取消结果未知，请使用重试确认原请求结果');
     } else {
       cancelIdempotencyKey.value = '';
       cancelResultUnknown.value = false;
@@ -574,11 +570,11 @@ function showError(error: unknown): void {
   <section class="review-editor" v-loading="loading">
     <div class="review-editor-heading">
       <div>
-        <h3>人工审核 revision</h3>
+        <h3>人工审核</h3>
         <small v-if="decision">当前 v{{ decision.version }} · {{ decision.actor_kind }}</small>
-        <small v-else>尚无人工审核 revision</small>
+        <small v-else>尚无人工审核记录</small>
       </div>
-      <el-tag type="info">审核 revision 本身不触发执行</el-tag>
+      <el-tag type="info">保存审核不会立即执行任务</el-tag>
     </div>
 
     <el-alert
@@ -590,8 +586,8 @@ function showError(error: unknown): void {
     />
     <el-alert
       v-else-if="!stateAllowsReview"
-      :title="`任务当前为 ${item.task.status}，不允许修改审核 revision`"
-      description="审核 API 只允许 PREFLIGHT 打开 REVIEW_OPENED bridge，或在 AWAITING_CONFIRMATION 中追加 revision；已进入副作用链的任务只能观察证据或按 journal 安全取消。"
+      :title="`任务当前为 ${item.task.status}，不允许修改审核结果`"
+      description="当前任务状态不支持继续修改审核内容。"
       type="warning"
       :closable="false"
       show-icon
@@ -659,8 +655,8 @@ function showError(error: unknown): void {
 
     <div class="review-editor-actions">
       <div class="review-editor-status">
-        <span v-if="decision?.requires_reverification">当前 revision 标记为需要重新验证</span>
-        <span v-else-if="decision">当前 revision 不要求重新验证，但仍不授予执行权限</span>
+        <span v-if="decision?.requires_reverification">当前审核结果需要重新验证</span>
+        <span v-else-if="decision">当前审核结果无需重新验证，仍需满足执行条件</span>
         <span v-if="verification">
           重验证 {{ verification.verification_level }} ·
           {{ verification.verification_digest.slice(0, 20) }}…
@@ -673,10 +669,10 @@ function showError(error: unknown): void {
           :loading="reverifying"
           @click="reverify"
         >
-          重新验证当前 revision
+          重新验证当前审核
         </el-button>
         <el-button type="primary" :disabled="!canSubmit" :loading="saving" @click="save">
-          保存审核 revision
+          保存审核
         </el-button>
       </div>
     </div>
@@ -684,8 +680,7 @@ function showError(error: unknown): void {
     <div v-if="decision" class="execution-gate-card">
       <div class="review-editor-heading">
         <div>
-          <h3>Pre-execution gate</h3>
-          <small>只生成进入后续安全准备阶段的资格证据，不创建目录、链接或下载器任务</small>
+          <h3>执行条件</h3>
         </div>
         <el-button
           :disabled="!item.preflight.current || !unit"
@@ -706,7 +701,7 @@ function showError(error: unknown): void {
           <el-tag v-if="executionGate.client_check_required" type="warning">
             CLIENT CHECK REQUIRED
           </el-tag>
-          <el-tag type="info">side_effects_started = false</el-tag>
+          <el-tag type="info">尚未执行</el-tag>
         </div>
         <div class="review-editor-status">
           <span v-if="executionGate.verification_level">
@@ -728,11 +723,7 @@ function showError(error: unknown): void {
     <div v-if="executionGate?.eligible" class="execution-gate-card">
       <div class="review-editor-heading">
         <div>
-          <h3>Execution plan preview</h3>
-          <small
-            >生成计划本身无副作用；只有 READY + CURRENT
-            的当前计划才能通过下方显式确认进入真实执行链</small
-          >
+          <h3>执行计划</h3>
         </div>
         <el-button :disabled="!canPlan" :loading="planning" @click="createExecutionPlan">
           生成无副作用计划
@@ -806,7 +797,7 @@ function showError(error: unknown): void {
           <el-alert
             v-if="executeResultUnknown"
             title="上一次执行请求结果未知"
-            description="已冻结原 execution plan ID 与 Idempotency-Key。这里只允许原请求幂等重放以确认结果，不会重新授权、切换计划或创建第二套资源。"
+            description="上一次请求可能已经生效。这里只会继续确认原请求结果，不会重复创建资源。"
             type="error"
             :closable="false"
             show-icon
@@ -820,13 +811,12 @@ function showError(error: unknown): void {
               本计划必须完整执行客户端校验，禁止 skip-check。
             </span>
             <span v-if="lastMutation">
-              最近动作 {{ lastMutation.action }} → {{ lastMutation.status }} · receipt
-              {{ lastMutation.receipt_id.slice(0, 12) }}…
+              最近动作 {{ lastMutation.action }} → {{ lastMutation.status }}
             </span>
           </div>
           <div class="mutation-action-buttons">
             <small v-if="executeResultUnknown">
-              当前任务可能已进入后续状态；重试仅查询/收敛第一次请求的持久化 receipt。
+              当前任务可能已进入后续状态；重试只会继续确认第一次请求的结果。
             </small>
             <small v-else-if="!canExecute">
               仅 AWAITING_CONFIRMATION 且计划 READY + CURRENT、目标下载器仍通过安全门时可首次执行。
@@ -855,8 +845,7 @@ function showError(error: unknown): void {
             >尚未进入 LINKING；取消只更新任务状态，不创建或回收文件/下载器资源</small
           >
           <small v-else
-            >取消选项会被后端冻结到 ROLLING_BACK checkpoint；文件回滚只处理 operation journal
-            明确拥有的资源</small
+            >取消后将按已确认范围继续处理；文件回滚只处理 PackBreaker 创建并能安全确认的资源</small
           >
         </div>
         <el-tag
@@ -879,7 +868,7 @@ function showError(error: unknown): void {
       <el-alert
         v-if="cancellationInProgress"
         title="取消/回滚已经开始"
-        description="当前选项已在服务端冻结。前端不会重新提交另一组 remove/rollback 选项；后台 driver 会按既有 checkpoint 幂等恢复。"
+        description="取消范围已经确认，系统会继续按当前选择完成处理。"
         type="warning"
         :closable="false"
         show-icon
@@ -887,7 +876,7 @@ function showError(error: unknown): void {
       <template v-else-if="cancelResultUnknown">
         <el-alert
           title="取消响应结果未知"
-          description="任务状态可能已经变化。此处只允许复用第一次请求的相同 Idempotency-Key 与相同取消选项确认结果，不会重新授权另一种取消范围。"
+          description="任务状态可能已经变化。这里只会继续确认第一次取消请求的结果，不会改变已选择的取消范围。"
           type="warning"
           :closable="false"
           show-icon
@@ -905,8 +894,8 @@ function showError(error: unknown): void {
           "
           :description="
             cooperativeAnalysisCancellation
-              ? '服务端会再次确认任务处于 ANALYZING / SEARCHING / MATCHING / VERIFYING 且没有 operation journal；请求先记录 CANCELLING，随后由原分析流在安全检查点确认 CANCELLED。'
-              : '服务端会再次确认任务处于 PENDING / PREFLIGHT / AWAITING_CONFIRMATION / PAUSED / RETRY，且没有任何 operation journal；通过后只记录 CANCELLING → CANCELLED，不访问 qBittorrent、不创建或删除文件。'
+              ? '系统会安全停止当前分析流程，不会创建或删除文件，也不会修改下载器任务。'
+              : '系统会在确认尚未执行外部操作后取消任务，不会创建或删除文件，也不会修改下载器任务。'
           "
           type="info"
           :closable="false"
@@ -947,7 +936,7 @@ function showError(error: unknown): void {
               回滚 PackBreaker 创建的 hardlink 与空目录
             </el-checkbox>
             <small
-              >仅按 operation journal ID 逆序回滚；外部替换、非空目录或证据不确定会阻断。</small
+              >只回滚 PackBreaker 创建且当前状态可安全确认的资源；状态不一致时会停止处理。</small
             >
           </label>
         </div>

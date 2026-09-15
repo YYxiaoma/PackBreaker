@@ -147,7 +147,7 @@ async function submitCreate(): Promise<void> {
     await refresh();
     createVisible.value = false;
     open(result.item);
-    ElMessage.success(result.created ? '真实任务已登记' : '相同任务已存在，已打开原任务');
+    ElMessage.success(result.created ? '任务已登记' : '相同任务已存在，已打开原任务');
   } catch (error) {
     showError(error);
   } finally {
@@ -182,8 +182,8 @@ async function cancelBeforeSideEffects(): Promise<void> {
       try {
         await ElMessageBox.confirm(
           cooperativeAnalysis
-            ? '服务端会先登记 CANCELLING；正在运行的只读分析会在下一个安全检查点自行停止并确认 CANCELLED。不会访问 qBittorrent，也不会创建、删除或写入媒体文件。'
-            : '服务端会再次确认该任务尚未进入 LINKING 且没有 operation journal。通过后只更新任务状态到 CANCELLED；不会访问 qBittorrent，不会创建、删除或写入任何媒体文件。',
+            ? '将停止当前分析，已有媒体文件不会被修改。'
+            : '将取消当前任务，已有媒体文件不会被修改。',
           cooperativeAnalysis ? '确认停止只读分析' : '确认取消未执行任务',
           {
             confirmButtonText: cooperativeAnalysis ? '请求停止只读分析' : '取消未执行任务',
@@ -210,7 +210,7 @@ async function cancelBeforeSideEffects(): Promise<void> {
   } catch (error) {
     if (isUnknownMutationResult(error) && preCancelIdempotencyKey.value) {
       preCancelResultUnknown.value = true;
-      ElMessage.warning('取消响应结果未知；只能使用同一 Idempotency-Key 重试确认结果');
+      ElMessage.warning('取消结果未知，请使用重试确认原请求结果');
     } else {
       clearPreCancelState();
     }
@@ -250,7 +250,7 @@ async function rerunActiveTask(): Promise<void> {
     if (!replaying) {
       try {
         await ElMessageBox.confirm(
-          `Run #${task.run_number} 会保持 ${task.status} 终态；系统只复制来源身份并创建全新的 Run #${task.run_number + 1}。旧 review、gate、plan、checkpoint 和 operation journal 都不会继承。`,
+          `当前 Run #${task.run_number} 将保持 ${task.status} 状态，并创建新的 Run #${task.run_number + 1} 重新处理。`,
           '确认重新运行',
           {
             confirmButtonText: `创建 Run #${task.run_number + 1}`,
@@ -276,7 +276,7 @@ async function rerunActiveTask(): Promise<void> {
   } catch (error) {
     if (isUnknownMutationResult(error) && rerunIdempotencyKey.value) {
       rerunResultUnknown.value = true;
-      ElMessage.warning('rerun 响应结果未知；只能使用同一 Idempotency-Key 重试确认结果');
+      ElMessage.warning('重新运行结果未知，请使用重试确认原请求结果');
     } else {
       clearRerunState();
     }
@@ -298,7 +298,7 @@ async function releaseActiveTask(): Promise<void> {
     if (!replaying) {
       try {
         await ElMessageBox.confirm(
-          '只允许 DONE 任务执行。服务端会先验证下载器 ownership，再以 keep-files 语义移除辅种任务，然后只回滚 PackBreaker journal-owned hardlink/目录。源媒体不会删除，任务仍保持 DONE。',
+          '将停止该任务的辅种并清理 PackBreaker 创建的链接与空目录；源媒体不会删除。',
           '确认释放辅种资源',
           {
             confirmButtonText: '释放资源',
@@ -322,7 +322,7 @@ async function releaseActiveTask(): Promise<void> {
   } catch (error) {
     if (isUnknownMutationResult(error) && releaseIdempotencyKey.value) {
       releaseResultUnknown.value = true;
-      ElMessage.warning('release 响应结果未知；只能使用同一 Idempotency-Key 重试确认结果');
+      ElMessage.warning('资源释放结果未知，请使用重试确认原请求结果');
     } else {
       clearReleaseState();
     }
@@ -380,7 +380,7 @@ const statusOptions: TaskStatus[] = [
 <template>
   <section class="task-section real-task-center">
     <div class="section-heading">
-      <h2>真实任务中心 <small>数据来自 SQLite `/tasks`，不使用 PB-* 合成任务</small></h2>
+      <h2>任务中心</h2>
       <div>
         <el-button :loading="loading" @click="refresh"><RefreshCw :size="16" />刷新</el-button>
         <el-button type="primary" @click="createVisible = true"
@@ -388,14 +388,6 @@ const statusOptions: TaskStatus[] = [
         >
       </div>
     </div>
-
-    <el-alert
-      title="任务登记与 Analyze 分离"
-      description="创建任务只登记来源身份与 normalized unit key，不扫描磁盘、不搜索站点、不写下载器。打开任务后再显式提供 /data 相对 source_root 执行只读 Analyze。"
-      type="info"
-      :closable="false"
-      show-icon
-    />
 
     <div class="filters real-task-filters">
       <el-input v-model="query" clearable placeholder="搜索 UUID、source hash、unit key…">
@@ -406,7 +398,7 @@ const statusOptions: TaskStatus[] = [
       </el-select>
     </div>
 
-    <el-table v-loading="loading" :data="filtered" row-key="id" empty-text="数据库中暂无真实任务">
+    <el-table v-loading="loading" :data="filtered" row-key="id" empty-text="暂无任务">
       <el-table-column label="任务" min-width="290">
         <template #default="{ row }">
           <div class="real-task-identity">
@@ -448,7 +440,7 @@ const statusOptions: TaskStatus[] = [
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="createVisible" title="登记真实任务" width="620px">
+    <el-dialog v-model="createVisible" title="登记任务" width="620px">
       <el-form label-position="top">
         <el-form-item label="任务类型">
           <el-input v-model="form.task_type" />
@@ -475,7 +467,7 @@ const statusOptions: TaskStatus[] = [
     <el-drawer
       v-model="detailVisible"
       size="min(980px, 96vw)"
-      :title="active ? `真实任务 Run #${active.run_number} · ${active.id}` : '真实任务'"
+      :title="active ? `任务 Run #${active.run_number} · ${active.id}` : '任务'"
     >
       <template v-if="active">
         <el-descriptions :column="2" border class="real-task-summary">
@@ -495,11 +487,11 @@ const statusOptions: TaskStatus[] = [
         </el-descriptions>
         <el-alert
           v-if="canReleaseActive"
-          :title="releaseResultUnknown ? 'release 结果未知' : '可释放 DONE 任务的辅种资源'"
+          :title="releaseResultUnknown ? '资源释放结果未知' : '可释放辅种资源'"
           :description="
             releaseResultUnknown
-              ? '服务端可能已经移除下载器任务或回滚资源；这里只能复用第一次请求的同一 Idempotency-Key 确认结果。'
-              : '任务保持 DONE；只会移除经 ownership 证明的下载器任务，并回滚 PackBreaker journal-owned hardlink/目录，源媒体不会删除。'
+              ? '请使用重试确认原请求结果，避免重复操作。'
+              : '将停止辅种并清理 PackBreaker 创建的链接与空目录；源媒体不会删除。'
           "
           type="warning"
           :closable="false"
@@ -508,17 +500,17 @@ const statusOptions: TaskStatus[] = [
         >
           <template #default>
             <el-button size="small" type="warning" :loading="releasing" @click="releaseActiveTask">
-              {{ releaseResultUnknown ? '重试确认 release 结果' : '释放辅种资源' }}
+              {{ releaseResultUnknown ? '重试确认释放结果' : '释放辅种资源' }}
             </el-button>
           </template>
         </el-alert>
         <el-alert
           v-if="canRerunActive"
-          :title="rerunResultUnknown ? 'rerun 结果未知' : '可创建新的任务 Run'"
+          :title="rerunResultUnknown ? '重新运行结果未知' : '可重新运行任务'"
           :description="
             rerunResultUnknown
-              ? '服务端可能已经创建了新 Run；这里只能复用第一次请求的同一 Idempotency-Key 确认结果。'
-              : `当前 Run #${active.run_number} 保持终态；新 Run 会从 PENDING 重新分析，不继承任何旧执行授权。`
+              ? '请使用重试确认原请求结果，避免重复创建。'
+              : `当前 Run #${active.run_number} 保持原状态，新 Run 将重新处理。`
           "
           type="info"
           :closable="false"
@@ -528,7 +520,7 @@ const statusOptions: TaskStatus[] = [
           <template #default>
             <el-button size="small" type="primary" :loading="rerunning" @click="rerunActiveTask">
               {{
-                rerunResultUnknown ? '重试确认 rerun 结果' : `创建 Run #${active.run_number + 1}`
+                rerunResultUnknown ? '重试确认重新运行结果' : `创建 Run #${active.run_number + 1}`
               }}
             </el-button>
           </template>
@@ -539,15 +531,15 @@ const statusOptions: TaskStatus[] = [
             preCancelResultUnknown
               ? '取消结果未知'
               : activeCancellationIsCooperative
-                ? '可协作停止只读分析'
-                : '可在副作用开始前安全取消'
+                ? '可停止当前分析'
+                : '可取消当前任务'
           "
           :description="
             preCancelResultUnknown
-              ? '任务状态可能已经变化；只能复用第一次请求的同一 Idempotency-Key 确认结果。'
+              ? '请使用重试确认原请求结果，避免重复操作。'
               : activeCancellationIsCooperative
-                ? 'ANALYZING / SEARCHING / MATCHING / VERIFYING 会先登记 CANCELLING，由原分析流在安全检查点停止；服务端仍要求没有任何 operation journal。'
-                : 'PENDING / PREFLIGHT / AWAITING_CONFIRMATION / PAUSED / RETRY 会直接安全取消；服务端仍要求没有任何 operation journal。'
+                ? '停止后已有媒体文件不会被修改。'
+                : '取消后已有媒体文件不会被修改。'
           "
           type="warning"
           :closable="false"

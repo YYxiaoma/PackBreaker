@@ -239,7 +239,7 @@ class SiteReliabilityRegistry:
             self._event_sink(event)
         except Exception as exc:
             _logger.warning(
-                "site reliability notification projection failed error_type=%s",
+                "站点可靠性通知投影失败 error_type=%s",
                 type(exc).__name__,
             )
 

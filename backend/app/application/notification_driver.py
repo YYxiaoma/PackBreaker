@@ -134,7 +134,7 @@ class NotificationDriver:
                 raise
             except Exception:
                 self._logger.exception(
-                    "notification driver tick failed error_type=%s consecutive_errors=%s",
+                    "通知驱动执行失败 error_type=%s consecutive_errors=%s",
                     self._last_error_type,
                     self._consecutive_errors,
                 )

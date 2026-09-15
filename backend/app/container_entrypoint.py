@@ -9,9 +9,9 @@ def _numeric_id(name: str, default: int) -> int:
     try:
         value = int(raw)
     except ValueError as exc:
-        raise RuntimeError(f"{name} 必须是正整数") from exc
-    if value < 1:
-        raise RuntimeError(f"{name} 必须是正整数")
+        raise RuntimeError(f"{name} 必须是非负整数") from exc
+    if value < 0:
+        raise RuntimeError(f"{name} 必须是非负整数")
     return value
 
 

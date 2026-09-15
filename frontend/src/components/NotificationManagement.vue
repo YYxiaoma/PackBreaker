@@ -110,7 +110,7 @@ async function save(): Promise<void> {
 async function testConnection(channel: NotificationChannel): Promise<void> {
   try {
     await store.testConnection(channel);
-    ElMessage.success(`${channel.name} 真实测试发送成功`);
+    ElMessage.success(`${channel.name} 测试发送成功`);
   } catch (caught) {
     ElMessage.error(caught instanceof ApiProblem ? caught.message : '通知渠道测试失败');
   }
@@ -147,7 +147,6 @@ function kindLabel(kind: NotificationChannelKind): string {
   <div class="section-heading">
     <div>
       <h3>通知渠道</h3>
-      <p class="muted">真实发送 · 凭证加密保存 · 重复错误按任务聚合</p>
     </div>
     <el-button type="primary" @click="openCreate"><Plus :size="15" />添加渠道</el-button>
   </div>
@@ -200,7 +199,7 @@ function kindLabel(kind: NotificationChannelKind): string {
           :loading="busy[`test:${channel.id}`]"
           @click="testConnection(channel)"
         >
-          <Activity :size="14" />真实测试
+          <Activity :size="14" />测试发送
         </el-button>
         <el-button size="small" @click="openEdit(channel)"><Settings2 :size="14" />配置</el-button>
         <el-button
@@ -239,7 +238,7 @@ function kindLabel(kind: NotificationChannelKind): string {
       <div v-if="editing" class="setting-row">
         <div>
           <b>替换凭证</b>
-          <p>关闭时保留现有加密凭证，不会从服务端读取明文。</p>
+          <p>关闭时保留现有凭证。</p>
         </div>
         <el-switch v-model="replaceCredential" @change="resetSecrets" />
       </div>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, reactive, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   HardDrive,
@@ -14,12 +14,10 @@ import {
   AlertTriangle,
   Server,
   Bell,
-  LockKeyhole,
   RotateCcw,
   Plus,
 } from '@lucide/vue';
 import { ApiProblem } from '../api/client';
-import type { Task } from '../demo';
 import {
   analyzeHistoryScanTasks,
   cancelHistoryScan,
@@ -51,27 +49,8 @@ import BackupManagement from './BackupManagement.vue';
 import UpgradeCenter from './UpgradeCenter.vue';
 const props = defineProps<{ page: string }>();
 const emit = defineEmits<{
-  export: [unknown, string];
-  open: [Task];
-  createHistory: [string];
   navigate: [string];
 }>();
-const rules = reactive({
-  automation: false,
-  skip: false,
-  repair: '人工引导',
-  tag: '大包',
-  stable: 60,
-  interval: 60,
-  concurrency: 1,
-  exclude: 'sample, trailer, extras',
-  extensions: '.mkv, .mp4, .m2ts',
-  episodes: '按集拆包',
-  approval: '全部人工确认',
-  timeout: 20,
-  retries: 2,
-});
-const savedRules = ref('');
 const scanDialog = ref(false),
   scanPath = ref('/data/movies'),
   scanKind = ref<'影片' | '剧集'>('影片'),
@@ -407,8 +386,8 @@ function retentionReasonLabel(reason: string): string {
       ELIGIBLE: '可安全清理',
       RETENTION_WINDOW_NOT_REACHED: '未到保留期',
       TASK_NOT_TERMINAL: '任务未终态',
-      TASK_CHECKPOINT_REFERENCE: '任务检查点仍引用',
-      ACTION_RECEIPT_REFERENCE: '动作回执仍引用',
+      TASK_CHECKPOINT_REFERENCE: '任务仍在使用该记录',
+      ACTION_RECEIPT_REFERENCE: '关联操作仍在使用该记录',
       JOURNAL_REFERENCE: '其他 journal 仍引用',
     }[reason] ?? reason
   );
@@ -419,7 +398,7 @@ async function purgeRetentionItem(item: OperationRetentionPlan['items'][number])
   try {
     await ElMessageBox.confirm(
       `清理 Journal ${item.journal_id} 的敏感 operation payload？服务端会再次验证任务终态、${planRetentionDays} 天保留期与零恢复引用。此动作不会删除媒体文件、下载器任务或其他外部资源，并会保留最小 tombstone 阻止历史幂等键再次执行。`,
-      '确认 operation journal 保留期清理',
+      '确认清理历史操作记录',
       {
         confirmButtonText: '重新验证并清理 payload',
         cancelButtonText: '返回',
@@ -458,11 +437,11 @@ async function executePendingRetentionPurge() {
   } catch (error) {
     if (isUnknownMutationResult(error)) {
       retentionResultUnknown.value = true;
-      ElMessage.warning('清理响应结果未知；只能使用冻结的同一 Journal 与 Idempotency-Key 重试确认');
+      ElMessage.warning('清理响应结果未知；请使用当前操作继续重试确认');
     } else {
       pendingRetentionPurge.value = undefined;
       retentionResultUnknown.value = false;
-      ElMessage.error(error instanceof Error ? error.message : 'operation journal 清理失败');
+      ElMessage.error(error instanceof Error ? error.message : '历史操作记录清理失败');
       await refreshRetentionPlan();
     }
   } finally {
@@ -491,106 +470,22 @@ watch(
 onUnmounted(() => {
   if (historyRefreshTimer !== undefined) clearInterval(historyRefreshTimer);
 });
-const settingTab = ref('常规'),
-  settings = reactive({
-    timezone: 'Asia/Shanghai',
-    retention: 30,
-    session: 120,
-    notification: '任务完成与失败',
-    port: 8000,
-  });
+const settingTab = ref('通知');
 </script>
 <template>
   <OperationalLogs v-if="page === '日志'" />
   <DownloaderManagement v-else-if="page === '下载器'" />
   <SiteManagement v-else-if="page === '站点管理'" />
-  <div v-else-if="page === '规则配置'" class="settings-layout">
-    <div class="panel">
-      <h3>触发与处理规则</h3>
-      <el-form label-position="top"
-        ><div class="form-grid">
-          <el-form-item label="命中的分类 / 标签"><el-input v-model="rules.tag" /></el-form-item
-          ><el-form-item label="源任务稳定期（秒）"
-            ><el-input-number v-model="rules.stable" :min="30" :max="3600" /></el-form-item
-          ><el-form-item label="轮询间隔（秒）"
-            ><el-input-number v-model="rules.interval" :min="30" :max="3600" /></el-form-item
-          ><el-form-item label="重磁盘验证并发"
-            ><el-input-number v-model="rules.concurrency" :min="1" :max="4" /></el-form-item
-          ><el-form-item label="剧集处理方式"
-            ><el-select v-model="rules.episodes"
-              ><el-option value="按集拆包" /><el-option
-                value="按季拆包" /></el-select></el-form-item
-          ><el-form-item label="确认策略"
-            ><el-select v-model="rules.approval"
-              ><el-option value="全部人工确认" /><el-option
-                value="完整验证后按规则自动确认" /></el-select
-          ></el-form-item>
-        </div>
-        <el-form-item label="媒体扩展名"><el-input v-model="rules.extensions" /></el-form-item
-        ><el-form-item label="排除目录与关键词"><el-input v-model="rules.exclude" /></el-form-item>
-        <div class="setting-row">
-          <div>
-            <b>启用自动任务触发</b>
-            <p>仅影响演示配置，默认关闭</p>
-          </div>
-          <el-switch v-model="rules.automation" />
-        </div>
-        <el-button
-          type="primary"
-          @click="
-            savedRules = JSON.stringify(rules);
-            ElMessage.success('规则已保存在当前演示会话');
-          "
-          >保存演示规则</el-button
-        ><span v-if="savedRules" class="saved-label">已保存</span></el-form
-      >
-    </div>
-    <div class="panel">
-      <h3>安全与修复策略</h3>
-      <div class="setting-row">
-        <div>
-          <b>qB 允许跳过客户端校验</b>
-          <p>仅完整 piece 验证通过时生效</p>
-        </div>
-        <el-switch v-model="rules.skip" />
-      </div>
-      <el-alert
-        v-if="rules.skip"
-        title="模拟配置已启用。CLIENT_CHECK_REQUIRED 和 Transmission 仍必须校验。"
-        type="warning"
-        :closable="false"
-      /><el-form label-position="top" class="form-stack"
-        ><el-form-item label="99% 修复默认模式"
-          ><el-select v-model="rules.repair"
-            ><el-option value="人工引导" /><el-option value="仅文件级修复" /><el-option
-              value="自动 piece 修复" /></el-select></el-form-item
-      ></el-form>
-      <div
-        class="locked-rule"
-        v-for="s in [
-          '源数据只读',
-          '拒绝路径穿越与不安全路径',
-          '清理仅限操作日志登记资源',
-          '硬链接修复前必须隔离 inode',
-          '抽样 hash 不作为执行依据',
-        ]"
-        :key="s"
-      >
-        <LockKeyhole :size="15" />{{ s }}
-      </div>
-      <p class="muted">自动匹配阈值待真实语料标定，本轮保持人工确认默认值。</p>
-    </div>
-  </div>
   <div v-else-if="page === '历史辅种'">
     <div class="section-heading">
-      <h2>历史目录扫描 <small>增量识别影片与剧集，复用安全预演流程</small></h2>
+      <h2>历史目录扫描</h2>
       <el-button type="primary" @click="scanDialog = true"><Plus :size="15" />新建扫描</el-button>
     </div>
     <div class="stats mini-stats">
       <div class="stat">
         <div>扫描根目录</div>
         <strong>{{ scans.length }}</strong
-        ><small>真实 /data 目录，只读元数据扫描</small>
+        ><small>/data 目录，只读元数据扫描</small>
       </div>
       <div class="stat">
         <div>识别文件</div>
@@ -676,11 +571,6 @@ const settingTab = ref('常规'),
         </div>
       </div>
       <div v-if="historyTaskResults[scan.id]" class="section-space">
-        <el-alert
-          title="批量 Analyze 仅复用现有只读搜站 / 验证 / preflight 流程；source_root 由服务端扫描证据派生。这里不会自动批准候选，也不会创建硬链接或调用下载器写接口。"
-          type="info"
-          :closable="false"
-        />
         <div class="filters section-space">
           <el-input
             v-model="historyTaskQueries[scan.id]"
@@ -714,7 +604,7 @@ const settingTab = ref('常规'),
             :loading="historyAnalyzeId === scan.id"
             :disabled="!(historyTaskSelections[scan.id]?.length ?? 0)"
             @click="analyzeSelectedHistoryTasks(scan)"
-            ><Search :size="15" />批量 Analyze
+            ><Search :size="15" />批量分析
             <span v-if="historyTaskSelections[scan.id]?.length"
               >({{ historyTaskSelections[scan.id]?.length }})</span
             ></el-button
@@ -727,9 +617,7 @@ const settingTab = ref('常规'),
             >重试 RETRY</el-button
           >
           <el-button @click="emit('navigate', '预演与确认')">打开审核中心</el-button>
-          <span class="muted"
-            >筛选由服务端执行，不受当前 500 条视图限制；Analyze / RETRY 每批最多 10 个任务。</span
-          >
+          <span class="muted">每批最多处理 10 个任务。</span>
         </div>
         <el-table
           :data="filteredHistoryTaskResults(scan.id)"
@@ -772,13 +660,13 @@ const settingTab = ref('常规'),
                 </el-tag>
                 <small v-if="row.task_error_code">{{ row.task_error_code }}</small>
               </div>
-              <span v-else class="muted">未创建 Task</span>
+              <span v-else class="muted">未创建任务</span>
             </template>
           </el-table-column>
           <el-table-column label="证据 / 操作" min-width="190">
             <template #default="{ row }">
               <div class="row-actions">
-                <el-tag v-if="row.has_preflight" type="success" size="small">有 Preflight</el-tag>
+                <el-tag v-if="row.has_preflight" type="success" size="small">有预演</el-tag>
                 <el-button
                   v-if="row.has_preflight"
                   link
@@ -804,13 +692,9 @@ const settingTab = ref('常规'),
     <div class="settings-layout">
       <section class="panel">
         <h3>清理 / 对账报告</h3>
-        <p class="muted">
-          只读汇总 operation journal
-          的阻断状态和可证明动作；不会删除资源、重放副作用或强制改写状态。
-        </p>
         <div class="health-list">
           <div>
-            <Server :size="18" />Operation journal
+            <Server :size="18" />操作记录
             <el-tag type="info">{{ maintenanceReport?.summary.total_journals ?? 0 }} 项</el-tag>
           </div>
           <div>
@@ -836,12 +720,8 @@ const settingTab = ref('常规'),
       </section>
       <section class="panel">
         <h3>保留期清理候选</h3>
-        <p class="muted">
-          维护报告只给出 NOOP / ROLLED_BACK 候选；真正授权必须由服务端 retention-plan
-          重新证明任务终态、保留期与零恢复引用。这里只允许逐条删除 operation payload，不做批量清理。
-        </p>
         <div class="cleanup-value">
-          {{ maintenanceReport?.summary.retention_candidates ?? 0 }} <span>个 journal 候选</span>
+          {{ maintenanceReport?.summary.retention_candidates ?? 0 }} <span>个清理候选</span>
         </div>
         <div class="filters section-space">
           <el-input-number v-model="retentionDays" :min="1" :max="3650" :step="1" />
@@ -865,8 +745,7 @@ const settingTab = ref('常规'),
           </div>
         </div>
         <el-alert
-          title="清理只移除 operation journal 的敏感 payload"
-          description="不会删除媒体文件、下载器任务或其他外部资源。服务端会在写事务中再次验证安全门，并保留最小 tombstone 维持审计与历史幂等键封锁。"
+          title="清理只移除 PackBreaker 操作记录，不会删除媒体文件或下载器任务。"
           type="info"
           :closable="false"
           show-icon
@@ -888,7 +767,7 @@ const settingTab = ref('常规'),
       v-if="retentionPlan?.summary.truncated"
       class="section-space"
       title="保留期安全预览已截断"
-      description="当前仅检查最早更新的 100 条候选；未出现在预览中的 journal 不会获得前端清理入口。"
+      description="当前仅检查最早更新的 100 条候选。"
       type="warning"
       :closable="false"
       show-icon
@@ -904,9 +783,8 @@ const settingTab = ref('常规'),
     >
       <template #default>
         <p>
-          任务 {{ pendingRetentionPurge.taskId }} · Journal
-          {{ pendingRetentionPurge.journalId }}。不要生成新请求； 只能使用已冻结的同一
-          Idempotency-Key 重试确认服务端最终结果。
+          任务 {{ pendingRetentionPurge.taskId }} · 记录
+          {{ pendingRetentionPurge.journalId }}。请使用下方按钮确认原请求结果，避免重复清理。
         </p>
         <el-button
           type="warning"
@@ -920,12 +798,9 @@ const settingTab = ref('常规'),
 
     <section class="panel section-space">
       <h3>保留期安全预览</h3>
-      <p class="muted">
-        这是当前服务端安全事实的只读快照。点击清理后，服务端仍会在写事务中重新证明；预览本身不构成写授权。
-      </p>
       <el-empty
         v-if="!retentionLoading && !retentionPlan?.items.length"
-        description="当前没有可检查的 NOOP / ROLLED_BACK journal"
+        description="当前没有可清理的操作记录"
       />
       <div v-for="item in retentionPlan?.items ?? []" :key="item.journal_id" class="resource-row">
         <span class="file-icon" :class="{ success: item.eligible, warning: !item.eligible }">
@@ -935,7 +810,7 @@ const settingTab = ref('常规'),
         <div>
           <b>{{ item.kind }} · {{ item.status }}</b>
           <p>{{ retentionReasonLabel(item.reason_code) }}</p>
-          <small class="muted">任务 {{ item.task_id }} · Journal {{ item.journal_id }}</small>
+          <small class="muted">任务 {{ item.task_id }} · 记录 {{ item.journal_id }}</small>
         </div>
         <el-button
           v-if="item.eligible"
@@ -955,7 +830,7 @@ const settingTab = ref('常规'),
       <h3>人工修复清单</h3>
       <el-empty
         v-if="!maintenanceLoading && !maintenanceReport?.repair_items.length"
-        description="当前没有 RECONCILE_REQUIRED / ROLLBACK_BLOCKED journal"
+        description="当前没有需要人工处理的操作记录"
       />
       <div
         v-for="item in maintenanceReport?.repair_items ?? []"
@@ -969,23 +844,22 @@ const settingTab = ref('常规'),
         <div>
           <b>{{ item.kind }} · {{ item.status }}</b>
           <p>{{ item.reason }}</p>
-          <small class="muted">任务 {{ item.task_id }} · Journal {{ item.journal_id }}</small>
+          <small class="muted">任务 {{ item.task_id }} · 记录 {{ item.journal_id }}</small>
           <p>
             <small>{{ item.recommended_action }}</small>
           </p>
         </div>
         <el-tag :type="item.action === 'RECONCILE' ? 'warning' : 'danger'">
-          {{ item.action === 'RECONCILE' ? '到任务详情只读对账' : '必须人工检查' }}
+          {{ item.action === 'RECONCILE' ? '到任务详情对账' : '必须人工检查' }}
         </el-tag>
       </div>
     </section>
 
     <section class="panel section-space">
       <h3>维护报告候选概览</h3>
-      <p class="muted">此列表仅用于说明候选原因；是否可清理由上方实时 retention-plan 决定。</p>
       <el-empty
         v-if="!maintenanceLoading && !maintenanceReport?.cleanup_candidates.length"
-        description="当前没有 NOOP / ROLLED_BACK journal 候选"
+        description="当前没有清理候选"
       />
       <div
         v-for="item in maintenanceReport?.cleanup_candidates ?? []"
@@ -996,7 +870,7 @@ const settingTab = ref('常规'),
         <div>
           <b>{{ item.kind }} · {{ item.status }}</b>
           <p>{{ item.reason }}</p>
-          <small class="muted">任务 {{ item.task_id }} · Journal {{ item.journal_id }}</small>
+          <small class="muted">任务 {{ item.task_id }} · 记录 {{ item.journal_id }}</small>
           <p>
             <small>{{ item.recommendation }}</small>
           </p>
@@ -1007,73 +881,20 @@ const settingTab = ref('常规'),
   </div>
   <div v-else-if="page === '系统设置'" class="panel">
     <el-tabs v-model="settingTab"
-      ><el-tab-pane
-        v-for="s in ['常规', '通知', '安全与集成', '备份恢复']"
-        :key="s"
-        :name="s"
-        :label="s"
+      ><el-tab-pane v-for="s in ['通知', '安全与集成', '备份恢复']" :key="s" :name="s" :label="s"
     /></el-tabs>
-    <div class="settings-content" v-if="settingTab === '常规'">
-      <h3>常规设置</h3>
-      <el-form label-position="top"
-        ><div class="form-grid">
-          <el-form-item label="显示时区"
-            ><el-select v-model="settings.timezone"
-              ><el-option value="Asia/Shanghai" /><el-option
-                value="UTC" /></el-select></el-form-item
-          ><el-form-item label="日志保留（天）"
-            ><el-input-number v-model="settings.retention" :min="1" :max="365" /></el-form-item
-          ><el-form-item label="会话有效期（分钟）"
-            ><el-input-number v-model="settings.session" :min="15" :max="1440"
-          /></el-form-item>
-        </div>
-        <el-button
-          type="primary"
-          @click="ElMessage.success('演示设置已保存；时间格式将在真实数据接入后应用')"
-          >保存演示设置</el-button
-        ></el-form
-      >
-      <h3 class="detail-section-title">健康状态</h3>
-      <div class="health-list">
-        <div v-for="h in ['进程存活', '数据库可写', '任务 Worker 就绪']" :key="h">
-          <Check :size="17" />{{ h }}<el-tag type="success">演示正常</el-tag>
-        </div>
-      </div>
-    </div>
-    <div v-else-if="settingTab === '通知'" class="settings-content">
+    <div v-if="settingTab === '通知'" class="settings-content">
       <NotificationManagement />
     </div>
     <div v-else-if="settingTab === '安全与集成'" class="settings-content">
-      <el-alert
-        title="管理员会话、CSRF、API Token 与加密 secret store 已接入真实后端。API Token 明文只在创建时展示一次。"
-        type="success"
-        :closable="false"
-      />
       <h3 class="detail-section-title">管理员与访问</h3>
       <div class="setting-row">
         <div>
-          <b>单管理员安全会话</b>
-          <p>Argon2id 强哈希 · 持久会话撤销 · CSRF · 登录双维度限速</p>
+          <b>管理员会话</b>
         </div>
         <el-tag type="success">已认证</el-tag>
       </div>
       <ApiTokenManagement />
-      <h3 class="detail-section-title">下载完成 Webhook</h3>
-      <code class="code-block">POST /api/v1/integrations/download-completed</code>
-      <div class="check-grid">
-        <div
-          v-for="s in [
-            'HMAC-SHA256 签名',
-            '时间戳窗口 300 秒',
-            'Nonce 防重放',
-            'Idempotency-Key 去重',
-          ]"
-          :key="s"
-        >
-          <ShieldCheck :size="15" />{{ s }}
-        </div>
-      </div>
-      <p class="muted">上方为计划契约，本原型未开放真实接口。</p>
     </div>
     <div v-else class="settings-content">
       <h3>备份与恢复</h3>
@@ -1088,11 +909,7 @@ const settingTab = ref('常规'),
         ><el-radio-group v-model="scanKind"
           ><el-radio value="影片" /><el-radio value="剧集" /></el-radio-group></el-form-item
       ><el-form-item label="文件类型"><el-input v-model="scanTypes" /></el-form-item
-      ><el-form-item label="排除规则"><el-input v-model="scanExclude" /></el-form-item
-      ><el-alert
-        title="真实只读增量扫描：仅记录 /data 内普通文件元数据；完成后可将当前快照幂等转换为 PENDING 任务，不会自动搜站、执行硬链接或写入下载器。"
-        type="info"
-        :closable="false" /></el-form
+      ><el-form-item label="排除规则"><el-input v-model="scanExclude" /></el-form-item></el-form
     ><template #footer
       ><el-button @click="scanDialog = false">取消</el-button
       ><el-button type="primary" :loading="scanLoading" @click="startScan"

@@ -355,7 +355,7 @@ class BackupDriver:
                 raise
             except Exception:
                 self._logger.exception(
-                    "backup driver tick failed error_type=%s consecutive_errors=%s",
+                    "备份驱动执行失败 error_type=%s consecutive_errors=%s",
                     self._last_error_type,
                     self._consecutive_errors,
                 )

@@ -167,7 +167,7 @@ class HistoryScanDriver:
                         continue
                     failed_count += 1
                     self._logger.warning(
-                        "history scan driver scan failed scan_id=%s code=%s",
+                        "历史扫描任务推进失败 scan_id=%s code=%s",
                         scan.id,
                         exc.code,
                     )
@@ -213,7 +213,7 @@ class HistoryScanDriver:
                 raise
             except Exception:
                 self._logger.exception(
-                    "history scan driver tick failed error_type=%s consecutive_errors=%s",
+                    "历史扫描驱动执行失败 error_type=%s consecutive_errors=%s",
                     self._last_error_type,
                     self._consecutive_errors,
                 )

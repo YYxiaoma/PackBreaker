@@ -17,9 +17,6 @@ const backupLoading = ref(false);
 const latestBackupFile = ref('');
 
 const overallType = computed(() => (report.value?.status === 'ready' ? 'success' : 'error'));
-const dockerSocketCheck = computed(() =>
-  report.value?.checks.find((check) => check.name === 'docker_socket'),
-);
 
 function checkType(status: ReleasePreflightCheck['status']): 'success' | 'warning' | 'danger' {
   return status === 'ok' ? 'success' : status === 'warning' ? 'warning' : 'danger';
@@ -43,7 +40,7 @@ async function refresh(): Promise<void> {
 async function createUpgradeBackup(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '创建当前 SQLite 的一致性升级前备份并应用普通备份保留策略。不会访问 PT、下载器或媒体内容。主密钥 secret.key 仍需独立保管。',
+      '创建升级前备份？主密钥 secret.key 需要独立保管。',
       '创建升级前备份',
       {
         confirmButtonText: '创建一致性备份',
@@ -86,7 +83,7 @@ onMounted(() => void refresh());
     <section class="panel">
       <div class="upgrade-header">
         <div>
-          <h2>发布与升级 <small>真实本地预检 · 手工不可变镜像切换</small></h2>
+          <h2>发布与升级</h2>
           <p class="muted">
             当前运行版本 <strong>v{{ report?.app_version ?? '—' }}</strong>
           </p>
@@ -116,18 +113,11 @@ onMounted(() => void refresh());
         </div>
       </div>
 
-      <el-alert
-        class="section-space"
-        title="页面预检只读取本地配置、数据库、主密钥与 /data 根状态，并故意跳过临时备份演练。正式升级前请运行维护 CLI 的完整 preflight。"
-        type="info"
-        :closable="false"
-      />
-
       <div class="backup-card section-space">
         <DatabaseBackup :size="28" />
         <div class="backup-summary">
           <b>升级前一致性备份</b>
-          <p>SQLite Backup API 快照；数据库中的凭证保持密文，secret.key 不在备份内。</p>
+          <p>主密钥 secret.key 不包含在备份中。</p>
           <p v-if="latestBackupFile" class="green">本页最近创建：{{ latestBackupFile }}</p>
         </div>
         <el-button type="primary" :loading="backupLoading" @click="createUpgradeBackup">
@@ -136,52 +126,7 @@ onMounted(() => void refresh());
       </div>
     </section>
 
-    <section class="panel">
-      <h3>不可变镜像升级 runbook</h3>
-      <el-alert
-        :title="
-          dockerSocketCheck?.code === 'DOCKER_SOCKET_PRESENT'
-            ? '检测到 docker.sock，但 Web UI 仍不会调用 Docker API。'
-            : '默认未挂载 docker.sock；升级由宿主机管理员显式执行。'
-        "
-        :type="dockerSocketCheck?.code === 'DOCKER_SOCKET_PRESENT' ? 'warning' : 'success'"
-        :closable="false"
-      />
-      <ol class="upgrade-runbook section-space">
-        <li>
-          <b>验证发布资产</b>
-          <p>核对 release manifest、SBOM 与 SHA256SUMS，并取得完整不可变镜像身份。</p>
-          <code>&lt;registry&gt;/&lt;image&gt;@sha256:&lt;digest&gt;</code>
-        </li>
-        <li>
-          <b>执行完整发布预检与备份</b>
-          <code>python -m backend.app.maintenance preflight</code>
-          <p>确认预检通过并独立保存 secret.key，再记录本次升级前备份文件。</p>
-        </li>
-        <li>
-          <b>停止旧实例并切换 digest</b>
-          <p>只在宿主机更新 Compose/image 引用到已验证 digest，然后启动新实例。</p>
-        </li>
-        <li>
-          <b>验证新实例</b>
-          <code>python -m backend.app.healthcheck</code>
-          <p>确认 readiness、数据库 migration、secret 自检和后台 worker 均正常。</p>
-        </li>
-        <li>
-          <b>失败时回滚</b>
-          <p>
-            停止新实例；使用升级前或 pre-upgrade 一致性备份恢复数据库，再用原不可变镜像 digest
-            启动并重新验证 readiness。不要只把镜像 tag 改回旧值。
-          </p>
-        </li>
-      </ol>
-
-      <el-alert
-        title="安全边界：本页面不会拉取镜像、修改 docker.sock、重建容器或在线替换数据库。目标 Docker 环境的真实升级/回滚仍必须按部署 runbook 验收。"
-        type="warning"
-        :closable="false"
-      />
-    </section>
+    <el-alert title="执行升级前请确认备份与部署环境。" type="warning" :closable="false" />
   </div>
 </template>
 
@@ -217,8 +162,7 @@ onMounted(() => void refresh());
   border-radius: 10px;
 }
 .preflight-row p,
-.backup-summary p,
-.upgrade-runbook p {
+.backup-summary p {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 12px;
@@ -226,16 +170,6 @@ onMounted(() => void refresh());
 .backup-summary {
   min-width: 0;
   flex: 1;
-}
-.upgrade-runbook {
-  display: grid;
-  gap: 14px;
-  padding-left: 22px;
-}
-.upgrade-runbook code {
-  display: block;
-  margin-top: 6px;
-  overflow-wrap: anywhere;
 }
 @media (max-width: 800px) {
   .upgrade-header,

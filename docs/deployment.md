@@ -63,14 +63,14 @@ v1.0 以单个 `linux/amd64` Docker 镜像发布，单容器内运行 FastAPI、
 
 ```bash
 export PACKBREAKER_DATA_PATH=/path/to/common/storage
-export PUID=1000
-export PGID=1000
+export PUID=1000  # 可设为 0，以 root UID 运行服务进程
+export PGID=1000  # 可设为 0，以 root GID 运行服务进程
 docker compose up --build -d
 ```
 
 Compose 使用 `packbreaker-config` named volume 保存 SQLite、主密钥和锁，数据根通过 `PACKBREAKER_DATA_PATH` 显式 bind mount 到 `/data`；默认 HTTP 端口为 8000，可用 `PACKBREAKER_HTTP_PORT` 修改宿主机端口。容器设置 `no-new-privileges`，健康检查执行 `python -m backend.app.healthcheck`，只请求本机 `/api/v1/health/ready`。
 
-如果使用自定义 `PUID`/`PGID`，应确保 `/data` 内需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限。入口不会为了方便而修改媒体树所有权。升级中心需要 docker.sock 时仍必须由用户在部署文件中显式增加挂载；默认 Compose 不授予 Docker 管理权限。
+如果使用自定义 `PUID`/`PGID`，应确保 `/data` 内需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限。`0` 是有效值；`PUID=0`、`PGID=0` 时服务进程保持 root 身份运行。入口不会为了方便而修改媒体树所有权。升级中心需要 docker.sock 时仍必须由用户在部署文件中显式增加挂载；默认 Compose 不授予 Docker 管理权限。
 
 ## 6. 网络与反向代理
 

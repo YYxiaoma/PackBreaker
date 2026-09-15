@@ -165,7 +165,7 @@ onUnmounted(() => {
   <div class="ops-overview" v-loading="loading">
     <div class="ops-actions">
       <div>
-        <h2>运行态势 <small>只汇总已有证据，不主动探测外部服务</small></h2>
+        <h2>运行态势</h2>
         <p v-if="health">
           数据生成于 {{ new Date(health.generated_at).toLocaleString() }} · v{{ health.version }}
         </p>
@@ -182,11 +182,6 @@ onUnmounted(() => {
       v-if="health"
       :title="`系统运维状态：${statusLabel(health.status)}`"
       :type="health.status === 'ok' ? 'success' : health.status === 'warning' ? 'warning' : 'error'"
-      :description="
-        health.status === 'ok'
-          ? '本地运行时、依赖既有证据和后台 Driver 未发现需要处理的异常。'
-          : '下方卡片会标出 warning / blocked；外部依赖 warning 不会错误影响容器 readiness。'
-      "
       :closable="false"
       show-icon
     />
@@ -269,12 +264,6 @@ onUnmounted(() => {
 .ops-actions h2,
 .ops-actions p {
   margin: 0;
-}
-.ops-actions h2 small {
-  margin-left: 10px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 400;
 }
 .ops-actions p {
   color: var(--muted);

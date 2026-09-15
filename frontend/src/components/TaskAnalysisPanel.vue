@@ -40,7 +40,7 @@ const staleLabel = computed(
 async function load(): Promise<void> {
   const id = taskId.value.trim();
   if (!id) {
-    ElMessage.warning('请输入真实后端 task ID');
+    ElMessage.warning('请输入任务 ID');
     return;
   }
   loading.value = true;
@@ -152,15 +152,8 @@ function staleReasonLabel(reason: string): string {
 
 <template>
   <section class="live-analysis-panel">
-    <el-alert
-      title="真实后端分析区"
-      description="这里的数据来自 /api/v1/tasks/*。PB-xxx 演示任务不会自动映射为真实任务；source_root 必须是 /data 下的相对目录。Analyze 只执行搜索、取种元数据、解析、映射和 piece 验证，不调用下载器写接口。"
-      type="info"
-      :closable="false"
-      show-icon
-    />
     <div class="live-analysis-form">
-      <el-input v-model="taskId" placeholder="真实 task ID（UUID）" aria-label="真实 task ID" />
+      <el-input v-model="taskId" placeholder="任务 ID（UUID）" aria-label="任务 ID" />
       <el-input
         v-model="sourceRoot"
         placeholder="source_root，例如 movie/Season.01 或 ."
@@ -168,7 +161,7 @@ function staleReasonLabel(reason: string): string {
       />
       <el-button :loading="loading" @click="load"><Search :size="15" />加载证据</el-button>
       <el-button type="primary" :loading="analyzing" @click="analyze">
-        <ShieldCheck :size="15" />Analyze
+        <ShieldCheck :size="15" />分析
       </el-button>
     </div>
 
@@ -195,7 +188,7 @@ function staleReasonLabel(reason: string): string {
     <el-empty v-else-if="loadedTaskId" description="该任务尚未生成 preflight，可执行 Analyze" />
 
     <h3 class="detail-section-title">
-      真实处理单元 <span>{{ units.length }} 项</span>
+      处理单元 <span>{{ units.length }} 项</span>
     </h3>
     <div v-if="units.length" class="live-unit-list">
       <article v-for="unit in units" :key="unit.id" class="live-evidence-card">
@@ -211,7 +204,7 @@ function staleReasonLabel(reason: string): string {
     <el-empty v-else description="尚无持久化处理单元" />
 
     <h3 class="detail-section-title">
-      真实候选证据 <span>{{ candidates.length }} 项</span>
+      候选证据 <span>{{ candidates.length }} 项</span>
     </h3>
     <div v-if="candidates.length" class="live-candidate-list">
       <article v-for="item in candidates" :key="item.id" class="candidate-card">

@@ -28,12 +28,6 @@ const canExecute = computed(
     execution.value === null,
 );
 
-const modeHelp: Record<RepairMode, string> = {
-  AUTO_PIECE: '后端重新证明全部安全事实后，允许进入 inode 隔离与受控下载修复。',
-  FILE_ONLY: '只读评估文件级修复是否安全；不会调用 repair execute。',
-  GUIDED: '只读输出影响范围和人工处理建议；不会调用 repair execute。',
-};
-
 const blockLabels: Record<string, string> = {
   NO_REPAIR_NEEDED: '当前没有需要修复的内容',
   VERIFICATION_BLOCKED: '验证证据已阻断',
@@ -50,7 +44,7 @@ const blockLabels: Record<string, string> = {
 async function loadPlan(): Promise<void> {
   const id = unitId.value.trim();
   if (!id) {
-    ElMessage.warning('请输入真实后端 task unit ID');
+    ElMessage.warning('请输入任务单元 ID');
     return;
   }
   loading.value = true;
@@ -58,7 +52,7 @@ async function loadPlan(): Promise<void> {
     plan.value = await getTaskUnitRepairPlan(id, mode.value);
     execution.value = null;
     idempotencyKey.value = newRepairKey();
-    ElMessage.success('已重新读取服务端可信 repair plan');
+    ElMessage.success('修复计划已刷新');
   } catch (error) {
     plan.value = null;
     execution.value = null;
@@ -74,10 +68,10 @@ async function executeRepair(): Promise<void> {
   if (!idempotencyKey.value) idempotencyKey.value = newRepairKey();
   try {
     await ElMessageBox.confirm(
-      '浏览器不会提交 inode、hash、ownership、journal 或暂停状态。服务端会重新生成 AUTO_PIECE 计划，并在每个副作用前重新证明下载器与文件系统证据。确认开始受控修复？',
-      '确认执行真实安全修复',
+      '将按当前修复计划隔离目标文件并补齐缺失数据。源文件保持只读，执行前会重新检查下载器状态、文件身份和可用空间。确认继续？',
+      '确认执行安全修复',
       {
-        confirmButtonText: '确认并由后端重新验证',
+        confirmButtonText: '确认执行',
         cancelButtonText: '返回检查',
         type: 'warning',
       },
@@ -89,7 +83,7 @@ async function executeRepair(): Promise<void> {
   executing.value = true;
   try {
     execution.value = await executeTaskUnitRepair(id, idempotencyKey.value);
-    ElMessage.success('repair execute 已受理，后续由任务驱动器推进下载补齐与完整重校验');
+    ElMessage.success('修复任务已受理，后续将进行下载补齐与完整校验');
   } catch (error) {
     // 不更换幂等键：网络/响应丢失后重试必须命中同一 receipt。
     showError(error);
@@ -133,43 +127,31 @@ function showError(error: unknown): void {
   <section class="repair-live-panel">
     <div class="repair-live-title">
       <div>
-        <span class="eyebrow">真实后端安全修复区</span>
-        <h4>可信 repair plan / execute</h4>
+        <h4>安全修复</h4>
       </div>
       <ShieldCheck :size="22" />
     </div>
 
-    <el-alert
-      title="repair plan 永远不是写授权"
-      description="GET 只返回脱敏影响范围；POST execute 只提交 unit + 动作 + Idempotency-Key。暂停状态、inode、hash、ownership、journal 与空间证据全部由后端重新读取和证明。"
-      type="info"
-      :closable="false"
-      show-icon
-    />
-
     <div class="repair-live-form">
-      <el-input v-model="unitId" placeholder="真实 task unit ID（UUID）" @input="resetPlan" />
+      <el-input v-model="unitId" placeholder="任务单元 ID（UUID）" @input="resetPlan" />
       <el-select v-model="mode" @change="resetPlan">
         <el-option label="AUTO_PIECE · 自动 piece 修复" value="AUTO_PIECE" />
         <el-option label="FILE_ONLY · 文件级只读评估" value="FILE_ONLY" />
         <el-option label="GUIDED · 人工引导" value="GUIDED" />
       </el-select>
-      <el-button :loading="loading" @click="loadPlan"
-        ><RefreshCw :size="15" />读取真实计划</el-button
-      >
+      <el-button :loading="loading" @click="loadPlan"><RefreshCw :size="15" />读取计划</el-button>
     </div>
-    <p class="muted">{{ modeHelp[mode] }}</p>
 
     <template v-if="plan">
       <el-alert
-        :title="plan.ready ? '当前 repair plan 已通过只读安全门' : '当前 repair plan 已阻断'"
+        :title="plan.ready ? '当前修复计划可执行' : '当前修复计划已阻断'"
         :type="plan.ready ? 'success' : 'warning'"
         :closable="false"
         show-icon
       />
       <el-descriptions :column="2" border class="repair-live-summary">
         <el-descriptions-item label="下载器">{{ plan.downloader_kind }}</el-descriptions-item>
-        <el-descriptions-item label="真实暂停状态">
+        <el-descriptions-item label="下载器状态">
           {{ plan.downloader_paused ? '已停止写入' : '未停止' }}
         </el-descriptions-item>
         <el-descriptions-item label="受影响 piece">
@@ -222,18 +204,17 @@ function showError(error: unknown): void {
           :loading="executing"
           @click="executeRepair"
         >
-          <Wrench :size="15" />执行受控 AUTO_PIECE 修复
+          <Wrench :size="15" />执行自动修复
         </el-button>
-        <small v-if="mode !== 'AUTO_PIECE'">该模式只读，不提供执行按钮。</small>
-        <small v-else-if="!plan.ready">安全门未通过，禁止执行。</small>
-        <small v-else>执行时后端仍会重新验证，不信任这份旧 plan。</small>
+        <small v-if="mode !== 'AUTO_PIECE'">当前模式不可执行。</small>
+        <small v-else-if="!plan.ready">存在阻断项，禁止执行。</small>
       </div>
     </template>
 
     <el-alert
       v-if="execution"
-      :title="`repair execute 已受理：${execution.status}`"
-      :description="`task ${execution.task_id} · version ${execution.task_version} · receipt ${execution.receipt_id}`"
+      :title="`修复任务已受理：${execution.status}`"
+      :description="`任务 ${execution.task_id}`"
       type="success"
       :closable="false"
       show-icon

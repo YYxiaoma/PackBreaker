@@ -149,17 +149,9 @@ function staleReason(reason: string): string {
 <template>
   <section class="task-section review-center">
     <div class="section-heading">
-      <h2>真实预演证据 <small>只读聚合 SQLite 任务、Preflight 与 Candidate</small></h2>
+      <h2>预演与确认</h2>
       <el-button :loading="loading" @click="refresh"><RefreshCw :size="16" />刷新</el-button>
     </div>
-
-    <el-alert
-      title="执行与取消动作已受安全门保护开放"
-      description="只有 READY + CURRENT 的不可变 execution plan 可进入 LINKING；execute/cancel 都要求持久化幂等 receipt。任务进入副作用阶段后，本页会轮询当前 task version/status，并只按显式范围执行安全取消与回滚。"
-      type="info"
-      :closable="false"
-      show-icon
-    />
 
     <div class="review-stats">
       <div>
@@ -208,12 +200,7 @@ function staleReason(reason: string): string {
       </el-select>
     </div>
 
-    <el-table
-      v-loading="loading"
-      :data="filtered"
-      row-key="task.id"
-      empty-text="暂无真实 preflight"
-    >
+    <el-table v-loading="loading" :data="filtered" row-key="task.id" empty-text="暂无预演记录">
       <el-table-column label="任务" min-width="275">
         <template #default="{ row }">
           <div class="review-identity">

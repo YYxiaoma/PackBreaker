@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Box, LockKeyhole, ShieldCheck } from '@lucide/vue';
+import { Box, LockKeyhole } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
 
@@ -54,11 +54,7 @@ async function submit(): Promise<void> {
         <div class="auth-icon"><LockKeyhole :size="23" /></div>
         <h1>{{ setupMode ? '初始化管理员' : '管理员登录' }}</h1>
         <p>
-          {{
-            setupMode
-              ? '首次启动需要设置唯一管理员口令。口令仅以 Argon2id 强哈希形式保存。'
-              : '使用本地管理员会话进入 PackBreaker。写操作同时受 CSRF 保护。'
-          }}
+          {{ setupMode ? '首次启动，请设置管理员口令。' : '请输入管理员口令。' }}
         </p>
         <el-alert
           v-if="auth.error"
@@ -94,10 +90,6 @@ async function submit(): Promise<void> {
             {{ setupMode ? '初始化并登录' : '登录' }}
           </el-button>
         </el-form>
-        <div class="auth-safety">
-          <ShieldCheck :size="16" />
-          <span>Session Cookie 为 HttpOnly；CSRF Token 不写入 localStorage。</span>
-        </div>
       </template>
     </section>
   </div>
@@ -162,19 +154,5 @@ p {
 }
 .auth-loading {
   margin-top: 34px;
-}
-.auth-safety {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 24px;
-  padding-top: 18px;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 11px;
-}
-.auth-safety svg {
-  color: #168765;
-  flex-shrink: 0;
 }
 </style>

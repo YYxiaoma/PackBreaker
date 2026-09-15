@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Activity, Globe, Plus, RefreshCw, Settings2, ShieldCheck } from '@lucide/vue';
+import { Activity, Globe, Plus, RefreshCw, Settings2 } from '@lucide/vue';
 
 import { ApiProblem, toApiProblem } from '../api/client';
 import { credentialKindForSite } from '../api/sites';
@@ -282,7 +282,7 @@ async function resetCircuit(item: Site) {
   }
   try {
     await store.resetCircuit(item);
-    ElMessage.success('熔断器已重置；站点是否恢复仍以之后真实请求/连接测试为准');
+    ElMessage.success('熔断器已重置；站点是否恢复以之后的请求或连接测试为准');
   } catch (caught) {
     await handleWriteProblem(caught);
   }
@@ -310,7 +310,7 @@ async function remove(item: Site) {
 <template>
   <div>
     <div class="section-heading">
-      <h2>已接入站点 <small>真实配置、只读探测与可靠性状态</small></h2>
+      <h2>站点配置</h2>
       <div class="downloader-heading-actions">
         <el-button :loading="loading" @click="refresh()"><RefreshCw :size="15" />刷新</el-button>
         <el-button type="primary" @click="openCreate"><Plus :size="15" />添加站点</el-button>
@@ -319,7 +319,7 @@ async function remove(item: Site) {
 
     <el-alert
       v-if="error"
-      :title="error.status === 401 ? '需要管理员登录' : '站点配置 API 暂不可用'"
+      :title="error.status === 401 ? '需要管理员登录' : '站点配置暂不可用'"
       :description="problemText(error)"
       type="warning"
       :closable="false"
@@ -348,9 +348,7 @@ async function remove(item: Site) {
             连接 {{ connectionLabel(item.connection_status) }}
           </el-tag>
           <el-tag :type="item.credential_configured ? 'success' : 'info'">
-            {{
-              item.credential_configured ? `${credentialLabel(item.type)} 已加密配置` : '未配置凭证'
-            }}
+            {{ item.credential_configured ? `${credentialLabel(item.type)} 已配置` : '未配置凭证' }}
           </el-tag>
           <el-tag :type="circuitTag(health[item.id]?.circuit_state)">
             熔断 {{ circuitLabel(health[item.id]?.circuit_state) }}
@@ -386,10 +384,7 @@ async function remove(item: Site) {
       </article>
     </div>
 
-    <el-empty
-      v-if="!loading && !items.length && !error"
-      description="还没有站点配置。创建后需配置凭证并通过只读连接测试才能启用。"
-    >
+    <el-empty v-if="!loading && !items.length && !error" description="暂无站点配置">
       <el-button type="primary" @click="openCreate">添加第一个站点</el-button>
     </el-empty>
 
@@ -432,18 +427,6 @@ async function remove(item: Site) {
       </el-table>
     </section>
 
-    <section class="panel section-space downloader-boundary">
-      <ShieldCheck :size="21" />
-      <div>
-        <b>M4 站点安全边界</b>
-        <p>
-          M-Team、HDTime 与 HHClub 已接真实只读适配器。凭证只写入加密 secret
-          store；连接测试、搜索和健康状态不会回显凭证。 reset-circuit
-          只重置当前配置版本的进程内熔断状态，不代表远端连接已经恢复。
-        </p>
-      </div>
-    </section>
-
     <el-dialog
       v-model="dialog"
       :title="editing ? '编辑站点' : '添加站点'"
@@ -479,7 +462,7 @@ async function remove(item: Site) {
 
         <el-alert
           v-if="editing && draft.credentialConfigured"
-          title="现有凭证不会从服务端回显。凭证框留空表示保持原凭证。"
+          title="凭证框留空将保留现有凭证。"
           type="info"
           :closable="false"
           class="form-alert"
@@ -494,27 +477,25 @@ async function remove(item: Site) {
             type="password"
             show-password
             autocomplete="new-password"
-            :placeholder="
-              editing && draft.credentialConfigured ? '留空保持原凭证' : '仅写入加密 secret store'
-            "
+            :placeholder="editing && draft.credentialConfigured ? '留空保持原凭证' : '请输入凭证'"
           />
         </el-form-item>
 
         <el-alert
           v-if="draft.type === 'HDTIME'"
-          title="HDTime 使用 Cookie 凭证，后端只允许 https://hdtime.org origin。"
+          title="HDTime 使用 Cookie 凭证，站点地址为 https://hdtime.org。"
           type="info"
           :closable="false"
         />
         <el-alert
           v-else-if="draft.type === 'HHCLUB'"
-          title="HHClub 使用 Cookie 凭证，后端只允许当前主站 https://hhanclub.net origin。"
+          title="HHClub 使用 Cookie 凭证，站点地址为 https://hhanclub.net。"
           type="info"
           :closable="false"
         />
         <el-alert
           v-else
-          title="M-Team 使用 API Key。填写站点网页地址（如 https://kp.m-team.cc）；后端会自动切换到 api.m-team.cc 调用 API，并再次规范化与验证。"
+          title="M-Team 使用 API Key；站点地址示例：https://kp.m-team.cc。"
           type="info"
           :closable="false"
         />

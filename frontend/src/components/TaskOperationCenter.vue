@@ -70,8 +70,8 @@ async function reconcile(item: TaskOperation): Promise<void> {
     if (!replaying) {
       try {
         await ElMessageBox.confirm(
-          '只重新读取当前文件系统对象或 qBittorrent torrent 状态，并用 operation journal 已登记的完成证据重新证明结果。此动作不会创建、删除、重命名、覆盖媒体文件，也不会重发 qB add/recheck/start/remove/stop；证据不匹配时保持安全阻断。',
-          '重新验证 operation journal 证据',
+          '只重新检查当前文件和下载器状态，不会创建、删除、重命名或覆盖媒体文件，也不会重复执行下载器写操作；状态不一致时将保持阻断。',
+          '重新验证当前状态',
           {
             confirmButtonText: '重新验证证据',
             cancelButtonText: '返回',
@@ -99,7 +99,7 @@ async function reconcile(item: TaskOperation): Promise<void> {
   } catch (error) {
     if (isUnknownMutationResult(error) && pendingJournalId.value && pendingIdempotencyKey.value) {
       resultUnknown.value = true;
-      ElMessage.warning('对账响应结果未知；只能使用同一 journal 与同一 Idempotency-Key 重试确认');
+      ElMessage.warning('对账响应结果未知；请使用当前操作继续重试确认');
     } else {
       clearPending();
     }
@@ -127,7 +127,7 @@ function showError(error: unknown): void {
     ElMessage.error(`${error.code}：${error.message}`);
     return;
   }
-  ElMessage.error(error instanceof Error ? error.message : 'operation journal 请求失败');
+  ElMessage.error(error instanceof Error ? error.message : '对账请求失败');
 }
 
 function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
@@ -156,10 +156,6 @@ function kindLabel(kind: string): string {
     <div class="task-operation-heading">
       <div>
         <h3>阻断 / 对账操作中心</h3>
-        <small>
-          仅展示 journal ID、固定操作类别、状态与时间；不返回路径、hash、save path、快照、ownership
-          tag 或幂等键。
-        </small>
       </div>
       <div class="task-operation-heading-actions">
         <el-tag v-if="attentionCount" type="danger">{{ attentionCount }} 项需关注</el-tag>
@@ -169,22 +165,14 @@ function kindLabel(kind: string): string {
 
     <el-alert
       v-if="errorCode"
-      :title="`operation journal 暂不可用：${errorCode}`"
+      :title="`任务操作记录暂不可用：${errorCode}`"
       type="warning"
       :closable="false"
       show-icon
     />
-    <el-alert
-      title="自动对账范围严格受限"
-      description="目录/硬链接仅在存在 after snapshot 且当前对象完全匹配时重新确认；qB ADD/RECHECK/START 与 Transmission ADD/VERIFY/START/REMOVE 也只在历史完成证据、下载器配置版本和当前真实状态共同满足对应后置条件时允许只读重验。qB REMOVE、无完成快照的未知结果与 ROLLBACK_BLOCKED 仍只读展示。"
-      type="info"
-      :closable="false"
-      show-icon
-    />
-
     <el-empty
       v-if="!loading && !operations.length"
-      description="当前任务暂无 operation journal"
+      description="当前任务暂无操作记录"
       :image-size="56"
     />
     <el-table v-else v-loading="loading" :data="operations" row-key="id" size="small">
@@ -217,7 +205,7 @@ function kindLabel(kind: string): string {
             :disabled="!canReconcile(row)"
             @click="reconcile(row)"
           >
-            {{ canReplay(row) ? '重试确认对账结果' : '重新验证证据' }}
+            {{ canReplay(row) ? '重试确认对账结果' : '重新检查' }}
           </el-button>
           <small v-else-if="row.attention_required">当前状态没有可自动证明的安全恢复动作</small>
           <small v-else>无需人工动作</small>
@@ -228,11 +216,7 @@ function kindLabel(kind: string): string {
     <el-alert
       v-if="lastAction"
       :title="`最近对账：${lastAction.kind} → ${lastAction.status}`"
-      :description="
-        lastAction.idempotency_replayed
-          ? '结果由同一幂等请求重放确认。'
-          : '当前资源已重新证明原 journal 完成证据。'
-      "
+      :description="lastAction.idempotency_replayed ? '重复请求已确认原结果。' : '对账已完成。'"
       type="success"
       :closable="false"
       show-icon

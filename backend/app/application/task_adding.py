@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.analysis import AnalysisSiteProvider
 from backend.app.application.downloader_operations import (
+    QBITTORRENT_ADD_OPERATION,
     QbittorrentAddOperationRequest,
     QbittorrentAddOperationResult,
     QbittorrentAddOperationService,
@@ -17,21 +18,30 @@ from backend.app.application.downloader_operations import (
 from backend.app.application.downloaders import QbittorrentWriteBinding, TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
 from backend.app.application.transmission_operations import (
+    TRANSMISSION_ADD_OPERATION,
     TransmissionAddOperationRequest,
     TransmissionAddOperationResult,
     TransmissionAddOperationService,
 )
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.execution_plan import EXECUTION_PLAN_SCHEMA_VERSION
-from backend.app.domain.idempotency import candidate_execution_key
+from backend.app.domain.idempotency import candidate_execution_key, downloader_operation_key
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.verification import DownloaderKind, VerificationLevel
+from backend.app.infrastructure.adapters.downloaders import (
+    DownloaderAdapterError,
+    QbittorrentTorrentState,
+    TransmissionTorrentState,
+)
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.persistence.models import TaskExecutionPlanRecord
 from backend.app.infrastructure.persistence.preflight_repositories import (
     PreflightSnapshotRepository,
 )
-from backend.app.infrastructure.persistence.repositories import TaskRepository
+from backend.app.infrastructure.persistence.repositories import (
+    OperationJournalRepository,
+    TaskRepository,
+)
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskCandidateRepository,
     TaskExecutionGateRepository,
@@ -49,6 +59,7 @@ from backend.app.infrastructure.torrent_parser import parse_torrent
 POST_ADD_CHECKPOINT_SCHEMA_VERSION = "packbreaker-post-add-checkpoint-v1"
 CLIENT_VERIFICATION_CHECKPOINT_SCHEMA_VERSION = "packbreaker-client-verification-checkpoint-v1"
 SEEDING_CHECKPOINT_SCHEMA_VERSION = "packbreaker-seeding-checkpoint-v1"
+EXISTING_TORRENT_SKIP_CHECKPOINT_SCHEMA_VERSION = "packbreaker-existing-torrent-skip-v1"
 
 
 class DownloaderBindingProvider(Protocol):
@@ -63,13 +74,14 @@ class TaskAddingResult:
     task_version: int
     status: TaskStatus
     execution_plan_id: str
-    qbit_journal_id: str
+    qbit_journal_id: str | None
     torrent_hash: str
     remote_save_path: str
-    ownership_tag: str
+    ownership_tag: str | None
     skip_checking: bool
     replayed: bool
     recovered_after_unknown_result: bool
+    skipped_existing: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,13 +150,35 @@ class TaskAddingCoordinator:
         self._assert_target_root_current(authorized)
         binding = self._load_target_binding(authorized)
         torrent_content = await self._fetch_torrent(authorized)
-
         candidate_key = candidate_execution_key(
             task_key=authorized.task_idempotency_key,
             site_id=authorized.candidate_site_id,
             remote_torrent_id=authorized.candidate_torrent_id,
             target_downloader_id=authorized.target_downloader_id,
         )
+        downloader_kind = (
+            DownloaderKind.QBITTORRENT
+            if isinstance(binding, QbittorrentWriteBinding)
+            else DownloaderKind.TRANSMISSION
+        )
+        add_operation_key = downloader_operation_key(
+            candidate_key=candidate_key,
+            operation_type=(
+                QBITTORRENT_ADD_OPERATION
+                if downloader_kind is DownloaderKind.QBITTORRENT
+                else TRANSMISSION_ADD_OPERATION
+            ),
+            downloader_id=authorized.target_downloader_id,
+        )
+        if not self._add_operation_known(add_operation_key):
+            existing_torrent = await self._find_existing_torrent(binding, torrent_content)
+            if existing_torrent is not None:
+                return self._complete_existing_torrent(
+                    authorized,
+                    existing_torrent,
+                    downloader_kind=downloader_kind,
+                )
+
         if isinstance(binding, QbittorrentWriteBinding):
             skip_checking = (
                 authorized.verification_level is VerificationLevel.FULL_VERIFIED
@@ -458,6 +492,110 @@ class TaskAddingCoordinator:
             )
         return payload.content
 
+    def _add_operation_known(self, operation_key: str) -> bool:
+        with self._session_factory() as session:
+            repository = OperationJournalRepository(session)
+            return (
+                repository.get_by_idempotency_key(operation_key) is not None
+                or repository.get_tombstone_by_idempotency_key(operation_key) is not None
+            )
+
+    async def _find_existing_torrent(
+        self,
+        binding: QbittorrentWriteBinding | TransmissionWriteBinding,
+        torrent_content: bytes,
+    ) -> QbittorrentTorrentState | TransmissionTorrentState | None:
+        meta = parse_torrent(torrent_content)
+        expected_hashes = tuple(
+            item.lower() for item in (meta.v1_info_hash, meta.v2_info_hash) if item is not None
+        )
+        if not expected_hashes:
+            raise _adding_plan_invalid("候选 torrent 缺少可用于下载器去重的 info hash")
+        try:
+            observed = await binding.adapter.get_torrents(expected_hashes)
+        except DownloaderAdapterError as exc:
+            raise ApplicationError(
+                code=exc.code,
+                status=502,
+                title="辅种前查询目标下载器失败",
+                detail="无法确认目标下载器是否已存在相同 torrent，已停止本次辅种以避免重复添加",
+            ) from exc
+        if not observed:
+            return None
+        matching = tuple(item for item in observed if item.torrent_hash.lower() in expected_hashes)
+        if len(matching) != 1:
+            raise ApplicationError(
+                code="ADDING_EXISTING_TORRENT_AMBIGUOUS",
+                status=409,
+                title="目标下载器中的 torrent 身份无法唯一确认",
+                detail="辅种前发现多个匹配结果，已停止本次操作以避免误判或重复添加",
+            )
+        return matching[0]
+
+    def _complete_existing_torrent(
+        self,
+        authorized: _AuthorizedAdd,
+        state: QbittorrentTorrentState | TransmissionTorrentState,
+        *,
+        downloader_kind: DownloaderKind,
+    ) -> TaskAddingResult:
+        remote_save_path = (
+            state.save_path if isinstance(state, QbittorrentTorrentState) else state.download_dir
+        )
+        checkpoint = {
+            "schema_version": EXISTING_TORRENT_SKIP_CHECKPOINT_SCHEMA_VERSION,
+            "stage": TaskStatus.DONE.value,
+            "execution_plan_id": authorized.plan_id,
+            "execution_plan_digest": authorized.plan_digest,
+            "execution_gate_id": authorized.gate_id,
+            "execution_gate_digest": authorized.gate_digest,
+            "target_downloader_id": authorized.target_downloader_id,
+            "target_downloader_version": authorized.target_downloader_version,
+            "target_downloader_binding_digest": authorized.target_downloader_binding_digest,
+            "downloader_kind": downloader_kind.value,
+            "torrent_hash": state.torrent_hash,
+            "remote_save_path": remote_save_path,
+            "existing_torrent_skipped": True,
+        }
+        with self._session_factory() as session:
+            repository = TaskRepository(session)
+            task = repository.get(authorized.task_id)
+            if (
+                task is None
+                or task.status != TaskStatus.ADDING.value
+                or task.version != authorized.task_version
+            ):
+                raise _adding_task_state_invalid()
+            try:
+                task = repository.transition(
+                    task_id=task.id,
+                    expected_version=task.version,
+                    to_status=TaskStatus.DONE,
+                    event_type="SEEDING_SKIPPED_EXISTING_TORRENT",
+                    reason=(
+                        f"目标 {downloader_kind.value} 已存在相同 torrent；"
+                        "已跳过重复辅种，未修改或认领下载器中的现有任务"
+                    ),
+                    checkpoint=checkpoint,
+                )
+            except DomainViolation as exc:
+                raise _adding_task_state_invalid() from exc
+            session.commit()
+            return TaskAddingResult(
+                task_id=task.id,
+                task_version=task.version,
+                status=TaskStatus.DONE,
+                execution_plan_id=authorized.plan_id,
+                qbit_journal_id=None,
+                torrent_hash=state.torrent_hash,
+                remote_save_path=remote_save_path,
+                ownership_tag=None,
+                skip_checking=False,
+                replayed=False,
+                recovered_after_unknown_result=False,
+                skipped_existing=True,
+            )
+
     def _complete_task(
         self,
         authorized: _AuthorizedAdd,
@@ -540,6 +678,7 @@ class TaskAddingCoordinator:
                 skip_checking=result.skip_checking,
                 replayed=result.replayed,
                 recovered_after_unknown_result=result.recovered_after_unknown_result,
+                skipped_existing=False,
             )
 
     def _load_completed(self, unit_id: str, plan_id: str) -> TaskAddingResult | None:
@@ -569,6 +708,34 @@ class TaskAddingCoordinator:
             plan_record_id = plan.id
             plan_record_digest = plan.plan_digest
         schema = checkpoint.get("schema_version")
+        if schema == EXISTING_TORRENT_SKIP_CHECKPOINT_SCHEMA_VERSION:
+            if (
+                status is not TaskStatus.DONE
+                or checkpoint.get("stage") != TaskStatus.DONE.value
+                or checkpoint.get("execution_plan_id") != plan_record_id
+                or checkpoint.get("execution_plan_digest") != plan_record_digest
+                or checkpoint.get("existing_torrent_skipped") is not True
+            ):
+                raise ApplicationError(
+                    code="POST_ADD_CHECKPOINT_MISMATCH",
+                    status=409,
+                    title="重复辅种跳过检查点不匹配",
+                    detail="当前任务状态不能证明已因目标下载器存在相同 torrent 而安全跳过",
+                )
+            return TaskAddingResult(
+                task_id=task_id,
+                task_version=task_version,
+                status=status,
+                execution_plan_id=plan_record_id,
+                qbit_journal_id=None,
+                torrent_hash=_required_text(checkpoint, "torrent_hash"),
+                remote_save_path=_required_text(checkpoint, "remote_save_path"),
+                ownership_tag=None,
+                skip_checking=False,
+                replayed=True,
+                recovered_after_unknown_result=False,
+                skipped_existing=True,
+            )
         stage_matches = (
             (schema == POST_ADD_CHECKPOINT_SCHEMA_VERSION and checkpoint.get("stage") == "POST_ADD")
             or (
@@ -603,6 +770,7 @@ class TaskAddingCoordinator:
             skip_checking=_required_bool(checkpoint, "skip_checking"),
             replayed=True,
             recovered_after_unknown_result=False,
+            skipped_existing=False,
         )
 
 

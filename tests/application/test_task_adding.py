@@ -585,6 +585,51 @@ async def test_full_verified_add_transitions_to_seeding_and_replays_once(
 
 
 @pytest.mark.asyncio
+async def test_existing_qb_torrent_skips_duplicate_seeding_without_claiming_it(
+    adding_fixture: _AddingFixture,
+) -> None:
+    meta = parse_torrent(adding_fixture.torrent_content)
+    torrent_hash = meta.v1_info_hash or meta.v2_info_hash
+    assert torrent_hash is not None
+    adding_fixture.qbit.states[torrent_hash] = QbittorrentTorrentState(
+        torrent_hash=torrent_hash,
+        save_path="/downloads/already-seeding",
+        content_path=None,
+        state="stalledUP",
+        tags=("external",),
+        progress=1.0,
+    )
+
+    first = await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+
+    assert first.status is TaskStatus.DONE
+    assert first.skipped_existing is True
+    assert first.qbit_journal_id is None
+    assert first.ownership_tag is None
+    assert first.torrent_hash == torrent_hash
+    assert first.remote_save_path == "/downloads/already-seeding"
+    assert adding_fixture.qbit.add_calls == 0
+    with adding_fixture.factory() as session:
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert task is not None
+        assert task.status == TaskStatus.DONE.value
+        assert task.checkpoint["existing_torrent_skipped"] is True
+        assert session.scalar(select(func.count()).select_from(OperationJournal)) == 0
+
+    replayed = await adding_fixture.coordinator.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+    assert replayed.status is TaskStatus.DONE
+    assert replayed.skipped_existing is True
+    assert replayed.replayed is True
+    assert adding_fixture.qbit.add_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_client_check_required_transitions_to_client_verifying_without_skip(
     adding_fixture: _AddingFixture,
 ) -> None:
@@ -757,6 +802,87 @@ async def test_transmission_full_verified_verifies_then_recovery_starts_seeding_
             TRANSMISSION_START_OPERATION,
         ]
         assert all(item.status == OperationStatus.APPLIED.value for item in journals)
+
+
+@pytest.mark.asyncio
+async def test_existing_transmission_torrent_skips_duplicate_seeding_without_claiming_it(
+    adding_fixture: _AddingFixture,
+) -> None:
+    current_binding = adding_fixture.downloader_provider.binding
+    assert isinstance(current_binding, QbittorrentWriteBinding)
+    capabilities = {
+        "client": "Transmission",
+        "version": "4.1.3",
+        "api_version": "6.0.0",
+        "supports_skip_checking": False,
+        "supports_force_recheck": True,
+        "supports_verify_progress": True,
+    }
+    binding_digest = downloader_execution_binding_digest(
+        downloader_id=current_binding.downloader_id,
+        version=current_binding.downloader_version,
+        kind=DownloaderKind.TRANSMISSION,
+        enabled=True,
+        connection_status=ProbeStatus.OK,
+        path_mapping_status=ProbeStatus.OK,
+        path_mappings=current_binding.path_mappings,
+        capabilities=capabilities,
+    )
+    transmission = _FakeTransmission()
+    adding_fixture.downloader_provider.binding = TransmissionWriteBinding(
+        downloader_id=current_binding.downloader_id,
+        downloader_version=current_binding.downloader_version,
+        binding_digest=binding_digest,
+        path_mappings=current_binding.path_mappings,
+        capabilities=capabilities,
+        adapter=transmission,
+        data_root=adding_fixture.data_root,
+    )
+    with adding_fixture.factory() as session:
+        plan = TaskExecutionPlanRepository(session).get(adding_fixture.plan_id)
+        task = session.get(UnpackTask, adding_fixture.task_id)
+        assert plan is not None and task is not None
+        plan_payload = dict(plan.payload)
+        plan_payload["target_downloader_binding_digest"] = binding_digest
+        plan.payload = plan_payload
+        checkpoint = dict(task.checkpoint)
+        checkpoint["target_downloader_binding_digest"] = binding_digest
+        task.checkpoint = checkpoint
+        session.commit()
+
+    meta = parse_torrent(adding_fixture.torrent_content)
+    torrent_hash = meta.v1_info_hash or meta.v2_info_hash
+    assert torrent_hash is not None
+    transmission.states[torrent_hash] = TransmissionTorrentState(
+        torrent_hash=torrent_hash,
+        download_dir="/downloads/already-seeding",
+        status=6,
+        labels=("external",),
+        percent_done=1.0,
+        recheck_progress=0.0,
+    )
+    adding = TaskAddingCoordinator(
+        adding_fixture.factory,
+        _FakeSiteProvider(adding_fixture.site_adapter),
+        adding_fixture.downloader_provider,
+        QbittorrentAddOperationService(adding_fixture.factory),
+        TransmissionAddOperationService(adding_fixture.factory),
+        data_root=adding_fixture.data_root,
+    )
+
+    result = await adding.execute(
+        adding_fixture.unit_id,
+        execution_plan_id=adding_fixture.plan_id,
+    )
+
+    assert result.status is TaskStatus.DONE
+    assert result.skipped_existing is True
+    assert result.qbit_journal_id is None
+    assert result.ownership_tag is None
+    assert result.remote_save_path == "/downloads/already-seeding"
+    assert transmission.add_calls == 0
+    with adding_fixture.factory() as session:
+        assert session.scalar(select(func.count()).select_from(OperationJournal)) == 0
 
 
 @pytest.mark.asyncio

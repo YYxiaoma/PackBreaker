@@ -19,7 +19,7 @@ describe('系统运维 API', () => {
     const health = {
       status: 'ok' as const,
       generated_at: '2026-09-14T09:00:00Z',
-      version: '0.1.0',
+      version: '0.1.1',
       checks: [],
     };
     const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: health, headers: {} });
@@ -31,7 +31,7 @@ describe('系统运维 API', () => {
   it('发布预检读取真实本地只读报告', async () => {
     const report = {
       status: 'ready' as const,
-      app_version: '0.1.0',
+      app_version: '0.1.1',
       checks: [
         {
           name: 'database',

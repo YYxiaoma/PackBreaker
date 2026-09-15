@@ -127,7 +127,7 @@ onMounted(() => void load());
 <template>
   <div v-loading="loading" class="backup-management">
     <el-alert
-      title="计划备份默认关闭。备份包含数据库中的加密凭证记录，但不包含 secret.key；主密钥必须独立安全保管。"
+      title="数据库备份不包含 secret.key，请独立安全保管主密钥。"
       type="warning"
       :closable="false"
       show-icon
@@ -149,10 +149,8 @@ onMounted(() => void load());
 
     <div v-if="policy" class="setting-row">
       <div>
-        <b>备份后台 Driver</b>
-        <p>
-          运行状态只负责本地数据库快照与保留清理；连续错误 {{ policy.driver_consecutive_errors }} 次
-        </p>
+        <b>自动备份状态</b>
+        <p>连续错误 {{ policy.driver_consecutive_errors }} 次</p>
       </div>
       <el-tag :type="driverTone">{{ policy.driver_running ? '运行中' : '未运行' }}</el-tag>
     </div>
@@ -197,7 +195,7 @@ onMounted(() => void load());
 
     <el-alert
       class="section-space"
-      title="在线管理只允许备份与策略配置。数据库恢复必须停止活动 PackBreaker 实例后使用维护 CLI 执行；管理页面不会提供在线替换数据库按钮。"
+      title="恢复数据库前必须先停止 PackBreaker。"
       type="info"
       :closable="false"
     />

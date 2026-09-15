@@ -10,7 +10,6 @@ import {
   Plus,
   RefreshCw,
   Settings2,
-  ShieldCheck,
   Trash2,
 } from '@lucide/vue';
 import { ApiProblem, toApiProblem } from '../api/client';
@@ -333,7 +332,7 @@ async function runDiagnostics() {
       (probe) => !probe.remote_path.trim() || !probe.target_directory.trim(),
     )
   ) {
-    ElMessage.warning('每条路径映射都需要提供一个真实存在的测试文件和目标目录');
+    ElMessage.warning('每条路径映射都需要提供一个实际存在的测试文件和目标目录');
     return;
   }
   const probes: PathDiagnosticProbeInput[] = diagnosticDrafts.value.map((probe) => ({
@@ -342,7 +341,7 @@ async function runDiagnostics() {
   }));
   try {
     const report = await store.diagnose(item, probes);
-    if (report.status === 'ok') ElMessage.success('全部路径映射已通过真实文件系统诊断');
+    if (report.status === 'ok') ElMessage.success('全部路径映射已通过文件系统诊断');
     else ElMessage.warning(`路径诊断被阻断：${report.error_code ?? '未知原因'}`);
   } catch (caught) {
     await handleWriteProblem(caught);
@@ -381,7 +380,7 @@ async function remove(item: Downloader) {
 <template>
   <div>
     <div class="section-heading">
-      <h2>下载器实例 <small>真实配置 API · M1 仅执行只读连接探测与路径诊断</small></h2>
+      <h2>下载器实例</h2>
       <div class="downloader-heading-actions">
         <el-button :loading="loading" @click="refresh()"><RefreshCw :size="15" />刷新</el-button>
         <el-button type="primary" @click="openCreate"><Plus :size="15" />添加下载器</el-button>
@@ -390,7 +389,7 @@ async function remove(item: Downloader) {
 
     <el-alert
       v-if="error"
-      :title="error.status === 401 ? '需要管理员登录' : '下载器 API 暂不可用'"
+      :title="error.status === 401 ? '需要管理员登录' : '下载器服务暂不可用'"
       :description="problemText(error)"
       type="warning"
       :closable="false"
@@ -422,7 +421,7 @@ async function remove(item: Downloader) {
             路径 {{ statusLabel(item.path_mapping_status) }}
           </el-tag>
           <el-tag :type="item.credential_configured ? 'success' : 'info'">
-            {{ item.credential_configured ? '凭证已加密配置' : '未配置凭证' }}
+            {{ item.credential_configured ? '凭证已配置' : '未配置凭证' }}
           </el-tag>
         </div>
         <dl class="config-summary">
@@ -455,23 +454,9 @@ async function remove(item: Downloader) {
       </article>
     </div>
 
-    <el-empty
-      v-if="!loading && !items.length && !error"
-      description="还没有下载器配置。创建后需分别完成连接测试和全部路径映射诊断才能启用。"
-    >
+    <el-empty v-if="!loading && !items.length && !error" description="暂无下载器配置">
       <el-button type="primary" @click="openCreate">添加第一个下载器</el-button>
     </el-empty>
-
-    <section class="panel section-space downloader-boundary">
-      <ShieldCheck :size="21" />
-      <div>
-        <b>M1 安全边界</b>
-        <p>
-          当前界面只管理配置、执行版本/认证探测和临时 hardlink
-          路径诊断。不会添加、删除、暂停、恢复或校验下载器任务，也不会删除下载数据。
-        </p>
-      </div>
-    </section>
 
     <el-dialog
       v-model="dialog"
@@ -497,7 +482,7 @@ async function remove(item: Downloader) {
 
         <el-alert
           v-if="editing && draft.credentialConfigured"
-          title="现有凭证不会从服务端回显。下方留空表示保持原凭证。"
+          title="凭证字段留空将保留现有凭证。"
           type="info"
           :closable="false"
           class="form-alert"
@@ -522,7 +507,7 @@ async function remove(item: Downloader) {
               type="password"
               show-password
               autocomplete="new-password"
-              placeholder="仅写入加密 secret store"
+              placeholder="请输入 API Key"
             />
           </el-form-item>
           <div v-else class="form-grid">
@@ -559,9 +544,6 @@ async function remove(item: Downloader) {
             <Trash2 :size="16" />
           </el-button>
         </div>
-        <p class="muted">
-          配置可以先保存为停用状态；启用前必须对每条映射提交真实存在的测试文件并通过诊断。
-        </p>
       </el-form>
       <template #footer>
         <el-button @click="dialog = false">取消</el-button>
@@ -572,7 +554,7 @@ async function remove(item: Downloader) {
     <el-dialog v-model="diagnosticDialog" title="路径映射诊断" width="min(760px, 94vw)">
       <template v-if="diagnosticTarget">
         <el-alert
-          title="诊断发生在 PackBreaker 服务端文件系统。请为每条映射填写一个真实存在的下载器文件路径和一个已存在的目标目录。"
+          title="请为每条映射填写一个实际存在的下载器文件路径和一个已存在的目标目录。"
           type="warning"
           :closable="false"
         />
@@ -625,7 +607,7 @@ async function remove(item: Downloader) {
           type="primary"
           :loading="isBusy(diagnosticTarget, 'diagnose')"
           @click="runDiagnostics"
-          >运行真实诊断</el-button
+          >运行诊断</el-button
         >
       </template>
     </el-dialog>
@@ -656,16 +638,6 @@ async function remove(item: Downloader) {
 .mapping-list code {
   overflow-wrap: anywhere;
   white-space: normal;
-}
-
-.downloader-boundary {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.downloader-boundary p {
-  margin: 5px 0 0;
 }
 
 .form-alert {

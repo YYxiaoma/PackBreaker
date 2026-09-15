@@ -195,10 +195,10 @@ const path = require('node:path');
     });
     const fulfillJson=(route,body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
     await page.route('**/api/v1/system/health',route=>fulfillJson(route,{
-      status:'ok',generated_at:now(),version:'0.1.0',checks:[],
+      status:'ok',generated_at:now(),version:'0.1.1',checks:[],
     }));
     await page.route('**/api/v1/system/release/preflight',route=>fulfillJson(route,{
-      status:'ready',app_version:'0.1.0',checks:[
+      status:'ready',app_version:'0.1.1',checks:[
         {name:'config_dir',status:'ok',code:'CONFIG_DIR_OK',detail:'配置目录权限与可写性通过'},
         {name:'database',status:'ok',code:'DATABASE_OK',detail:'SQLite integrity_check 与 migration head 通过（0023_backup_policy）'},
         {name:'secret_key',status:'ok',code:'SECRET_KEY_OK',detail:'主密钥存在且安全自检通过'},
