@@ -305,9 +305,9 @@ assert_probe() {
 
 assert_quiesced_backup_exists() {
   local config_dir="$1"
-  mapfile -t helper_backups < <(find "$config_dir/backups/pre-upgrade-helper" -maxdepth 1 -type f -name 'packbreaker-*.db' -printf '%f\n')
+  mapfile -t helper_backups < <(sudo find "$config_dir/backups/pre-upgrade-helper" -maxdepth 1 -type f -name 'packbreaker-*.db' -printf '%f\n' 2>/dev/null || true)
   test "${#helper_backups[@]}" -eq 1
-  test -f "$config_dir/backups/pre-upgrade-helper/${helper_backups[0]%.db}.json"
+  sudo test -f "$config_dir/backups/pre-upgrade-helper/${helper_backups[0]%.db}.json"
 }
 
 prepare_transient_case() {
