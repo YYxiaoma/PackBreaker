@@ -235,7 +235,8 @@ class TransientUpdaterLauncher:
         return {
             "Image": image_id,
             "User": "0:0",
-            "Entrypoint": ["python", "-m", "backend.app.updater_helper"],
+            "WorkingDir": "/app",
+            "Entrypoint": ["/opt/venv/bin/python", "-m", "backend.app.updater_helper"],
             "Cmd": ["--oneshot", in_container_request],
             "Env": [
                 "PACKBREAKER_CONFIG_DIR=/config",

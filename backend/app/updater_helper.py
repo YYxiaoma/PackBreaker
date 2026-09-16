@@ -366,61 +366,95 @@ def _serve() -> None:
 
 
 def _run_oneshot(request_path: Path) -> None:
-    config_dir, docker_socket, target_container, allowed_image = _runtime_settings()
+    fallback_config_dir = Path(os.environ.get("PACKBREAKER_CONFIG_DIR", "/config")).resolve()
     state_path = Path(
         os.environ.get(
             "PACKBREAKER_UPDATER_STATE_FILE",
-            str(config_dir / "transient-updater" / "state.json"),
+            str(fallback_config_dir / "transient-updater" / "state.json"),
         )
     ).resolve()
-    resolved_request = request_path.resolve()
-    transient_root = (config_dir / "transient-updater").resolve()
-    if not resolved_request.is_relative_to(transient_root):
-        raise SystemExit("一次性 updater 请求文件必须位于 /config/transient-updater 下")
-    try:
-        payload = json.loads(resolved_request.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit("一次性 updater 请求文件不可读取") from exc
-    request = _parse_upgrade_request(payload)
     helper_version = app_version()
     state_store = UpdaterStateStore(state_path, helper_version=helper_version)
-    current = state_store.get()
-    if current.request_id == request.request_id:
-        if (
-            current.target_image != request.target_image
-            or current.target_version != request.target_version
-        ):
-            raise SystemExit("一次性 updater 幂等请求与已记录目标不一致")
-    else:
-        now = _now()
-        current = state_store.set(
-            UpdaterStatus(
-                protocol_version=UPDATER_PROTOCOL_VERSION,
-                helper_version=helper_version,
-                phase="accepted",
-                message="一次性 updater 已接管升级；页面将短暂断开",
-                request_id=request.request_id,
-                current_version=request.current_version,
-                target_version=request.target_version,
-                target_image=request.target_image,
-                backup_database_file=request.backup_database_file,
-                started_at=now,
-                updated_at=now,
-            )
-        )
+    resolved_request: Path | None = None
+    request: UpgradeHelperRequest | None = None
 
-    def phase(next_phase: str, message: str) -> None:
-        state = state_store.get()
-        state_store.set(
-            replace(
-                state,
-                phase=cast(UpdaterPhase, next_phase),
-                message=message,
-                updated_at=_now(),
+    def mark_failed(exc: BaseException) -> None:
+        try:
+            current = state_store.get()
+            now = _now()
+            message = (
+                f"{exc.code}:{exc}"
+                if isinstance(exc, (DockerUpdaterError, HelperRequestError))
+                else str(exc) or type(exc).__name__
             )
-        )
+            state_store.set(
+                replace(
+                    current,
+                    phase="failed",
+                    message=f"一次性 updater 执行失败：{message}",
+                    updated_at=now,
+                    finished_at=now,
+                )
+            )
+        except Exception:
+            # 原始异常必须优先保留；状态落盘失败不能掩盖 helper 的真实退出原因。
+            pass
 
     try:
+        config_dir, docker_socket, target_container, allowed_image = _runtime_settings()
+        resolved_request = request_path.resolve()
+        transient_root = (config_dir / "transient-updater").resolve()
+        if not resolved_request.is_relative_to(transient_root):
+            raise HelperRequestError(
+                "UPDATER_REQUEST_PATH_INVALID",
+                "一次性 updater 请求文件必须位于 /config/transient-updater 下",
+            )
+        try:
+            payload = json.loads(resolved_request.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HelperRequestError(
+                "UPDATER_REQUEST_UNREADABLE", "一次性 updater 请求文件不可读取"
+            ) from exc
+        request = _parse_upgrade_request(payload)
+        current = state_store.get()
+        if current.request_id == request.request_id:
+            if (
+                current.target_image != request.target_image
+                or current.target_version != request.target_version
+            ):
+                raise HelperRequestError(
+                    "UPDATER_IDEMPOTENCY_CONFLICT",
+                    "一次性 updater 幂等请求与已记录目标不一致",
+                )
+        else:
+            now = _now()
+            current = state_store.set(
+                UpdaterStatus(
+                    protocol_version=UPDATER_PROTOCOL_VERSION,
+                    helper_version=helper_version,
+                    phase="accepted",
+                    message="一次性 updater 已接管升级；页面将短暂断开",
+                    request_id=request.request_id,
+                    current_version=request.current_version,
+                    target_version=request.target_version,
+                    target_image=request.target_image,
+                    backup_database_file=request.backup_database_file,
+                    started_at=now,
+                    updated_at=now,
+                )
+            )
+
+        def phase(next_phase: str, message: str) -> None:
+            state = state_store.get()
+            state_store.set(
+                replace(
+                    state,
+                    phase=cast(UpdaterPhase, next_phase),
+                    message=message,
+                    updated_at=_now(),
+                )
+            )
+
         time.sleep(request.grace_seconds)
         with DockerEngineClient(docker_socket) as docker:
             executor = DockerUpgradeExecutor(
@@ -433,23 +467,9 @@ def _run_oneshot(request_path: Path) -> None:
                 ),
             )
             outcome = executor.execute(request, phase=phase)
-    except Exception as exc:
-        message = (
-            f"{exc.code}:{exc}"
-            if isinstance(exc, (DockerUpdaterError, HelperRequestError))
-            else type(exc).__name__
-        )
-        state = state_store.get()
-        now = _now()
-        state_store.set(
-            replace(
-                state,
-                phase="failed",
-                message=f"一次性 updater 执行失败：{message}",
-                updated_at=now,
-                finished_at=now,
-            )
-        )
+    except (Exception, SystemExit) as exc:
+        mark_failed(exc)
+        raise
     else:
         state = state_store.get()
         now = _now()
@@ -464,7 +484,10 @@ def _run_oneshot(request_path: Path) -> None:
             )
         )
     finally:
-        resolved_request.unlink(missing_ok=True)
+        if resolved_request is not None:
+            transient_root = (fallback_config_dir / "transient-updater").resolve()
+            if resolved_request.is_relative_to(transient_root):
+                resolved_request.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -166,7 +166,12 @@ def test_transient_launcher_starts_auto_remove_helper_and_persists_accepted_stat
     assert payload["HostConfig"]["AutoRemove"] is True
     assert payload["HostConfig"]["NetworkMode"] == "none"
     assert f"{docker_socket}:/var/run/docker.sock" in payload["HostConfig"]["Binds"]
-    assert payload["Entrypoint"] == ["python", "-m", "backend.app.updater_helper"]
+    assert payload["WorkingDir"] == "/app"
+    assert payload["Entrypoint"] == [
+        "/opt/venv/bin/python",
+        "-m",
+        "backend.app.updater_helper",
+    ]
     request_files = list((config_dir / "transient-updater" / "requests").glob("*.json"))
     assert len(request_files) == 1
 
