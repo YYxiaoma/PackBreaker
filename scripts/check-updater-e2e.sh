@@ -137,13 +137,13 @@ wait_transient_helper_cleanup() {
   for attempt in $(seq 1 30); do
     local helper_present request_present
     helper_present="$(docker ps -a --format '{{.Names}}' | grep --fixed-strings "${transient_main}-updater-once-" || true)"
-    request_present="$(find "$transient_config/transient-updater/requests" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null || true)"
+    request_present="$(sudo find "$transient_config/transient-updater/requests" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null || true)"
     if [ -z "$helper_present" ] && [ -z "$request_present" ]; then
       return 0
     fi
     if [ "$attempt" -eq 30 ]; then
       docker ps -a --filter "name=${transient_main}-updater-once-" || true
-      find "$transient_config/transient-updater/requests" -maxdepth 1 -type f -name '*.json' -print 2>/dev/null || true
+      sudo find "$transient_config/transient-updater/requests" -maxdepth 1 -type f -name '*.json' -print 2>/dev/null || true
       return 1
     fi
     sleep 1
@@ -338,7 +338,7 @@ prepare_transient_case() {
   docker exec --user 0:0 --env PB_RELEASE_PROBE=transient-original "$transient_main" \
     python -c 'import os,sqlite3; c=sqlite3.connect("/config/packbreaker.db", timeout=30); c.execute("CREATE TABLE release_upgrade_probe (probe_key TEXT PRIMARY KEY, probe_value TEXT NOT NULL)"); c.execute("INSERT INTO release_upgrade_probe(probe_key, probe_value) VALUES (\"upgrade\", ?)", (os.environ["PB_RELEASE_PROBE"],)); c.commit(); c.close()'
   docker exec --user 0:0 "$transient_main" python -m backend.app.maintenance backup >/dev/null
-  mapfile -t transient_backups < <(find "$transient_config/backups" -maxdepth 1 -type f -name 'packbreaker-*.db' -printf '%f\n')
+  mapfile -t transient_backups < <(sudo find "$transient_config/backups" -maxdepth 1 -type f -name 'packbreaker-*.db' -printf '%f\n' 2>/dev/null || true)
   test "${#transient_backups[@]}" -eq 1
   transient_backup_db="${transient_backups[0]}"
   transient_backup_manifest="${transient_backup_db%.db}.json"
