@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 candidate_image="${1:?usage: check-updater-e2e.sh <candidate-image>}"
 baseline_payload="$(python3 scripts/validate_release_baseline.py --json)"
@@ -40,7 +40,23 @@ cleanup() {
     "$rollback_config" "$rollback_data" \
     "$transient_config" "$transient_data" >/dev/null 2>&1 || true
 }
+
+report_failure() {
+  local exit_code="$?"
+  local line="${BASH_LINENO[0]:-0}"
+  local command="${BASH_COMMAND:-unknown}"
+  local state_summary=""
+  set +e
+  if [ -f "$transient_config/transient-updater/state.json" ]; then
+    state_summary="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); print(str(p.get("phase"))+":"+str(p.get("message")))' "$transient_config/transient-updater/state.json" 2>/dev/null)"
+  fi
+  printf '::error file=scripts/check-updater-e2e.sh,line=%s::exit=%s command=%s transient_state=%s\n' \
+    "$line" "$exit_code" "$command" "$state_summary"
+  exit "$exit_code"
+}
+
 trap cleanup EXIT
+trap report_failure ERR
 
 wait_registry() {
   for attempt in $(seq 1 30); do
@@ -87,6 +103,23 @@ wait_app_ready_after_switch() {
     if [ "$attempt" -eq 180 ]; then
       docker ps -a --filter "name=$container" || true
       docker logs "$container" 2>/dev/null || true
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+wait_transient_helper_cleanup() {
+  for attempt in $(seq 1 30); do
+    local helper_present request_present
+    helper_present="$(docker ps -a --format '{{.Names}}' | grep --fixed-strings "${transient_main}-updater-once-" || true)"
+    request_present="$(find "$transient_config/transient-updater/requests" -maxdepth 1 -type f -name '*.json' -print -quit 2>/dev/null || true)"
+    if [ -z "$helper_present" ] && [ -z "$request_present" ]; then
+      return 0
+    fi
+    if [ "$attempt" -eq 30 ]; then
+      docker ps -a --filter "name=${transient_main}-updater-once-" || true
+      find "$transient_config/transient-updater/requests" -maxdepth 1 -type f -name '*.json' -print 2>/dev/null || true
       return 1
     fi
     sleep 1
@@ -298,7 +331,7 @@ trigger_transient_upgrade() {
     --env PB_TARGET_CONTAINER="$transient_main" \
     --env PB_ALLOWED_IMAGE="$registry_repo" \
     "$transient_main" \
-    python -c 'import os; from pathlib import Path; from backend.app.infrastructure.transient_updater import TransientUpdaterLauncher; from backend.app.infrastructure.updater_protocol import UpgradeHelperRequest; launcher=TransientUpdaterLauncher(config_dir=Path("/config"), target_container=os.environ["PB_TARGET_CONTAINER"], allowed_image=os.environ["PB_ALLOWED_IMAGE"]); status=launcher.start_upgrade(UpgradeHelperRequest(request_id=os.environ["PB_REQUEST_ID"], current_version=os.environ["PB_CURRENT_VERSION"], target_version=os.environ["PB_TARGET_VERSION"], target_image=os.environ["PB_TARGET_IMAGE"], backup_database_file=os.environ["PB_BACKUP_DB"], backup_manifest_file=os.environ["PB_BACKUP_MANIFEST"], grace_seconds=0.5)); assert status.phase == "accepted", status' >/dev/null
+    python -c 'import os; from pathlib import Path; from backend.app.infrastructure.transient_updater import TransientUpdaterLauncher; from backend.app.infrastructure.updater_protocol import UpgradeHelperRequest; launcher=TransientUpdaterLauncher(config_dir=Path("/config"), target_container=os.environ["PB_TARGET_CONTAINER"], allowed_image=os.environ["PB_ALLOWED_IMAGE"]); status=launcher.start_upgrade(UpgradeHelperRequest(request_id=os.environ["PB_REQUEST_ID"], current_version=os.environ["PB_CURRENT_VERSION"], target_version=os.environ["PB_TARGET_VERSION"], target_image=os.environ["PB_TARGET_IMAGE"], backup_database_file=os.environ["PB_BACKUP_DB"], backup_manifest_file=os.environ["PB_BACKUP_MANIFEST"], grace_seconds=2.0)); assert status.phase == "accepted", status' >/dev/null
 }
 
 mkdir -p "$fault_build_dir"
@@ -410,11 +443,6 @@ docker exec --user 0:0 \
   python -c 'import os; from pathlib import Path; from backend.app.infrastructure.transient_updater import TransientUpdaterLauncher; launcher=TransientUpdaterLauncher(config_dir=Path("/config"), target_container=os.environ["PB_TARGET_CONTAINER"], allowed_image=os.environ["PB_ALLOWED_IMAGE"]); status=launcher.status(); assert status.phase == "succeeded", status; assert status.request_id == os.environ["PB_REQUEST_ID"], status' >/dev/null
 test -n "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/var/run/docker.sock"}}{{.Source}}{{end}}{{end}}')"
 assert_quiesced_backup_exists "$transient_config"
-docker exec --user 0:0 "$transient_main" \
-  python -c 'from pathlib import Path; assert not list(Path("/config/transient-updater/requests").glob("*.json"))'
-if docker ps -a --format '{{.Names}}' | grep --fixed-strings --quiet "${transient_main}-updater-once-"; then
-  echo "一次性 updater 完成后仍残留 helper 容器" >&2
-  exit 1
-fi
+wait_transient_helper_cleanup
 
 echo "updater E2E passed: formal $baseline_version -> candidate $candidate_version, unhealthy-candidate rollback, and single-container transient helper replacement"
