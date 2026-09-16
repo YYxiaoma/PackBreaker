@@ -21,19 +21,24 @@ success_config="$PWD/.ci-updater-e2e-$suffix-success-config"
 success_data="$PWD/.ci-updater-e2e-$suffix-success-data"
 rollback_config="$PWD/.ci-updater-e2e-$suffix-rollback-config"
 rollback_data="$PWD/.ci-updater-e2e-$suffix-rollback-data"
+transient_config="$PWD/.ci-updater-e2e-$suffix-transient-config"
+transient_data="$PWD/.ci-updater-e2e-$suffix-transient-data"
 success_main="packbreaker-updater-success-$suffix"
 success_helper="packbreaker-updater-success-helper-$suffix"
 rollback_main="packbreaker-updater-rollback-$suffix"
 rollback_helper="packbreaker-updater-rollback-helper-$suffix"
+transient_main="packbreaker-updater-transient-$suffix"
 success_request="success-$suffix"
 rollback_request="rollback-$suffix"
+transient_request="transient-$suffix"
 
 cleanup() {
   docker ps -aq --filter "name=$suffix" | xargs -r docker rm --force >/dev/null 2>&1 || true
   sudo rm -rf \
     "$fault_build_dir" \
     "$success_config" "$success_data" \
-    "$rollback_config" "$rollback_data" >/dev/null 2>&1 || true
+    "$rollback_config" "$rollback_data" \
+    "$transient_config" "$transient_data" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -52,8 +57,9 @@ wait_registry() {
 
 wait_app_ready() {
   local container="$1"
+  local exec_user="${2:-$runtime_user}"
   for attempt in $(seq 1 90); do
-    if docker exec --user "$runtime_user" "$container" \
+    if docker exec --user "$exec_user" "$container" \
       python -m backend.app.healthcheck >/dev/null 2>&1; then
       return 0
     fi
@@ -63,6 +69,24 @@ wait_app_ready() {
     fi
     if [ "$attempt" -eq 90 ]; then
       docker logs "$container" || true
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+wait_app_ready_after_switch() {
+  local container="$1"
+  local exec_user="$2"
+  for attempt in $(seq 1 180); do
+    if docker inspect "$container" >/dev/null 2>&1 && \
+      docker exec --user "$exec_user" "$container" \
+        python -m backend.app.healthcheck >/dev/null 2>&1; then
+      return 0
+    fi
+    if [ "$attempt" -eq 180 ]; then
+      docker ps -a --filter "name=$container" || true
+      docker logs "$container" 2>/dev/null || true
       return 1
     fi
     sleep 1
@@ -229,6 +253,54 @@ assert_quiesced_backup_exists() {
   test -f "$config_dir/backups/pre-upgrade-helper/${helper_backups[0]%.db}.json"
 }
 
+prepare_transient_case() {
+  mkdir -p "$transient_config" "$transient_data"
+  chmod 700 "$transient_config"
+  chmod 755 "$transient_data"
+
+  docker run --detach \
+    --name "$transient_main" \
+    --restart unless-stopped \
+    --user 0:0 \
+    --env PUID=0 \
+    --env PGID=0 \
+    --env PACKBREAKER_TIMEZONE=Asia/Shanghai \
+    --publish 127.0.0.1:18083:8000 \
+    --volume "$transient_config:/config" \
+    --volume "$transient_data:/data" \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    --health-interval 1s \
+    --health-timeout 2s \
+    --health-retries 10 \
+    --health-start-period 1s \
+    "$local_candidate_tag" >/dev/null
+
+  wait_app_ready "$transient_main" 0:0
+  wait_docker_healthy "$transient_main"
+  transient_initial_container_id="$(docker inspect "$transient_main" --format '{{.Id}}')"
+  docker exec --user 0:0 --env PB_RELEASE_PROBE=transient-original "$transient_main" \
+    python -c 'import os,sqlite3; c=sqlite3.connect("/config/packbreaker.db", timeout=30); c.execute("CREATE TABLE release_upgrade_probe (probe_key TEXT PRIMARY KEY, probe_value TEXT NOT NULL)"); c.execute("INSERT INTO release_upgrade_probe(probe_key, probe_value) VALUES (\"upgrade\", ?)", (os.environ["PB_RELEASE_PROBE"],)); c.commit(); c.close()'
+  docker exec --user 0:0 "$transient_main" python -m backend.app.maintenance backup >/dev/null
+  mapfile -t transient_backups < <(find "$transient_config/backups" -maxdepth 1 -type f -name 'packbreaker-*.db' -printf '%f\n')
+  test "${#transient_backups[@]}" -eq 1
+  transient_backup_db="${transient_backups[0]}"
+  transient_backup_manifest="${transient_backup_db%.db}.json"
+}
+
+trigger_transient_upgrade() {
+  docker exec --user 0:0 \
+    --env PB_REQUEST_ID="$transient_request" \
+    --env PB_CURRENT_VERSION="$candidate_version" \
+    --env PB_TARGET_VERSION="$candidate_version" \
+    --env PB_TARGET_IMAGE="$candidate_target" \
+    --env PB_BACKUP_DB="$transient_backup_db" \
+    --env PB_BACKUP_MANIFEST="$transient_backup_manifest" \
+    --env PB_TARGET_CONTAINER="$transient_main" \
+    --env PB_ALLOWED_IMAGE="$registry_repo" \
+    "$transient_main" \
+    python -c 'import os; from pathlib import Path; from backend.app.infrastructure.transient_updater import TransientUpdaterLauncher; from backend.app.infrastructure.updater_protocol import UpgradeHelperRequest; launcher=TransientUpdaterLauncher(config_dir=Path("/config"), target_container=os.environ["PB_TARGET_CONTAINER"], allowed_image=os.environ["PB_ALLOWED_IMAGE"]); status=launcher.start_upgrade(UpgradeHelperRequest(request_id=os.environ["PB_REQUEST_ID"], current_version=os.environ["PB_CURRENT_VERSION"], target_version=os.environ["PB_TARGET_VERSION"], target_image=os.environ["PB_TARGET_IMAGE"], backup_database_file=os.environ["PB_BACKUP_DB"], backup_manifest_file=os.environ["PB_BACKUP_MANIFEST"], grace_seconds=0.5)); assert status.phase == "accepted", status' >/dev/null
+}
+
 mkdir -p "$fault_build_dir"
 
 echo "Pull formal baseline by immutable digest: $baseline_image"
@@ -316,4 +388,33 @@ curl --fail --silent http://127.0.0.1:18082/api/v1/health/ready >/dev/null
 docker exec --user "$runtime_user" "$rollback_main" \
   python -c 'import glob,sqlite3; files=glob.glob("/config/backups/pre-restore/packbreaker-*.db"); assert len(files) == 1, files; c=sqlite3.connect(files[0], timeout=30); row=c.execute("SELECT probe_value FROM release_upgrade_probe WHERE probe_key=\"upgrade\"").fetchone(); assert row == ("candidate-mutated",), row; c.close()'
 
-echo "updater E2E passed: formal $baseline_version -> candidate $candidate_version, plus unhealthy-candidate automatic database/container rollback"
+echo "Run real single-container transient helper replacement path"
+# 正式 v0.1.3 尚未包含 transient launcher，因此首个支持该能力的候选版本无法从
+# v0.1.3 主容器内部发起完整相邻版本流程。这里先用候选镜像验证真实 Docker 替换机制：
+# 一次性 helper 创建/接管、主容器重建、docker.sock 保留、状态持久化与自动清理。
+# 待 transient-capable 版本成为正式 baseline 后，再由后续版本覆盖完整相邻版本 API 路径。
+prepare_transient_case
+trigger_transient_upgrade
+wait_app_ready_after_switch "$transient_main" 0:0
+wait_docker_healthy "$transient_main"
+transient_new_container_id="$(docker inspect "$transient_main" --format '{{.Id}}')"
+test "$transient_new_container_id" != "$transient_initial_container_id"
+test "$(docker inspect "$transient_main" --format '{{.Image}}')" = "$candidate_image_id"
+docker exec --user 0:0 "$transient_main" \
+  python -c 'import sqlite3; c=sqlite3.connect("/config/packbreaker.db", timeout=30); row=c.execute("SELECT probe_value FROM release_upgrade_probe WHERE probe_key=\"upgrade\"").fetchone(); assert row == ("transient-original",), row; c.close()'
+docker exec --user 0:0 \
+  --env PB_REQUEST_ID="$transient_request" \
+  --env PB_TARGET_CONTAINER="$transient_main" \
+  --env PB_ALLOWED_IMAGE="$registry_repo" \
+  "$transient_main" \
+  python -c 'import os; from pathlib import Path; from backend.app.infrastructure.transient_updater import TransientUpdaterLauncher; launcher=TransientUpdaterLauncher(config_dir=Path("/config"), target_container=os.environ["PB_TARGET_CONTAINER"], allowed_image=os.environ["PB_ALLOWED_IMAGE"]); status=launcher.status(); assert status.phase == "succeeded", status; assert status.request_id == os.environ["PB_REQUEST_ID"], status' >/dev/null
+test -n "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/var/run/docker.sock"}}{{.Source}}{{end}}{{end}}')"
+assert_quiesced_backup_exists "$transient_config"
+docker exec --user 0:0 "$transient_main" \
+  python -c 'from pathlib import Path; assert not list(Path("/config/transient-updater/requests").glob("*.json"))'
+if docker ps -a --format '{{.Names}}' | grep --fixed-strings --quiet "${transient_main}-updater-once-"; then
+  echo "一次性 updater 完成后仍残留 helper 容器" >&2
+  exit 1
+fi
+
+echo "updater E2E passed: formal $baseline_version -> candidate $candidate_version, unhealthy-candidate rollback, and single-container transient helper replacement"

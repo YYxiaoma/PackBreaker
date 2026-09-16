@@ -17,6 +17,7 @@ def _numeric_id(name: str, default: int) -> int:
 
 def _chown_config_tree(config_dir: Path, uid: int, gid: int) -> None:
     config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(config_dir, 0o700, follow_symlinks=False)
     for root, directories, files in os.walk(config_dir, topdown=False, followlinks=False):
         for name in (*directories, *files):
             os.chown(Path(root) / name, uid, gid, follow_symlinks=False)

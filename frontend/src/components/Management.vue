@@ -46,7 +46,6 @@ import ApiTokenManagement from './AutomationAccessManagement.vue';
 import NotificationManagement from './NotificationManagement.vue';
 import OperationalLogs from './OperationalLogs.vue';
 import BackupManagement from './BackupManagement.vue';
-import UpgradeCenter from './UpgradeCenter.vue';
 const props = defineProps<{ page: string }>();
 const emit = defineEmits<{
   navigate: [string];
@@ -901,7 +900,6 @@ const settingTab = ref('通知');
       <BackupManagement />
     </div>
   </div>
-  <UpgradeCenter v-else-if="page === '升级中心'" />
   <el-dialog v-model="scanDialog" title="新建历史扫描" width="min(560px, 94vw)"
     ><el-form label-position="top"
       ><el-form-item label="扫描根目录"><el-input v-model="scanPath" /></el-form-item

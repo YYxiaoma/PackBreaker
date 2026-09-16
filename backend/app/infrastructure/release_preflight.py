@@ -167,11 +167,11 @@ def _check_docker_socket(checks: list[PreflightCheck]) -> None:
         checks.append(
             PreflightCheck(
                 "docker_socket",
-                "warning",
+                "ok",
                 "DOCKER_SOCKET_PRESENT",
                 (
-                    "主服务检测到 docker.sock；自动升级应只由独立 updater helper 持有，"
-                    "建议移除主容器挂载"
+                    "已检测到 docker.sock；单容器一键升级会仅用它启动一次性 updater，"
+                    "容器切换与失败回滚由临时 helper 接管"
                 ),
             )
         )
@@ -179,9 +179,9 @@ def _check_docker_socket(checks: list[PreflightCheck]) -> None:
     checks.append(
         PreflightCheck(
             "docker_socket",
-            "ok",
+            "warning",
             "DOCKER_SOCKET_ABSENT",
-            "主服务未挂载 docker.sock；自动升级可由独立 updater helper 安全接管",
+            "未挂载 docker.sock；单容器一键升级不可用，但仍可使用独立 updater helper",
         )
     )
 

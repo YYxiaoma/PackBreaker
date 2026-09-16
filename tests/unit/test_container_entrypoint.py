@@ -29,7 +29,7 @@ def test_config_permission_bootstrap_never_follows_symlinks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "config"
-    config.mkdir()
+    config.mkdir(mode=0o755)
     outside = tmp_path / "outside"
     outside.write_text("synthetic", encoding="utf-8")
     link = config / "outside-link"
@@ -48,5 +48,6 @@ def test_config_permission_bootstrap_never_follows_symlinks(
     monkeypatch.setattr(os, "chown", record_chown)
     _chown_config_tree(config, 1000, 1000)
 
+    assert config.stat().st_mode & 0o777 == 0o700
     assert (link, False) in calls
     assert all(path != outside for path, _follow in calls)

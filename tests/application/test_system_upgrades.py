@@ -43,7 +43,7 @@ class FakeUpdaterGateway:
         self.requests.append(request)
         self.current = UpdaterStatus(
             protocol_version=UPDATER_PROTOCOL_VERSION,
-            helper_version="0.1.3",
+            helper_version="0.1.4",
             phase="accepted",
             message="accepted",
             request_id=request.request_id,
@@ -83,8 +83,8 @@ def _settings(tmp_path: Path) -> AppSettings:
 
 def _target() -> ReleaseTarget:
     return ReleaseTarget(
-        version="0.1.4",
-        tag="v0.1.4",
+        version="0.1.5",
+        tag="v0.1.5",
         commit="9" * 40,
         image=OFFICIAL_IMAGE,
         image_digest=_DIGEST,
@@ -96,7 +96,7 @@ def _target() -> ReleaseTarget:
 def _idle() -> UpdaterStatus:
     return UpdaterStatus(
         protocol_version=UPDATER_PROTOCOL_VERSION,
-        helper_version="0.1.3",
+        helper_version="0.1.4",
         phase="idle",
         message="ready",
     )
@@ -123,8 +123,8 @@ async def test_status_reports_newer_release_and_ready_helper(tmp_path: Path) -> 
 
     status = await service.status()
 
-    assert status.current_version == "0.1.3"
-    assert status.latest_version == "0.1.4"
+    assert status.current_version == "0.1.4"
+    assert status.latest_version == "0.1.5"
     assert status.update_available is True
     assert status.can_upgrade is True
     assert status.blocked_reasons == ()
@@ -136,12 +136,12 @@ async def test_execute_replays_existing_helper_request_without_new_backup(tmp_pa
     helper = FakeUpdaterGateway(
         UpdaterStatus(
             protocol_version=UPDATER_PROTOCOL_VERSION,
-            helper_version="0.1.3",
+            helper_version="0.1.4",
             phase="accepted",
             message="accepted",
             request_id="same-key",
-            current_version="0.1.3",
-            target_version="0.1.4",
+            current_version="0.1.4",
+            target_version="0.1.5",
             target_image=_TARGET_IMAGE,
             backup_database_file="packbreaker-20260915T010101Z-1234abcd.db",
         )
@@ -156,7 +156,7 @@ async def test_execute_replays_existing_helper_request_without_new_backup(tmp_pa
     )
 
     result = await service.execute(
-        target_version="0.1.4",
+        target_version="0.1.5",
         target_image_digest=_DIGEST,
         idempotency_key="same-key",
         backup_driver=backup,
@@ -173,12 +173,12 @@ async def test_execute_rejects_same_idempotency_key_with_different_digest(tmp_pa
     helper = FakeUpdaterGateway(
         UpdaterStatus(
             protocol_version=UPDATER_PROTOCOL_VERSION,
-            helper_version="0.1.3",
+            helper_version="0.1.4",
             phase="accepted",
             message="accepted",
             request_id="same-key",
-            current_version="0.1.3",
-            target_version="0.1.4",
+            current_version="0.1.4",
+            target_version="0.1.5",
             target_image=_TARGET_IMAGE,
             backup_database_file="packbreaker-20260915T010101Z-1234abcd.db",
         )
@@ -194,7 +194,7 @@ async def test_execute_rejects_same_idempotency_key_with_different_digest(tmp_pa
 
     with pytest.raises(ApplicationError) as exc_info:
         await service.execute(
-            target_version="0.1.4",
+            target_version="0.1.5",
             target_image_digest="sha256:" + "7" * 64,
             idempotency_key="same-key",
             backup_driver=backup,
@@ -217,7 +217,7 @@ async def test_execute_rejects_stale_digest_before_backup(tmp_path: Path) -> Non
 
     with pytest.raises(ApplicationError) as exc_info:
         await service.execute(
-            target_version="0.1.4",
+            target_version="0.1.5",
             target_image_digest="sha256:" + "7" * 64,
             idempotency_key="request-key",
             backup_driver=backup,
@@ -240,7 +240,7 @@ async def test_execute_creates_backup_then_delegates_to_helper(tmp_path: Path) -
     )
 
     result = await service.execute(
-        target_version="0.1.4",
+        target_version="0.1.5",
         target_image_digest=_DIGEST,
         idempotency_key="request-key",
         backup_driver=backup,
@@ -256,23 +256,31 @@ async def test_execute_creates_backup_then_delegates_to_helper(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_execute_blocks_when_main_container_has_docker_socket(tmp_path: Path) -> None:
+async def test_execute_prefers_transient_updater_when_main_container_has_docker_socket(
+    tmp_path: Path,
+) -> None:
     docker_socket = tmp_path / "docker.sock"
     docker_socket.write_text("synthetic", encoding="utf-8")
+    independent = FakeUpdaterGateway(_idle())
+    transient = FakeUpdaterGateway(_idle())
+    backup = FakeBackupRunner()
     service = SystemUpgradeService(
         _settings(tmp_path),
         release_client=FakeReleaseProvider(_target()),
-        updater_client=FakeUpdaterGateway(_idle()),
+        updater_client=independent,
+        transient_updater=transient,
         main_docker_socket_path=docker_socket,
         preflight_runner=_ready_preflight,
     )
 
-    with pytest.raises(ApplicationError) as exc_info:
-        await service.execute(
-            target_version="0.1.4",
-            target_image_digest=_DIGEST,
-            idempotency_key="request-key",
-            backup_driver=FakeBackupRunner(),
-        )
+    result = await service.execute(
+        target_version="0.1.5",
+        target_image_digest=_DIGEST,
+        idempotency_key="request-key",
+        backup_driver=backup,
+    )
 
-    assert exc_info.value.code == "UPGRADE_MAIN_DOCKER_SOCKET_PRESENT"
+    assert result.helper_status.phase == "accepted"
+    assert backup.calls == 1
+    assert len(transient.requests) == 1
+    assert independent.requests == []

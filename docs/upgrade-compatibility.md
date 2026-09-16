@@ -31,10 +31,12 @@ PackBreaker 启动取得 `/config` 单实例锁并完成主密钥自检后，数
 
 ## 4. 正式镜像升级基线与跨镜像门禁
 
-`release-baseline.json` 当前固定最新正式 `v0.1.2`：tag、发布 commit、Alembic revision、Release workflow run 与公开 GHCR digest `sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`。`scripts/validate_release_baseline.py` 已进入静态门禁，禁止把基线退化成可移动 tag、错误 digest、未来版本或与 tag 不一致的身份。正式 tag workflow 还会通过 GitHub Releases API 要求 baseline tag 必须等于当前最新正式 Release。
+`release-baseline.json` 当前固定最新正式 `v0.1.3`：tag、发布 commit `8e5b9ead1eeb9f0dccbe79972aac2c0a6a02f10c`、Alembic revision、Release workflow run `35046214232` 与公开 GHCR digest `sha256:1dbbe55cc7b9b1ec6e35afe62ab7ecf32db092350dfeec4cf5966a06d165f48d`。`scripts/validate_release_baseline.py` 已进入静态门禁，禁止把基线退化成可移动 tag、错误 digest、未来版本或与 tag 不一致的身份。正式 tag workflow 还会通过 GitHub Releases API 要求 baseline tag 必须等于当前最新正式 Release。
 
 CI/container 与未来 tag release 都执行 `scripts/check-release-upgrade.sh`：先按基线 digest 启动上一正式镜像，在隔离 `/config` 写入合成兼容探针并创建一致性升级前备份；随后让当前候选镜像直接接管同一 config 并通过 readiness/探针校验；最后停止候选镜像，用**上一正式镜像自己的维护工具**恢复升级前备份，再启动同一基线 digest 并重新证明 readiness、Alembic revision 与探针数据。门禁明确禁止以 `alembic downgrade` 代替生产回滚。
 
 正式 `v0.1.2` 的 Release workflow run `34937718889` 已在真实 `ubuntu-latest` Docker runner 上完成跨版本证据：`v0.1.1@sha256:76f4c041...18e30d` 启动并创建合成探针/备份，`v0.1.2` 候选接管同一 `/config` 后通过 readiness，随后用 `v0.1.1` 镜像恢复旧备份并再次通过 readiness/revision/探针校验；同一正式发布流水线还运行独立 updater helper 的真实 digest pull、容器替换，以及故障候选修改数据库后自动恢复旧数据库/旧容器的 E2E。
 
 `v0.1.2` 已正式提供运行时一键升级 helper：主服务只负责校验正式 Release、完整 preflight、在线一致性备份和受认证的 helper 请求；独立 helper 负责拉取目标 digest、停止/重建容器、切换瞬间静止数据库备份、Docker healthcheck 和失败回滚。该运行时链路不会替代 release workflow 的跨版本门禁，二者分别验证“发布前兼容性”和“用户现场执行路径”。
+
+`v0.1.4` candidate 在兼容独立 helper 的同时新增“单常驻 PackBreaker + 一次性 helper”路径；`scripts/check-updater-e2e.sh` 已增加真实 Docker case，要求从挂载 docker.sock 的主容器启动临时 `AutoRemove` helper、完成容器替换、保留 docker.sock 供后续升级、验证数据库探针与 helper 自动清理。该新增路径只有在 GitHub Actions 实跑成功后才升级为正式证据。

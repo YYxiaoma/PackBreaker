@@ -26,17 +26,17 @@ class FakeUpgradeService:
         self.execute_calls: list[dict[str, object]] = []
         self.helper = UpdaterStatus(
             protocol_version=UPDATER_PROTOCOL_VERSION,
-            helper_version="0.1.3",
+            helper_version="0.1.4",
             phase="idle",
             message="ready",
         )
 
     async def status(self) -> SystemUpgradeStatus:
         return SystemUpgradeStatus(
-            current_version="0.1.3",
-            latest_version="0.1.4",
+            current_version="0.1.4",
+            latest_version="0.1.5",
             update_available=True,
-            target_tag="v0.1.4",
+            target_tag="v0.1.5",
             target_image_digest=_DIGEST,
             immutable_image=_IMAGE,
             platform="linux/amd64",
@@ -59,19 +59,19 @@ class FakeUpgradeService:
         self.execute_calls.append(dict(kwargs))
         accepted = UpdaterStatus(
             protocol_version=UPDATER_PROTOCOL_VERSION,
-            helper_version="0.1.3",
+            helper_version="0.1.4",
             phase="accepted",
             message="accepted",
             request_id=str(idempotency_key),
-            current_version="0.1.3",
-            target_version="0.1.4",
+            current_version="0.1.4",
+            target_version="0.1.5",
             target_image=_IMAGE,
             backup_database_file="packbreaker-20260915T010101Z-1234abcd.db",
         )
         return SystemUpgradeActionResult(
             request_id=str(idempotency_key),
-            current_version="0.1.3",
-            target_version="0.1.4",
+            current_version="0.1.4",
+            target_version="0.1.5",
             target_image=_IMAGE,
             backup_database_file="packbreaker-20260915T010101Z-1234abcd.db",
             helper_status=accepted,
@@ -113,8 +113,8 @@ def test_upgrade_status_is_no_store_and_exposes_immutable_target(tmp_path: Path)
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
         payload = response.json()
-        assert payload["current_version"] == "0.1.3"
-        assert payload["latest_version"] == "0.1.4"
+        assert payload["current_version"] == "0.1.4"
+        assert payload["latest_version"] == "0.1.5"
         assert payload["target_image_digest"] == _DIGEST
         assert payload["immutable_image"] == _IMAGE
         assert payload["helper_status"]["phase"] == "idle"
@@ -127,7 +127,7 @@ def test_upgrade_action_requires_csrf_and_idempotency_key_then_returns_202(tmp_p
     client, _app, service = _client(tmp_path)
     payload = {
         "action": "upgrade",
-        "target_version": "0.1.4",
+        "target_version": "0.1.5",
         "target_image_digest": _DIGEST,
     }
     try:
@@ -150,7 +150,7 @@ def test_upgrade_action_requires_csrf_and_idempotency_key_then_returns_202(tmp_p
         )
         assert accepted.status_code == 202
         result = accepted.json()
-        assert result["target_version"] == "0.1.4"
+        assert result["target_version"] == "0.1.5"
         assert result["target_image"] == _IMAGE
         assert result["helper_status"]["phase"] == "accepted"
         assert result["idempotency_replayed"] is False

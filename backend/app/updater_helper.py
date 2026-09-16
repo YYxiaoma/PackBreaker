@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -311,7 +312,7 @@ class _RequestHandler(socketserver.StreamRequestHandler):
         self.wfile.flush()
 
 
-def main() -> None:
+def _runtime_settings() -> tuple[Path, Path, str, str]:
     config_dir = Path(os.environ.get("PACKBREAKER_CONFIG_DIR", "/config")).resolve()
     docker_socket = Path(os.environ.get("PACKBREAKER_DOCKER_SOCKET", "/var/run/docker.sock"))
     target_container = os.environ.get("PACKBREAKER_UPDATER_TARGET_CONTAINER", "packbreaker").strip()
@@ -326,6 +327,11 @@ def main() -> None:
         raise SystemExit("PACKBREAKER_UPDATER_ALLOWED_IMAGE 格式无效")
     if not docker_socket.exists():
         raise SystemExit("未检测到 Docker socket，升级 helper 无法启动")
+    return config_dir, docker_socket, target_container, allowed_image
+
+
+def _serve() -> None:
+    config_dir, docker_socket, target_container, allowed_image = _runtime_settings()
 
     uid = _nonnegative_id("PUID", 1000)
     gid = _nonnegative_id("PGID", 1000)
@@ -357,6 +363,118 @@ def main() -> None:
     finally:
         server.server_close()
         socket_path.unlink(missing_ok=True)
+
+
+def _run_oneshot(request_path: Path) -> None:
+    config_dir, docker_socket, target_container, allowed_image = _runtime_settings()
+    state_path = Path(
+        os.environ.get(
+            "PACKBREAKER_UPDATER_STATE_FILE",
+            str(config_dir / "transient-updater" / "state.json"),
+        )
+    ).resolve()
+    resolved_request = request_path.resolve()
+    transient_root = (config_dir / "transient-updater").resolve()
+    if not resolved_request.is_relative_to(transient_root):
+        raise SystemExit("一次性 updater 请求文件必须位于 /config/transient-updater 下")
+    try:
+        payload = json.loads(resolved_request.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit("一次性 updater 请求文件不可读取") from exc
+    request = _parse_upgrade_request(payload)
+    helper_version = app_version()
+    state_store = UpdaterStateStore(state_path, helper_version=helper_version)
+    current = state_store.get()
+    if current.request_id == request.request_id:
+        if (
+            current.target_image != request.target_image
+            or current.target_version != request.target_version
+        ):
+            raise SystemExit("一次性 updater 幂等请求与已记录目标不一致")
+    else:
+        now = _now()
+        current = state_store.set(
+            UpdaterStatus(
+                protocol_version=UPDATER_PROTOCOL_VERSION,
+                helper_version=helper_version,
+                phase="accepted",
+                message="一次性 updater 已接管升级；页面将短暂断开",
+                request_id=request.request_id,
+                current_version=request.current_version,
+                target_version=request.target_version,
+                target_image=request.target_image,
+                backup_database_file=request.backup_database_file,
+                started_at=now,
+                updated_at=now,
+            )
+        )
+
+    def phase(next_phase: str, message: str) -> None:
+        state = state_store.get()
+        state_store.set(
+            replace(
+                state,
+                phase=cast(UpdaterPhase, next_phase),
+                message=message,
+                updated_at=_now(),
+            )
+        )
+
+    try:
+        time.sleep(request.grace_seconds)
+        with DockerEngineClient(docker_socket) as docker:
+            executor = DockerUpgradeExecutor(
+                docker,
+                target_container=target_container,
+                allowed_image=allowed_image,
+                config_dir=config_dir,
+                preserve_docker_socket=(
+                    os.environ.get("PACKBREAKER_UPDATER_PRESERVE_DOCKER_SOCKET") == "1"
+                ),
+            )
+            outcome = executor.execute(request, phase=phase)
+    except Exception as exc:
+        message = (
+            f"{exc.code}:{exc}"
+            if isinstance(exc, (DockerUpdaterError, HelperRequestError))
+            else type(exc).__name__
+        )
+        state = state_store.get()
+        now = _now()
+        state_store.set(
+            replace(
+                state,
+                phase="failed",
+                message=f"一次性 updater 执行失败：{message}",
+                updated_at=now,
+                finished_at=now,
+            )
+        )
+    else:
+        state = state_store.get()
+        now = _now()
+        state_store.set(
+            replace(
+                state,
+                phase=outcome.phase,
+                message=outcome.message,
+                updated_at=now,
+                finished_at=now,
+                rollback_performed=outcome.rollback_performed,
+            )
+        )
+    finally:
+        resolved_request.unlink(missing_ok=True)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="python -m backend.app.updater_helper")
+    parser.add_argument("--oneshot", type=Path)
+    args = parser.parse_args(argv)
+    if args.oneshot is not None:
+        _run_oneshot(args.oneshot)
+        return
+    _serve()
 
 
 def _parse_upgrade_request(value: object) -> UpgradeHelperRequest:

@@ -182,7 +182,7 @@ M2 使用合成 1 万文件 torrent 和跨文件 piece 测试内存上界与流�
 1. `quality`：Python 3.11 + `uv sync --frozen --all-groups`，运行统一静态检查、OpenAPI/生成类型漂移检查、pytest、Vitest 与 production build。
 2. `browser-e2e`：安装 Playwright bundled Chromium，启动本地 Vite；认证与所有业务 API 均使用显式合成 mock，最外层 `/api/v1/**` catch-all 对任何未 mock 请求返回 501 并记录失败，因此门禁不会穿透到本机 8000、真实后端或凭证。
 3. `container`：构建三阶段 runtime 镜像，以临时空 `/config`、`/data` 启动，验证 readiness、同源前端首页和镜像默认非 root 用户；随后在同一隔离配置卷执行 release preflight 与一致性备份，停止主容器，用一次性容器离线 verify/restore，再重启原容器并重新证明 readiness。
-4. `updater-e2e`：在独立 `ubuntu-latest` Docker VM 中按 `release-baseline.json` 拉取上一正式版本的不可变 digest，并把该确切 baseline 与当前候选镜像镜像到 Runner 内临时 registry。第一条真实链由独立 helper 通过 docker.sock 执行 baseline → candidate 容器替换、healthcheck、配置/端口/数据探针保留和主容器 docker.sock 剥离；第二条故障链使用会先修改合成数据库、随后故意 healthcheck 失败的候选镜像，要求 helper 自动恢复切换瞬间数据库和旧容器，同时验证恢复前 safety backup 确实保留了候选写入值。整个 job 只使用 Runner 临时目录和合成 SQLite 探针，不连接 PT、下载器或真实媒体。
+4. `updater-e2e`：在独立 `ubuntu-latest` Docker VM 中按 `release-baseline.json` 拉取上一正式版本的不可变 digest，并把该确切 baseline 与当前候选镜像镜像到 Runner 内临时 registry。现有真实链覆盖独立 helper 的 baseline → candidate 容器替换、healthcheck、配置/端口/数据探针保留，以及“候选修改合成数据库后 healthcheck 失败”的自动数据库/旧容器回滚；单容器临时 helper 模式另由专项单测与浏览器门禁覆盖，正式发布前应把同一 transient 路径纳入真实 Docker job。整个 job 只使用 Runner 临时目录和合成 SQLite 探针，不连接 PT、下载器或真实媒体。
 
 pytest 另外把 Alembic 历史链作为 M6 升级矩阵：当前 22 个历史 revision（`0001`～`0022`）分别构造独立合成数据库并升级到 `0023_backup_policy`，验证自定义业务探针、升级前备份和最终 revision；同时覆盖迁移失败不切换当前数据库、空配置失败不遗留半成品以及 RuntimeManager 自动升级。
 
@@ -194,7 +194,7 @@ M6 持久日志门禁另覆盖真实临时轮转文件：写入带 userinfo/path
 
 M6 计划备份门禁验证默认关闭、启用后到期执行/未到期跳过、手动 force 备份、计划与手动运行互斥、retention 复用、运行状态不递增策略 version，以及 API 的 CSRF、`config:write`、强 `If-Match`/412 冲突。所有数据库和备份目录均为 pytest 临时目录，不连接 PT/qB/TR 或媒体目录。
 
-M6 升级中心门禁验证 typed `/system/release/preflight` 只做本地读取且不创建备份演练文件、不遍历或修改媒体 canary；`/system/upgrade` 使用合成正式 Release/helper 状态验证版本与不可变 digest 展示，`/system/upgrade/actions` 必须携带 `Idempotency-Key`。浏览器 E2E 覆盖“发现新版本 → 用户确认 → 同键提交 → 独立 helper 接管”并保持所有未显式 mock API 失败关闭。后端专项测试使用纯 Fake Docker backend 覆盖容器配置重建、docker.sock 剥离、静止数据库备份、健康失败恢复旧容器/旧数据库、helper 状态损坏/重启失败关闭；默认测试不会连接真实 Docker daemon。
+M6 版本升级门禁验证 typed `/system/release/preflight` 只做本地读取且不创建备份演练文件、不遍历或修改媒体 canary；`/system/upgrade` 使用合成正式 Release/升级执行器状态验证版本与不可变 digest，`/system/upgrade/actions` 必须携带 `Idempotency-Key`。浏览器 E2E 覆盖“发现新版本 → 用户确认 → 同键提交 → 单容器一次性 helper 接管”，并保持所有未显式 mock API 失败关闭。后端专项测试使用纯 Fake Docker backend 覆盖容器配置重建、单容器模式保留 docker.sock、独立 helper 模式剥离 docker.sock、临时 AutoRemove helper 启动、静止数据库备份、健康失败恢复旧容器/旧数据库以及健康升级后的旧容器清理失败不反向回滚；默认测试不会连接真实 Docker daemon。
 
 `scripts/repository_scan.py` 扫描 Git 已跟踪文件以及未被 `.gitignore` 排除的工作区候选，阻断真实 `.torrent`、媒体、数据库/日志/密钥类制品、明显私钥/常见 Token 形态以及超过 5 MiB 的单个候选文件；该扫描也被 `scripts/check.py` 本地入口复用。普通 CI 永不连接真实 PT 或下载器。容器恢复门禁也只使用 CI 临时目录，不挂载真实媒体或生产配置。任何安全不变量、迁移、契约、仓库扫描、容器 smoke/恢复或端到端测试失败都应阻止合并。
 

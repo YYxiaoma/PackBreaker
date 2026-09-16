@@ -195,10 +195,10 @@ const path = require('node:path');
     });
     const fulfillJson=(route,body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
     await page.route('**/api/v1/system/health',route=>fulfillJson(route,{
-      status:'ok',generated_at:now(),version:'0.1.3',checks:[],
+      status:'ok',generated_at:now(),version:'0.1.4',checks:[],
     }));
     await page.route('**/api/v1/system/release/preflight',route=>fulfillJson(route,{
-      status:'ready',app_version:'0.1.3',checks:[
+      status:'ready',app_version:'0.1.4',checks:[
         {name:'config_dir',status:'ok',code:'CONFIG_DIR_OK',detail:'配置目录权限与可写性通过'},
         {name:'database',status:'ok',code:'DATABASE_OK',detail:'SQLite integrity_check 与 migration head 通过（0023_backup_policy）'},
         {name:'secret_key',status:'ok',code:'SECRET_KEY_OK',detail:'主密钥存在且安全自检通过'},
@@ -210,12 +210,16 @@ const path = require('node:path');
     const upgradeDigest=`sha256:${'8'.repeat(64)}`;
     const upgradeImage=`ghcr.io/yyxiaoma/packbreaker@${upgradeDigest}`;
     const upgradeKeys=[];
-    let upgradeHelperStatus={protocol_version:1,helper_version:'0.1.3',phase:'idle',message:'升级 helper 已就绪',request_id:null,current_version:null,target_version:null,target_image:null,backup_database_file:null,started_at:null,updated_at:now(),finished_at:null,rollback_performed:false};
+    let upgradeHelperStatus={protocol_version:1,helper_version:'0.1.4',phase:'idle',message:'升级 helper 已就绪',request_id:null,current_version:null,target_version:null,target_image:null,backup_database_file:null,started_at:null,updated_at:now(),finished_at:null,rollback_performed:false};
     let upgradeStatusDelayMs=0;
+    let upgradeReleaseFailure=false;
     await page.route('**/api/v1/system/upgrade',async route=>{
       if(upgradeStatusDelayMs) await new Promise(resolve=>setTimeout(resolve,upgradeStatusDelayMs));
+      if(upgradeReleaseFailure)return fulfillJson(route,{
+        current_version:'0.1.4',latest_version:null,update_available:false,target_tag:null,target_image_digest:null,immutable_image:null,platform:null,release_error_code:'RELEASE_NETWORK_FAILED',helper_available:false,helper_status:null,can_upgrade:false,blocked_reasons:['UPDATER_HELPER_UNAVAILABLE','RELEASE_NETWORK_FAILED'],
+      });
       return fulfillJson(route,{
-        current_version:'0.1.3',latest_version:'0.1.4',update_available:true,target_tag:'v0.1.4',target_image_digest:upgradeDigest,immutable_image:upgradeImage,platform:'linux/amd64',release_error_code:null,helper_available:true,helper_status:upgradeHelperStatus,can_upgrade:upgradeHelperStatus.phase==='idle',blocked_reasons:upgradeHelperStatus.phase==='idle'?[]:['UPDATER_BUSY'],
+        current_version:'0.1.4',latest_version:'0.1.5',update_available:true,target_tag:'v0.1.5',target_image_digest:upgradeDigest,immutable_image:upgradeImage,platform:'linux/amd64',release_error_code:null,helper_available:true,helper_status:upgradeHelperStatus,can_upgrade:upgradeHelperStatus.phase==='idle',blocked_reasons:upgradeHelperStatus.phase==='idle'?[]:['UPDATER_BUSY'],
       });
     });
     await page.route('**/api/v1/system/upgrade/actions',route=>{
@@ -224,9 +228,9 @@ const path = require('node:path');
       const key=request.headers()['idempotency-key'];
       assert.ok(key,'Docker 升级必须携带 Idempotency-Key');
       upgradeKeys.push(key);
-      assert.deepEqual(request.postDataJSON(),{action:'upgrade',target_version:'0.1.4',target_image_digest:upgradeDigest});
-      upgradeHelperStatus={...upgradeHelperStatus,phase:'accepted',message:'升级请求已由独立 helper 接管',request_id:key,current_version:'0.1.3',target_version:'0.1.4',target_image:upgradeImage,backup_database_file:'packbreaker-e2e.db',started_at:now(),updated_at:now()};
-      return fulfillJson(route,{request_id:key,current_version:'0.1.3',target_version:'0.1.4',target_image:upgradeImage,backup_database_file:'packbreaker-e2e.db',helper_status:upgradeHelperStatus,idempotency_replayed:false},202);
+      assert.deepEqual(request.postDataJSON(),{action:'upgrade',target_version:'0.1.5',target_image_digest:upgradeDigest});
+      upgradeHelperStatus={...upgradeHelperStatus,phase:'accepted',message:'升级请求已由独立 helper 接管',request_id:key,current_version:'0.1.4',target_version:'0.1.5',target_image:upgradeImage,backup_database_file:'packbreaker-e2e.db',started_at:now(),updated_at:now()};
+      return fulfillJson(route,{request_id:key,current_version:'0.1.4',target_version:'0.1.5',target_image:upgradeImage,backup_database_file:'packbreaker-e2e.db',helper_status:upgradeHelperStatus,idempotency_replayed:false},202);
     });
     await page.route('**/api/v1/system/logs**',route=>fulfillJson(route,{
       window_minutes:60,limit:200,count:0,truncated:false,max_file_bytes:2097152,backup_count:4,approximate_capacity_bytes:10485760,items:[],
@@ -549,6 +553,39 @@ const path = require('node:path');
     }
     upgradeStatusDelayMs=0;
     await page.setViewportSize({width:1440,height:900});
+    assert.equal(await page.locator('nav').getByRole('button',{name:'升级中心',exact:true}).count(),0,'主导航不应再展示升级中心');
+    const versionTrigger=page.getByRole('button',{name:'当前版本 v0.1.4',exact:true});
+    await versionTrigger.waitFor();
+    await versionTrigger.click();
+    const versionPanel=page.locator('.packbreaker-version-popover');
+    await versionPanel.getByText('发现新版本 v0.1.5',{exact:true}).waitFor();
+    const releaseLink=versionPanel.getByRole('link',{name:/查看发布/});
+    assert.equal(await releaseLink.getAttribute('href'),'https://github.com/YYxiaoma/PackBreaker/releases/tag/v0.1.5','版本弹窗应链接到目标正式 Release');
+    await versionPanel.getByRole('button',{name:'立即升级到 v0.1.5',exact:true}).click();
+    await page.locator('.el-message-box').getByRole('button',{name:'立即升级到 v0.1.5',exact:true}).click();
+    await page.locator('.el-overlay.is-message-box').waitFor({state:'detached'});
+    await versionTrigger.click();
+    await versionPanel.waitFor({state:'visible'});
+    await versionPanel.getByText('已接管升级',{exact:true}).waitFor();
+    assert.equal(upgradeKeys.length,1,'版本弹窗一键升级应只提交一次 Docker 升级请求');
+    assert.ok(upgradeKeys[0].startsWith('pb-upgrade-'),'版本弹窗一键升级应生成明确幂等键');
+    await versionPanel.getByRole('button',{name:'高级：手动 Docker 升级',exact:true}).click();
+    await versionPanel.getByText(upgradeImage,{exact:true}).waitFor();
+    await versionPanel.getByText(/docker pull ghcr\.io\/yyxiaoma\/packbreaker@sha256:/).waitFor();
+    await versionPanel.getByRole('button',{name:'版本回退',exact:true}).click();
+    await versionPanel.getByText(/回退不能只替换旧镜像/).waitFor();
+    assert.equal(upgradeKeys.length,1,'高级手动升级入口不得额外调用 Docker 升级 API');
+    upgradeHelperStatus={...upgradeHelperStatus,phase:'idle',message:'单容器一次性 updater 已就绪',request_id:null,current_version:null,target_version:null,target_image:null,backup_database_file:null,started_at:null,updated_at:now(),finished_at:null};
+    await page.keyboard.press('Escape');
+    await versionTrigger.click();
+    await versionPanel.waitFor({state:'visible'});
+    upgradeReleaseFailure=true;
+    await versionPanel.getByRole('button',{name:'检查更新',exact:true}).click();
+    await versionPanel.getByText('无法检查最新版本',{exact:true}).waitFor();
+    await versionPanel.getByText('RELEASE_NETWORK_FAILED',{exact:true}).waitFor();
+    assert.equal(await versionPanel.getByText('已是最新版本',{exact:true}).count(),0,'Release 网络失败时不得误报已是最新版本');
+    upgradeReleaseFailure=false;
+    await page.keyboard.press('Escape');
     await page.getByRole('button',{name:'切换深色主题',exact:true}).click();
     const darkServiceStyle=await page.locator('.service-tile').first().evaluate(element=>({
       backgroundImage:getComputedStyle(element).backgroundImage,
@@ -676,7 +713,7 @@ const path = require('node:path');
     assert.equal(siteTestCalls,1,'站点连接测试应只调用一次');
     assert.equal(await page.getByText(/连接恢复/).count(),0,'reset-circuit 不得伪造远端连接恢复文案');
 
-    for(const name of ['总览','预演与确认','历史辅种','站点管理','下载器','清理与对账','日志','系统设置','升级中心']){
+    for(const name of ['总览','预演与确认','历史辅种','站点管理','下载器','清理与对账','日志','系统设置']){
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
       assert.equal(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`${name} 桌面溢出`);
@@ -689,21 +726,6 @@ const path = require('node:path');
     await page.getByText('一致性备份已创建：packbreaker-e2e.db',{exact:true}).waitFor();
     assert.equal(backupRuns,1,'备份管理页立即备份只应提交一次');
     assert.equal(await page.getByRole('button',{name:/恢复/}).count(),0,'在线管理页不得提供数据库恢复按钮');
-
-    await page.locator('nav').getByRole('button',{name:'升级中心',exact:true}).click();
-    await page.getByText('DOCKER_SOCKET_ABSENT',{exact:true}).waitFor();
-    await page.getByText(upgradeImage,{exact:true}).waitFor();
-    assert.equal(await page.getByText(/模拟升级|模拟检查更新/).count(),0,'升级中心不得保留模拟更新入口');
-    const upgradePanel=page.locator('section.panel').filter({has:page.getByRole('heading',{name:'发布与升级',exact:true})});
-    await upgradePanel.getByRole('button',{name:'升级到 v0.1.4',exact:true}).click();
-    await page.locator('.el-message-box').getByRole('button',{name:'升级到 v0.1.4',exact:true}).click();
-    await page.getByText('升级请求已由独立 helper 接管',{exact:true}).waitFor();
-    assert.equal(upgradeKeys.length,1,'Docker 自动升级只应提交一次');
-    const preflightPanel=page.locator('section.panel').filter({has:page.getByRole('heading',{name:'本地升级前置检查',exact:true})});
-    await preflightPanel.getByRole('button',{name:'创建一致性备份',exact:true}).click();
-    await page.locator('.el-message-box').getByRole('button',{name:'创建一致性备份',exact:true}).click();
-    await page.getByText('升级前一致性备份已创建：packbreaker-e2e.db',{exact:true}).waitFor();
-    assert.equal(backupRuns,2,'备份管理页与升级中心应各提交一次一致性备份');
 
     await page.locator('nav').getByRole('button',{name:'历史辅种',exact:true}).click();
     await page.getByRole('button',{name:'新建扫描',exact:true}).click();
@@ -742,7 +764,7 @@ const path = require('node:path');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'移动配置页横向溢出');
     await page.getByRole('button',{name:'切换深色主题',exact:true}).click();
     await page.screenshot({path:path.join(output,'mobile-dark.png'),fullPage:true});
-    for(const name of ['总览','任务中心','预演与确认','历史辅种','下载器','清理与对账','日志','系统设置','升级中心']){
+    for(const name of ['总览','任务中心','预演与确认','历史辅种','下载器','清理与对账','日志','系统设置']){
       await page.getByRole('button',{name:'展开导航',exact:true}).click();
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
@@ -750,6 +772,6 @@ const path = require('node:path');
     }
     assert.deepEqual(unmockedApiCalls,[],'浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端');
     assert.deepEqual(errors,[]);
-    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、真实站点 health/reset/启用、状态自动刷新、10 页导航、计划备份管理、正式 Release digest 检查/独立 helper 一键升级、历史扫描、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题；未显式 mock 的 API 请求全部失败关闭。');
+    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、真实站点 health/reset/启用、状态自动刷新、9 页导航、计划备份管理、品牌版本弹窗与单容器一次性 helper 一键升级/手动故障备用、历史扫描、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题；未显式 mock 的 API 请求全部失败关闭。');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -10,11 +10,11 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 | --- | --- | --- |
 | 一致性数据库备份 | ✅ CI 闭环 | SQLite Backup API、SHA-256 manifest、完整性/revision 验证、CLI、preview-first 保留、默认关闭的计划调度、强 `If-Match` 管理 API 与真实 UI 已接通；GitHub Actions run `34851129257` 已在 linux/amd64 Docker 环境完成真实备份与离线 verify/restore 演练 |
 | 恢复与失败回滚 | ✅ CI 闭环 | 已实现实例锁停止门禁、恢复前安全快照、临时迁移预检、原子切换与切换后失败自动回滚；GitHub Actions run `34851129257` 已在 linux/amd64 Docker 环境完成空配置启动、preflight、备份、离线 verify/restore 与重启 readiness |
-| 升级兼容矩阵 | ✅ 跨版本门禁闭环 | 已自动覆盖 22 个历史 Alembic revision（0001～0022）→ `0023_backup_policy`、空配置原子首装、迁移失败不切换和 Runtime 启动安全升级；正式 `v0.1.2` Release workflow run `34937718889` 已真实跑绿 `v0.1.1 → v0.1.2 → 恢复 v0.1.1` 及独立 updater helper 自动回滚 E2E，当前 `release-baseline.json` 已推进到 `v0.1.2` |
+| 升级兼容矩阵 | ✅ 跨版本门禁闭环 | 已自动覆盖 22 个历史 Alembic revision（0001～0022）→ `0023_backup_policy`、空配置原子首装、迁移失败不切换和 Runtime 启动安全升级；`v0.1.2` 已留下 `v0.1.1 → v0.1.2 → 恢复 v0.1.1` 与独立 updater helper E2E 历史证据，最新正式 `v0.1.3` 已发布，当前 `release-baseline.json` 已推进到 `v0.1.3`，供 `v0.1.4` candidate 做相邻版本门禁 |
 | 真实依赖健康/仪表盘 | ✅ 代码闭环 | `/system/health` 已聚合 runtime、磁盘、备份、任务/operation 风险、站点/下载器既有证据、通知与后台 driver，前端总览直接消费 typed OpenAPI；读取页面不主动访问外部服务 |
 | 日志与诊断导出 | ✅ 代码闭环 | stdout JSON + `/config/logs` 有界轮转日志、7 天最大查询窗口、查询/导出条数硬限制、typed API 与前端筛选/导出已接通；诊断 ZIP 继续独立且默认不含日志，日志/诊断均有泄漏 canary |
-| 镜像/SBOM/发布产物 | ✅ 发布闭环 | `v0.1.2` Release workflow run `34937718889` 已真实发布 linux/amd64 GHCR 镜像、SPDX JSON SBOM、release manifest、SHA256SUMS 与 GitHub Release；公开 `0.1.2`、`stable` 和 manifest 均指向 `sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`，发布资产校验和已独立复核 |
-| 运维 runbook/用户手册 | ✅ 闭环 | 已补 Compose 备份/停止/恢复/readiness/回滚步骤；正式 `v0.1.2` 提供独立 updater helper 的 Web 一键升级、安全容器重建、healthcheck 与失败自动回滚；无 helper 或复杂拓扑仍保留手工 digest runbook |
+| 镜像/SBOM/发布产物 | ✅ 发布闭环 | 当前最新正式 `v0.1.3` Release workflow run `35046214232` 已完成 linux/amd64 GHCR 镜像、SBOM、release manifest、SHA256SUMS 与 GitHub Release 发布；正式不可变 digest 为 `sha256:1dbbe55cc7b9b1ec6e35afe62ab7ecf32db092350dfeec4cf5966a06d165f48d` |
+| 运维 runbook/用户手册 | ✅ 闭环 | 已补 Compose 备份/停止/恢复/readiness/回滚步骤；已发布版本保留独立 updater helper 的 Web 一键升级、安全容器重建、healthcheck 与失败自动回滚；`v0.1.4` candidate 新增单常驻容器 + 一次性 helper 路径，无 Docker 管理权限或复杂拓扑时仍保留手工 digest runbook |
 | v1.0 全量验收 | ✅ 验收闭环 | 25 条验收项已建立机器可校验证据索引：21 条自动化/CI 覆盖、4 条现场证据、0 条 `pending_external`；首个正式 tag 的 registry/SBOM/Release 供应链证据也已完成 |
 
 ## 3. 一致性备份首批能力
@@ -69,13 +69,13 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 - BackupDriver 每分钟默认检查一次是否到期；实际备份仍调用同一 SQLite 一致性快照与安全 retention 实现。手动“立即备份”和计划备份共用同一进程内互斥锁，重叠请求返回 busy 而不会并发制造第二份快照。
 - “系统设置 → 备份恢复”已接真实策略 API、Driver 状态和手动一致性备份。页面不提供在线数据库恢复；恢复仍要求停止活动实例后使用维护 CLI，且 `secret.key` 必须独立保管。
 
-## 10. 升级中心安全入口
+## 10. 版本升级安全入口
 
 - `GET /api/v1/system/release/preflight` 复用 release preflight 的本地检查，但固定 `exercise_backup=false`，因此页面刷新不会创建/删除备份演练文件；返回配置目录、SQLite head/integrity、现有主密钥、`/data` 根与 docker.sock 风险，不访问 PT/下载器/通知，也不遍历媒体树。
-- `GET /api/v1/system/upgrade` 展示当前版本、最新正式 Release/digest、独立 updater helper phase 与自动升级阻断原因；`POST /api/v1/system/upgrade/actions` 要求 `config:write`、管理会话 CSRF（如适用）和 `Idempotency-Key`，并在交给 helper 前重新确认 Release、跑完整 preflight、创建一致性备份。
-- `packbreaker-updater` 独占 docker.sock，通过 `/config/updater/updater.sock` + 随机 token 接受主服务请求。主 PackBreaker 自身检测到 docker.sock 时拒绝自动升级。helper 会创建切换瞬间静止数据库备份、按 allowlist 重建容器配置、等待 Docker healthcheck，并在失败时恢复旧数据库/旧容器；无法收敛则进入 `manual_recovery_required`。
-- 自动升级当前只支持可安全重建的单容器/单网络拓扑；Docker Compose 管理标签、AutoRemove、container namespace、多网络、显式静态 IP/MAC 等失败关闭。没有 helper 时仍可按不可变 digest runbook 手工升级/回滚。
-- CI 新增 `updater-e2e` 真实 Docker 门禁：从 `release-baseline.json` 的正式不可变 baseline 出发，通过 Runner 内临时 registry 给 helper 提供真实 digest pull，分别验证成功替换和“候选修改数据库后 healthcheck 失败”的自动容器/数据库回滚。该门禁不使用生产 `/config`、PT、下载器或媒体目录。
+- `GET /api/v1/system/upgrade` 展示当前版本、最新正式 Release/digest 与当前升级执行器 phase/阻断原因；`POST /api/v1/system/upgrade/actions` 要求 `config:write`、管理会话 CSRF（如适用）和 `Idempotency-Key`，并在交给 helper 前重新确认 Release、跑完整 preflight、创建一致性备份。
+- 单容器易用模式由主 PackBreaker 挂载 docker.sock，只在用户确认升级后创建一次性 `AutoRemove` helper；helper 创建切换瞬间静止数据库备份、按 allowlist 重建容器配置、等待 Docker healthcheck，并在失败时恢复旧数据库/旧容器。若不授予主容器 docker.sock，原独立 `packbreaker-updater` Unix socket + token 模式仍可作为兼容路径。
+- 自动升级当前只支持可安全重建的单容器/单网络拓扑；Docker Compose 管理标签、AutoRemove、container namespace、多网络、显式静态 IP/MAC 等失败关闭。无可用升级执行器时仍可按不可变 digest runbook 手工升级/回滚。
+- CI `updater-e2e` 真实 Docker 门禁从 `release-baseline.json` 的正式不可变 baseline 出发，通过 Runner 内临时 registry 验证成功替换和“候选修改数据库后 healthcheck 失败”的自动容器/数据库回滚；当前真实 job 仍走独立 helper，单容器一次性 helper 已有专项合成门禁并需在下一次正式发布前补入同一真实 Docker job。所有门禁均不使用生产 `/config`、PT、下载器或媒体目录。
 
 ## 11. v1.0 验收证据索引与发布边界
 
@@ -86,4 +86,4 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 
 ## 12. 下一阶段退出证据
 
-当前代码侧已取得备份/计划调度、恢复、安全升级矩阵、统一健康仪表盘、持久日志查询/导出与诊断脱敏证据；正式 `v0.1.2` Release workflow run `34937718889` 的镜像、SBOM、manifest、checksums、GitHub Release、`stable` 推进、`v0.1.1 → v0.1.2 → 恢复 v0.1.1` 跨版本门禁以及独立 updater helper 的现场成功升级/自动回滚 E2E 均已完成。M6 的本轮发布级外部证据已经闭环，后续版本以正式 `v0.1.2` 不可变 digest 作为新的相邻版本 baseline。
+当前代码侧已取得备份/计划调度、恢复、安全升级矩阵、统一健康仪表盘、持久日志查询/导出与诊断脱敏证据；历史 `v0.1.2` 的跨版本门禁与独立 updater helper E2E 已闭环，最新正式 `v0.1.3` Release workflow run `35046214232` 已完成发布。后续版本以正式 `v0.1.3` 不可变 digest 作为新的相邻版本 baseline；`v0.1.4` candidate 的单容器一次性 helper 仍需 GitHub Actions 真实 Docker E2E 后才可计入发布级外部证据。

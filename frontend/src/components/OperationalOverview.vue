@@ -31,7 +31,10 @@ import {
   type SystemUpgradeStatus,
 } from '../api/system';
 
-const emit = defineEmits<{ navigate: [page: string] }>();
+const emit = defineEmits<{
+  navigate: [page: string];
+  openVersion: [];
+}>();
 const health = ref<SystemHealth | null>(null);
 const tasks = ref<TaskRecord[]>([]);
 const upgrade = ref<SystemUpgradeStatus | null>(null);
@@ -188,30 +191,16 @@ const recentTasks = computed(() =>
 );
 
 const historyDriverErrors = computed(() => metricNumber('workers', 'history_consecutive_errors'));
-const updaterPhase = computed(() => upgrade.value?.helper_status?.phase ?? 'idle');
 
-function updaterLabel(): string {
-  return (
-    {
-      idle: '就绪',
-      accepted: '已接管',
-      pulling: '拉取镜像',
-      stopping: '切换容器',
-      starting: '启动新容器',
-      verifying: '健康检查',
-      succeeded: '升级成功',
-      rolling_back: '自动回滚',
-      rolled_back: '已回滚',
-      failed: '升级失败',
-      manual_recovery_required: '需人工恢复',
-    }[updaterPhase.value] ?? updaterPhase.value
-  );
+function versionStatusLabel(): string {
+  if (!upgrade.value) return '检查中';
+  if (upgrade.value.release_error_code) return '检查失败';
+  return upgrade.value.update_available ? '有更新' : '最新';
 }
 
-function updaterStatusClass(): string {
+function versionStatusClass(): string {
   if (!upgrade.value) return 'is-warning';
-  if (['failed', 'manual_recovery_required'].includes(updaterPhase.value)) return 'is-critical';
-  if (['rolling_back', 'rolled_back'].includes(updaterPhase.value)) return 'is-warning';
+  if (upgrade.value.release_error_code || upgrade.value.update_available) return 'is-warning';
   return 'is-ok';
 }
 
@@ -527,20 +516,23 @@ onUnmounted(() => {
               </div>
               <span class="service-visual green" aria-hidden="true"><Archive :size="98" /></span>
             </button>
-            <button class="service-tile service-updater" @click="go('升级中心')">
+            <button class="service-tile service-updater" @click="emit('openVersion')">
               <div class="service-main">
                 <span class="service-icon purple"><RefreshCw :size="24" /></span>
                 <div class="service-copy">
                   <div class="service-title-row">
-                    <b>Updater</b><small :class="updaterStatusClass()">{{ updaterLabel() }}</small>
+                    <b>版本</b
+                    ><small :class="versionStatusClass()">{{ versionStatusLabel() }}</small>
                   </div>
                   <strong>v{{ upgrade?.current_version ?? health.version }}</strong>
                   <span class="service-value-note">{{
-                    upgrade?.update_available
-                      ? `可升级到 v${upgrade.latest_version}`
-                      : '当前正式版本'
+                    upgrade?.release_error_code
+                      ? '暂时无法检查正式版本'
+                      : upgrade?.update_available
+                        ? `可升级到 v${upgrade.latest_version}`
+                        : '当前已是最新正式版本'
                   }}</span>
-                  <p>系统更新与版本管理</p>
+                  <p>正式版本发现与手动升级</p>
                 </div>
               </div>
               <span class="service-visual purple" aria-hidden="true"

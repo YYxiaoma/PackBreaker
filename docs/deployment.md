@@ -30,7 +30,7 @@ v1.0 以单个 `linux/amd64` Docker 镜像发布，单容器内运行 FastAPI、
 | `/config` | SQLite、加密密钥文件、日志、备份、运行锁 | 应用用户读写，目录建议 0700 |
 | `/data` | 媒体源、硬链接目标、受控 staging | 按路径策略读/写；不能包含应用秘密 |
 | `/tmp` | 临时解析和导出 | 容器临时空间，定期清理 |
-| `/var/run/docker.sock` | 仅独立 `packbreaker-updater` helper 使用 | 主 PackBreaker 禁止挂载；helper 挂载即拥有 Docker 管理权限 |
+| `/var/run/docker.sock` | 单容器一键升级或独立 `packbreaker-updater` helper 使用 | 挂载即拥有 Docker 主机级管理权限，只应在受信宿主机启用 |
 
 硬链接要求源与目标在内核允许的同一挂载/文件系统内。部署时应把源目录和目标目录的共同父目录一次性挂载到 `/data`，再通过应用允许根目录限制访问。把两个子目录分别 bind mount 可能产生 `EXDEV`，即使宿主机底层存储相同。
 
@@ -70,29 +70,29 @@ docker compose up --build -d
 
 Compose 使用 `packbreaker-config` named volume 保存 SQLite、主密钥和锁，数据根通过 `PACKBREAKER_DATA_PATH` 显式 bind mount 到 `/data`；默认 HTTP 端口为 8000，可用 `PACKBREAKER_HTTP_PORT` 修改宿主机端口。容器设置 `no-new-privileges`，健康检查执行 `python -m backend.app.healthcheck`，只请求本机 `/api/v1/health/ready`。
 
-生产部署建议把 `PACKBREAKER_IMAGE` 固定为正式 Release manifest 中的不可变 digest。当前 Web 一键升级只支持独立 `docker run` 管理的主容器；检测到 `com.docker.compose.*` 标签时会失败关闭，避免应用在 Compose 之外替换容器后被后续 `docker compose up` 按旧声明覆盖。因此仓库 `compose.yaml` 继续采用宿主机显式更新 digest 的方式。
+生产部署建议把实际运行版本记录为正式 Release manifest 中的不可变 digest。Web 一键升级只支持独立 `docker run --name packbreaker` 管理的主容器；检测到 `com.docker.compose.*` 标签时会失败关闭，避免应用在 Compose 之外替换容器后被后续 `docker compose up` 按旧声明覆盖。因此仓库 `compose.yaml` 继续采用宿主机显式更新 digest 的方式。
 
-对于独立 `docker run --name packbreaker` 部署，可额外启动 updater helper。以下示例假设主容器的 `/config` 来自 `/root/packbreaker/config`；helper 必须挂载同一个配置目录，但不需要挂载 `/data`：
+独立 `docker run` 的推荐易用部署是“单常驻容器”模式：主 PackBreaker 挂载 Docker socket，平时只有一个 `packbreaker` 容器；用户在左上角版本弹窗点击一键升级时，主服务完成正式 Release/digest 复验和一致性备份，然后临时创建一个 `AutoRemove` updater 容器。临时 helper 接管后停止旧主容器、按原部署参数创建新主容器、等待 healthcheck，并在失败时恢复切换瞬间数据库与旧容器。helper 退出后由 Docker 自动删除，因此升级结束后重新回到单常驻容器状态。
 
 ```bash
 docker run -d \
-  --name packbreaker-updater \
+  --name packbreaker \
   --restart unless-stopped \
   --user 0:0 \
-  -e PUID=1000 \
-  -e PGID=1000 \
-  -e PACKBREAKER_CONFIG_DIR=/config \
-  -e PACKBREAKER_UPDATER_TARGET_CONTAINER=packbreaker \
-  -e PACKBREAKER_UPDATER_ALLOWED_IMAGE=ghcr.io/yyxiaoma/packbreaker \
+  -e PUID=0 \
+  -e PGID=0 \
+  -e PACKBREAKER_TIMEZONE="Asia/Shanghai" \
+  -p 8000:8000 \
   -v /root/packbreaker/config:/config \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/yyxiaoma/packbreaker@sha256:<支持 updater 的正式 release digest> \
-  python -m backend.app.updater_helper
+  ghcr.io/yyxiaoma/packbreaker:latest
 ```
 
-`packbreaker-updater` 在 `/config/updater/updater.sock` 上提供 Unix socket，并使用 `/config/updater/token` 的随机 token 认证。helper 以 root 运行且独占 `/var/run/docker.sock`；主 PackBreaker 不应挂载 Docker socket。helper 协议具有独立版本号，只要协议仍兼容即可继续服务后续升级；未来协议不兼容时升级中心会明确阻断并要求先由宿主机更新 helper。
+需要访问媒体目录时，仍应按实际公共父目录额外挂载 `/data`。`docker.sock` 等价于 Docker 主机级管理权限，因此该易用模式只应部署在受信宿主机；PackBreaker 的升级 API 仍只接受官方 Release 的 `ghcr.io/yyxiaoma/packbreaker@sha256:<digest>`，并只重建名为 `packbreaker` 的受支持单容器拓扑。
 
-如果使用自定义 `PUID`/`PGID`，应确保 `/data` 内需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限。`0` 是有效值；`PUID=0`、`PGID=0` 时服务进程保持 root 身份运行。入口不会为了方便而修改媒体树所有权。默认 Compose 不授予 Docker 管理权限，也不支持 Web 在 Compose 之外替换主容器；Compose 部署按宿主机不可变 digest runbook 升级。独立 `docker run` 部署若启用 Web 一键升级，则 docker.sock 只挂载到 `packbreaker-updater` helper。
+若不愿把 Docker socket 授予主容器，仍可采用兼容的最小权限模式：主 PackBreaker 不挂 docker.sock，另外常驻 `packbreaker-updater`，二者共享同一个 `/config`。独立 helper 使用 `/config/updater/updater.sock` + 随机 token 接受受限升级请求。该模式继续受支持，但不再是独立 `docker run` 的默认易用部署。
+
+如果使用自定义 `PUID`/`PGID`，应确保 `/data` 内需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限；单容器一键升级还要求主进程身份能够访问挂载的 Docker socket。`0` 是有效值；`PUID=0`、`PGID=0` 时服务进程保持 root 身份运行。入口不会为了方便而修改媒体树所有权。默认 Compose 不授予 Docker 管理权限，也不支持 Web 在 Compose 之外替换主容器；Compose 部署按宿主机不可变 digest runbook 升级。
 
 ## 6. 网络与反向代理
 
@@ -206,15 +206,15 @@ flowchart LR
 
 当前自动化兼容矩阵已覆盖仓库全部 22 个历史 revision（`0001`～`0022`）升级到 `0023_backup_policy`。生产回滚不依赖 Alembic 原地 downgrade：若旧镜像不能读取新 schema，必须恢复 `pre-upgrade`/升级前备份后再启动旧镜像。完整矩阵见 `docs/upgrade-compatibility.md`。
 
-仓库固定 `release-baseline.json` 作为上一正式镜像的不可变升级输入。当前 baseline 已推进到最新正式 `v0.1.2`：`ghcr.io/yyxiaoma/packbreaker@sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`。普通 CI container gate 与正式 tag release 在发布后续镜像前都会运行 `scripts/check-release-upgrade.sh`，真实验证上一正式 release → 当前候选 → 恢复上一正式 release；正式 tag workflow 还会运行独立 updater helper 的真实 Docker 自动升级/回滚 E2E。
+仓库固定 `release-baseline.json` 作为上一正式镜像的不可变升级输入；它是下一候选版本兼容门禁的基线，而不等同于“最新 Release”展示通道。普通 CI container gate 与正式 tag release 在发布后续镜像前都会运行 `scripts/check-release-upgrade.sh`，真实验证 baseline → 当前候选 → 恢复 baseline；正式 tag workflow 还会运行 updater helper 的真实 Docker 自动升级/回滚 E2E。
 
 - 版本与目标镜像只信任正式 GitHub Release manifest 中的官方 `ghcr.io/yyxiaoma/packbreaker@sha256:<digest>`；`stable` 和版本 tag 只用于发现/导航。
-- `GET /system/upgrade` 会读取当前正式 Release、目标 digest 和 updater helper 状态；`POST /system/upgrade/actions` 要求 `config:write`、管理员 CSRF（会话模式）和 `Idempotency-Key`。
+- `GET /system/upgrade` 会读取当前正式 Release、目标 digest 和当前可用升级执行器状态；`POST /system/upgrade/actions` 要求 `config:write`、管理员 CSRF（会话模式）和 `Idempotency-Key`。
 - 写入升级请求前，主服务重新读取正式 Release、执行完整本地 preflight 并创建一致性升级前备份；页面上的旧目标 digest 已变化时直接拒绝。
-- 独立 updater helper 拉取目标 digest，inspect 当前 `packbreaker` 容器，只复制允许的端口、环境变量、挂载、restart policy、单网络等配置；Docker Compose 管理标签、`AutoRemove`、`container:<id>` namespace/网络和多网络、显式静态 IP/MAC 等无法安全重建的部署失败关闭。
-- helper 停止旧容器后再创建一份“切换瞬间”静止数据库备份，重命名旧容器，创建/启动新容器并等待 Docker healthcheck。新容器健康后才删除旧容器。
+- 单容器模式由主服务通过 Docker API 启动一次性 `AutoRemove` helper；helper 使用当前镜像中的受限升级程序，目标只接受正式 Release 的官方不可变 digest。兼容的独立 updater helper 仍可作为不授予主容器 docker.sock 的替代方案。
+- helper inspect 当前 `packbreaker` 容器，只复制允许的端口、环境变量、挂载、restart policy、单网络等配置；一次性模式会继续保留主容器的 docker.sock 挂载，以便未来版本仍可一键升级。Docker Compose 管理标签、`AutoRemove`、`container:<id>` namespace/网络和多网络、显式静态 IP/MAC 等无法安全重建的部署失败关闭。
+- helper 停止旧容器后再创建一份“切换瞬间”静止数据库备份，重命名旧容器，创建/启动新容器并等待 Docker healthcheck。新容器健康后尝试删除旧容器；若仅旧停止容器清理失败，健康升级保持成功并留下人工清理提示，不会反向回滚健康新版本。
 - 新版本启动、迁移或 healthcheck 失败时，helper 会删除失败的新容器；若数据库可能已被新容器修改，则使用旧镜像的维护命令恢复切换瞬间备份，再把旧容器改回原名、启动并验证健康。自动回滚无法收敛时状态转为 `manual_recovery_required` 并禁止继续覆盖现场。
-- 主 PackBreaker 若检测到自身挂载 `/var/run/docker.sock` 会拒绝自动升级；Docker 管理权限必须只存在于独立 helper。
 - 新版本健康检查包含迁移版本、数据库/secret 自检和实例/worker 运行条件，不要求所有 PT 站在线。
 
 ## 9. 日志、指标与告警
@@ -234,6 +234,6 @@ flowchart LR
 - `/config` 与 secret.key 权限正确，备份存储位置受控。
 - 站点、下载器、通知测试日志和诊断包通过秘密 canary 测试。
 - `/data` 只映射必要共同父目录，应用允许根目录配置正确。
-- 主 PackBreaker 不挂载 docker.sock；只有显式启用的独立 updater helper 挂载，并通过共享 `/config` 的 Unix socket + token 接受受限升级请求。
+- 使用单容器一键升级时，主 PackBreaker 挂载 docker.sock；该权限等价于 Docker 主机管理权限，只应在受信宿主机启用。若采用最小权限兼容模式，则 docker.sock 仅授予独立 updater helper。
 - 真实 `.torrent`、数据库和日志未进入镜像或源码仓库。
 - 恢复、升级失败回滚和主密钥丢失场景已经演练。

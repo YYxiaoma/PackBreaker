@@ -49,4 +49,4 @@ release manifest 不保存凭证、数据库或真实环境路径。SBOM 从已�
 
 ## 5. 当前发布证据
 
-正式 `v0.1.2` Release workflow run `34937718889` 已真实生成并发布 linux/amd64 GHCR 镜像、SPDX SBOM、release manifest、`SHA256SUMS` 与 GitHub Release 资产；发布前同时跑绿 `v0.1.1 → v0.1.2 候选 → 恢复 v0.1.1` 跨镜像兼容门禁，以及独立 updater helper 的真实 digest pull、成功容器替换和“故障候选修改数据库后自动恢复旧数据库/旧容器”E2E。release manifest 绑定 commit `bee69945702b20318232ec73d66d580f394a125f` 和不可变 digest `sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`；独立下载复核确认 release JSON 与 SPDX SBOM 都与 `SHA256SUMS` 一致，SBOM SHA-256 与 manifest 一致，公开 `0.1.2`、`stable` 与 `latest` 均应解析到该 digest；`latest`/`stable` 都只是可移动发现通道，生产升级与回滚仍以 release manifest 中的完整不可变 digest 为准。
+当前最新正式版本为 `v0.1.3`。Release workflow run `35046214232` 已成功完成正式发布门禁，并发布 linux/amd64 GHCR 镜像、release manifest、SBOM、`SHA256SUMS` 与 GitHub Release 资产；release 身份绑定 commit `8e5b9ead1eeb9f0dccbe79972aac2c0a6a02f10c` 和不可变 digest `sha256:1dbbe55cc7b9b1ec6e35afe62ab7ecf32db092350dfeec4cf5966a06d165f48d`。`latest`/`stable` 仍只是可移动发现通道，生产升级、回滚与下一候选的相邻版本门禁都以 release manifest / `release-baseline.json` 中的完整不可变 digest 为准。当前 `v0.1.4` candidate 的单容器 transient updater 路径尚需 GitHub Actions 真实 Docker E2E 后才能进入下一次正式发布证据。

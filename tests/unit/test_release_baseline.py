@@ -10,16 +10,16 @@ from scripts.validate_release_baseline import load_release_baseline
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_repository_release_baseline_is_immutable_v012() -> None:
+def test_repository_release_baseline_is_immutable_v013() -> None:
     baseline = load_release_baseline()
 
-    assert baseline.version == "0.1.2"
-    assert baseline.tag == "v0.1.2"
-    assert baseline.commit == "bee69945702b20318232ec73d66d580f394a125f"
+    assert baseline.version == "0.1.3"
+    assert baseline.tag == "v0.1.3"
+    assert baseline.commit == "8e5b9ead1eeb9f0dccbe79972aac2c0a6a02f10c"
     assert baseline.alembic_revision == "0023_backup_policy"
     assert baseline.immutable_image == (
         "ghcr.io/yyxiaoma/packbreaker@"
-        "sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4"
+        "sha256:1dbbe55cc7b9b1ec6e35afe62ab7ecf32db092350dfeec4cf5966a06d165f48d"
     )
 
 
@@ -33,7 +33,7 @@ def test_release_baseline_rejects_mutable_or_mismatched_identity(tmp_path: Path)
         load_release_baseline(baseline)
 
     payload = json.loads((ROOT / "release-baseline.json").read_text(encoding="utf-8"))
-    payload["tag"] = "v0.1.3"
+    payload["tag"] = "v0.1.2"
     baseline.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="tag 与 version"):
         load_release_baseline(baseline)
@@ -41,8 +41,8 @@ def test_release_baseline_rejects_mutable_or_mismatched_identity(tmp_path: Path)
 
 def test_release_baseline_cannot_be_newer_than_project_version(tmp_path: Path) -> None:
     payload = json.loads((ROOT / "release-baseline.json").read_text(encoding="utf-8"))
-    payload["version"] = "0.1.4"
-    payload["tag"] = "v0.1.4"
+    payload["version"] = "0.1.5"
+    payload["tag"] = "v0.1.5"
     baseline = tmp_path / "baseline.json"
     baseline.write_text(json.dumps(payload), encoding="utf-8")
 

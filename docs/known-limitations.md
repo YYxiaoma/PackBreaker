@@ -11,15 +11,15 @@
 ## 2. 发布与容器证据
 
 - 正式发布目标当前只有 `linux/amd64`。
-- 当前开发 Runner 无 Docker daemon；GitHub Actions CI run `34937287040` 已跑绿 `quality`、`browser-e2e`、`container` 与真实 `updater-e2e`，持续承担容器、备份/恢复和独立 helper 的真实 Docker 门禁。
-- `v0.1.2` 已由 Release workflow run `34937718889` 正式发布；公开 GHCR `0.1.2` 与 `stable` 均指向 `sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`，SPDX SBOM、release manifest、`SHA256SUMS` 和 GitHub Release 资产均已发布并独立复核。
-- 该 Release 已真实通过 `v0.1.1 → v0.1.2 候选 → 恢复 v0.1.1` Docker 升级/回滚门禁，并通过独立 updater helper 的成功升级与故障候选自动数据库/容器回滚 E2E。`release-baseline.json` 已推进到正式 `v0.1.2`，供下一版本继续做相邻正式版本兼容门禁。
+- 当前开发 Runner 无 Docker daemon；GitHub Actions 持续承担容器、备份/恢复和 updater 的真实 Docker 门禁。单容器一次性 helper 是 `v0.1.4` candidate 能力，已经补进 `scripts/check-updater-e2e.sh`，但在 push 并由 GitHub Actions 实跑成功前仍不宣称取得真实 Docker E2E 证据。
+- 当前最新正式 Release 为 `v0.1.3`，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:1dbbe55cc7b9b1ec6e35afe62ab7ecf32db092350dfeec4cf5966a06d165f48d`；Release workflow run `35046214232` 已成功完成正式发布。
+- 已发布版本仍由跨版本 Docker 升级/恢复门禁与独立 updater helper E2E 提供正式证据；当前 `release-baseline.json` 已固定正式 `v0.1.3` 作为 `v0.1.4` candidate 的相邻兼容输入，单容器 transient 路径尚未宣称具有正式 Docker E2E 证据。
 
 ## 3. 升级与 Docker 权限
 
-- 正式 `v0.1.2` 已实现 Web 一键 Docker 升级，但要求额外运行独立 `packbreaker-updater` helper；主 PackBreaker 本身禁止挂载 docker.sock。没有 helper 时升级中心仍可做版本/预检/备份诊断，但不能自动切换容器。
-- helper 只支持能够安全重建的单容器部署：必须存在唯一可写 `/config` 挂载，当前镜像必须来自官方 GHCR；Docker Compose 管理标签、`AutoRemove`、`container:<id>` network/PID/IPC namespace、多网络、显式静态 IP/MAC 等配置会阻断自动升级。Compose/Swarm/Kubernetes 拓扑仍需宿主机管理员按 runbook 手工升级。
-- helper 持有 `/var/run/docker.sock`，等价于 Docker 主机级管理权限；该权限被隔离在 helper，但仍应只在受信宿主机上启用。
+- 独立 `docker run --name packbreaker` 支持“单常驻容器”一键升级：主容器挂载 docker.sock，点击版本弹窗的升级按钮后临时创建 `AutoRemove` helper 接管停机、容器替换、健康检查与失败回滚；升级窗口内会短暂存在第二个 helper 容器，结束后自动删除。若不愿向主容器授予 docker.sock，仍可额外常驻独立 `packbreaker-updater` 作为兼容的最小权限方案。
+- 自动升级只支持能够安全重建的单容器部署：必须存在唯一可写 `/config` 挂载，当前镜像必须来自官方 GHCR；Docker Compose 管理标签、`AutoRemove`、`container:<id>` network/PID/IPC namespace、多网络、显式静态 IP/MAC 等配置会阻断自动升级。Compose/Swarm/Kubernetes 拓扑仍需宿主机管理员按 runbook 手工升级。
+- `/var/run/docker.sock` 等价于 Docker 主机级管理权限；单容器易用模式把该权限授予主 PackBreaker，因此只应在受信宿主机启用。服务端升级入口仍限制到官方 Release 不可变 digest 和目标 `packbreaker` 容器，但这不能把 Docker socket 本身变成低权限接口。
 - 自动回滚依赖旧镜像仍可启动且 `/config` 可写；若 Docker daemon、卷、旧镜像或离线恢复本身不可用，helper 会进入 `manual_recovery_required`，不会继续覆盖现场。
 - `stable` 是可移动发现通道，不能作为生产安装、升级或回滚的唯一身份；运维记录必须保存完整 image digest。
 

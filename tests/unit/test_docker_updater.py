@@ -132,6 +132,19 @@ def test_replacement_plan_preserves_deployment_overrides_and_strips_docker_socke
     assert plan.config_bind == "/root/packbreaker/config:/config"
 
 
+def test_replacement_plan_can_preserve_docker_socket_for_single_container_upgrade() -> None:
+    plan = build_replacement_plan(
+        _container(),
+        _old_image(),
+        target_image=_TARGET,
+        allowed_image=_OFFICIAL,
+        preserve_docker_socket=True,
+    )
+
+    host = plan.create_payload["HostConfig"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" in host["Binds"]
+
+
 def test_replacement_plan_accepts_private_registry_with_port_for_isolated_e2e() -> None:
     repository = "127.0.0.1:5000/packbreaker"
     container = _container()
@@ -212,8 +225,9 @@ def test_replacement_plan_fails_closed_for_unsafe_runtime_shapes(
 
 
 class FakeDocker:
-    def __init__(self, *, fail_new_health: bool = False) -> None:
+    def __init__(self, *, fail_new_health: bool = False, fail_old_cleanup: bool = False) -> None:
         self.fail_new_health = fail_new_health
+        self.fail_old_cleanup = fail_old_cleanup
         self.calls: list[tuple[str, object]] = []
 
     def inspect_container(self, container: str) -> dict[str, Any]:
@@ -242,6 +256,8 @@ class FakeDocker:
 
     def remove_container(self, container: str, *, force: bool = False) -> None:
         self.calls.append(("remove", (container, force)))
+        if container == "old-container-id" and not force and self.fail_old_cleanup:
+            raise DockerUpdaterError("DOCKER_CONTAINER_REMOVE_FAILED", "synthetic cleanup failure")
 
     def wait_healthy(
         self,
@@ -305,6 +321,23 @@ def test_upgrade_executor_switches_to_new_container_after_health() -> None:
     assert outcome.rollback_performed is False
     assert phases == ["pulling", "stopping", "starting", "verifying"]
     assert ("remove", ("old-container-id", False)) in docker.calls
+    assert not any(call[0] == "restore" for call in docker.calls)
+
+
+def test_upgrade_executor_does_not_rollback_healthy_upgrade_when_old_cleanup_fails() -> None:
+    docker = FakeDocker(fail_old_cleanup=True)
+    outcome = DockerUpgradeExecutor(
+        docker,
+        target_container="packbreaker",
+        allowed_image=_OFFICIAL,
+        config_dir=Path("/config"),
+        backup_factory=_backup_factory,
+    ).execute(_request(), phase=lambda _phase, _message: None)
+
+    assert outcome.phase == "succeeded"
+    assert outcome.rollback_performed is False
+    assert "旧停止容器清理失败" in outcome.message
+    assert ("healthy", "new-container-id") in docker.calls
     assert not any(call[0] == "restore" for call in docker.calls)
 
 

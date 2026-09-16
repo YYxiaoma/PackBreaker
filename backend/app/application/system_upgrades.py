@@ -20,6 +20,7 @@ from backend.app.infrastructure.release_updates import (
     ReleaseUpdateError,
     semantic_version,
 )
+from backend.app.infrastructure.transient_updater import TransientUpdaterLauncher
 from backend.app.infrastructure.updater_protocol import (
     UpdaterClient,
     UpdaterProtocolError,
@@ -87,6 +88,7 @@ class SystemUpgradeService:
         *,
         release_client: ReleaseProvider | None = None,
         updater_client: UpdaterGateway | None = None,
+        transient_updater: UpdaterGateway | None = None,
         preflight_runner: PreflightRunner = run_release_preflight,
         main_docker_socket_path: Path = Path("/var/run/docker.sock"),
     ) -> None:
@@ -97,7 +99,29 @@ class SystemUpgradeService:
             settings.updater_token_path,
         )
         self._main_docker_socket_path = main_docker_socket_path
+        self._transient_updater = transient_updater or TransientUpdaterLauncher(
+            config_dir=settings.config_dir,
+            docker_socket=main_docker_socket_path,
+            target_container="packbreaker",
+            allowed_image=OFFICIAL_IMAGE,
+        )
         self._preflight_runner = preflight_runner
+
+    async def _resolve_updater(
+        self,
+    ) -> tuple[UpdaterGateway | None, UpdaterStatus | None, UpdaterProtocolError | None]:
+        last_error: UpdaterProtocolError | None = None
+        if self._main_docker_socket_path.exists():
+            try:
+                status = await asyncio.to_thread(self._transient_updater.status)
+                return self._transient_updater, status, None
+            except UpdaterProtocolError as exc:
+                last_error = exc
+        try:
+            status = await asyncio.to_thread(self._updater_client.status)
+            return self._updater_client, status, None
+        except UpdaterProtocolError as exc:
+            return None, None, last_error or exc
 
     async def status(self) -> SystemUpgradeStatus:
         current_version = app_version()
@@ -108,19 +132,14 @@ class SystemUpgradeService:
         except ReleaseUpdateError as exc:
             release_error_code = exc.code
 
-        helper: UpdaterStatus | None = None
-        helper_available = False
-        try:
-            helper = await asyncio.to_thread(self._updater_client.status)
-            helper_available = True
-        except UpdaterProtocolError:
-            pass
+        _gateway, helper, updater_error = await self._resolve_updater()
+        helper_available = helper is not None
 
         blocked: list[str] = []
-        if self._main_docker_socket_path.exists():
-            blocked.append("MAIN_DOCKER_SOCKET_PRESENT")
         if not helper_available:
-            blocked.append("UPDATER_HELPER_UNAVAILABLE")
+            blocked.append(
+                updater_error.code if updater_error is not None else "UPDATER_EXECUTOR_UNAVAILABLE"
+            )
         elif helper is not None and helper.active:
             blocked.append("UPDATER_BUSY")
         elif helper is not None and helper.phase == "manual_recovery_required":
@@ -164,19 +183,11 @@ class SystemUpgradeService:
     ) -> SystemUpgradeActionResult:
         request_id = _require_idempotency_key(idempotency_key)
         current_version = app_version()
-        if self._main_docker_socket_path.exists():
-            raise ApplicationError(
-                code="UPGRADE_MAIN_DOCKER_SOCKET_PRESENT",
-                status=409,
-                title="主容器权限过高",
-                detail=(
-                    "自动升级要求 docker.sock 只挂载到独立 updater helper，"
-                    "请先移除主 PackBreaker 容器的 Docker socket 挂载"
-                ),
+        updater, helper, updater_error = await self._resolve_updater()
+        if updater is None or helper is None:
+            exc = updater_error or UpdaterProtocolError(
+                "UPDATER_EXECUTOR_UNAVAILABLE", "没有可用的 Docker 升级执行器"
             )
-        try:
-            helper = await asyncio.to_thread(self._updater_client.status)
-        except UpdaterProtocolError as exc:
             raise _updater_error(exc) from exc
         if helper.request_id == request_id:
             expected_target_image = f"{OFFICIAL_IMAGE}@{target_image_digest.lower()}"
@@ -280,7 +291,7 @@ class SystemUpgradeService:
             backup_manifest_file=manifest_file,
         )
         try:
-            accepted = await asyncio.to_thread(self._updater_client.start_upgrade, request)
+            accepted = await asyncio.to_thread(updater.start_upgrade, request)
         except UpdaterProtocolError as exc:
             raise _updater_error(exc) from exc
         return SystemUpgradeActionResult(
@@ -319,10 +330,19 @@ def _invalid_idempotency_key() -> ApplicationError:
 
 
 def _updater_error(exc: UpdaterProtocolError) -> ApplicationError:
-    status = 409 if exc.code in {"UPDATER_BUSY", "UPDATER_IDEMPOTENCY_CONFLICT"} else 503
+    status = (
+        409
+        if exc.code
+        in {
+            "UPDATER_BUSY",
+            "UPDATER_IDEMPOTENCY_CONFLICT",
+            "UPDATER_MANUAL_RECOVERY_REQUIRED",
+        }
+        else 503
+    )
     return ApplicationError(
         code=exc.code,
         status=status,
-        title="独立升级 helper 不可用",
+        title="Docker 升级执行器不可用",
         detail=str(exc),
     )

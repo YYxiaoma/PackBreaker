@@ -19,9 +19,9 @@ PackBreaker 是一个面向 PT 场景的自动拆包辅种系统。它以“大�
 
 ## 项目状态
 
-PackBreaker 已完成 M6 发布与运维闭环的主要能力，并已正式发布 `v0.1.2`。该版本的 linux/amd64 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:9d8cacfe1269be4573fa9db78536475d70769c8ea648bac1c521e529f7f7c3b4`；Release workflow run `34937718889` 已真实通过 `v0.1.1 → v0.1.2 → 恢复 v0.1.1` 的跨版本 Docker 门禁，以及独立 updater helper 的成功升级与故障候选自动数据库/容器回滚 E2E。
+PackBreaker 已完成 M6 发布与运维闭环的主要能力，当前最新正式版本为 `v0.1.3`。该版本的 linux/amd64 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:1dbbe55cc7b9b1ec6e35afe62ab7ecf32db092350dfeec4cf5966a06d165f48d`；Release workflow run `35046214232` 已成功完成正式发布门禁与 Release 资产发布。
 
-当前源码与正式 `v0.1.2` 对齐。除既有 qBittorrent/Transmission 主链、M-Team/HDTime/HHClub、v1/v2/hybrid piece 验证、人工审核、journal-backed 执行/取消/回滚、历史扫描、repair、备份恢复、健康/日志/诊断等能力外，升级中心已提供独立 `packbreaker-updater` helper：主 PackBreaker 不持有 docker.sock，helper 负责按正式 Release 的不可变 digest 拉取镜像、重建容器、等待 healthcheck，并在失败时恢复切换瞬间数据库备份与旧容器。
+当前 `main` 为 `v0.1.4` candidate，在正式 `v0.1.3` 之后继续迭代界面与升级体验。除既有 qBittorrent/Transmission 主链、M-Team/HDTime/HHClub、v1/v2/hybrid piece 验证、人工审核、journal-backed 执行/取消/回滚、历史扫描、repair、备份恢复、健康/日志/诊断等能力外，独立 `docker run` 正在采用“单常驻 PackBreaker + 升级期间一次性 helper”的一键升级方式：主容器挂载 docker.sock，用户从左上角版本弹窗确认升级后，临时 helper 负责按正式 Release 的不可变 digest 重建主容器、等待 healthcheck，并在失败时恢复切换瞬间数据库备份与旧容器。升级结束后临时 helper 自动删除。
 
 发布、升级与支持边界见 `docs/deployment.md`、`docs/upgrade-compatibility.md`、`docs/support-matrix.md` 与 `docs/known-limitations.md`。
 
@@ -42,7 +42,7 @@ Docker 环境可直接运行：
 docker compose up --build -d
 ```
 
-生产环境应把 `PACKBREAKER_IMAGE` 固定为正式 Release manifest 给出的完整 `@sha256:` digest，而不是依赖可移动 tag。Compose 管理的主容器继续采用宿主机显式更新 digest；Web 一键升级只支持独立 `docker run --name packbreaker` 部署，并需要另行启动只持有 Docker socket 的 `packbreaker-updater` helper，完整命令见 `docs/deployment.md`。
+生产运维记录应保存正式 Release manifest 给出的完整 `@sha256:` digest，而不是只记录可移动 tag。Compose 管理的主容器继续采用宿主机显式更新 digest；独立 `docker run --name packbreaker` 的单容器一键升级需要把 `/var/run/docker.sock` 挂载到主容器，完整安全边界和部署命令见 `docs/deployment.md`。若不愿向主容器授予 Docker 管理权限，仍可使用独立 `packbreaker-updater` 兼容模式。
 
 完整需求请参阅[需求基线 v0.3](./自动拆包辅种系统-需求基线-v0.3.html)。历史版本保留在[需求基线 v0.2](./自动拆包辅种系统-需求基线-v0.2.html)。研发设计、接口规范、测试计划和实施路线请参阅[研发文档索引](./docs/README.md)。
 

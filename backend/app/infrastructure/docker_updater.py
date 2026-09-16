@@ -345,6 +345,7 @@ def build_replacement_plan(
     *,
     target_image: str,
     allowed_image: str,
+    preserve_docker_socket: bool = False,
 ) -> ReplacementPlan:
     target_repository = digest_image_repository(target_image)
     if target_repository is None or target_repository != allowed_image.lower():
@@ -442,9 +443,9 @@ def build_replacement_plan(
             continue
         value = host.get(key)
         if key == "Binds":
-            value = _sanitize_binds(value)
+            value = _sanitize_binds(value, preserve_docker_socket=preserve_docker_socket)
         elif key == "Mounts":
-            value = _sanitize_mounts(value)
+            value = _sanitize_mounts(value, preserve_docker_socket=preserve_docker_socket)
         if value not in (None, [], {}):
             host_payload[key] = value
     create_payload["HostConfig"] = host_payload
@@ -514,6 +515,7 @@ class DockerUpgradeExecutor:
         config_dir: Path,
         backup_factory: BackupFactory = create_consistent_backup,
         health_timeout_seconds: float = 180.0,
+        preserve_docker_socket: bool = False,
     ) -> None:
         self._docker = docker
         self._target_container = target_container
@@ -521,6 +523,7 @@ class DockerUpgradeExecutor:
         self._config_dir = config_dir
         self._backup_factory = backup_factory
         self._health_timeout_seconds = health_timeout_seconds
+        self._preserve_docker_socket = preserve_docker_socket
 
     def execute(
         self,
@@ -537,6 +540,7 @@ class DockerUpgradeExecutor:
             old_image,
             target_image=request.target_image,
             allowed_image=self._allowed_image,
+            preserve_docker_socket=self._preserve_docker_socket,
         )
         if plan.container_name != self._target_container:
             raise DockerUpdaterError(
@@ -575,10 +579,23 @@ class DockerUpgradeExecutor:
                 new_container_id,
                 timeout_seconds=self._health_timeout_seconds,
             )
-            self._docker.remove_container(plan.container_id, force=False)
+            cleanup_warning = False
+            try:
+                self._docker.remove_container(plan.container_id, force=False)
+            except DockerUpdaterError:
+                # 新容器已经通过健康检查，此时旧容器只以 rollback 名称保持停止状态。
+                # 清理失败不应把一次已经成功的升级反向回滚；后续可人工删除该停止容器。
+                cleanup_warning = True
             return UpgradeOutcome(
                 phase="succeeded",
-                message=f"PackBreaker 已升级到 {request.target_version}",
+                message=(
+                    (
+                        f"PackBreaker 已升级到 {request.target_version}；"
+                        "旧停止容器清理失败，可稍后人工删除"
+                    )
+                    if cleanup_warning
+                    else f"PackBreaker 已升级到 {request.target_version}"
+                ),
                 rollback_performed=False,
                 quiesced_backup_file=(
                     None if quiesced_backup is None else quiesced_backup.database_path.name
@@ -690,7 +707,7 @@ def _config_bind(container: Mapping[str, Any]) -> str:
     return f"{source}:/config"
 
 
-def _sanitize_binds(value: object) -> list[str] | None:
+def _sanitize_binds(value: object, *, preserve_docker_socket: bool = False) -> list[str] | None:
     if value is None:
         return None
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
@@ -698,13 +715,15 @@ def _sanitize_binds(value: object) -> list[str] | None:
     kept = []
     for bind in cast(list[str], value):
         parts = bind.split(":")
-        if len(parts) >= 2 and parts[1] == "/var/run/docker.sock":
+        if not preserve_docker_socket and len(parts) >= 2 and parts[1] == "/var/run/docker.sock":
             continue
         kept.append(bind)
     return kept
 
 
-def _sanitize_mounts(value: object) -> list[dict[str, Any]] | None:
+def _sanitize_mounts(
+    value: object, *, preserve_docker_socket: bool = False
+) -> list[dict[str, Any]] | None:
     if value is None:
         return None
     if not isinstance(value, list):
@@ -724,7 +743,7 @@ def _sanitize_mounts(value: object) -> list[dict[str, Any]] | None:
         if not isinstance(item, dict):
             raise DockerUpdaterError("UPGRADE_MOUNTS_INVALID", "Docker Mounts 条目无效")
         target = item.get("Target") or item.get("Destination")
-        if target == "/var/run/docker.sock":
+        if target == "/var/run/docker.sock" and not preserve_docker_socket:
             continue
         sanitized = {key: item[key] for key in allowed_keys if key in item}
         if "Target" not in sanitized and isinstance(target, str):

@@ -11,7 +11,6 @@ import {
   ShieldCheck,
   ScrollText,
   Settings,
-  ArrowUpCircle,
   ChevronRight,
   Bell,
   Sun,
@@ -26,10 +25,12 @@ import PreflightReviewCenter from './components/PreflightReviewCenter.vue';
 import OperationalOverview from './components/OperationalOverview.vue';
 import Management from './components/Management.vue';
 import AuthGate from './components/AuthGate.vue';
+import VersionPopover from './components/VersionPopover.vue';
 import { AUTH_REQUIRED_EVENT } from './api/client';
 import { useAuthStore } from './stores/auth';
 
 const auth = useAuthStore();
+const versionPopover = ref<InstanceType<typeof VersionPopover> | null>(null);
 
 function handleAuthRequired(): void {
   auth.markUnauthenticated();
@@ -51,7 +52,6 @@ const nav = [
   { name: '清理与对账', icon: ShieldCheck },
   { name: '日志', icon: ScrollText },
   { name: '系统设置', icon: Settings },
-  { name: '升级中心', icon: ArrowUpCircle },
 ];
 const pageCopy: Record<string, { eyebrow: string; description: string }> = {
   总览: {
@@ -90,10 +90,6 @@ const pageCopy: Record<string, { eyebrow: string; description: string }> = {
     eyebrow: '系统配置',
     description: '管理通知、安全集成、自动化访问与数据库备份策略。',
   },
-  升级中心: {
-    eyebrow: '发布运维',
-    description: '检查正式版本、升级前置条件与独立 updater 的安全升级状态。',
-  },
 };
 const initialRoute = location.hash.slice(1) ? decodeURIComponent(location.hash.slice(1)) : '总览';
 const route = ref(nav.some((item) => item.name === initialRoute) ? initialRoute : '总览');
@@ -130,6 +126,10 @@ async function logout(): Promise<void> {
     ElMessage.success('管理员会话已退出');
   } catch {}
 }
+
+function openVersionPopover(): void {
+  versionPopover.value?.open();
+}
 </script>
 
 <template>
@@ -137,10 +137,15 @@ async function logout(): Promise<void> {
   <div v-else class="app-shell">
     <div v-if="mobile" class="sidebar-mask" @click="mobile = false"></div>
     <aside class="sidebar" :class="{ visible: mobile }">
-      <a class="brand" href="#总览" @click="route = '总览'">
-        <span class="brand-icon"><Box :size="25" /></span>
-        <span class="brand-copy"><b>PackBreaker</b><small>让资源整理更简单</small></span>
-      </a>
+      <div class="brand">
+        <a class="brand-home" href="#总览" aria-label="返回总览" @click="route = '总览'">
+          <span class="brand-icon"><Box :size="25" /></span>
+        </a>
+        <span class="brand-copy">
+          <a class="brand-title" href="#总览" @click="route = '总览'">PackBreaker</a>
+          <VersionPopover ref="versionPopover" />
+        </span>
+      </div>
       <div class="workspace"><i class="dot"></i><span>本地工作空间</span><em>运行中</em></div>
       <nav>
         <button
@@ -198,7 +203,11 @@ async function logout(): Promise<void> {
         </div>
         <TaskCenter v-if="route === '任务中心'" />
         <PreflightReviewCenter v-else-if="route === '预演与确认'" />
-        <OperationalOverview v-else-if="route === '总览'" @navigate="route = $event" />
+        <OperationalOverview
+          v-else-if="route === '总览'"
+          @navigate="route = $event"
+          @open-version="openVersionPopover"
+        />
         <Management
           v-show="!['任务中心', '预演与确认', '总览'].includes(route)"
           :page="route"
