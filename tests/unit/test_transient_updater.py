@@ -157,7 +157,10 @@ def test_transient_launcher_starts_auto_remove_helper_and_persists_accepted_stat
     accepted = launcher.start_upgrade(_request())
 
     assert accepted.phase == "accepted"
-    assert launcher.status().request_id == "pb-upgrade-test-001"
+    assert accepted.backup_database_file == "packbreaker-20260916T010101Z-1234abcd.db"
+    persisted = launcher.status()
+    assert persisted.request_id == "pb-upgrade-test-001"
+    assert persisted.backup_database_file == "packbreaker-20260916T010101Z-1234abcd.db"
     create_calls = [item for client in FakeDockerEngineClient.instances for item in client.created]
     assert len(create_calls) == 1
     helper_name, payload = create_calls[0]

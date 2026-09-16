@@ -93,3 +93,58 @@ def test_oneshot_persists_early_request_failure(
     assert status.phase == "failed"
     assert "UPDATER_REQUEST_UNREADABLE" in status.message
     assert request_path.exists() is False
+
+
+def test_oneshot_preserves_invalid_backup_name_in_failed_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "config"
+    requests_dir = config_dir / "transient-updater" / "requests"
+    requests_dir.mkdir(parents=True, mode=0o700)
+    docker_socket = tmp_path / "docker.sock"
+    docker_socket.touch()
+    state_path = config_dir / "transient-updater" / "state.json"
+    request_path = requests_dir / "invalid-backup.json"
+    invalid_backup = "unexpected-backup.db"
+    request_path.write_text(
+        json.dumps(
+            {
+                "request_id": "request-invalid-backup",
+                "current_version": "0.1.4",
+                "target_version": "0.1.5",
+                "target_image": "ghcr.io/yyxiaoma/packbreaker@sha256:" + "8" * 64,
+                "backup_database_file": invalid_backup,
+                "backup_manifest_file": "unexpected-backup.json",
+                "grace_seconds": 0.5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    UpdaterStateStore(state_path, helper_version="0.1.4").set(
+        UpdaterStatus(
+            protocol_version=UPDATER_PROTOCOL_VERSION,
+            helper_version="0.1.4",
+            phase="accepted",
+            message="accepted",
+            request_id="request-invalid-backup",
+            current_version="0.1.4",
+            target_version="0.1.5",
+            target_image="ghcr.io/yyxiaoma/packbreaker@sha256:" + "8" * 64,
+            backup_database_file=invalid_backup,
+        )
+    )
+    monkeypatch.setenv("PACKBREAKER_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("PACKBREAKER_DOCKER_SOCKET", str(docker_socket))
+    monkeypatch.setenv("PACKBREAKER_UPDATER_TARGET_CONTAINER", "packbreaker")
+    monkeypatch.setenv("PACKBREAKER_UPDATER_ALLOWED_IMAGE", "ghcr.io/yyxiaoma/packbreaker")
+    monkeypatch.setenv("PACKBREAKER_UPDATER_STATE_FILE", str(state_path))
+
+    with pytest.raises(HelperRequestError) as exc_info:
+        _run_oneshot(request_path)
+
+    assert exc_info.value.code == "UPDATER_BACKUP_INVALID"
+    status = UpdaterStateStore(state_path, helper_version="0.1.4").get()
+    assert status.phase == "failed"
+    assert status.backup_database_file == invalid_backup
+    assert "UPDATER_BACKUP_INVALID" in status.message
+    assert request_path.exists() is False

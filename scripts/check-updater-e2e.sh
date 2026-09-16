@@ -41,19 +41,31 @@ cleanup() {
     "$transient_config" "$transient_data" >/dev/null 2>&1 || true
 }
 
+workflow_escape() {
+  local value="$1"
+  value="${value//'%'/'%25'}"
+  value="${value//$'\r'/'%0D'}"
+  value="${value//$'\n'/'%0A'}"
+  printf '%s' "$value"
+}
+
 report_failure() {
   local exit_code="$?"
   local line="${BASH_LINENO[0]:-0}"
   local command="${BASH_COMMAND:-unknown}"
   local state_summary=""
+  local input_summary=""
   local docker_summary=""
+  local annotation=""
   set +e
   if sudo test -f "$transient_config/transient-updater/state.json"; then
-    state_summary="$(sudo python3 -c 'import json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); print(str(p.get("phase"))+":"+str(p.get("message")))' "$transient_config/transient-updater/state.json" 2>/dev/null)"
+    state_summary="$(sudo python3 -c 'import json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps({"phase":p.get("phase"),"message":p.get("message"),"backup_database_file":p.get("backup_database_file")}, ensure_ascii=False, separators=(",",":")))' "$transient_config/transient-updater/state.json" 2>/dev/null)"
   fi
+  input_summary="$(python3 -c 'import json,sys; print(json.dumps({"backup_database_file":sys.argv[1],"backup_manifest_file":sys.argv[2]}, ensure_ascii=False, separators=(",",":")))' "${transient_backup_db:-}" "${transient_backup_manifest:-}" 2>/dev/null)"
   docker_summary="$(docker ps -a --filter "name=$transient_main" --format '{{.Names}}={{.ID}}:{{.Status}}' 2>/dev/null | tr '\n' ';')"
-  printf '::error file=scripts/check-updater-e2e.sh,line=%s::exit=%s command=%s transient_state=%s docker=%s\n' \
-    "$line" "$exit_code" "$command" "$state_summary" "$docker_summary"
+  annotation="exit=$exit_code command=$command transient_state=$state_summary transient_input=$input_summary docker=$docker_summary"
+  printf '::error file=scripts/check-updater-e2e.sh,line=%s::%s\n' \
+    "$line" "$(workflow_escape "$annotation")"
   exit "$exit_code"
 }
 
