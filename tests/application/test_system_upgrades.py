@@ -131,6 +131,33 @@ async def test_status_reports_newer_release_and_ready_helper(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_status_allows_direct_upgrade_to_non_adjacent_latest_release(tmp_path: Path) -> None:
+    target = ReleaseTarget(
+        version="0.1.7",
+        tag="v0.1.7",
+        commit="7" * 40,
+        image=OFFICIAL_IMAGE,
+        image_digest=_DIGEST,
+        immutable_image=_TARGET_IMAGE,
+        platform="linux/amd64",
+    )
+    service = SystemUpgradeService(
+        _settings(tmp_path),
+        release_client=FakeReleaseProvider(target),
+        updater_client=FakeUpdaterGateway(_idle()),
+        main_docker_socket_path=tmp_path / "missing.sock",
+    )
+
+    status = await service.status()
+
+    assert status.current_version == "0.1.4"
+    assert status.latest_version == "0.1.7"
+    assert status.update_available is True
+    assert status.can_upgrade is True
+    assert status.blocked_reasons == ()
+
+
+@pytest.mark.asyncio
 async def test_execute_replays_existing_helper_request_without_new_backup(tmp_path: Path) -> None:
     release = FakeReleaseProvider(_target())
     helper = FakeUpdaterGateway(

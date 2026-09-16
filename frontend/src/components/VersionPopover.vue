@@ -4,12 +4,10 @@ import {
   ArrowUpCircle,
   Check,
   ChevronDown,
-  Copy,
   ExternalLink,
   GitBranch,
   RefreshCw,
   RotateCcw,
-  Terminal,
   TriangleAlert,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -22,6 +20,10 @@ import {
   type SystemUpgradeStatus,
   type UpdaterStatus,
 } from '../api/system';
+import {
+  BACKGROUND_RELEASE_CHECK_INTERVAL_MS,
+  shouldMarkUpdateUnseen,
+} from '../versionUpdateIndicator';
 
 const visible = ref(false);
 const currentVersion = ref('—');
@@ -32,9 +34,11 @@ const upgradeLoading = ref(false);
 const upgradeResultUnknown = ref(false);
 const pendingIdempotencyKey = ref('');
 const targetInFlight = ref('');
-const manualOpen = ref(false);
 const rollbackOpen = ref(false);
+const quietReleaseLoading = ref(false);
+const unseenUpdate = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | undefined;
+let releaseCheckTimer: ReturnType<typeof setInterval> | undefined;
 
 const activePhases = new Set<UpdaterStatus['phase']>([
   'accepted',
@@ -48,7 +52,6 @@ const activePhases = new Set<UpdaterStatus['phase']>([
 const displayedVersion = computed(() => upgrade.value?.current_version || currentVersion.value);
 const releaseLookupFailed = computed(() => Boolean(upgrade.value?.release_error_code));
 const latestVersion = computed(() => upgrade.value?.latest_version ?? null);
-const targetImage = computed(() => upgrade.value?.immutable_image ?? null);
 const upgradeActive = computed(() => {
   const phase = upgrade.value?.helper_status?.phase;
   return phase ? activePhases.has(phase) : false;
@@ -73,7 +76,7 @@ const automaticUpgradeHint = computed(() => {
   }
   if (reasons.includes('UPDATER_BUSY')) return '已有升级正在执行。';
   if (upgrade.value?.update_available && upgrade.value?.can_upgrade === false) {
-    return '当前部署条件暂不满足一键升级，可展开高级手动升级。';
+    return '当前部署条件暂不满足一键升级，请检查 Docker 访问、升级现场和前置检查状态。';
   }
   return '';
 });
@@ -112,23 +115,6 @@ const statusText = computed(() => {
   if (statusKind.value === 'latest') return '已是最新版本';
   return '点击刷新检查正式版本';
 });
-const manualCommand = computed(() => {
-  if (!targetImage.value) return '';
-  return [
-    `docker pull ${targetImage.value}`,
-    '',
-    '# 建议先在「系统设置 → 备份恢复」创建一致性备份',
-    '# 并记录当前容器配置，便于恢复原启动参数：',
-    'docker inspect packbreaker > packbreaker.before-upgrade.json',
-    '',
-    '# 确认备份与原 docker run 参数都已保存后，再重建容器：',
-    'docker rm -f packbreaker',
-    '',
-    '# 重新执行原 docker run 命令，仅将镜像替换为以下不可变引用：',
-    targetImage.value,
-  ].join('\n');
-});
-
 async function loadCurrentVersion(): Promise<void> {
   try {
     currentVersion.value = (await getSystemHealth()).version;
@@ -152,11 +138,14 @@ async function refreshRelease(): Promise<void> {
 }
 
 async function refreshReleaseQuietly(): Promise<void> {
+  if (quietReleaseLoading.value || releaseLoading.value) return;
+  quietReleaseLoading.value = true;
   try {
     const next = await getSystemUpgradeStatus();
     upgrade.value = next;
     currentVersion.value = next.current_version || currentVersion.value;
     releaseChecked.value = true;
+    if (shouldMarkUpdateUnseen(next.update_available, visible.value)) unseenUpdate.value = true;
     const phase = next.helper_status?.phase;
     if (phase && !activePhases.has(phase) && phase !== 'idle') {
       upgradeResultUnknown.value = false;
@@ -176,7 +165,9 @@ async function refreshReleaseQuietly(): Promise<void> {
       window.setTimeout(() => window.location.reload(), 600);
     }
   } catch {
-    // 容器切换期间主服务会短暂离线；继续轮询，避免把正常重启误报成失败。
+    // 后台检查与容器切换期间的短暂离线都保持静默，避免打扰当前操作。
+  } finally {
+    quietReleaseLoading.value = false;
   }
 }
 
@@ -243,24 +234,23 @@ async function startUpgrade(): Promise<void> {
   }
 }
 
-async function copyText(value: string, success: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(value);
-    ElMessage.success(success);
-  } catch {
-    ElMessage.warning('浏览器未允许写入剪贴板，请手动复制。');
-  }
-}
-
 function open(): void {
+  unseenUpdate.value = false;
   visible.value = true;
 }
 
 watch(visible, (isVisible) => {
-  if (isVisible && !releaseChecked.value && !releaseLoading.value) void refreshRelease();
+  if (isVisible) {
+    unseenUpdate.value = false;
+    if (!releaseLoading.value && !quietReleaseLoading.value) void refreshRelease();
+  }
 });
 onMounted(() => {
   void loadCurrentVersion();
+  void refreshReleaseQuietly();
+  releaseCheckTimer = setInterval(() => {
+    if (!visible.value) void refreshReleaseQuietly();
+  }, BACKGROUND_RELEASE_CHECK_INTERVAL_MS);
   pollTimer = setInterval(() => {
     if (upgradeActive.value || upgradeResultUnknown.value || targetInFlight.value) {
       void refreshReleaseQuietly();
@@ -269,6 +259,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   if (pollTimer !== undefined) clearInterval(pollTimer);
+  if (releaseCheckTimer !== undefined) clearInterval(releaseCheckTimer);
 });
 defineExpose({ open });
 </script>
@@ -286,11 +277,11 @@ defineExpose({ open });
       <button
         class="brand-version-trigger"
         type="button"
-        :class="{ 'has-update': upgrade?.update_available }"
+        :class="{ 'has-update': unseenUpdate }"
         :aria-label="`当前版本 v${displayedVersion}`"
       >
         v{{ displayedVersion }}
-        <span v-if="upgrade?.update_available" class="version-dot" aria-hidden="true"></span>
+        <span v-if="unseenUpdate" class="version-dot" aria-hidden="true"></span>
       </button>
     </template>
 
@@ -352,45 +343,6 @@ defineExpose({ open });
         <p v-else class="version-upgrade-hint">自动备份 · 临时 helper 接管 · 健康失败自动回滚</p>
       </section>
 
-      <section class="version-action-section">
-        <button class="version-action-row" type="button" @click="manualOpen = !manualOpen">
-          <span><Terminal :size="17" />高级：手动 Docker 升级</span>
-          <ChevronDown :size="17" :class="{ expanded: manualOpen }" />
-        </button>
-        <div v-if="manualOpen" class="version-action-detail">
-          <template v-if="targetImage">
-            <p>
-              一键升级不可用时，可在宿主机拉取正式不可变镜像，再沿用原来的
-              <code>docker run</code> 参数重建容器。此入口仅作为故障备用。
-            </p>
-            <div class="version-image-ref">
-              <code>{{ targetImage }}</code>
-              <button
-                type="button"
-                aria-label="复制镜像引用"
-                @click="copyText(targetImage, '镜像引用已复制')"
-              >
-                <Copy :size="14" />
-              </button>
-            </div>
-            <pre>{{ manualCommand }}</pre>
-            <button
-              class="version-copy-button"
-              type="button"
-              @click="copyText(manualCommand, '手动升级命令已复制')"
-            >
-              <Copy :size="15" />复制升级命令
-            </button>
-          </template>
-          <template v-else>
-            <p>
-              尚未取得正式 Release 的不可变镜像。请先重新检查网络，或前往 GitHub Releases
-              查看目标版本后再手动升级。
-            </p>
-          </template>
-        </div>
-      </section>
-
       <section class="version-action-section rollback-section">
         <button class="version-action-row" type="button" @click="rollbackOpen = !rollbackOpen">
           <span><RotateCcw :size="17" />版本回退</span>
@@ -450,7 +402,7 @@ defineExpose({ open });
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--orange);
+  background: #e5484d;
 }
 
 :global(.packbreaker-version-popover.el-popper) {
@@ -688,66 +640,6 @@ defineExpose({ open });
   margin: 0 0 10px;
 }
 
-.version-image-ref {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 9px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface-soft);
-}
-
-.version-image-ref code {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink-soft);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.version-image-ref button {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 7px;
-  color: var(--muted);
-  background: transparent;
-}
-
-.version-action-detail pre {
-  max-height: 180px;
-  margin: 10px 0;
-  padding: 10px;
-  overflow: auto;
-  border-radius: 9px;
-  color: #dce7fb;
-  background: #172033;
-  font-size: 10px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.version-copy-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 32px;
-  padding: 6px 10px;
-  border: 1px solid #cbdafc;
-  border-radius: 8px;
-  color: var(--blue);
-  background: var(--blue-soft);
-  font-size: 11px;
-  font-weight: 650;
-}
-
 .rollback-release-link {
   margin-top: 2px;
   color: var(--blue);
@@ -766,10 +658,5 @@ defineExpose({ open });
 :global(.dark .packbreaker-version-popover.el-popper) {
   border-color: #2e3c50 !important;
   background: #172033 !important;
-}
-
-:global(.dark .packbreaker-version-popover .version-action-detail pre) {
-  border: 1px solid #36455c;
-  background: #101726;
 }
 </style>

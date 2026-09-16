@@ -126,30 +126,6 @@ body {
   text-decoration: none;
 }
 
-#app .workspace {
-  min-height: 40px;
-  margin: 18px 1px 20px;
-  padding: 9px 11px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: linear-gradient(135deg, #fbfdff, #f4f7fc);
-  color: var(--ink-soft);
-  box-shadow: 0 3px 12px rgba(50, 70, 100, 0.035);
-}
-
-#app .workspace > span {
-  margin: 0;
-  font-weight: 600;
-}
-
-#app .workspace em {
-  margin-left: auto;
-  color: var(--green);
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 650;
-}
-
 #app .dot {
   width: 7px;
   height: 7px;
@@ -163,6 +139,7 @@ body {
   gap: 6px;
   width: 100%;
   min-width: 0;
+  margin-top: 22px;
   overflow-x: hidden;
 }
 
@@ -1090,7 +1067,6 @@ html.dark body {
   background: rgba(24, 31, 44, 0.94);
 }
 
-.dark #app .workspace,
 .dark #app .endpoint,
 .dark #app .resource-row,
 .dark #app .filters,

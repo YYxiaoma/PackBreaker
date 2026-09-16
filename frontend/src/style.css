@@ -138,17 +138,6 @@ button svg,
   background: var(--blue);
   border-radius: 7px;
 }
-.workspace {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 22px 9px 30px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.workspace span {
-  margin-left: auto;
-}
 .dot {
   display: inline-block;
   width: 6px;

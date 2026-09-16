@@ -532,7 +532,7 @@ onUnmounted(() => {
                         ? `可升级到 v${upgrade.latest_version}`
                         : '当前已是最新正式版本'
                   }}</span>
-                  <p>正式版本发现与手动升级</p>
+                  <p>正式版本发现与一键升级</p>
                 </div>
               </div>
               <span class="service-visual purple" aria-hidden="true"

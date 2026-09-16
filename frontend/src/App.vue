@@ -146,7 +146,6 @@ function openVersionPopover(): void {
           <VersionPopover ref="versionPopover" />
         </span>
       </div>
-      <div class="workspace"><i class="dot"></i><span>本地工作空间</span><em>运行中</em></div>
       <nav>
         <button
           v-for="item in nav"
