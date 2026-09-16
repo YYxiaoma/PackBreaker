@@ -46,12 +46,14 @@ report_failure() {
   local line="${BASH_LINENO[0]:-0}"
   local command="${BASH_COMMAND:-unknown}"
   local state_summary=""
+  local docker_summary=""
   set +e
-  if [ -f "$transient_config/transient-updater/state.json" ]; then
+  if sudo test -f "$transient_config/transient-updater/state.json"; then
     state_summary="$(sudo python3 -c 'import json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); print(str(p.get("phase"))+":"+str(p.get("message")))' "$transient_config/transient-updater/state.json" 2>/dev/null)"
   fi
-  printf '::error file=scripts/check-updater-e2e.sh,line=%s::exit=%s command=%s transient_state=%s\n' \
-    "$line" "$exit_code" "$command" "$state_summary"
+  docker_summary="$(docker ps -a --filter "name=$transient_main" --format '{{.Names}}={{.ID}}:{{.Status}}' 2>/dev/null | tr '\n' ';')"
+  printf '::error file=scripts/check-updater-e2e.sh,line=%s::exit=%s command=%s transient_state=%s docker=%s\n' \
+    "$line" "$exit_code" "$command" "$state_summary" "$docker_summary"
   exit "$exit_code"
 }
 
