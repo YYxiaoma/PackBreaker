@@ -6,5 +6,6 @@ import 'element-plus/theme-chalk/dark/css-vars.css';
 import App from './App.vue';
 import './style.css';
 import './details.css';
+import './module-card-theme.css';
 
 createApp(App).use(createPinia()).use(ElementPlus).mount('#app');

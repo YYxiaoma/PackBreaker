@@ -173,7 +173,7 @@ def test_release_preflight_api_is_local_read_only_and_skips_backup_exercise(
         assert response.headers["cache-control"] == "no-store"
         payload = response.json()
         assert payload["status"] == "ready"
-        assert payload["app_version"] == "0.1.2"
+        assert payload["app_version"] == "0.1.3"
         codes = {item["code"] for item in payload["checks"]}
         assert {
             "CONFIG_DIR_OK",

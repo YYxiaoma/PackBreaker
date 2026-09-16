@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   Box,
   LayoutDashboard,
@@ -18,6 +18,7 @@ import {
   Moon,
   Menu,
   LogOut,
+  Sparkles,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import TaskCenter from './components/TaskCenter.vue';
@@ -45,17 +46,60 @@ const nav = [
   { name: '任务中心', icon: ListChecks },
   { name: '预演与确认', icon: GitBranch },
   { name: '历史辅种', icon: History },
-  { name: '站点管理', icon: Globe, group: '连接与规则' },
+  { name: '站点管理', icon: Globe },
   { name: '下载器', icon: HardDrive },
-  { name: '清理与对账', icon: ShieldCheck, group: '系统' },
+  { name: '清理与对账', icon: ShieldCheck },
   { name: '日志', icon: ScrollText },
   { name: '系统设置', icon: Settings },
   { name: '升级中心', icon: ArrowUpCircle },
 ];
-const initialRoute = location.hash.slice(1)
-  ? decodeURIComponent(location.hash.slice(1))
-  : '任务中心';
-const route = ref(nav.some((item) => item.name === initialRoute) ? initialRoute : '任务中心');
+const pageCopy: Record<string, { eyebrow: string; description: string }> = {
+  总览: {
+    eyebrow: '运行态势',
+    description: '聚合健康、任务、备份与依赖状态，快速定位需要关注的系统信号。',
+  },
+  任务中心: {
+    eyebrow: '自动化工作流',
+    description: '查看任务状态、分析进度与安全操作入口，保持处理链路清晰可追踪。',
+  },
+  预演与确认: {
+    eyebrow: '人工审核',
+    description: '集中检查候选证据、当前性与风险，在执行前完成最终确认。',
+  },
+  历史辅种: {
+    eyebrow: '历史资源',
+    description: '扫描既有媒体并转换为受控任务，持续补齐可安全复用的辅种机会。',
+  },
+  站点管理: {
+    eyebrow: '连接与规则',
+    description: '管理 PT 站点连接、凭证状态、能力探测与可靠性保护。',
+  },
+  下载器: {
+    eyebrow: '连接与规则',
+    description: '统一管理下载器实例、路径映射、连接探测与运行边界。',
+  },
+  清理与对账: {
+    eyebrow: '安全维护',
+    description: '预览可清理记录与对账风险，只在证据充分时执行受控维护。',
+  },
+  日志: {
+    eyebrow: '可观测性',
+    description: '检索脱敏运行日志并导出受控窗口，辅助定位任务与依赖异常。',
+  },
+  系统设置: {
+    eyebrow: '系统配置',
+    description: '管理通知、安全集成、自动化访问与数据库备份策略。',
+  },
+  升级中心: {
+    eyebrow: '发布运维',
+    description: '检查正式版本、升级前置条件与独立 updater 的安全升级状态。',
+  },
+};
+const initialRoute = location.hash.slice(1) ? decodeURIComponent(location.hash.slice(1)) : '总览';
+const route = ref(nav.some((item) => item.name === initialRoute) ? initialRoute : '总览');
+const currentPageCopy = computed(
+  () => pageCopy[route.value] ?? { eyebrow: '工作空间', description: '' },
+);
 const dark = ref(localStorage.getItem('pb-theme') === 'dark');
 const mobile = ref(false);
 watch(route, (v) => {
@@ -93,27 +137,21 @@ async function logout(): Promise<void> {
   <div v-else class="app-shell">
     <div v-if="mobile" class="sidebar-mask" @click="mobile = false"></div>
     <aside class="sidebar" :class="{ visible: mobile }">
-      <a class="brand" href="#任务中心" @click="route = '任务中心'"
-        ><span class="brand-icon"><Box :size="25" /></span>PackBreaker</a
-      >
-      <div class="workspace"><i class="dot"></i> 本地工作空间 <span>⌃</span></div>
+      <a class="brand" href="#总览" @click="route = '总览'">
+        <span class="brand-icon"><Box :size="25" /></span>
+        <span class="brand-copy"><b>PackBreaker</b><small>让资源整理更简单</small></span>
+      </a>
+      <div class="workspace"><i class="dot"></i><span>本地工作空间</span><em>运行中</em></div>
       <nav>
-        <template v-for="item in nav" :key="item.name"
-          ><p v-if="item.group" class="nav-group">{{ item.group }}</p>
-          <button :class="['nav-item', { active: route === item.name }]" @click="route = item.name">
-            <component :is="item.icon" :size="19" /><span>{{ item.name }}</span>
-          </button></template
+        <button
+          v-for="item in nav"
+          :key="item.name"
+          :class="['nav-item', { active: route === item.name }]"
+          @click="route = item.name"
         >
+          <component :is="item.icon" :size="19" /><span>{{ item.name }}</span>
+        </button>
       </nav>
-      <div class="sidebar-bottom">
-        <div class="profile">
-          <span class="avatar">A</span>
-          <div><strong>管理员</strong><small>本地安全会话</small></div>
-          <button class="icon-button" aria-label="退出登录" title="退出登录" @click="logout">
-            <LogOut :size="17" />
-          </button>
-        </div>
-      </div>
     </aside>
     <div class="main-shell">
       <header class="topbar">
@@ -128,23 +166,39 @@ async function logout(): Promise<void> {
             :aria-label="dark ? '切换浅色主题' : '切换深色主题'"
             @click="dark = !dark"
           >
-            <Sun v-if="dark" :size="18" /><Moon v-else :size="18" /></button
-          ><button
+            <Sun v-if="dark" :size="18" /><Moon v-else :size="18" />
+          </button>
+          <button
             class="icon-button notification"
             aria-label="待确认通知"
             @click="route = '预演与确认'"
           >
             <Bell :size="18" />
           </button>
+          <div class="top-user">
+            <span class="avatar">A</span>
+            <div class="top-user-copy"><strong>管理员</strong><small>本地安全会话</small></div>
+            <button class="icon-button" aria-label="退出登录" title="退出登录" @click="logout">
+              <LogOut :size="17" />
+            </button>
+          </div>
         </div>
       </header>
       <main>
-        <div class="page-heading">
-          <h1>{{ route }}</h1>
+        <div v-if="route !== '总览'" class="page-heading page-hero">
+          <div class="page-title-copy">
+            <div class="page-eyebrow"><Sparkles :size="14" />{{ currentPageCopy.eyebrow }}</div>
+            <h1>{{ route }}</h1>
+            <p>{{ currentPageCopy.description }}</p>
+          </div>
+          <div class="page-context">
+            <span><i class="dot"></i> 服务在线</span>
+            <span>安全模式</span>
+          </div>
         </div>
         <TaskCenter v-if="route === '任务中心'" />
         <PreflightReviewCenter v-else-if="route === '预演与确认'" />
-        <OperationalOverview v-else-if="route === '总览'" />
+        <OperationalOverview v-else-if="route === '总览'" @navigate="route = $event" />
         <Management
           v-show="!['任务中心', '预演与确认', '总览'].includes(route)"
           :page="route"

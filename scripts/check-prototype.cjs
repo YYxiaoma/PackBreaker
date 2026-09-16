@@ -195,10 +195,10 @@ const path = require('node:path');
     });
     const fulfillJson=(route,body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
     await page.route('**/api/v1/system/health',route=>fulfillJson(route,{
-      status:'ok',generated_at:now(),version:'0.1.2',checks:[],
+      status:'ok',generated_at:now(),version:'0.1.3',checks:[],
     }));
     await page.route('**/api/v1/system/release/preflight',route=>fulfillJson(route,{
-      status:'ready',app_version:'0.1.2',checks:[
+      status:'ready',app_version:'0.1.3',checks:[
         {name:'config_dir',status:'ok',code:'CONFIG_DIR_OK',detail:'配置目录权限与可写性通过'},
         {name:'database',status:'ok',code:'DATABASE_OK',detail:'SQLite integrity_check 与 migration head 通过（0023_backup_policy）'},
         {name:'secret_key',status:'ok',code:'SECRET_KEY_OK',detail:'主密钥存在且安全自检通过'},
@@ -210,19 +210,23 @@ const path = require('node:path');
     const upgradeDigest=`sha256:${'8'.repeat(64)}`;
     const upgradeImage=`ghcr.io/yyxiaoma/packbreaker@${upgradeDigest}`;
     const upgradeKeys=[];
-    let upgradeHelperStatus={protocol_version:1,helper_version:'0.1.2',phase:'idle',message:'升级 helper 已就绪',request_id:null,current_version:null,target_version:null,target_image:null,backup_database_file:null,started_at:null,updated_at:now(),finished_at:null,rollback_performed:false};
-    await page.route('**/api/v1/system/upgrade',route=>fulfillJson(route,{
-      current_version:'0.1.2',latest_version:'0.1.3',update_available:true,target_tag:'v0.1.3',target_image_digest:upgradeDigest,immutable_image:upgradeImage,platform:'linux/amd64',release_error_code:null,helper_available:true,helper_status:upgradeHelperStatus,can_upgrade:upgradeHelperStatus.phase==='idle',blocked_reasons:upgradeHelperStatus.phase==='idle'?[]:['UPDATER_BUSY'],
-    }));
+    let upgradeHelperStatus={protocol_version:1,helper_version:'0.1.3',phase:'idle',message:'升级 helper 已就绪',request_id:null,current_version:null,target_version:null,target_image:null,backup_database_file:null,started_at:null,updated_at:now(),finished_at:null,rollback_performed:false};
+    let upgradeStatusDelayMs=0;
+    await page.route('**/api/v1/system/upgrade',async route=>{
+      if(upgradeStatusDelayMs) await new Promise(resolve=>setTimeout(resolve,upgradeStatusDelayMs));
+      return fulfillJson(route,{
+        current_version:'0.1.3',latest_version:'0.1.4',update_available:true,target_tag:'v0.1.4',target_image_digest:upgradeDigest,immutable_image:upgradeImage,platform:'linux/amd64',release_error_code:null,helper_available:true,helper_status:upgradeHelperStatus,can_upgrade:upgradeHelperStatus.phase==='idle',blocked_reasons:upgradeHelperStatus.phase==='idle'?[]:['UPDATER_BUSY'],
+      });
+    });
     await page.route('**/api/v1/system/upgrade/actions',route=>{
       const request=route.request();
       assert.equal(request.method(),'POST');
       const key=request.headers()['idempotency-key'];
       assert.ok(key,'Docker 升级必须携带 Idempotency-Key');
       upgradeKeys.push(key);
-      assert.deepEqual(request.postDataJSON(),{action:'upgrade',target_version:'0.1.3',target_image_digest:upgradeDigest});
-      upgradeHelperStatus={...upgradeHelperStatus,phase:'accepted',message:'升级请求已由独立 helper 接管',request_id:key,current_version:'0.1.2',target_version:'0.1.3',target_image:upgradeImage,backup_database_file:'packbreaker-e2e.db',started_at:now(),updated_at:now()};
-      return fulfillJson(route,{request_id:key,current_version:'0.1.2',target_version:'0.1.3',target_image:upgradeImage,backup_database_file:'packbreaker-e2e.db',helper_status:upgradeHelperStatus,idempotency_replayed:false},202);
+      assert.deepEqual(request.postDataJSON(),{action:'upgrade',target_version:'0.1.4',target_image_digest:upgradeDigest});
+      upgradeHelperStatus={...upgradeHelperStatus,phase:'accepted',message:'升级请求已由独立 helper 接管',request_id:key,current_version:'0.1.3',target_version:'0.1.4',target_image:upgradeImage,backup_database_file:'packbreaker-e2e.db',started_at:now(),updated_at:now()};
+      return fulfillJson(route,{request_id:key,current_version:'0.1.3',target_version:'0.1.4',target_image:upgradeImage,backup_database_file:'packbreaker-e2e.db',helper_status:upgradeHelperStatus,idempotency_replayed:false},202);
     });
     await page.route('**/api/v1/system/logs**',route=>fulfillJson(route,{
       window_minutes:60,limit:200,count:0,truncated:false,max_file_bytes:2097152,backup_count:4,approximate_capacity_bytes:10485760,items:[],
@@ -463,9 +467,100 @@ const path = require('node:path');
       }
       return fulfillJson(route,{code:'NOT_FOUND',detail:'E2E route not found'},404);
     });
-    await page.goto('http://127.0.0.1:5173/',{waitUntil:'networkidle'});
+    upgradeStatusDelayMs=2000;
+    const overviewStartedAt=Date.now();
+    await page.goto('http://127.0.0.1:5173/',{waitUntil:'domcontentloaded'});
+    await page.getByRole('heading',{name:'总览',exact:true,level:1}).waitFor();
+    const overviewFirstPaintMs=Date.now()-overviewStartedAt;
+    assert.ok(overviewFirstPaintMs<1500,`总览首屏不应等待慢速 Release 查询，实际 ${overviewFirstPaintMs}ms`);
+    const overviewViewports=[
+      {width:1920,height:1080,name:'overview-1920'},
+      {width:1440,height:900,name:'overview-1440'},
+      {width:1280,height:800,name:'overview-1280'},
+      {width:390,height:844,name:'overview-390'},
+    ];
+    for(const viewport of overviewViewports){
+      await page.setViewportSize({width:viewport.width,height:viewport.height});
+      await page.waitForTimeout(80);
+      const metrics=await page.evaluate(()=>{
+        const rect=selector=>{
+          const element=document.querySelector(selector);
+          if(!element)return null;
+          const box=element.getBoundingClientRect();
+          return {left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:box.width,height:box.height};
+        };
+        const stages=[...document.querySelectorAll('.pipeline-orbit-stage')].map(element=>{
+          const box=element.getBoundingClientRect();
+          return {left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:box.width,height:box.height};
+        });
+        const serviceTiles=[...document.querySelectorAll('.service-tile')].map(element=>{
+          const box=element.getBoundingClientRect();
+          const visual=element.querySelector('.service-visual')?.getBoundingClientRect();
+          return {
+            left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:box.width,height:box.height,
+            visual:visual?{left:visual.left,top:visual.top,right:visual.right,bottom:visual.bottom}:null,
+          };
+        });
+        let overlaps=0;
+        for(let i=0;i<stages.length;i+=1)for(let j=i+1;j<stages.length;j+=1){
+          const a=stages[i],b=stages[j];
+          if(a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top)overlaps+=1;
+        }
+        const hub=document.querySelector('.pipeline-hub');
+        return {
+          innerWidth:window.innerWidth,
+          scrollWidth:document.documentElement.scrollWidth,
+          pipeline:rect('.pipeline-card'),
+          services:rect('.services-card'),
+          serviceGrid:rect('.service-grid'),
+          hubVisible:Boolean(hub&&getComputedStyle(hub).display!=='none'&&hub.getBoundingClientRect().width>0),
+          stageOverlaps:overlaps,
+          serviceTiles,
+        };
+      });
+      assert.ok(metrics.scrollWidth<=metrics.innerWidth+1,`${viewport.name} 不应横向溢出`);
+      assert.equal(metrics.serviceTiles.length,4,`${viewport.name} 应展示四个系统服务卡`);
+      for(const tile of metrics.serviceTiles){
+        assert.ok(tile.width>0&&tile.height>0,`${viewport.name} 系统服务卡必须可见`);
+        if(tile.visual){
+          assert.ok(tile.visual.left>=tile.left-2&&tile.visual.right<=tile.right+2,`${viewport.name} 服务装饰图形不得横向溢出卡片`);
+          assert.ok(tile.visual.top>=tile.top-2&&tile.visual.bottom<=tile.bottom+2,`${viewport.name} 服务装饰图形不得纵向溢出卡片`);
+        }
+      }
+      if(viewport.width>=1440){
+        assert.ok(metrics.pipeline&&metrics.services&&Math.abs(metrics.pipeline.height-metrics.services.height)<3,`${viewport.name} 主卡片高度应对齐`);
+        assert.ok(metrics.serviceGrid&&metrics.services&&metrics.services.bottom-metrics.serviceGrid.bottom<22,`${viewport.name} 系统服务卡底部不应留大块空白`);
+        assert.equal(metrics.hubVisible,true,`${viewport.name} 应展示中心流转图`);
+        assert.equal(metrics.stageOverlaps,0,`${viewport.name} 流水线节点不应互相遮挡`);
+        const [serviceA,serviceB,serviceC,serviceD]=metrics.serviceTiles;
+        assert.ok(Math.abs(serviceA.top-serviceB.top)<3&&Math.abs(serviceC.top-serviceD.top)<3,`${viewport.name} 系统服务应保持 2×2 行对齐`);
+        assert.ok(serviceC.top>=serviceA.bottom-1&&serviceD.top>=serviceB.bottom-1,`${viewport.name} 系统服务上下两行不得重叠`);
+      }
+      if(viewport.width===1280){
+        assert.ok(metrics.pipeline&&metrics.services&&metrics.services.top>=metrics.pipeline.bottom-1,'1280 宽度应切换为上下布局');
+      }
+      if(viewport.width===390){
+        assert.equal(metrics.hubVisible,false,'移动端应降级为卡片式流水线');
+        for(let index=1;index<metrics.serviceTiles.length;index+=1){
+          assert.ok(metrics.serviceTiles[index].top>=metrics.serviceTiles[index-1].bottom-1,'移动端系统服务应单列顺序排列');
+        }
+      }
+      await page.screenshot({path:path.join(output,`${viewport.name}.png`),fullPage:true});
+    }
+    upgradeStatusDelayMs=0;
+    await page.setViewportSize({width:1440,height:900});
+    await page.getByRole('button',{name:'切换深色主题',exact:true}).click();
+    const darkServiceStyle=await page.locator('.service-tile').first().evaluate(element=>({
+      backgroundImage:getComputedStyle(element).backgroundImage,
+      visualOpacity:Number(getComputedStyle(element.querySelector('.service-visual')).opacity),
+    }));
+    assert.notEqual(darkServiceStyle.backgroundImage,'none','深色主题系统服务卡需要明确渐变背景');
+    assert.ok(darkServiceStyle.visualOpacity<=0.2,'深色主题装饰图形需要保持低干扰');
+    await page.screenshot({path:path.join(output,'overview-dark-1440.png'),fullPage:true});
+    await page.getByRole('button',{name:'切换浅色主题',exact:true}).click();
+    console.log(`总览首屏 ${overviewFirstPaintMs}ms；已检查 1920/1440/1280/390 四档布局与深色系统服务卡`);
+    await page.getByRole('button',{name:'任务中心',exact:true}).click();
     await page.getByRole('heading',{name:'任务中心',exact:true,level:1}).waitFor();
-    await page.screenshot({path:path.join(output,'desktop.png'),fullPage:true});
     await page.getByPlaceholder('搜索 UUID、source hash、unit key…').fill('不存在');
     await page.getByText('暂无任务').waitFor();
     await page.getByPlaceholder('搜索 UUID、source hash、unit key…').fill('');
@@ -600,8 +695,8 @@ const path = require('node:path');
     await page.getByText(upgradeImage,{exact:true}).waitFor();
     assert.equal(await page.getByText(/模拟升级|模拟检查更新/).count(),0,'升级中心不得保留模拟更新入口');
     const upgradePanel=page.locator('section.panel').filter({has:page.getByRole('heading',{name:'发布与升级',exact:true})});
-    await upgradePanel.getByRole('button',{name:'升级到 v0.1.3',exact:true}).click();
-    await page.locator('.el-message-box').getByRole('button',{name:'升级到 v0.1.3',exact:true}).click();
+    await upgradePanel.getByRole('button',{name:'升级到 v0.1.4',exact:true}).click();
+    await page.locator('.el-message-box').getByRole('button',{name:'升级到 v0.1.4',exact:true}).click();
     await page.getByText('升级请求已由独立 helper 接管',{exact:true}).waitFor();
     assert.equal(upgradeKeys.length,1,'Docker 自动升级只应提交一次');
     const preflightPanel=page.locator('section.panel').filter({has:page.getByRole('heading',{name:'本地升级前置检查',exact:true})});
