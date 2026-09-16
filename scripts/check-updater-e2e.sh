@@ -48,7 +48,7 @@ report_failure() {
   local state_summary=""
   set +e
   if [ -f "$transient_config/transient-updater/state.json" ]; then
-    state_summary="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); print(str(p.get("phase"))+":"+str(p.get("message")))' "$transient_config/transient-updater/state.json" 2>/dev/null)"
+    state_summary="$(sudo python3 -c 'import json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); print(str(p.get("phase"))+":"+str(p.get("message")))' "$transient_config/transient-updater/state.json" 2>/dev/null)"
   fi
   printf '::error file=scripts/check-updater-e2e.sh,line=%s::exit=%s command=%s transient_state=%s\n' \
     "$line" "$exit_code" "$command" "$state_summary"
@@ -96,13 +96,20 @@ wait_app_ready_after_switch() {
   local exec_user="$2"
   local previous_id="$3"
   for attempt in $(seq 1 180); do
-    local current_id
+    local current_id transient_phase
     current_id="$(docker inspect "$container" --format '{{.Id}}' 2>/dev/null || true)"
     if [ -n "$current_id" ] && [ "$current_id" != "$previous_id" ] && \
       docker exec --user "$exec_user" "$container" \
         python -m backend.app.healthcheck >/dev/null 2>&1; then
       return 0
     fi
+    transient_phase="$(sudo python3 -c 'import json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); print(p.get("phase") or "")' "$transient_config/transient-updater/state.json" 2>/dev/null || true)"
+    case "$transient_phase" in
+      rolled_back|failed|manual_recovery_required)
+        echo "一次性 updater 已进入终态但未完成容器替换: $transient_phase" >&2
+        return 1
+        ;;
+    esac
     if [ "$attempt" -eq 180 ]; then
       docker ps -a --filter "name=$container" || true
       docker logs "$container" 2>/dev/null || true
