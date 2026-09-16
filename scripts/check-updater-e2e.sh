@@ -94,8 +94,11 @@ wait_app_ready() {
 wait_app_ready_after_switch() {
   local container="$1"
   local exec_user="$2"
+  local previous_id="$3"
   for attempt in $(seq 1 180); do
-    if docker inspect "$container" >/dev/null 2>&1 && \
+    local current_id
+    current_id="$(docker inspect "$container" --format '{{.Id}}' 2>/dev/null || true)"
+    if [ -n "$current_id" ] && [ "$current_id" != "$previous_id" ] && \
       docker exec --user "$exec_user" "$container" \
         python -m backend.app.healthcheck >/dev/null 2>&1; then
       return 0
@@ -428,7 +431,7 @@ echo "Run real single-container transient helper replacement path"
 # 待 transient-capable 版本成为正式 baseline 后，再由后续版本覆盖完整相邻版本 API 路径。
 prepare_transient_case
 trigger_transient_upgrade
-wait_app_ready_after_switch "$transient_main" 0:0
+wait_app_ready_after_switch "$transient_main" 0:0 "$transient_initial_container_id"
 wait_docker_healthy "$transient_main"
 transient_new_container_id="$(docker inspect "$transient_main" --format '{{.Id}}')"
 test "$transient_new_container_id" != "$transient_initial_container_id"
