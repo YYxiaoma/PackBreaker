@@ -221,3 +221,20 @@ v0.1.5 的主要产品研发基线为 [`v0.1.5-task-center-design.md`](./v0.1.5-
 8. 使用已授权真实 qBittorrent、Transmission、站点和目录完成受控 E2E。
 
 任务列表中的结果必须展示成功数、失败数（必要时增加跳过数），手动任务提供失败对象重试入口；常用配置使用设计文档定义的安全默认值，例如默认视频过滤、包含子目录、临时文件忽略、文件稳定检测、仅处理已完成下载、首次只处理新增数据、Cron 重叠跳过本轮和有限自动重试。
+
+## 13. v0.1.6：管理体验、通知中心与 AI 助手
+
+v0.1.6 的研发基线为 [`v0.1.6-management-and-ai-design.md`](./v0.1.6-management-and-ai-design.md)。该版本不调整 v0.1.5 已收敛的任务安全主链，主要重构下载器/站点/通知管理体验，引入用户名登录、用户头像抽屉、站内通知与修改密码，并增加 AI 助手的只读 MVP 和“关于”页面。
+
+推荐实施顺序为：
+
+1. 兼容 migration、站点 Profile Registry、代理/事件/管理员通知等共享领域模型；
+2. 下载器未保存配置测试、运行指标与卡片重构；
+3. 站点新增类型、固定地址、连接参数、状态点和用户详情；
+4. 通知事件订阅、代理、临时测试与站内 Inbox；
+5. 用户名登录、Docker 首次 bootstrap、一次性临时密码、头像抽屉与修改密码；
+6. AI 助手 OpenAI/OpenAI-compatible Provider、自定义 Base URL/Model、只读 Tool 与 Telegram Long Polling 对话；
+7. About、移动端/空状态/错误态统一；
+8. v0.1.5 → v0.1.6 升级矩阵、全量自动化与真实环境验收。
+
+AI 助手在 v0.1.6 固定保持只读，不提供 Web AI Chat，只通过 Telegram Long Polling 承载对话；Provider 支持 OpenAI 官方 API 与用户自定义 OpenAI-compatible Base URL，Model 使用自由文本并由真实 Provider Probe 验证，不由后端枚举限制。AI 不新建绕过现有 CSRF、Idempotency-Key、operation journal、预演和人工确认的写入通道。新增站点类型只有在对应适配器完成鉴权、搜索、详情、torrent 获取、错误分类和真实只读验收后才标记为正式可用。
