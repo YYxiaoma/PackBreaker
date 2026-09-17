@@ -51,7 +51,7 @@ def test_consistent_backup_reads_committed_wal_without_copying_master_key(tmp_pa
 
     verified = verify_backup(artifact.database_path, artifact.manifest_path)
     assert verified.database_sha256 == artifact.database_sha256
-    assert verified.alembic_revision == "0023_backup_policy"
+    assert verified.alembic_revision == "0024_task_center_v015"
     assert verified.app_version == "0.1.0-test"
     assert artifact.database_path.stat().st_mode & 0o777 == 0o600
     assert artifact.manifest_path.stat().st_mode & 0o777 == 0o600
@@ -134,7 +134,7 @@ def test_restore_replaces_current_database_and_keeps_pre_restore_snapshot(tmp_pa
         app_version="0.1.0-test",
     )
 
-    assert result.restored_revision == "0023_backup_policy"
+    assert result.restored_revision == "0024_task_center_v015"
     assert result.safety_backup is not None
     assert _probe_value(settings.database_path) == "from-backup"
     assert _probe_value(result.safety_backup.database_path) == "current-before-restore"

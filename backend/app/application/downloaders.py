@@ -6,7 +6,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
@@ -31,6 +31,8 @@ from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.adapters.downloaders import (
     DownloaderAdapterError,
     DownloaderAdapterFactory,
+    DownloaderTorrent,
+    DownloaderTorrentListAdapter,
     QbittorrentWriteAdapter,
     TransmissionWriteAdapter,
 )
@@ -58,6 +60,14 @@ class DownloaderView:
     last_path_diagnostic_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DownloaderTorrentListView:
+    items: tuple[DownloaderTorrent, ...]
+    page: int
+    page_size: int
+    total: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +142,13 @@ class QbittorrentWriteBinding:
             allowed_root=self.data_root,
         )
 
+    def container_path(self, remote_path: str) -> Path:
+        return map_remote_path(
+            remote_path,
+            list(self.path_mappings),
+            allowed_root=self.data_root,
+        ).container_path
+
 
 @dataclass(frozen=True, slots=True)
 class TransmissionWriteBinding:
@@ -149,6 +166,13 @@ class TransmissionWriteBinding:
             list(self.path_mappings),
             allowed_root=self.data_root,
         )
+
+    def container_path(self, remote_path: str) -> Path:
+        return map_remote_path(
+            remote_path,
+            list(self.path_mappings),
+            allowed_root=self.data_root,
+        ).container_path
 
 
 class DownloaderService:
@@ -172,6 +196,78 @@ class DownloaderService:
     def get(self, downloader_id: str) -> DownloaderView:
         with self._session_factory() as session:
             return self._view(self._require_record(DownloaderRepository(session), downloader_id))
+
+    async def list_torrents(
+        self,
+        downloader_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        search: str | None = None,
+        status: str | None = None,
+        category: str | None = None,
+        tag: str | None = None,
+        tracker: str | None = None,
+        save_path: str | None = None,
+    ) -> DownloaderTorrentListView:
+        if page < 1 or page_size < 1 or page_size > 200:
+            raise ApplicationError(
+                code="DOWNLOADER_TORRENT_PAGE_INVALID",
+                status=422,
+                title="种子分页参数无效",
+                detail="page 必须大于等于 1，page_size 必须位于 1..200",
+            )
+        items = await self.list_all_torrents(downloader_id)
+        needles = {
+            "search": (search or "").strip().casefold(),
+            "status": (status or "").strip().casefold(),
+            "category": (category or "").strip().casefold(),
+            "tag": (tag or "").strip().casefold(),
+            "tracker": (tracker or "").strip().casefold(),
+            "save_path": (save_path or "").strip().casefold(),
+        }
+
+        def matches(item: DownloaderTorrent) -> bool:
+            if needles["search"] and needles["search"] not in item.name.casefold():
+                return False
+            if needles["status"] and needles["status"] not in item.status.casefold():
+                return False
+            if needles["category"] and needles["category"] not in (item.category or "").casefold():
+                return False
+            if needles["tag"] and all(
+                needles["tag"] not in value.casefold() for value in item.tags
+            ):
+                return False
+            if needles["tracker"] and needles["tracker"] not in (item.tracker or "").casefold():
+                return False
+            return not needles["save_path"] or needles["save_path"] in item.save_path.casefold()
+
+        filtered = tuple(
+            sorted(
+                (item for item in items if matches(item)),
+                key=lambda item: (item.name.casefold(), item.torrent_hash),
+            )
+        )
+        offset = (page - 1) * page_size
+        return DownloaderTorrentListView(
+            items=filtered[offset : offset + page_size],
+            page=page,
+            page_size=page_size,
+            total=len(filtered),
+        )
+
+    async def list_all_torrents(self, downloader_id: str) -> tuple[DownloaderTorrent, ...]:
+        binding = self.write_binding(downloader_id)
+        adapter = cast(DownloaderTorrentListAdapter, binding.adapter)
+        try:
+            return await adapter.list_torrents()
+        except DownloaderAdapterError as exc:
+            raise ApplicationError(
+                code=exc.code,
+                status=502,
+                title="读取下载器种子失败",
+                detail=str(exc),
+            ) from exc
 
     def write_binding(
         self, downloader_id: str

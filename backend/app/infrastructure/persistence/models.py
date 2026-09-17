@@ -26,6 +26,18 @@ from backend.app.domain.notification import (
 )
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.site_config import SiteCredentialKind, SiteKind
+from backend.app.domain.task_definition import (
+    TaskConflictPolicy,
+    TaskDefinitionKind,
+    TaskDefinitionStatus,
+    TaskExecutionPhase,
+    TaskExecutionStatus,
+    TaskExecutionTrigger,
+    TaskInitialScope,
+    TaskOverlapPolicy,
+    TaskSourceKind,
+    TaskStorageMode,
+)
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.persistence.base import Base
@@ -55,6 +67,16 @@ _HISTORY_SCAN_STATUS_SQL = ", ".join(f"'{status.value}'" for status in HistorySc
 _HISTORY_MATERIALIZATION_STATUS_SQL = ", ".join(
     f"'{status.value}'" for status in HistoryMaterializationStatus
 )
+_TASK_DEFINITION_KIND_SQL = ", ".join(f"'{value.value}'" for value in TaskDefinitionKind)
+_TASK_DEFINITION_STATUS_SQL = ", ".join(f"'{value.value}'" for value in TaskDefinitionStatus)
+_TASK_SOURCE_KIND_SQL = ", ".join(f"'{value.value}'" for value in TaskSourceKind)
+_TASK_STORAGE_MODE_SQL = ", ".join(f"'{value.value}'" for value in TaskStorageMode)
+_TASK_CONFLICT_POLICY_SQL = ", ".join(f"'{value.value}'" for value in TaskConflictPolicy)
+_TASK_INITIAL_SCOPE_SQL = ", ".join(f"'{value.value}'" for value in TaskInitialScope)
+_TASK_OVERLAP_POLICY_SQL = ", ".join(f"'{value.value}'" for value in TaskOverlapPolicy)
+_TASK_EXECUTION_TRIGGER_SQL = ", ".join(f"'{value.value}'" for value in TaskExecutionTrigger)
+_TASK_EXECUTION_STATUS_SQL = ", ".join(f"'{value.value}'" for value in TaskExecutionStatus)
+_TASK_EXECUTION_PHASE_SQL = ", ".join(f"'{value.value}'" for value in TaskExecutionPhase)
 
 
 class BackupPolicy(Base):
@@ -218,6 +240,246 @@ class Site(Base):
     last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskDefinition(Base):
+    __tablename__ = "task_definition"
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_TASK_DEFINITION_KIND_SQL})", name="kind"),
+        CheckConstraint(f"status IN ({_TASK_DEFINITION_STATUS_SQL})", name="status"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        Index("ix_task_definition_kind_status", "kind", "status"),
+        Index("ix_task_definition_site_id", "site_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    site_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("site.id", ondelete="SET NULL"), nullable=True
+    )
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskSchedule(Base):
+    __tablename__ = "task_schedule"
+    __table_args__ = (
+        UniqueConstraint("task_definition_id", name="uq_task_schedule_definition"),
+        Index("ix_task_schedule_next_run_at", "next_run_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_definition_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_definition.id", ondelete="CASCADE"), nullable=False
+    )
+    cron_expression: Mapped[str] = mapped_column(String(160), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_scan_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_successful_scan_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    scan_checkpoint: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskSource(Base):
+    __tablename__ = "task_source"
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_TASK_SOURCE_KIND_SQL})", name="kind"),
+        CheckConstraint(
+            "(kind = 'DOWNLOADER' AND directory_path IS NULL) OR "
+            "(kind = 'DIRECTORY' AND downloader_id IS NULL AND directory_path IS NOT NULL)",
+            name="binding",
+        ),
+        UniqueConstraint("task_definition_id", name="uq_task_source_definition"),
+        Index("ix_task_source_downloader_id", "downloader_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_definition_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_definition.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    downloader_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("downloader.id", ondelete="SET NULL"), nullable=True
+    )
+    directory_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskFilter(Base):
+    __tablename__ = "task_filter"
+    __table_args__ = (
+        CheckConstraint("min_size_bytes IS NULL OR min_size_bytes >= 0", name="min_size"),
+        CheckConstraint("max_size_bytes IS NULL OR max_size_bytes >= 0", name="max_size"),
+        CheckConstraint(
+            "min_size_bytes IS NULL OR max_size_bytes IS NULL OR min_size_bytes <= max_size_bytes",
+            name="size_range",
+        ),
+        CheckConstraint("max_scan_depth IS NULL OR max_scan_depth >= 0", name="max_scan_depth"),
+        UniqueConstraint("task_definition_id", name="uq_task_filter_definition"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_definition_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_definition.id", ondelete="CASCADE"), nullable=False
+    )
+    file_types: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    video_extensions: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    archive_extensions: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    min_size_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    max_size_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    include_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    exclude_names: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    ignore_temp_files: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    temp_patterns: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    include_subdirectories: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    max_scan_depth: Mapped[int | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskOutputPolicy(Base):
+    __tablename__ = "task_output_policy"
+    __table_args__ = (
+        CheckConstraint(f"storage_mode IN ({_TASK_STORAGE_MODE_SQL})", name="storage_mode"),
+        CheckConstraint(
+            f"conflict_policy IN ({_TASK_CONFLICT_POLICY_SQL})", name="conflict_policy"
+        ),
+        UniqueConstraint("task_definition_id", name="uq_task_output_policy_definition"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_definition_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_definition.id", ondelete="CASCADE"), nullable=False
+    )
+    output_directory: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    preserve_structure: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    conflict_policy: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskExecutionPolicy(Base):
+    __tablename__ = "task_execution_policy"
+    __table_args__ = (
+        CheckConstraint(f"initial_scope IN ({_TASK_INITIAL_SCOPE_SQL})", name="initial_scope"),
+        CheckConstraint(f"overlap_policy IN ({_TASK_OVERLAP_POLICY_SQL})", name="overlap_policy"),
+        CheckConstraint("stability_wait_seconds >= 0", name="stability_wait"),
+        CheckConstraint("debounce_seconds >= 0", name="debounce"),
+        CheckConstraint("max_auto_retries BETWEEN 0 AND 20", name="max_auto_retries"),
+        UniqueConstraint("task_definition_id", name="uq_task_execution_policy_definition"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_definition_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_definition.id", ondelete="CASCADE"), nullable=False
+    )
+    stability_detection_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    stability_wait_seconds: Mapped[int] = mapped_column(nullable=False, default=60)
+    only_completed_downloads: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    initial_scope: Mapped[str] = mapped_column(String(24), nullable=False)
+    debounce_seconds: Mapped[int] = mapped_column(nullable=False, default=30)
+    overlap_policy: Mapped[str] = mapped_column(String(24), nullable=False)
+    auto_retry_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    max_auto_retries: Mapped[int] = mapped_column(nullable=False, default=3)
+    retry_intervals_seconds: Mapped[list[int]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskExecution(Base):
+    __tablename__ = "task_execution"
+    __table_args__ = (
+        CheckConstraint(f"trigger IN ({_TASK_EXECUTION_TRIGGER_SQL})", name="trigger"),
+        CheckConstraint(f"status IN ({_TASK_EXECUTION_STATUS_SQL})", name="status"),
+        CheckConstraint(f"phase IN ({_TASK_EXECUTION_PHASE_SQL})", name="phase"),
+        CheckConstraint("discovered_count >= 0", name="discovered_count"),
+        CheckConstraint("success_count >= 0", name="success_count"),
+        CheckConstraint("failed_count >= 0", name="failed_count"),
+        CheckConstraint("skipped_count >= 0", name="skipped_count"),
+        Index("ix_task_execution_definition_started", "task_definition_id", "started_at"),
+        Index("ix_task_execution_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_definition_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("task_definition.id", ondelete="SET NULL"), nullable=True
+    )
+    task_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    trigger: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    phase: Mapped[str] = mapped_column(String(24), nullable=False)
+    source_execution_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("task_execution.id", ondelete="SET NULL"), nullable=True
+    )
+    trace_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    config_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    discovered_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    success_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    skipped_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskExecutionItem(Base):
+    __tablename__ = "task_execution_item"
+    __table_args__ = (
+        CheckConstraint(f"phase IN ({_TASK_EXECUTION_PHASE_SQL})", name="phase"),
+        CheckConstraint("size_bytes IS NULL OR size_bytes >= 0", name="size"),
+        CheckConstraint("progress IS NULL OR (progress >= 0 AND progress <= 100)", name="progress"),
+        UniqueConstraint("execution_id", "source_object_key", name="uq_task_execution_item_source"),
+        Index("ix_task_execution_item_execution_phase", "execution_id", "phase"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_execution.id", ondelete="CASCADE"), nullable=False
+    )
+    unpack_task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="SET NULL"), nullable=True
+    )
+    source_object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    phase: Mapped[str] = mapped_column(String(24), nullable=False)
+    progress: Mapped[int | None] = mapped_column(nullable=True)
+    result: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_summary_zh: Mapped[str | None] = mapped_column(Text, nullable=True)
+    technical_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retryable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    retry_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskExecutionEvent(Base):
+    __tablename__ = "task_execution_event"
+    __table_args__ = (
+        Index("ix_task_execution_event_execution_created", "execution_id", "created_at"),
+        Index("ix_task_execution_event_code_created", "event_code", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_execution.id", ondelete="CASCADE"), nullable=False
+    )
+    event_code: Mapped[str] = mapped_column(String(96), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    trace_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
 class HistoryScan(Base):

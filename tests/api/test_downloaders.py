@@ -316,6 +316,96 @@ def test_connection_path_diagnostics_and_enable_gate(tmp_path: Path) -> None:
         client.__exit__(None, None, None)
 
 
+def test_downloaders_torrent_picker_reads_and_filters_real_qb_items(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        created = _create_qb(client, data_root=app.state.settings.data_dir)
+        downloader_id = cast(str, created["id"])
+        now = datetime.now(UTC)
+        with app.state.runtime.session_factory() as session:
+            downloader = session.get(Downloader, downloader_id)
+            assert downloader is not None
+            downloader.enabled = True
+            downloader.connection_status = "OK"
+            downloader.path_mapping_status = "OK"
+            downloader.capabilities = {
+                "client": "qBittorrent",
+                "version": "v5.2.3",
+                "api_version": "2.15.1",
+                "supports_skip_checking": True,
+                "supports_force_recheck": True,
+                "supports_verify_progress": True,
+                "read_only_probe": True,
+            }
+            downloader.last_test_at = now
+            downloader.last_path_diagnostic_at = now
+            session.commit()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path.endswith("/auth/login"):
+                return httpx2.Response(200, text="Ok.", headers={"Set-Cookie": "SID=fake; path=/"})
+            if request.url.path.endswith("/torrents/info"):
+                return httpx2.Response(
+                    200,
+                    json=[
+                        {
+                            "hash": "a" * 40,
+                            "name": "Movie.One.2024",
+                            "state": "uploading",
+                            "progress": 1.0,
+                            "size": 1024,
+                            "category": "movie",
+                            "tags": "manual,uhd",
+                            "tracker": "https://tracker.invalid/announce",
+                            "save_path": "/downloads",
+                            "content_path": "/downloads/Movie.One.2024",
+                        },
+                        {
+                            "hash": "b" * 40,
+                            "name": "Series.Two.S01",
+                            "state": "downloading",
+                            "progress": 0.5,
+                            "size": 2048,
+                            "category": "tv",
+                            "tags": "series",
+                            "tracker": "https://other.invalid/announce",
+                            "save_path": "/downloads/tv",
+                            "content_path": "/downloads/tv/Series.Two.S01",
+                        },
+                    ],
+                )
+            return httpx2.Response(404)
+
+        app.state.downloader_service._adapter_factory = DownloaderAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(handler)
+        )
+        response = client.get(
+            f"/api/v1/downloaders/{downloader_id}/torrents",
+            params={"search": "movie", "category": "MOVIE", "tag": "UHD", "page_size": 25},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["page"] == 1
+        assert body["page_size"] == 25
+        assert body["total"] == 1
+        assert body["items"] == [
+            {
+                "torrent_hash": "a" * 40,
+                "name": "Movie.One.2024",
+                "status": "uploading",
+                "progress": 1.0,
+                "size_bytes": 1024,
+                "category": "movie",
+                "tags": ["manual", "uhd"],
+                "tracker": "https://tracker.invalid/announce",
+                "save_path": "/downloads",
+                "content_path": "/downloads/Movie.One.2024",
+            }
+        ]
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_transmission_probe_and_write_binding_freeze_safe_capabilities(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:

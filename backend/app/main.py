@@ -17,6 +17,7 @@ from backend.app.api.history_scans import router as history_scan_router
 from backend.app.api.notifications import router as notification_router
 from backend.app.api.sites import router as site_router
 from backend.app.api.system import router as system_router
+from backend.app.api.task_definitions import router as task_definition_router
 from backend.app.api.tasks import router as task_router
 from backend.app.application.auth import AuthService
 from backend.app.application.automation_access import ApiTokenService
@@ -43,6 +44,9 @@ from backend.app.application.task_actions import TaskActionService
 from backend.app.application.task_adding import TaskAddingCoordinator
 from backend.app.application.task_cancellation import TaskCancellationCoordinator
 from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
+from backend.app.application.task_definition_driver import TaskDefinitionDriver
+from backend.app.application.task_definition_executions import TaskDefinitionExecutionService
+from backend.app.application.task_definitions import TaskDefinitionService
 from backend.app.application.task_driver import ActiveTaskDriver
 from backend.app.application.task_events import TaskEventService
 from backend.app.application.task_linking import TaskLinkingCoordinator
@@ -188,6 +192,11 @@ def create_app(
             reliability_registry=site_reliability_registry,
         )
         app.state.site_service = site_service
+        app.state.task_definition_service = TaskDefinitionService(
+            resolved_runtime.session_factory,
+            data_root=resolved_settings.data_dir,
+            timezone=resolved_settings.timezone,
+        )
         task_analysis_service = TaskAnalysisService(
             resolved_runtime.session_factory,
             site_service,
@@ -271,12 +280,21 @@ def create_app(
             transmission_remove_operations,
         )
         app.state.task_cancellation_coordinator = task_cancellation_coordinator
-        app.state.task_action_service = TaskActionService(
+        task_action_service = TaskActionService(
             resolved_runtime.session_factory,
             task_linking_coordinator,
             task_cancellation_coordinator,
             task_cancellation_coordinator,
         )
+        app.state.task_action_service = task_action_service
+        task_definition_execution_service = TaskDefinitionExecutionService(
+            resolved_runtime.session_factory,
+            downloader_service,
+            task_action_service,
+            task_analysis_service,
+            data_root=resolved_settings.data_dir,
+        )
+        app.state.task_definition_execution_service = task_definition_execution_service
         task_recovery_coordinator = TaskRecoveryCoordinator(
             resolved_runtime.session_factory,
             task_linking_coordinator,
@@ -317,6 +335,14 @@ def create_app(
         )
         app.state.task_driver = task_driver
         task_driver.start()
+        task_definition_driver = TaskDefinitionDriver(
+            task_definition_execution_service,
+            interval_seconds=resolved_settings.task_definition_driver_interval_seconds,
+            scan_limit=resolved_settings.task_definition_driver_scan_limit,
+            retry_limit=resolved_settings.task_definition_driver_retry_limit,
+        )
+        app.state.task_definition_driver = task_definition_driver
+        task_definition_driver.start()
         history_scan_driver = HistoryScanDriver(
             history_scan_service,
             interval_seconds=resolved_settings.history_scan_driver_interval_seconds,
@@ -349,6 +375,7 @@ def create_app(
             await backup_driver.stop()
             await notification_driver.stop()
             await history_scan_driver.stop()
+            await task_definition_driver.stop()
             await task_driver.stop()
             resolved_runtime.stop()
 
@@ -442,6 +469,7 @@ def create_app(
     app.include_router(notification_router, prefix="/api/v1")
     app.include_router(site_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
+    app.include_router(task_definition_router, prefix="/api/v1")
     app.include_router(task_router, prefix="/api/v1")
     _attach_frontend(app, resolved_settings)
     return app

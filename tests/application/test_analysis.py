@@ -87,6 +87,40 @@ class _FakeAdapter:
         return TorrentPayload(self.site_id, torrent_id, self.torrent_bytes, datetime.now(UTC))
 
 
+class _CompleteSearchAdapter(_FakeAdapter):
+    def __init__(self, site_id: str, torrent_bytes: bytes) -> None:
+        super().__init__(site_id, torrent_bytes, min_interval=90.0)
+        self.fetch_torrent_calls: list[str] = []
+
+    async def capabilities(self) -> SiteSearchCapabilities:
+        return SiteSearchCapabilities(
+            supports_pagination=True,
+            min_request_interval_seconds=90.0,
+            search_results_are_complete=True,
+            max_verification_candidates=1,
+        )
+
+    async def search(self, query: SearchQuery) -> SearchPage:
+        self.search_calls.append(query)
+        items = tuple(
+            normalize_candidate_meta(
+                site_id=self.site_id,
+                torrent_id=str(index),
+                display_name="Movie.2026",
+                total_size=16,
+            )
+            for index in range(1, 4)
+        )
+        return SearchPage(self.site_id, query.page, items, False, len(items))
+
+    async def fetch_details(self, torrent_id: str) -> TorrentDetails:
+        raise AssertionError(f"完整搜索结果不应重复请求详情: {torrent_id}")
+
+    async def fetch_torrent(self, torrent_id: str) -> TorrentPayload:
+        self.fetch_torrent_calls.append(torrent_id)
+        return TorrentPayload(self.site_id, torrent_id, self.torrent_bytes, datetime.now(UTC))
+
+
 class _FakeSiteProvider:
     def __init__(
         self,
@@ -170,6 +204,48 @@ async def test_analysis_builds_stable_multi_site_preflight_and_persists_once(
         assert stored.snapshot_digest == first.snapshot_digest
         assert stored.payload["snapshot_digest"] == first.snapshot_digest
         assert session.scalar(select(func.count()).select_from(TaskCandidateRecord)) == 2
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_analysis_uses_site_verification_budget_and_skips_redundant_details(
+    tmp_path: Path,
+) -> None:
+    content = b"0123456789abcdef"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_file = source_root / "Movie.2026.mkv"
+    source_file.write_bytes(content)
+    unit = identify_task_units((SourceTaskFile(source_file.name, len(content)),))[0]
+    torrent = _v1_torrent(source_file.name.encode(), content, piece_length=4)
+
+    engine = create_sqlite_engine(tmp_path / "analysis-complete-search.db")
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    with factory() as session:
+        task, _ = TaskRepository(session).create_or_get(
+            TaskCreate(
+                "PACKAGE_UNPACK",
+                "source",
+                "complete-search",
+                unit.normalized_unit_key,
+                "trace",
+            )
+        )
+        session.commit()
+        task_id = task.id
+
+    adapter = _CompleteSearchAdapter("complete", torrent)
+    provider = _FakeSiteProvider((EnabledSiteAdapter("cfg-complete", 1, "complete", adapter),))
+    service = AnalysisService(factory, provider, policy=AnalysisPolicy(max_candidates_to_verify=5))
+
+    snapshot = await service.analyze(task_id=task_id, unit=unit, source_root=source_root)
+
+    assert len(snapshot.candidates) == 3
+    selected = [item for item in snapshot.candidates if item.selected_for_verification]
+    assert len(selected) == 1
+    assert selected[0].verification_level is VerificationLevel.FULL_VERIFIED
+    assert len(adapter.fetch_torrent_calls) == 1
     engine.dispose()
 
 

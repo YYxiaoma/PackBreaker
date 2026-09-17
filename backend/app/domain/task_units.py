@@ -20,7 +20,8 @@ _UNIT_KEY_VERSION = "packbreaker-task-unit-v1"
 _EPISODE_GROUP_KEY_VERSION = "packbreaker-episode-group-v1"
 _EPISODE_VARIANT_KEY_VERSION = "packbreaker-episode-variant-v1"
 _WINDOWS_DRIVE_RE = re.compile(r"^[a-zA-Z]:")
-_VIDEO_EXTENSIONS = frozenset({".avi", ".m4v", ".mkv", ".mov", ".mp4", ".wmv"})
+_VIDEO_EXTENSIONS = frozenset({".avi", ".m4v", ".mkv", ".mov", ".mp4", ".m2ts", ".ts", ".wmv"})
+_DISC_STRUCTURE_COMPONENTS = frozenset({"bdmv", "video_ts"})
 _SEASON_COMPONENT_RE = re.compile(r"^(?:season[ ._-]*|s)(\d{1,2})$", re.IGNORECASE)
 _SPECIALS_COMPONENT_RE = re.compile(r"^specials?$", re.IGNORECASE)
 _CONTEXT_EPISODE_RANGE_RE = re.compile(
@@ -96,7 +97,11 @@ def identify_task_units(
         by_path.values(), key=lambda item: (item.relative_path.casefold(), item.relative_path)
     ):
         path = PurePosixPath(source_file.relative_path)
-        if path.suffix.casefold() not in _VIDEO_EXTENSIONS or source_file.length == 0:
+        if (
+            path.suffix.casefold() not in _VIDEO_EXTENSIONS
+            or source_file.length == 0
+            or any(part.casefold() in _DISC_STRUCTURE_COMPONENTS for part in path.parts[:-1])
+        ):
             continue
         display_name = path.stem
         descriptor = parse_media_name(

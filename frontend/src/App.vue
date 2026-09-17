@@ -20,7 +20,7 @@ import {
   Sparkles,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import TaskCenter from './components/TaskCenter.vue';
+import TaskDefinitionCenter from './components/TaskDefinitionCenter.vue';
 import PreflightReviewCenter from './components/PreflightReviewCenter.vue';
 import OperationalOverview from './components/OperationalOverview.vue';
 import Management from './components/Management.vue';
@@ -200,7 +200,7 @@ function openVersionPopover(): void {
             <span>安全模式</span>
           </div>
         </div>
-        <TaskCenter v-if="route === '任务中心'" />
+        <TaskDefinitionCenter v-if="route === '任务中心'" @navigate="route = $event" />
         <PreflightReviewCenter v-else-if="route === '预演与确认'" />
         <OperationalOverview
           v-else-if="route === '总览'"

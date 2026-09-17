@@ -30,7 +30,14 @@ _RECOVERABLE_STATUSES = (
     TaskStatus.SEEDING,
     TaskStatus.ROLLING_BACK,
 )
-_STARTUP_RECOVERABLE_STATUSES = (TaskStatus.CANCELLING, *_RECOVERABLE_STATUSES)
+_STARTUP_RECOVERABLE_STATUSES = (
+    TaskStatus.ANALYZING,
+    TaskStatus.SEARCHING,
+    TaskStatus.MATCHING,
+    TaskStatus.VERIFYING,
+    TaskStatus.CANCELLING,
+    *_RECOVERABLE_STATUSES,
+)
 _DEFAULT_RECOVERY_LIMIT = 100
 _DEFAULT_MAX_STEPS_PER_TASK = 4
 
@@ -145,7 +152,7 @@ class TaskRecoveryCoordinator:
                 title="任务状态不需要启动恢复",
                 detail=(
                     "仅 LINKING/ADDING/CLIENT_VERIFYING/SEEDING/ROLLING_BACK 进入普通恢复；"
-                    "启动期可额外恢复遗留的协作式 CANCELLING"
+                    "启动期可额外恢复遗留只读分析与协作式 CANCELLING"
                 ),
             )
 
@@ -157,6 +164,24 @@ class TaskRecoveryCoordinator:
                 current_status = self._load_task_status(task_id)
                 if current_status not in recoverable_statuses:
                     break
+                if current_status in ACTIVE_ANALYSIS_STATUSES:
+                    if not recover_abandoned_analysis:
+                        raise AssertionError("普通周期恢复不应扫描活动分析状态")
+                    steps.append(current_status)
+                    self._recover_abandoned_analysis(task_id, current_status)
+                    next_status = self._load_task_status(task_id)
+                    return TaskRecoveryItem(
+                        task_id=task_id,
+                        execution_plan_id=None,
+                        initial_status=initial_status,
+                        final_status=next_status,
+                        outcome=(
+                            RecoveryOutcome.COMPLETED
+                            if next_status not in recoverable_statuses
+                            else RecoveryOutcome.WAITING
+                        ),
+                        steps=tuple(steps),
+                    )
                 if current_status is TaskStatus.CANCELLING:
                     if not recover_abandoned_analysis:
                         raise AssertionError("普通周期恢复不应扫描 CANCELLING")
@@ -317,6 +342,49 @@ class TaskRecoveryCoordinator:
                     title="启动恢复任务状态无效",
                     detail="任务保存了未知状态",
                 ) from exc
+
+    def _recover_abandoned_analysis(self, task_id: str, status: TaskStatus) -> None:
+        with self._session_factory() as session:
+            repository = TaskRepository(session)
+            task = repository.get(task_id)
+            if task is None:
+                raise ApplicationError(
+                    code="RECOVERY_TASK_NOT_FOUND",
+                    status=404,
+                    title="启动恢复任务不存在",
+                    detail="恢复遗留分析时任务已不存在",
+                )
+            if task.status != status.value or status not in ACTIVE_ANALYSIS_STATUSES:
+                raise ApplicationError(
+                    code="RECOVERY_ANALYSIS_STATE_INVALID",
+                    status=409,
+                    title="遗留分析状态已变化",
+                    detail="启动恢复只能收敛 ANALYZING/SEARCHING/MATCHING/VERIFYING 状态",
+                )
+            if OperationJournalRepository(session).list_for_task(task.id):
+                raise ApplicationError(
+                    code="ANALYSIS_RECOVERY_EVIDENCE_CONFLICT",
+                    status=409,
+                    title="遗留分析存在副作用证据",
+                    detail="启动恢复发现 operation journal；拒绝把分析状态自动恢复到 RETRY",
+                )
+            try:
+                repository.transition(
+                    task_id=task.id,
+                    expected_version=task.version,
+                    to_status=TaskStatus.RETRY,
+                    event_type="ANALYSIS_INTERRUPTED_RECOVERED",
+                    reason="进程重启后确认只读分析已中断；恢复到 RETRY 等待重新分析",
+                    checkpoint=deepcopy(task.checkpoint),
+                )
+            except DomainViolation as exc:
+                raise ApplicationError(
+                    code="RECOVERY_ANALYSIS_TASK_CHANGED",
+                    status=409,
+                    title="遗留分析恢复期间任务发生变化",
+                    detail="无法确认遗留分析状态仍绑定当前任务版本",
+                ) from exc
+            session.commit()
 
     def _recover_abandoned_analysis_cancellation(self, task_id: str) -> None:
         with self._session_factory() as session:

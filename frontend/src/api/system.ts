@@ -21,6 +21,11 @@ export interface OperationalLogQuery {
   limit?: number;
   level?: OperationalLogLevel;
   q?: string;
+  source?: 'SYSTEM' | 'TASK_EVENT';
+  event_code?: string;
+  task_id?: string;
+  execution_id?: string;
+  trace_id?: string;
 }
 
 export interface DownloadArtifact {

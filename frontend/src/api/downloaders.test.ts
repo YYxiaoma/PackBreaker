@@ -3,6 +3,7 @@ import { apiClient } from './client';
 import {
   deleteDownloader,
   diagnoseDownloaderPaths,
+  listDownloaderTorrents,
   setDownloaderEnabled,
   updateDownloader,
   type Downloader,
@@ -76,5 +77,20 @@ describe('路径诊断契约', () => {
     await diagnoseDownloaderPaths(downloader.id, probes);
 
     expect(post).toHaveBeenCalledWith(`/downloaders/${downloader.id}/path-diagnostics`, { probes });
+  });
+});
+
+describe('真实种子选择器契约', () => {
+  it('按分页与筛选参数读取下载器种子', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
+      data: { items: [], page: 1, page_size: 25, total: 0 },
+    });
+    const query = { page: 1, page_size: 25, search: 'Movie', tag: 'uhd' };
+
+    await listDownloaderTorrents(downloader.id, query);
+
+    expect(get).toHaveBeenCalledWith(`/downloaders/${downloader.id}/torrents`, {
+      params: query,
+    });
   });
 });

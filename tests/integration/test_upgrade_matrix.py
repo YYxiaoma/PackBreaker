@@ -48,7 +48,7 @@ def test_every_historical_revision_upgrades_to_head_without_losing_probe(
 
     assert result.upgraded is True
     assert result.source_revision == source_revision
-    assert result.target_revision == "0023_backup_policy"
+    assert result.target_revision == "0024_task_center_v015"
     assert result.safety_backup is not None
     assert (
         verify_backup(
@@ -62,7 +62,7 @@ def test_every_historical_revision_upgrades_to_head_without_losing_probe(
             source_revision,
         )
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0023_backup_policy",
+            "0024_task_center_v015",
         )
 
 
@@ -214,7 +214,7 @@ def test_runtime_start_uses_safe_upgrade_and_keeps_pre_upgrade_snapshot(tmp_path
     runtime.start()
     try:
         assert runtime.readiness().ready is True
-        assert runtime.readiness().current_revision == "0023_backup_policy"
+        assert runtime.readiness().current_revision == "0024_task_center_v015"
     finally:
         runtime.stop()
 

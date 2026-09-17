@@ -42,8 +42,8 @@ def test_release_baseline_rejects_mutable_or_mismatched_identity(tmp_path: Path)
 
 def test_release_baseline_cannot_be_newer_than_project_version(tmp_path: Path) -> None:
     payload = json.loads((ROOT / "release-baseline.json").read_text(encoding="utf-8"))
-    payload["version"] = "0.1.5"
-    payload["tag"] = "v0.1.5"
+    payload["version"] = "0.1.6"
+    payload["tag"] = "v0.1.6"
     baseline = tmp_path / "baseline.json"
     baseline.write_text(json.dumps(payload), encoding="utf-8")
 

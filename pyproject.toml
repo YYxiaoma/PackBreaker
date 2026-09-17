@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "packbreaker"
-version = "0.1.4"
+version = "0.1.5"
 description = "面向 PT 场景的自动拆包辅种系统"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"

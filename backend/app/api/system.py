@@ -1,6 +1,6 @@
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, Query, Request
@@ -35,6 +35,7 @@ from backend.app.application.system_upgrades import (
 )
 from backend.app.application.task_driver import ActiveTaskDriver
 from backend.app.domain.auth import ApiScope
+from backend.app.infrastructure.app_logging import redact_fields, sanitize_message
 from backend.app.infrastructure.backups import BackupError
 from backend.app.infrastructure.diagnostics import build_diagnostic_bundle
 from backend.app.infrastructure.operational_logs import (
@@ -47,7 +48,11 @@ from backend.app.infrastructure.operational_logs import (
     OperationalLogQueryResult,
     query_operational_logs,
 )
-from backend.app.infrastructure.persistence.models import UnpackTask
+from backend.app.infrastructure.persistence.models import (
+    TaskExecution,
+    TaskExecutionEvent,
+    UnpackTask,
+)
 from backend.app.infrastructure.release_preflight import (
     ReleasePreflightReport,
     run_release_preflight,
@@ -80,8 +85,14 @@ class SystemHealthResponse(BaseModel):
 class OperationalLogEntryResponse(BaseModel):
     timestamp: datetime
     level: OperationalLogLevel
+    source: Literal["SYSTEM", "TASK_EVENT"] = "SYSTEM"
     logger: str
     message: str
+    event_code: str | None = None
+    task_id: str | None = None
+    task_name: str | None = None
+    execution_id: str | None = None
+    trace_id: str | None = None
     fields: dict[str, Any]
     exception: str | None
 
@@ -372,27 +383,132 @@ def _operational_logs_response(
     *,
     max_file_bytes: int,
     backup_count: int,
+    task_entries: tuple[OperationalLogEntryResponse, ...] = (),
+    limit: int | None = None,
 ) -> OperationalLogListResponse:
+    requested_limit = limit or result.limit
+    system_entries = [
+        OperationalLogEntryResponse(
+            timestamp=entry.timestamp,
+            level=entry.level,
+            source="SYSTEM",
+            logger=entry.logger,
+            message=entry.message,
+            trace_id=_string_field(entry.fields, "trace_id"),
+            task_id=_string_field(entry.fields, "task_id")
+            or _string_field(entry.fields, "task_definition_id"),
+            execution_id=_string_field(entry.fields, "execution_id"),
+            event_code=_string_field(entry.fields, "event_code"),
+            fields=entry.fields,
+            exception=entry.exception,
+        )
+        for entry in result.entries
+    ]
+    combined = [*system_entries, *task_entries]
+    combined.sort(key=lambda entry: entry.timestamp, reverse=True)
     return OperationalLogListResponse(
         window_minutes=result.window_minutes,
-        limit=result.limit,
-        count=len(result.entries),
-        truncated=result.truncated,
+        limit=requested_limit,
+        count=min(len(combined), requested_limit),
+        truncated=result.truncated or len(combined) > requested_limit,
         max_file_bytes=max_file_bytes,
         backup_count=backup_count,
         approximate_capacity_bytes=max_file_bytes * (backup_count + 1),
-        items=[
-            OperationalLogEntryResponse(
-                timestamp=entry.timestamp,
-                level=entry.level,
-                logger=entry.logger,
-                message=entry.message,
-                fields=entry.fields,
-                exception=entry.exception,
-            )
-            for entry in result.entries
-        ],
+        items=combined[:requested_limit],
     )
+
+
+def _string_field(fields: dict[str, Any], key: str) -> str | None:
+    value = fields.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _task_event_level(event_code: str) -> OperationalLogLevel:
+    if "FAILED" in event_code:
+        return "ERROR"
+    if "REJECTED" in event_code:
+        return "WARNING"
+    return "INFO"
+
+
+def _task_event_logs(
+    request: Request,
+    *,
+    window_minutes: int,
+    level: OperationalLogLevel | None,
+    query: str | None,
+    event_code: str | None,
+    task_id: str | None,
+    execution_id: str | None,
+    trace_id: str | None,
+    limit: int,
+) -> tuple[OperationalLogEntryResponse, ...]:
+    runtime = cast(RuntimeManager, request.app.state.runtime)
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(minutes=window_minutes)
+    statement = (
+        select(TaskExecutionEvent, TaskExecution.task_definition_id, TaskExecution.task_name)
+        .join(TaskExecution, TaskExecution.id == TaskExecutionEvent.execution_id)
+        .where(
+            TaskExecutionEvent.created_at >= cutoff,
+            TaskExecutionEvent.created_at <= now + timedelta(minutes=1),
+        )
+        .order_by(TaskExecutionEvent.created_at.desc(), TaskExecutionEvent.id.desc())
+        .limit(MAX_LOG_EXPORT_LIMIT + 1)
+    )
+    if event_code:
+        statement = statement.where(TaskExecutionEvent.event_code == event_code)
+    if task_id:
+        statement = statement.where(TaskExecution.task_definition_id == task_id)
+    if execution_id:
+        statement = statement.where(TaskExecutionEvent.execution_id == execution_id)
+    if trace_id:
+        statement = statement.where(TaskExecutionEvent.trace_id == trace_id)
+
+    normalized_query = query.strip().casefold() if query else ""
+    entries: list[OperationalLogEntryResponse] = []
+    with runtime.session_factory() as session:
+        rows = session.execute(statement)
+        for event, definition_id, task_name in rows:
+            event_level = _task_event_level(event.event_code)
+            if level is not None and event_level != level:
+                continue
+            context = redact_fields(event.context)
+            safe_context = context if isinstance(context, dict) else {"value": context}
+            if normalized_query:
+                haystack = " ".join(
+                    (
+                        event.event_code,
+                        event.message,
+                        event.trace_id,
+                        event.execution_id,
+                        definition_id or "",
+                        task_name,
+                        json.dumps(safe_context, ensure_ascii=False, sort_keys=True),
+                    )
+                ).casefold()
+                if normalized_query not in haystack:
+                    continue
+            entries.append(
+                OperationalLogEntryResponse(
+                    timestamp=event.created_at,
+                    level=event_level,
+                    source="TASK_EVENT",
+                    logger="packbreaker.task_execution",
+                    message=sanitize_message(event.message)[:4096],
+                    event_code=event.event_code,
+                    task_id=definition_id
+                    or _string_field(cast(dict[str, Any], safe_context), "task_id"),
+                    task_name=task_name,
+                    execution_id=event.execution_id,
+                    trace_id=event.trace_id,
+                    fields=cast(dict[str, Any], safe_context),
+                    exception=None,
+                )
+            )
+            if len(entries) > limit:
+                break
+    return tuple(entries)
 
 
 def _query_logs(
@@ -402,19 +518,75 @@ def _query_logs(
     limit: int,
     level: OperationalLogLevel | None,
     query: str | None,
-) -> tuple[OperationalLogQueryResult, int, int]:
+    source: Literal["SYSTEM", "TASK_EVENT"] | None = None,
+    event_code: str | None = None,
+    task_id: str | None = None,
+    execution_id: str | None = None,
+    trace_id: str | None = None,
+) -> tuple[OperationalLogListResponse, int, int]:
     runtime = cast(RuntimeManager, request.app.state.runtime)
     settings = runtime.settings
+    system_query = query or trace_id or execution_id or task_id or event_code
     result = query_operational_logs(
         settings.log_dir,
         backup_count=settings.log_file_backup_count,
         max_file_bytes=settings.log_file_max_bytes,
         window_minutes=window_minutes,
-        limit=limit,
+        limit=MAX_LOG_EXPORT_LIMIT,
         level=level,
-        query=query,
+        query=system_query,
     )
-    return result, settings.log_file_max_bytes, settings.log_file_backup_count
+    if source == "TASK_EVENT":
+        result = OperationalLogQueryResult(
+            window_minutes=result.window_minutes,
+            limit=result.limit,
+            truncated=False,
+            entries=(),
+        )
+    elif task_id or execution_id or trace_id or event_code:
+        filtered_entries = tuple(
+            entry
+            for entry in result.entries
+            if (
+                not task_id
+                or (
+                    _string_field(entry.fields, "task_id")
+                    or _string_field(entry.fields, "task_definition_id")
+                )
+                == task_id
+            )
+            and (not execution_id or _string_field(entry.fields, "execution_id") == execution_id)
+            and (not trace_id or _string_field(entry.fields, "trace_id") == trace_id)
+            and (not event_code or _string_field(entry.fields, "event_code") == event_code)
+        )
+        result = OperationalLogQueryResult(
+            window_minutes=result.window_minutes,
+            limit=result.limit,
+            truncated=result.truncated,
+            entries=filtered_entries,
+        )
+
+    task_entries: tuple[OperationalLogEntryResponse, ...] = ()
+    if source != "SYSTEM":
+        task_entries = _task_event_logs(
+            request,
+            window_minutes=window_minutes,
+            level=level,
+            query=query,
+            event_code=event_code,
+            task_id=task_id,
+            execution_id=execution_id,
+            trace_id=trace_id,
+            limit=limit,
+        )
+    response = _operational_logs_response(
+        result,
+        max_file_bytes=settings.log_file_max_bytes,
+        backup_count=settings.log_file_backup_count,
+        task_entries=task_entries,
+        limit=limit,
+    )
+    return response, settings.log_file_max_bytes, settings.log_file_backup_count
 
 
 def _health_service(request: Request) -> SystemHealthService:
@@ -654,21 +826,27 @@ async def list_system_logs(
     limit: Annotated[int, Query(ge=1, le=MAX_LOG_QUERY_LIMIT)] = DEFAULT_LOG_QUERY_LIMIT,
     level: OperationalLogLevel | None = None,
     query: Annotated[str | None, Query(alias="q", max_length=128)] = None,
+    source: Literal["SYSTEM", "TASK_EVENT"] | None = None,
+    event_code: Annotated[str | None, Query(max_length=96)] = None,
+    task_id: Annotated[str | None, Query(max_length=36)] = None,
+    execution_id: Annotated[str | None, Query(max_length=36)] = None,
+    trace_id: Annotated[str | None, Query(max_length=64)] = None,
 ) -> OperationalLogListResponse:
     """查询有界、持久、已脱敏的本地运行日志；不读取 Docker daemon 日志。"""
 
-    result, max_file_bytes, backup_count = _query_logs(
+    result, _, _ = _query_logs(
         request,
         window_minutes=window_minutes,
         limit=limit,
         level=level,
         query=query,
+        source=source,
+        event_code=event_code,
+        task_id=task_id,
+        execution_id=execution_id,
+        trace_id=trace_id,
     )
-    return _operational_logs_response(
-        result,
-        max_file_bytes=max_file_bytes,
-        backup_count=backup_count,
-    )
+    return result
 
 
 @router.get("/system/logs/export")
@@ -681,6 +859,11 @@ async def export_system_logs(
     limit: Annotated[int, Query(ge=1, le=MAX_LOG_EXPORT_LIMIT)] = MAX_LOG_EXPORT_LIMIT,
     level: OperationalLogLevel | None = None,
     query: Annotated[str | None, Query(alias="q", max_length=128)] = None,
+    source: Literal["SYSTEM", "TASK_EVENT"] | None = None,
+    event_code: Annotated[str | None, Query(max_length=96)] = None,
+    task_id: Annotated[str | None, Query(max_length=36)] = None,
+    execution_id: Annotated[str | None, Query(max_length=36)] = None,
+    trace_id: Annotated[str | None, Query(max_length=64)] = None,
 ) -> Response:
     """导出同一受控查询结果；硬上限 2000 条并再次经过读取端脱敏。"""
 
@@ -690,6 +873,11 @@ async def export_system_logs(
         limit=limit,
         level=level,
         query=query,
+        source=source,
+        event_code=event_code,
+        task_id=task_id,
+        execution_id=execution_id,
+        trace_id=trace_id,
     )
     payload = {
         "format_version": 1,
@@ -702,7 +890,7 @@ async def export_system_logs(
             "backup_count": backup_count,
             "approximate_capacity_bytes": max_file_bytes * (backup_count + 1),
         },
-        "items": [entry.as_dict() for entry in result.entries],
+        "items": [entry.model_dump(mode="json") for entry in result.items],
     }
     content = (json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
     digest = hashlib.sha256(content).hexdigest()

@@ -98,15 +98,19 @@ class _FakeAdapter:
 
 
 class _FakeSiteProvider:
-    def __init__(self, adapter: _FakeAdapter) -> None:
+    def __init__(self, adapter: _FakeAdapter, *, extra_version: int | None = None) -> None:
         self._adapter = adapter
         self.version = 1
+        self.extra_version = extra_version
 
     def enabled_adapters(self) -> tuple[EnabledSiteAdapter, ...]:
         return (EnabledSiteAdapter("cfg-fake", self.version, "fake", self._adapter),)
 
     def enabled_site_versions(self) -> tuple[tuple[str, int], ...]:
-        return (("cfg-fake", self.version),)
+        versions = [("cfg-fake", self.version)]
+        if self.extra_version is not None:
+            versions.append(("cfg-other", self.extra_version))
+        return tuple(versions)
 
 
 class _EmptySiteProvider:
@@ -218,6 +222,61 @@ def test_task_analyze_persists_units_candidates_and_reports_preflight_currentity
         with app.state.runtime.session_factory() as session:
             assert session.scalar(select(func.count()).select_from(TaskUnitRecord)) == 1
             assert session.scalar(select(func.count()).select_from(TaskCandidateRecord)) == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_task_definition_bridge_preflight_currentity_uses_scoped_site_version(
+    tmp_path: Path,
+) -> None:
+    client, app, settings = _authenticated_client(tmp_path)
+    source_root = settings.data_dir / "movie"
+    source_root.mkdir(parents=True)
+    content = b"0123456789abcdef"
+    source_file = source_root / "Movie.2026.mkv"
+    source_file.write_bytes(content)
+    unit = identify_task_units((SourceTaskFile(source_file.name, len(content)),))[0]
+    task_id = _create_task(app, unit.normalized_unit_key)
+    provider = _FakeSiteProvider(
+        _FakeAdapter(_v1_torrent(source_file.name.encode(), content, piece_length=4)),
+        extra_version=7,
+    )
+    app.state.task_analysis_service = TaskAnalysisService(
+        app.state.runtime.session_factory,
+        provider,
+        data_root=settings.data_dir,
+    )
+    with app.state.runtime.session_factory() as session:
+        task = TaskRepository(session).get(task_id)
+        assert task is not None
+        task.checkpoint = {
+            "schema_version": "packbreaker-task-definition-bridge-v1",
+            "source_root": "movie",
+            "site_id": "cfg-fake",
+        }
+        session.commit()
+
+    try:
+        analyzed = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers=_csrf(client),
+            json={"action": "analyze", "source_root": "movie"},
+        )
+        assert analyzed.status_code == 200
+        assert analyzed.json()["current"] is True
+        assert analyzed.json()["payload"]["site_versions"] == [["cfg-fake", 1]]
+
+        provider.extra_version = 8
+        unrelated_site_change = client.get(f"/api/v1/tasks/{task_id}/preflight/current")
+        assert unrelated_site_change.status_code == 200
+        assert unrelated_site_change.json()["current"] is True
+        assert unrelated_site_change.json()["stale_reasons"] == []
+
+        provider.version = 2
+        scoped_site_change = client.get(f"/api/v1/tasks/{task_id}/preflight/current")
+        assert scoped_site_change.status_code == 200
+        assert scoped_site_change.json()["current"] is False
+        assert scoped_site_change.json()["stale_reasons"] == ["SITE_CONFIG_CHANGED"]
     finally:
         client.__exit__(None, None, None)
 

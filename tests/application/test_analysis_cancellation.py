@@ -175,6 +175,47 @@ def _prepare_cancelling_task(
     return engine, factory, task_id
 
 
+def _prepare_abandoned_analysis_task(
+    tmp_path: Path,
+    status: TaskStatus,
+) -> tuple[Engine, sessionmaker[Session], str]:
+    engine = create_sqlite_engine(tmp_path / f"abandoned-{status.value.lower()}.db")
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    with factory() as session:
+        repository = TaskRepository(session)
+        task, _ = repository.create_or_get(
+            TaskCreate(
+                "PACKAGE_UNPACK",
+                "source",
+                f"abandoned-{status.value.lower()}",
+                "movie:abandoned-analysis",
+                f"trace-{status.value.lower()}",
+                checkpoint={"schema_version": "packbreaker-task-definition-bridge-v1"},
+            )
+        )
+        stages = (
+            (TaskStatus.ANALYZING, "ANALYSIS_STARTED"),
+            (TaskStatus.SEARCHING, "ANALYSIS_SEARCHING"),
+            (TaskStatus.MATCHING, "ANALYSIS_MATCHING"),
+            (TaskStatus.VERIFYING, "ANALYSIS_VERIFYING"),
+        )
+        for next_status, event_type in stages:
+            task = repository.transition(
+                task_id=task.id,
+                expected_version=task.version,
+                to_status=next_status,
+                event_type=event_type,
+                reason="构造遗留只读分析测试状态",
+                checkpoint=task.checkpoint,
+            )
+            if next_status is status:
+                break
+        session.commit()
+        task_id = task.id
+    return engine, factory, task_id
+
+
 @pytest.mark.asyncio
 async def test_running_analysis_cooperatively_cancels_after_search_checkpoint(
     tmp_path: Path,
@@ -309,6 +350,75 @@ async def test_startup_recovery_completes_abandoned_cooperative_analysis_cancel(
             assert latest.event_type == "CANCELLATION_COMPLETED"
             assert latest.from_status == TaskStatus.CANCELLING.value
             assert latest.to_status == TaskStatus.CANCELLED.value
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        TaskStatus.ANALYZING,
+        TaskStatus.SEARCHING,
+        TaskStatus.MATCHING,
+        TaskStatus.VERIFYING,
+    ],
+)
+async def test_startup_recovery_moves_abandoned_readonly_analysis_to_retry(
+    tmp_path: Path,
+    status: TaskStatus,
+) -> None:
+    engine, factory, task_id = _prepare_abandoned_analysis_task(tmp_path, status)
+    try:
+        report = await _recovery(factory).reconcile_once(recover_abandoned_analysis=True)
+
+        assert report.scanned_count == 1
+        assert report.completed_count == 1
+        assert report.blocked_count == 0
+        item = report.items[0]
+        assert item.initial_status is status
+        assert item.final_status is TaskStatus.RETRY
+        assert item.execution_plan_id is None
+        assert item.outcome is RecoveryOutcome.COMPLETED
+        assert item.steps == (status,)
+        with factory() as session:
+            task = TaskRepository(session).get(task_id)
+            assert task is not None
+            assert task.status == TaskStatus.RETRY.value
+            assert task.checkpoint["schema_version"] == "packbreaker-task-definition-bridge-v1"
+            assert OperationJournalRepository(session).list_for_task(task_id) == []
+            latest = TaskRepository(session).latest_event(task_id)
+            assert latest is not None
+            assert latest.event_type == "ANALYSIS_INTERRUPTED_RECOVERED"
+            assert latest.from_status == status.value
+            assert latest.to_status == TaskStatus.RETRY.value
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_blocks_abandoned_analysis_with_operation_journal(
+    tmp_path: Path,
+) -> None:
+    engine, factory, task_id = _prepare_abandoned_analysis_task(tmp_path, TaskStatus.VERIFYING)
+    try:
+        with factory() as session:
+            OperationJournalRepository(session).record_intent(
+                OperationIntent(
+                    task_id=task_id,
+                    idempotency_key="unexpected-analysis-side-effect",
+                    operation_type="CREATE_HARDLINK",
+                    target={"resource": "synthetic"},
+                    intent={"synthetic": True},
+                )
+            )
+            session.commit()
+
+        report = await _recovery(factory).reconcile_once(recover_abandoned_analysis=True)
+
+        assert report.blocked_count == 1
+        assert report.items[0].error_code == "ANALYSIS_RECOVERY_EVIDENCE_CONFLICT"
+        assert report.items[0].final_status is TaskStatus.VERIFYING
     finally:
         engine.dispose()
 

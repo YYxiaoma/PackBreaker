@@ -11,6 +11,8 @@ from backend.app.application.history_scans import HistoryScanService
 from backend.app.application.notifications import NotificationService
 from backend.app.application.sites import SiteService
 from backend.app.application.task_actions import TaskActionService
+from backend.app.application.task_definition_executions import TaskDefinitionExecutionService
+from backend.app.application.task_definitions import TaskDefinitionService
 from backend.app.application.task_events import TaskEventService
 from backend.app.application.task_operations import TaskOperationService
 from backend.app.application.task_repair_actions import TaskRepairActionService
@@ -55,6 +57,17 @@ def site_service(request: Request) -> SiteService:
 
 def task_analysis_service(request: Request) -> TaskAnalysisService:
     return cast(TaskAnalysisService, request.app.state.task_analysis_service)
+
+
+def task_definition_service(request: Request) -> TaskDefinitionService:
+    return cast(TaskDefinitionService, request.app.state.task_definition_service)
+
+
+def task_definition_execution_service(request: Request) -> TaskDefinitionExecutionService:
+    return cast(
+        TaskDefinitionExecutionService,
+        request.app.state.task_definition_execution_service,
+    )
 
 
 def task_action_service(request: Request) -> TaskActionService:

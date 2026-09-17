@@ -4,6 +4,7 @@ from base64 import b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Protocol, cast
 from urllib.parse import urlsplit
 
@@ -38,6 +39,36 @@ class DownloaderAdapterError(RuntimeError):
 
 class DownloaderProbeAdapter(Protocol):
     async def test_connection(self) -> ConnectionTestResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DownloaderTorrent:
+    torrent_hash: str
+    name: str
+    status: str
+    progress: float
+    size_bytes: int
+    category: str | None
+    tags: tuple[str, ...]
+    tracker: str | None
+    save_path: str
+    content_path: str | None
+
+    def __post_init__(self) -> None:
+        if not self.name or len(self.name) > 4096:
+            raise ValueError("torrent 名称无效")
+        if isinstance(self.progress, bool) or not isinstance(self.progress, (int, float)):
+            raise ValueError("torrent progress 必须是 0..1 数值")
+        if not 0.0 <= float(self.progress) <= 1.0:
+            raise ValueError("torrent progress 必须位于 0..1")
+        if isinstance(self.size_bytes, bool) or not isinstance(self.size_bytes, int):
+            raise ValueError("torrent 大小必须是整数")
+        if self.size_bytes < 0:
+            raise ValueError("torrent 大小不能小于 0")
+
+
+class DownloaderTorrentListAdapter(Protocol):
+    async def list_torrents(self) -> tuple[DownloaderTorrent, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,6 +436,76 @@ class QbittorrentAdapter:
                 )
             return tuple(states)
 
+    async def list_torrents(self) -> tuple[DownloaderTorrent, ...]:
+        async with self._authenticated_client() as client:
+            response = await client.get(f"{self._base_url}/api/v2/torrents/info")
+            self._raise_for_probe_status(response)
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "qBittorrent torrent 列表响应无法解析"
+                ) from exc
+            if not isinstance(payload, list):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "qBittorrent torrent 列表响应格式无效"
+                )
+            items: list[DownloaderTorrent] = []
+            for raw in payload:
+                if not isinstance(raw, dict):
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_INVALID_RESPONSE", "qBittorrent torrent 列表项格式无效"
+                    )
+                torrent_hash = raw.get("hash")
+                name = raw.get("name")
+                state = raw.get("state")
+                progress = raw.get("progress")
+                size = raw.get("size")
+                category = raw.get("category", "")
+                tags = raw.get("tags", "")
+                tracker = raw.get("tracker", "")
+                save_path = raw.get("save_path")
+                content_path = raw.get("content_path")
+                if (
+                    not isinstance(torrent_hash, str)
+                    or not isinstance(name, str)
+                    or not isinstance(state, str)
+                    or isinstance(progress, bool)
+                    or not isinstance(progress, (int, float))
+                    or isinstance(size, bool)
+                    or not isinstance(size, int)
+                    or not isinstance(category, str)
+                    or not isinstance(tags, str)
+                    or not isinstance(tracker, str)
+                    or not isinstance(save_path, str)
+                    or (content_path is not None and not isinstance(content_path, str))
+                ):
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_INVALID_RESPONSE", "qBittorrent torrent 列表字段无效"
+                    )
+                try:
+                    items.append(
+                        DownloaderTorrent(
+                            torrent_hash=_normalize_torrent_hash(torrent_hash),
+                            name=name,
+                            status=state,
+                            progress=float(progress),
+                            size_bytes=size,
+                            category=category.strip() or None,
+                            tags=tuple(tag.strip() for tag in tags.split(",") if tag.strip()),
+                            tracker=tracker.strip() or None,
+                            save_path=normalize_remote_path(save_path),
+                            content_path=(
+                                normalize_remote_path(content_path) if content_path else None
+                            ),
+                        )
+                    )
+                except (ValueError, TypeError) as exc:
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_INVALID_RESPONSE", "qBittorrent torrent 列表字段无效"
+                    ) from exc
+            return tuple(items)
+
     async def stop_torrent(self, torrent_hash: str) -> None:
         await self._torrent_action("stop", torrent_hash)
 
@@ -709,6 +810,77 @@ class TransmissionAdapter:
             states.append(state)
         return tuple(states)
 
+    async def list_torrents(self) -> tuple[DownloaderTorrent, ...]:
+        result, _ = await self._rpc(
+            "torrent_get",
+            {
+                "fields": [
+                    "hash_string",
+                    "name",
+                    "download_dir",
+                    "status",
+                    "labels",
+                    "percent_done",
+                    "total_size",
+                ]
+            },
+        )
+        raw_torrents = result.get("torrents")
+        if not isinstance(raw_torrents, list):
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 列表响应格式无效"
+            )
+        items: list[DownloaderTorrent] = []
+        for raw in raw_torrents:
+            if not isinstance(raw, dict):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 列表项格式无效"
+                )
+            torrent_hash = raw.get("hash_string")
+            name = raw.get("name")
+            download_dir = raw.get("download_dir")
+            status = raw.get("status")
+            labels = raw.get("labels")
+            percent_done = raw.get("percent_done")
+            total_size = raw.get("total_size")
+            if (
+                not isinstance(torrent_hash, str)
+                or not isinstance(name, str)
+                or not isinstance(download_dir, str)
+                or isinstance(status, bool)
+                or not isinstance(status, int)
+                or not isinstance(labels, list)
+                or not all(isinstance(item, str) for item in labels)
+                or isinstance(percent_done, bool)
+                or not isinstance(percent_done, (int, float))
+                or isinstance(total_size, bool)
+                or not isinstance(total_size, int)
+            ):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 列表字段无效"
+                )
+            try:
+                normalized_dir = normalize_remote_path(download_dir)
+                items.append(
+                    DownloaderTorrent(
+                        torrent_hash=_normalize_torrent_hash(torrent_hash),
+                        name=name,
+                        status=str(status),
+                        progress=float(percent_done),
+                        size_bytes=total_size,
+                        category=None,
+                        tags=tuple(item.strip() for item in labels if item.strip()),
+                        tracker=None,
+                        save_path=normalized_dir,
+                        content_path=_remote_child(normalized_dir, name),
+                    )
+                )
+            except (ValueError, TypeError) as exc:
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 列表字段无效"
+                ) from exc
+        return tuple(items)
+
     async def stop_torrent(self, torrent_hash: str) -> None:
         await self._torrent_action("torrent_stop", torrent_hash)
 
@@ -801,3 +973,11 @@ class TransmissionAdapter:
             raise DownloaderAdapterError(
                 "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC 响应无法解析"
             ) from exc
+
+
+def _remote_child(root: str, name: str) -> str:
+    if not name or "\x00" in name or "/" in name or "\\" in name or name in {".", ".."}:
+        raise ValueError("torrent 名称不能作为安全路径段")
+    if "\\" in root or (len(root) >= 2 and root[1] == ":"):
+        return normalize_remote_path(str(PureWindowsPath(root) / name))
+    return normalize_remote_path(str(PurePosixPath(root) / name))

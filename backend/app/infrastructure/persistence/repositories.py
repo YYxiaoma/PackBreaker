@@ -1,5 +1,5 @@
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import sha256
 from typing import Any
@@ -41,6 +41,7 @@ class TaskCreate:
     source_hash: str
     normalized_unit_key: str
     trace_id: str
+    checkpoint: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +224,7 @@ class TaskRepository:
             run_number=1,
             status=TaskStatus.PENDING.value,
             trace_id=request.trace_id,
-            checkpoint={},
+            checkpoint=deepcopy(request.checkpoint),
             version=1,
             created_at=now,
             updated_at=now,
@@ -304,7 +305,7 @@ class TaskRepository:
             run_number=parent.run_number + 1,
             status=TaskStatus.PENDING.value,
             trace_id=trace_id,
-            checkpoint={},
+            checkpoint=deepcopy(parent.checkpoint),
             version=1,
             created_at=now,
             updated_at=now,

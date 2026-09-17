@@ -20,6 +20,7 @@ from backend.app.application.analysis import (
     verify_torrent_mappings,
 )
 from backend.app.application.errors import ApplicationError
+from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.domain.downloader import (
     PathMappingRule,
     ProbeStatus,
@@ -448,6 +449,24 @@ class _TaskAnalysisLifecycle(AnalysisLifecycle):
         return True
 
 
+@dataclass(frozen=True, slots=True)
+class _ScopedAnalysisSiteProvider:
+    delegate: AnalysisSiteProvider
+    config_id: str
+
+    def enabled_adapters(self) -> tuple[EnabledSiteAdapter, ...]:
+        return tuple(
+            binding
+            for binding in self.delegate.enabled_adapters()
+            if binding.config_id == self.config_id
+        )
+
+    def enabled_site_versions(self) -> tuple[tuple[str, int], ...]:
+        return tuple(
+            item for item in self.delegate.enabled_site_versions() if item[0] == self.config_id
+        )
+
+
 class TaskAnalysisService:
     """任务级 M2 入口：安全定位 /data、持久化 unit/candidate，并判断 preflight 当前性。"""
 
@@ -509,6 +528,7 @@ class TaskAnalysisService:
 
     async def analyze(self, task_id: str, *, source_root: str) -> PreflightSnapshot:
         normalized_root, resolved_root = self._resolve_source_root(source_root)
+        analysis = self._analysis
         with self._session_factory() as session:
             task = TaskRepository(session).get(task_id)
             if task is None:
@@ -523,6 +543,27 @@ class TaskAnalysisService:
                     status=409,
                     title="任务状态不允许分析",
                     detail="手动 Analyze 只允许从 PENDING、RETRY 或 PAUSED 开始",
+                )
+            if task.checkpoint.get("schema_version") == "packbreaker-task-definition-bridge-v1":
+                expected_root = task.checkpoint.get("source_root")
+                if not isinstance(expected_root, str) or normalized_root != expected_root:
+                    raise ApplicationError(
+                        code="ANALYSIS_SOURCE_ROOT_MISMATCH",
+                        status=409,
+                        title="分析来源与任务快照不一致",
+                        detail="任务中心生成的 Run 必须使用物化时记录的 source_root",
+                    )
+                site_id = task.checkpoint.get("site_id")
+                if not isinstance(site_id, str) or not site_id:
+                    raise ApplicationError(
+                        code="ANALYSIS_SITE_SCOPE_MISSING",
+                        status=409,
+                        title="任务扫描站点快照缺失",
+                        detail="任务中心生成的 Run 缺少扫描站点绑定，不能降级为扫描全部站点",
+                    )
+                analysis = AnalysisService(
+                    self._session_factory,
+                    _ScopedAnalysisSiteProvider(self._site_service, site_id),
                 )
             self._assert_history_task_source_current(
                 session,
@@ -577,7 +618,7 @@ class TaskAnalysisService:
             session.commit()
         lifecycle.check_cancel_requested()
         try:
-            return await self._analysis.analyze(
+            return await analysis.analyze(
                 task_id=task_id,
                 unit=selected,
                 source_root=resolved_root,
@@ -635,6 +676,11 @@ class TaskAnalysisService:
             record_task_version = record.task_version
             task_version = task.version
             task_status = task.status
+            scoped_site_config_id: str | None = None
+            if task.checkpoint.get("schema_version") == "packbreaker-task-definition-bridge-v1":
+                raw_site_id = task.checkpoint.get("site_id")
+                if isinstance(raw_site_id, str) and raw_site_id:
+                    scoped_site_config_id = raw_site_id
 
         reasons: list[str] = []
         if task_version != record_task_version and not _review_bridge_is_current(
@@ -656,9 +702,14 @@ class TaskAnalysisService:
                 reasons.append("SOURCE_UNAVAILABLE")
 
         expected_site_versions = _site_versions_from_payload(payload)
+        current_site_versions = tuple(sorted(self._site_service.enabled_site_versions()))
+        if scoped_site_config_id is not None:
+            current_site_versions = tuple(
+                item for item in current_site_versions if item[0] == scoped_site_config_id
+            )
         if expected_site_versions is None:
             reasons.append("PREFLIGHT_EVIDENCE_INVALID")
-        elif tuple(sorted(self._site_service.enabled_site_versions())) != expected_site_versions:
+        elif current_site_versions != expected_site_versions:
             reasons.append("SITE_CONFIG_CHANGED")
 
         return PreflightView(

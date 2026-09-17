@@ -2342,6 +2342,17 @@
       },
       "OperationalLogEntryResponse": {
         "properties": {
+          "event_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Code"
+          },
           "exception": {
             "anyOf": [
               {
@@ -2352,6 +2363,17 @@
               }
             ],
             "title": "Exception"
+          },
+          "execution_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Id"
           },
           "fields": {
             "additionalProperties": true,
@@ -2377,10 +2399,52 @@
             "title": "Message",
             "type": "string"
           },
+          "source": {
+            "default": "SYSTEM",
+            "enum": [
+              "SYSTEM",
+              "TASK_EVENT"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "task_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Name"
+          },
           "timestamp": {
             "format": "date-time",
             "title": "Timestamp",
             "type": "string"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
           }
         },
         "required": [
@@ -3894,6 +3958,16 @@
         "title": "TaskCandidateResponse",
         "type": "object"
       },
+      "TaskConflictPolicy": {
+        "enum": [
+          "VERIFY_REUSE_OR_STOP",
+          "SKIP",
+          "RENAME",
+          "OVERWRITE"
+        ],
+        "title": "TaskConflictPolicy",
+        "type": "string"
+      },
       "TaskCreateRequest": {
         "properties": {
           "normalized_unit_key": {
@@ -3945,6 +4019,682 @@
           "created"
         ],
         "title": "TaskCreateResponse",
+        "type": "object"
+      },
+      "TaskCronPreviewRequest": {
+        "properties": {
+          "cron_expression": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Cron Expression",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cron_expression"
+        ],
+        "title": "TaskCronPreviewRequest",
+        "type": "object"
+      },
+      "TaskCronPreviewResponse": {
+        "properties": {
+          "cron_expression": {
+            "title": "Cron Expression",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "next_runs": {
+            "items": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "title": "Next Runs",
+            "type": "array"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cron_expression",
+          "timezone",
+          "description",
+          "next_runs"
+        ],
+        "title": "TaskCronPreviewResponse",
+        "type": "object"
+      },
+      "TaskDefinitionActionRequest": {
+        "properties": {
+          "action": {
+            "enum": [
+              "pause",
+              "resume"
+            ],
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "TaskDefinitionActionRequest",
+        "type": "object"
+      },
+      "TaskDefinitionCreateRequest": {
+        "properties": {
+          "cron_expression": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cron Expression"
+          },
+          "execution_policy": {
+            "$ref": "#/components/schemas/TaskExecutionPolicyInput"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/TaskFilterInput"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TaskDefinitionKind"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "output_policy": {
+            "$ref": "#/components/schemas/TaskOutputPolicyInput"
+          },
+          "site_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Site Id",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/TaskSourceInput"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "site_id",
+          "source",
+          "output_policy"
+        ],
+        "title": "TaskDefinitionCreateRequest",
+        "type": "object"
+      },
+      "TaskDefinitionKind": {
+        "enum": [
+          "MANUAL",
+          "MONITOR"
+        ],
+        "title": "TaskDefinitionKind",
+        "type": "string"
+      },
+      "TaskDefinitionListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskDefinitionResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "TaskDefinitionListResponse",
+        "type": "object"
+      },
+      "TaskDefinitionPrecheckItemResponse": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "status",
+          "title",
+          "detail"
+        ],
+        "title": "TaskDefinitionPrecheckItemResponse",
+        "type": "object"
+      },
+      "TaskDefinitionPrecheckResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskDefinitionPrecheckItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "items"
+        ],
+        "title": "TaskDefinitionPrecheckResponse",
+        "type": "object"
+      },
+      "TaskDefinitionResponse": {
+        "properties": {
+          "archive_extensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Archive Extensions",
+            "type": "array"
+          },
+          "auto_retry_enabled": {
+            "title": "Auto Retry Enabled",
+            "type": "boolean"
+          },
+          "conflict_policy": {
+            "title": "Conflict Policy",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "cron_expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cron Expression"
+          },
+          "debounce_seconds": {
+            "title": "Debounce Seconds",
+            "type": "integer"
+          },
+          "exclude_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Exclude Names",
+            "type": "array"
+          },
+          "file_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "File Types",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ignore_temp_files": {
+            "title": "Ignore Temp Files",
+            "type": "boolean"
+          },
+          "include_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Name"
+          },
+          "include_subdirectories": {
+            "title": "Include Subdirectories",
+            "type": "boolean"
+          },
+          "initial_scope": {
+            "title": "Initial Scope",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_scan_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Scan At"
+          },
+          "last_successful_scan_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Successful Scan At"
+          },
+          "latest_execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskExecutionSummaryResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_auto_retries": {
+            "title": "Max Auto Retries",
+            "type": "integer"
+          },
+          "max_scan_depth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Scan Depth"
+          },
+          "max_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Size Bytes"
+          },
+          "min_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Size Bytes"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "only_completed_downloads": {
+            "title": "Only Completed Downloads",
+            "type": "boolean"
+          },
+          "output_directory": {
+            "title": "Output Directory",
+            "type": "string"
+          },
+          "overlap_policy": {
+            "title": "Overlap Policy",
+            "type": "string"
+          },
+          "preserve_structure": {
+            "title": "Preserve Structure",
+            "type": "boolean"
+          },
+          "retry_intervals_seconds": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Retry Intervals Seconds",
+            "type": "array"
+          },
+          "site_available": {
+            "title": "Site Available",
+            "type": "boolean"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          },
+          "site_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Name"
+          },
+          "source_available": {
+            "title": "Source Available",
+            "type": "boolean"
+          },
+          "source_config": {
+            "additionalProperties": true,
+            "title": "Source Config",
+            "type": "object"
+          },
+          "source_directory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Directory"
+          },
+          "source_downloader_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Downloader Id"
+          },
+          "source_downloader_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Downloader Name"
+          },
+          "source_kind": {
+            "title": "Source Kind",
+            "type": "string"
+          },
+          "stability_detection_enabled": {
+            "title": "Stability Detection Enabled",
+            "type": "boolean"
+          },
+          "stability_wait_seconds": {
+            "title": "Stability Wait Seconds",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "storage_mode": {
+            "title": "Storage Mode",
+            "type": "string"
+          },
+          "temp_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Temp Patterns",
+            "type": "array"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "video_extensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Video Extensions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "status",
+          "site_id",
+          "site_name",
+          "site_available",
+          "source_kind",
+          "source_downloader_id",
+          "source_downloader_name",
+          "source_directory",
+          "source_available",
+          "source_config",
+          "cron_expression",
+          "timezone",
+          "last_scan_at",
+          "last_successful_scan_at",
+          "next_run_at",
+          "file_types",
+          "video_extensions",
+          "archive_extensions",
+          "min_size_bytes",
+          "max_size_bytes",
+          "include_name",
+          "exclude_names",
+          "ignore_temp_files",
+          "temp_patterns",
+          "include_subdirectories",
+          "max_scan_depth",
+          "output_directory",
+          "storage_mode",
+          "preserve_structure",
+          "conflict_policy",
+          "stability_detection_enabled",
+          "stability_wait_seconds",
+          "only_completed_downloads",
+          "initial_scope",
+          "debounce_seconds",
+          "overlap_policy",
+          "auto_retry_enabled",
+          "max_auto_retries",
+          "retry_intervals_seconds",
+          "latest_execution",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "TaskDefinitionResponse",
+        "type": "object"
+      },
+      "TaskDirectoryBrowseResponse": {
+        "properties": {
+          "current_path": {
+            "title": "Current Path",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/TaskDirectoryEntryResponse"
+            },
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "current_path",
+          "entries"
+        ],
+        "title": "TaskDirectoryBrowseResponse",
+        "type": "object"
+      },
+      "TaskDirectoryEntryResponse": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "title": "TaskDirectoryEntryResponse",
+        "type": "object"
+      },
+      "TaskDirectoryFileResponse": {
+        "properties": {
+          "device": {
+            "title": "Device",
+            "type": "integer"
+          },
+          "inode": {
+            "title": "Inode",
+            "type": "integer"
+          },
+          "mtime_ns": {
+            "title": "Mtime Ns",
+            "type": "integer"
+          },
+          "relative_path": {
+            "title": "Relative Path",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "relative_path",
+          "size_bytes",
+          "device",
+          "inode",
+          "mtime_ns"
+        ],
+        "title": "TaskDirectoryFileResponse",
+        "type": "object"
+      },
+      "TaskDirectoryPreviewRequest": {
+        "properties": {
+          "directory_path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Directory Path",
+            "type": "string"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/TaskFilterInput"
+          }
+        },
+        "required": [
+          "directory_path"
+        ],
+        "title": "TaskDirectoryPreviewRequest",
+        "type": "object"
+      },
+      "TaskDirectoryPreviewResponse": {
+        "properties": {
+          "directory_path": {
+            "title": "Directory Path",
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/TaskDirectoryFileResponse"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "matched_count": {
+            "title": "Matched Count",
+            "type": "integer"
+          },
+          "total_size_bytes": {
+            "title": "Total Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "directory_path",
+          "matched_count",
+          "total_size_bytes",
+          "files"
+        ],
+        "title": "TaskDirectoryPreviewResponse",
         "type": "object"
       },
       "TaskEventListResponse": {
@@ -4012,6 +4762,784 @@
         "title": "TaskEventResponse",
         "type": "object"
       },
+      "TaskExecutionEventResponse": {
+        "properties": {
+          "context": {
+            "additionalProperties": true,
+            "title": "Context",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_code": {
+            "title": "Event Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event_code",
+          "message",
+          "trace_id",
+          "context",
+          "created_at"
+        ],
+        "title": "TaskExecutionEventResponse",
+        "type": "object"
+      },
+      "TaskExecutionItemResponse": {
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_summary_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Summary Zh"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "retry_count": {
+            "title": "Retry Count",
+            "type": "integer"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "source_object_key": {
+            "title": "Source Object Key",
+            "type": "string"
+          },
+          "technical_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technical Detail"
+          },
+          "unpack_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unpack Task Id"
+          }
+        },
+        "required": [
+          "id",
+          "unpack_task_id",
+          "source_object_key",
+          "name",
+          "source",
+          "size_bytes",
+          "phase",
+          "progress",
+          "result",
+          "error_code",
+          "error_summary_zh",
+          "technical_detail",
+          "retryable",
+          "retry_count"
+        ],
+        "title": "TaskExecutionItemResponse",
+        "type": "object"
+      },
+      "TaskExecutionListItemResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "discovered_count": {
+            "title": "Discovered Count",
+            "type": "integer"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "skipped_count": {
+            "title": "Skipped Count",
+            "type": "integer"
+          },
+          "source_execution_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Execution Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "success_count": {
+            "title": "Success Count",
+            "type": "integer"
+          },
+          "task_definition_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Definition Id"
+          },
+          "task_name": {
+            "title": "Task Name",
+            "type": "string"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "task_definition_id",
+          "task_name",
+          "trigger",
+          "status",
+          "phase",
+          "source_execution_id",
+          "discovered_count",
+          "success_count",
+          "failed_count",
+          "skipped_count",
+          "trace_id",
+          "started_at",
+          "finished_at",
+          "created_at"
+        ],
+        "title": "TaskExecutionListItemResponse",
+        "type": "object"
+      },
+      "TaskExecutionListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskExecutionListItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "TaskExecutionListResponse",
+        "type": "object"
+      },
+      "TaskExecutionPlanResponse": {
+        "properties": {
+          "blocked_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocked Reasons",
+            "type": "array"
+          },
+          "client_fetch_count": {
+            "title": "Client Fetch Count",
+            "type": "integer"
+          },
+          "create_directory_count": {
+            "title": "Create Directory Count",
+            "type": "integer"
+          },
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "estimated_download_bytes_upper_bound": {
+            "title": "Estimated Download Bytes Upper Bound",
+            "type": "integer"
+          },
+          "execution_allowed": {
+            "title": "Execution Allowed",
+            "type": "boolean"
+          },
+          "hardlink_count": {
+            "title": "Hardlink Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "side_effects_started": {
+            "title": "Side Effects Started",
+            "type": "boolean"
+          },
+          "target_downloader_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Downloader Id"
+          },
+          "target_root": {
+            "title": "Target Root",
+            "type": "string"
+          },
+          "verification_level": {
+            "title": "Verification Level",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "ready",
+          "current",
+          "target_root",
+          "target_downloader_id",
+          "verification_level",
+          "hardlink_count",
+          "client_fetch_count",
+          "create_directory_count",
+          "estimated_download_bytes_upper_bound",
+          "blocked_reasons",
+          "execution_allowed",
+          "side_effects_started"
+        ],
+        "title": "TaskExecutionPlanResponse",
+        "type": "object"
+      },
+      "TaskExecutionPolicyInput": {
+        "properties": {
+          "auto_retry_enabled": {
+            "default": true,
+            "title": "Auto Retry Enabled",
+            "type": "boolean"
+          },
+          "debounce_seconds": {
+            "default": 30,
+            "maximum": 86400.0,
+            "minimum": 0.0,
+            "title": "Debounce Seconds",
+            "type": "integer"
+          },
+          "initial_scope": {
+            "$ref": "#/components/schemas/TaskInitialScope",
+            "default": "NEW_ONLY"
+          },
+          "max_auto_retries": {
+            "default": 3,
+            "maximum": 20.0,
+            "minimum": 0.0,
+            "title": "Max Auto Retries",
+            "type": "integer"
+          },
+          "only_completed_downloads": {
+            "default": true,
+            "title": "Only Completed Downloads",
+            "type": "boolean"
+          },
+          "overlap_policy": {
+            "$ref": "#/components/schemas/TaskOverlapPolicy",
+            "default": "SKIP"
+          },
+          "retry_intervals_seconds": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 20,
+            "title": "Retry Intervals Seconds",
+            "type": "array"
+          },
+          "stability_detection_enabled": {
+            "default": true,
+            "title": "Stability Detection Enabled",
+            "type": "boolean"
+          },
+          "stability_wait_seconds": {
+            "default": 60,
+            "maximum": 86400.0,
+            "minimum": 0.0,
+            "title": "Stability Wait Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "TaskExecutionPolicyInput",
+        "type": "object"
+      },
+      "TaskExecutionResponse": {
+        "properties": {
+          "config_snapshot": {
+            "additionalProperties": true,
+            "title": "Config Snapshot",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "discovered_count": {
+            "title": "Discovered Count",
+            "type": "integer"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/TaskExecutionEventResponse"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskExecutionItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "skipped_count": {
+            "title": "Skipped Count",
+            "type": "integer"
+          },
+          "source_execution_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Execution Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "success_count": {
+            "title": "Success Count",
+            "type": "integer"
+          },
+          "task_definition_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Definition Id"
+          },
+          "task_name": {
+            "title": "Task Name",
+            "type": "string"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "task_definition_id",
+          "task_name",
+          "trigger",
+          "status",
+          "phase",
+          "source_execution_id",
+          "discovered_count",
+          "success_count",
+          "failed_count",
+          "skipped_count",
+          "trace_id",
+          "started_at",
+          "finished_at",
+          "created_at",
+          "config_snapshot",
+          "items",
+          "events"
+        ],
+        "title": "TaskExecutionResponse",
+        "type": "object"
+      },
+      "TaskExecutionSummaryResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "skipped_count": {
+            "title": "Skipped Count",
+            "type": "integer"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "success_count": {
+            "title": "Success Count",
+            "type": "integer"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "phase",
+          "trigger",
+          "success_count",
+          "failed_count",
+          "skipped_count",
+          "created_at",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "TaskExecutionSummaryResponse",
+        "type": "object"
+      },
+      "TaskFilterInput": {
+        "properties": {
+          "archive_extensions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Archive Extensions",
+            "type": "array"
+          },
+          "exclude_names": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 128,
+            "title": "Exclude Names",
+            "type": "array"
+          },
+          "file_types": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "title": "File Types",
+            "type": "array"
+          },
+          "ignore_temp_files": {
+            "default": true,
+            "title": "Ignore Temp Files",
+            "type": "boolean"
+          },
+          "include_name": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Name"
+          },
+          "include_subdirectories": {
+            "default": true,
+            "title": "Include Subdirectories",
+            "type": "boolean"
+          },
+          "max_scan_depth": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Scan Depth"
+          },
+          "max_size_bytes": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Size Bytes"
+          },
+          "min_size_bytes": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Size Bytes"
+          },
+          "temp_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 128,
+            "title": "Temp Patterns",
+            "type": "array"
+          },
+          "video_extensions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Video Extensions",
+            "type": "array"
+          }
+        },
+        "title": "TaskFilterInput",
+        "type": "object"
+      },
+      "TaskInitialScope": {
+        "enum": [
+          "NEW_ONLY",
+          "INCLUDE_EXISTING"
+        ],
+        "title": "TaskInitialScope",
+        "type": "string"
+      },
       "TaskListResponse": {
         "properties": {
           "items": {
@@ -4026,6 +5554,63 @@
           "items"
         ],
         "title": "TaskListResponse",
+        "type": "object"
+      },
+      "TaskMonitorScanResponse": {
+        "properties": {
+          "discovered_count": {
+            "title": "Discovered Count",
+            "type": "integer"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskExecutionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "new_count": {
+            "title": "New Count",
+            "type": "integer"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "task_definition_id": {
+            "title": "Task Definition Id",
+            "type": "string"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_definition_id",
+          "trigger",
+          "outcome",
+          "discovered_count",
+          "new_count",
+          "next_run_at",
+          "execution"
+        ],
+        "title": "TaskMonitorScanResponse",
         "type": "object"
       },
       "TaskMutationActionResponse": {
@@ -4281,6 +5866,42 @@
         "title": "TaskOperationResponse",
         "type": "object"
       },
+      "TaskOutputPolicyInput": {
+        "properties": {
+          "conflict_policy": {
+            "$ref": "#/components/schemas/TaskConflictPolicy",
+            "default": "VERIFY_REUSE_OR_STOP"
+          },
+          "output_directory": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Output Directory",
+            "type": "string"
+          },
+          "preserve_structure": {
+            "default": true,
+            "title": "Preserve Structure",
+            "type": "boolean"
+          },
+          "storage_mode": {
+            "$ref": "#/components/schemas/TaskStorageMode",
+            "default": "HARDLINK"
+          }
+        },
+        "required": [
+          "output_directory"
+        ],
+        "title": "TaskOutputPolicyInput",
+        "type": "object"
+      },
+      "TaskOverlapPolicy": {
+        "enum": [
+          "SKIP",
+          "RUN_ONCE_AFTER"
+        ],
+        "title": "TaskOverlapPolicy",
+        "type": "string"
+      },
       "TaskResponse": {
         "properties": {
           "created_at": {
@@ -4526,6 +6147,55 @@
         "title": "TaskReviewResponse",
         "type": "object"
       },
+      "TaskSourceInput": {
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "directory_path": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Directory Path"
+          },
+          "downloader_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloader Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TaskSourceKind"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "TaskSourceInput",
+        "type": "object"
+      },
+      "TaskSourceKind": {
+        "enum": [
+          "DOWNLOADER",
+          "DIRECTORY"
+        ],
+        "title": "TaskSourceKind",
+        "type": "string"
+      },
       "TaskStatus": {
         "enum": [
           "PENDING",
@@ -4548,6 +6218,15 @@
           "CANCELLED"
         ],
         "title": "TaskStatus",
+        "type": "string"
+      },
+      "TaskStorageMode": {
+        "enum": [
+          "HARDLINK",
+          "SYMLINK",
+          "COPY"
+        ],
+        "title": "TaskStorageMode",
         "type": "string"
       },
       "TaskUnitListResponse": {
@@ -4838,7 +6517,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "0.1.4"
+    "version": "0.1.5"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6178,6 +7857,201 @@
           }
         },
         "summary": "Test Downloader",
+        "tags": [
+          "downloaders"
+        ]
+      }
+    },
+    "/api/v1/downloaders/{downloader_id}/torrents": {
+      "get": {
+        "operationId": "list_downloader_torrents_api_v1_downloaders__downloader_id__torrents_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "downloader_id",
+            "required": true,
+            "schema": {
+              "title": "Downloader Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tag"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tracker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tracker"
+            }
+          },
+          {
+            "in": "query",
+            "name": "save_path",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Save Path"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Downloader Torrents Api V1 Downloaders  Downloader Id  Torrents Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Downloader Torrents",
         "tags": [
           "downloaders"
         ]
@@ -8974,6 +10848,94 @@
             }
           },
           {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SYSTEM",
+                    "TASK_EVENT"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "event_code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 96,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Event Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 36,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "execution_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 36,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Execution Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "trace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Trace Id"
+            }
+          },
+          {
             "in": "header",
             "name": "Authorization",
             "required": false,
@@ -9101,6 +11063,94 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SYSTEM",
+                    "TASK_EVENT"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "event_code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 96,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Event Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 36,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "execution_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 36,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Execution Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "trace_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Trace Id"
             }
           },
           {
@@ -9480,6 +11530,1688 @@
         "summary": "System Upgrade Action",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/api/v1/task-definitions": {
+      "get": {
+        "operationId": "list_task_definitions_api_v1_task_definitions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TaskDefinitionKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDefinitionListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Task Definitions",
+        "tags": [
+          "task-definitions"
+        ]
+      },
+      "post": {
+        "operationId": "create_task_definition_api_v1_task_definitions_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDefinitionCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDefinitionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Task Definition",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/cron-preview": {
+      "post": {
+        "operationId": "preview_task_definition_cron_api_v1_task_definitions_cron_preview_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCronPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCronPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Task Definition Cron",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/directory-preview": {
+      "post": {
+        "operationId": "preview_task_source_directory_api_v1_task_definitions_directory_preview_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDirectoryPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDirectoryPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Task Source Directory",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/precheck": {
+      "post": {
+        "operationId": "precheck_task_definition_api_v1_task_definitions_precheck_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDefinitionCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDefinitionPrecheckResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Precheck Task Definition",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/source-directories": {
+      "get": {
+        "operationId": "browse_task_source_directories_api_v1_task_definitions_source_directories_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": ".",
+              "maxLength": 4096,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDirectoryBrowseResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Browse Task Source Directories",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/{definition_id}": {
+      "delete": {
+        "operationId": "delete_task_definition_api_v1_task_definitions__definition_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Task Definition",
+        "tags": [
+          "task-definitions"
+        ]
+      },
+      "get": {
+        "operationId": "get_task_definition_api_v1_task_definitions__definition_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDefinitionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Definition",
+        "tags": [
+          "task-definitions"
+        ]
+      },
+      "put": {
+        "operationId": "update_task_definition_api_v1_task_definitions__definition_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDefinitionCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDefinitionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Task Definition",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/{definition_id}/actions": {
+      "post": {
+        "operationId": "act_on_task_definition_api_v1_task_definitions__definition_id__actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDefinitionActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDefinitionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Act On Task Definition",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/{definition_id}/executions": {
+      "get": {
+        "operationId": "list_task_definition_executions_api_v1_task_definitions__definition_id__executions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 24,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "trigger",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 24,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Trigger"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "started_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "started_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started To"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Task Definition Executions",
+        "tags": [
+          "task-definitions"
+        ]
+      },
+      "post": {
+        "operationId": "execute_manual_task_definition_api_v1_task_definitions__definition_id__executions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Manual Task Definition",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/{definition_id}/executions/{execution_id}": {
+      "get": {
+        "operationId": "get_task_definition_execution_api_v1_task_definitions__definition_id__executions__execution_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Definition Execution",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/{definition_id}/executions/{execution_id}/items/{item_id}/execution-plan": {
+      "post": {
+        "operationId": "create_task_definition_execution_plan_api_v1_task_definitions__definition_id__executions__execution_id__items__item_id__execution_plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionPlanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Task Definition Execution Plan",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/{definition_id}/executions/{execution_id}/retry-failed": {
+      "post": {
+        "operationId": "retry_failed_task_definition_execution_api_v1_task_definitions__definition_id__executions__execution_id__retry_failed_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Failed Task Definition Execution",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/{definition_id}/scan": {
+      "post": {
+        "operationId": "scan_monitor_task_definition_api_v1_task_definitions__definition_id__scan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskMonitorScanResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scan Monitor Task Definition",
+        "tags": [
+          "task-definitions"
         ]
       }
     },

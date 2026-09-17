@@ -33,6 +33,37 @@ export interface Downloader {
   updated_at: string;
 }
 
+export interface DownloaderTorrent {
+  torrent_hash: string;
+  name: string;
+  status: string;
+  progress: number;
+  size_bytes: number;
+  category: string | null;
+  tags: string[];
+  tracker: string | null;
+  save_path: string;
+  content_path: string | null;
+}
+
+export interface DownloaderTorrentPage {
+  items: DownloaderTorrent[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface DownloaderTorrentQuery {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  status?: string;
+  category?: string;
+  tag?: string;
+  tracker?: string;
+  save_path?: string;
+}
+
 export interface DownloaderCreateInput {
   name: string;
   type: DownloaderKind;
@@ -91,6 +122,16 @@ export async function listDownloaders(): Promise<Downloader[]> {
 
 export async function getDownloader(id: string): Promise<Downloader> {
   const response = await apiClient.get<Downloader>(`/downloaders/${id}`);
+  return response.data;
+}
+
+export async function listDownloaderTorrents(
+  id: string,
+  query: DownloaderTorrentQuery = {},
+): Promise<DownloaderTorrentPage> {
+  const response = await apiClient.get<DownloaderTorrentPage>(`/downloaders/${id}/torrents`, {
+    params: query,
+  });
   return response.data;
 }
 

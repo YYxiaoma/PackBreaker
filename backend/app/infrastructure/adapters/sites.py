@@ -102,6 +102,8 @@ class MTeamAdapter:
             supports_detail_file_list=False,
             requires_download_token=True,
             min_request_interval_seconds=_MTEAM_MIN_REQUEST_INTERVAL_SECONDS,
+            search_results_are_complete=True,
+            max_verification_candidates=1,
         )
 
     async def test_connection(self) -> SiteConnectionResult:

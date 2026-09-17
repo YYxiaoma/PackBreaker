@@ -126,6 +126,11 @@ def test_site_capabilities_reject_negative_rate_interval() -> None:
         SiteSearchCapabilities(min_request_interval_seconds=-0.1)
 
 
+def test_site_capabilities_reject_nonpositive_verification_candidate_limit() -> None:
+    with pytest.raises(ValueError):
+        SiteSearchCapabilities(max_verification_candidates=0)
+
+
 def test_file_summary_is_kept_as_search_claim_not_verified_torrent_fact() -> None:
     summary = (MediaFileSummary("Movie.mkv", 100),)
     candidate = normalize_candidate_meta(

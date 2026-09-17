@@ -212,6 +212,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/downloaders/{downloader_id}/torrents': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Downloader Torrents */
+    get: operations['list_downloader_torrents_api_v1_downloaders__downloader_id__torrents_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/health/live': {
     parameters: {
       query?: never;
@@ -710,6 +727,214 @@ export interface paths {
     put?: never;
     /** System Upgrade Action */
     post: operations['system_upgrade_action_api_v1_system_upgrade_actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Task Definitions */
+    get: operations['list_task_definitions_api_v1_task_definitions_get'];
+    put?: never;
+    /** Create Task Definition */
+    post: operations['create_task_definition_api_v1_task_definitions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/cron-preview': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Preview Task Definition Cron */
+    post: operations['preview_task_definition_cron_api_v1_task_definitions_cron_preview_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/directory-preview': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Preview Task Source Directory */
+    post: operations['preview_task_source_directory_api_v1_task_definitions_directory_preview_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/precheck': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Precheck Task Definition */
+    post: operations['precheck_task_definition_api_v1_task_definitions_precheck_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/source-directories': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Browse Task Source Directories */
+    get: operations['browse_task_source_directories_api_v1_task_definitions_source_directories_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/{definition_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Task Definition */
+    get: operations['get_task_definition_api_v1_task_definitions__definition_id__get'];
+    /** Update Task Definition */
+    put: operations['update_task_definition_api_v1_task_definitions__definition_id__put'];
+    post?: never;
+    /** Delete Task Definition */
+    delete: operations['delete_task_definition_api_v1_task_definitions__definition_id__delete'];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/{definition_id}/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Act On Task Definition */
+    post: operations['act_on_task_definition_api_v1_task_definitions__definition_id__actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/{definition_id}/executions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Task Definition Executions */
+    get: operations['list_task_definition_executions_api_v1_task_definitions__definition_id__executions_get'];
+    put?: never;
+    /** Execute Manual Task Definition */
+    post: operations['execute_manual_task_definition_api_v1_task_definitions__definition_id__executions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/{definition_id}/executions/{execution_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Task Definition Execution */
+    get: operations['get_task_definition_execution_api_v1_task_definitions__definition_id__executions__execution_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/{definition_id}/executions/{execution_id}/items/{item_id}/execution-plan': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Create Task Definition Execution Plan */
+    post: operations['create_task_definition_execution_plan_api_v1_task_definitions__definition_id__executions__execution_id__items__item_id__execution_plan_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/{definition_id}/executions/{execution_id}/retry-failed': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Retry Failed Task Definition Execution */
+    post: operations['retry_failed_task_definition_execution_api_v1_task_definitions__definition_id__executions__execution_id__retry_failed_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/{definition_id}/scan': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Scan Monitor Task Definition */
+    post: operations['scan_monitor_task_definition_api_v1_task_definitions__definition_id__scan_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1891,8 +2116,12 @@ export interface components {
       | 'ROLLBACK_BLOCKED';
     /** OperationalLogEntryResponse */
     OperationalLogEntryResponse: {
+      /** Event Code */
+      event_code?: string | null;
       /** Exception */
       exception: string | null;
+      /** Execution Id */
+      execution_id?: string | null;
       /** Fields */
       fields: {
         [key: string]: unknown;
@@ -1907,10 +2136,22 @@ export interface components {
       /** Message */
       message: string;
       /**
+       * Source
+       * @default SYSTEM
+       * @enum {string}
+       */
+      source: 'SYSTEM' | 'TASK_EVENT';
+      /** Task Id */
+      task_id?: string | null;
+      /** Task Name */
+      task_name?: string | null;
+      /**
        * Timestamp
        * Format: date-time
        */
       timestamp: string;
+      /** Trace Id */
+      trace_id?: string | null;
     };
     /** OperationalLogListResponse */
     OperationalLogListResponse: {
@@ -2474,6 +2715,11 @@ export interface components {
       /** Verification Level */
       verification_level: string | null;
     };
+    /**
+     * TaskConflictPolicy
+     * @enum {string}
+     */
+    TaskConflictPolicy: 'VERIFY_REUSE_OR_STOP' | 'SKIP' | 'RENAME' | 'OVERWRITE';
     /** TaskCreateRequest */
     TaskCreateRequest: {
       /** Normalized Unit Key */
@@ -2490,6 +2736,218 @@ export interface components {
       /** Created */
       created: boolean;
       item: components['schemas']['TaskResponse'];
+    };
+    /** TaskCronPreviewRequest */
+    TaskCronPreviewRequest: {
+      /** Cron Expression */
+      cron_expression: string;
+    };
+    /** TaskCronPreviewResponse */
+    TaskCronPreviewResponse: {
+      /** Cron Expression */
+      cron_expression: string;
+      /** Description */
+      description: string;
+      /** Next Runs */
+      next_runs: string[];
+      /** Timezone */
+      timezone: string;
+    };
+    /** TaskDefinitionActionRequest */
+    TaskDefinitionActionRequest: {
+      /**
+       * Action
+       * @enum {string}
+       */
+      action: 'pause' | 'resume';
+    };
+    /** TaskDefinitionCreateRequest */
+    TaskDefinitionCreateRequest: {
+      /** Cron Expression */
+      cron_expression?: string | null;
+      execution_policy?: components['schemas']['TaskExecutionPolicyInput'];
+      filters?: components['schemas']['TaskFilterInput'];
+      kind: components['schemas']['TaskDefinitionKind'];
+      /** Name */
+      name: string;
+      output_policy: components['schemas']['TaskOutputPolicyInput'];
+      /** Site Id */
+      site_id: string;
+      source: components['schemas']['TaskSourceInput'];
+    };
+    /**
+     * TaskDefinitionKind
+     * @enum {string}
+     */
+    TaskDefinitionKind: 'MANUAL' | 'MONITOR';
+    /** TaskDefinitionListResponse */
+    TaskDefinitionListResponse: {
+      /** Items */
+      items: components['schemas']['TaskDefinitionResponse'][];
+    };
+    /** TaskDefinitionPrecheckItemResponse */
+    TaskDefinitionPrecheckItemResponse: {
+      /** Code */
+      code: string;
+      /** Detail */
+      detail: string;
+      /** Status */
+      status: string;
+      /** Title */
+      title: string;
+    };
+    /** TaskDefinitionPrecheckResponse */
+    TaskDefinitionPrecheckResponse: {
+      /** Items */
+      items: components['schemas']['TaskDefinitionPrecheckItemResponse'][];
+      /** Status */
+      status: string;
+    };
+    /** TaskDefinitionResponse */
+    TaskDefinitionResponse: {
+      /** Archive Extensions */
+      archive_extensions: string[];
+      /** Auto Retry Enabled */
+      auto_retry_enabled: boolean;
+      /** Conflict Policy */
+      conflict_policy: string;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Cron Expression */
+      cron_expression: string | null;
+      /** Debounce Seconds */
+      debounce_seconds: number;
+      /** Exclude Names */
+      exclude_names: string[];
+      /** File Types */
+      file_types: string[];
+      /** Id */
+      id: string;
+      /** Ignore Temp Files */
+      ignore_temp_files: boolean;
+      /** Include Name */
+      include_name: string | null;
+      /** Include Subdirectories */
+      include_subdirectories: boolean;
+      /** Initial Scope */
+      initial_scope: string;
+      /** Kind */
+      kind: string;
+      /** Last Scan At */
+      last_scan_at: string | null;
+      /** Last Successful Scan At */
+      last_successful_scan_at: string | null;
+      latest_execution: components['schemas']['TaskExecutionSummaryResponse'] | null;
+      /** Max Auto Retries */
+      max_auto_retries: number;
+      /** Max Scan Depth */
+      max_scan_depth: number | null;
+      /** Max Size Bytes */
+      max_size_bytes: number | null;
+      /** Min Size Bytes */
+      min_size_bytes: number | null;
+      /** Name */
+      name: string;
+      /** Next Run At */
+      next_run_at: string | null;
+      /** Only Completed Downloads */
+      only_completed_downloads: boolean;
+      /** Output Directory */
+      output_directory: string;
+      /** Overlap Policy */
+      overlap_policy: string;
+      /** Preserve Structure */
+      preserve_structure: boolean;
+      /** Retry Intervals Seconds */
+      retry_intervals_seconds: number[];
+      /** Site Available */
+      site_available: boolean;
+      /** Site Id */
+      site_id: string | null;
+      /** Site Name */
+      site_name: string | null;
+      /** Source Available */
+      source_available: boolean;
+      /** Source Config */
+      source_config: {
+        [key: string]: unknown;
+      };
+      /** Source Directory */
+      source_directory: string | null;
+      /** Source Downloader Id */
+      source_downloader_id: string | null;
+      /** Source Downloader Name */
+      source_downloader_name: string | null;
+      /** Source Kind */
+      source_kind: string;
+      /** Stability Detection Enabled */
+      stability_detection_enabled: boolean;
+      /** Stability Wait Seconds */
+      stability_wait_seconds: number;
+      /** Status */
+      status: string;
+      /** Storage Mode */
+      storage_mode: string;
+      /** Temp Patterns */
+      temp_patterns: string[];
+      /** Timezone */
+      timezone: string | null;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+      /** Version */
+      version: number;
+      /** Video Extensions */
+      video_extensions: string[];
+    };
+    /** TaskDirectoryBrowseResponse */
+    TaskDirectoryBrowseResponse: {
+      /** Current Path */
+      current_path: string;
+      /** Entries */
+      entries: components['schemas']['TaskDirectoryEntryResponse'][];
+    };
+    /** TaskDirectoryEntryResponse */
+    TaskDirectoryEntryResponse: {
+      /** Name */
+      name: string;
+      /** Path */
+      path: string;
+    };
+    /** TaskDirectoryFileResponse */
+    TaskDirectoryFileResponse: {
+      /** Device */
+      device: number;
+      /** Inode */
+      inode: number;
+      /** Mtime Ns */
+      mtime_ns: number;
+      /** Relative Path */
+      relative_path: string;
+      /** Size Bytes */
+      size_bytes: number;
+    };
+    /** TaskDirectoryPreviewRequest */
+    TaskDirectoryPreviewRequest: {
+      /** Directory Path */
+      directory_path: string;
+      filters?: components['schemas']['TaskFilterInput'];
+    };
+    /** TaskDirectoryPreviewResponse */
+    TaskDirectoryPreviewResponse: {
+      /** Directory Path */
+      directory_path: string;
+      /** Files */
+      files: components['schemas']['TaskDirectoryFileResponse'][];
+      /** Matched Count */
+      matched_count: number;
+      /** Total Size Bytes */
+      total_size_bytes: number;
     };
     /** TaskEventListResponse */
     TaskEventListResponse: {
@@ -2514,10 +2972,298 @@ export interface components {
       task_id: string;
       to_status: components['schemas']['TaskStatus'];
     };
+    /** TaskExecutionEventResponse */
+    TaskExecutionEventResponse: {
+      /** Context */
+      context: {
+        [key: string]: unknown;
+      };
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Event Code */
+      event_code: string;
+      /** Id */
+      id: string;
+      /** Message */
+      message: string;
+      /** Trace Id */
+      trace_id: string;
+    };
+    /** TaskExecutionItemResponse */
+    TaskExecutionItemResponse: {
+      /** Error Code */
+      error_code: string | null;
+      /** Error Summary Zh */
+      error_summary_zh: string | null;
+      /** Id */
+      id: string;
+      /** Name */
+      name: string;
+      /** Phase */
+      phase: string;
+      /** Progress */
+      progress: number | null;
+      /** Result */
+      result: string | null;
+      /** Retry Count */
+      retry_count: number;
+      /** Retryable */
+      retryable: boolean;
+      /** Size Bytes */
+      size_bytes: number | null;
+      /** Source */
+      source: string;
+      /** Source Object Key */
+      source_object_key: string;
+      /** Technical Detail */
+      technical_detail: string | null;
+      /** Unpack Task Id */
+      unpack_task_id: string | null;
+    };
+    /** TaskExecutionListItemResponse */
+    TaskExecutionListItemResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Discovered Count */
+      discovered_count: number;
+      /** Failed Count */
+      failed_count: number;
+      /** Finished At */
+      finished_at: string | null;
+      /** Id */
+      id: string;
+      /** Phase */
+      phase: string;
+      /** Skipped Count */
+      skipped_count: number;
+      /** Source Execution Id */
+      source_execution_id: string | null;
+      /** Started At */
+      started_at: string | null;
+      /** Status */
+      status: string;
+      /** Success Count */
+      success_count: number;
+      /** Task Definition Id */
+      task_definition_id: string | null;
+      /** Task Name */
+      task_name: string;
+      /** Trace Id */
+      trace_id: string;
+      /** Trigger */
+      trigger: string;
+    };
+    /** TaskExecutionListResponse */
+    TaskExecutionListResponse: {
+      /** Items */
+      items: components['schemas']['TaskExecutionListItemResponse'][];
+      /** Page */
+      page: number;
+      /** Page Size */
+      page_size: number;
+      /** Total */
+      total: number;
+    };
+    /** TaskExecutionPlanResponse */
+    TaskExecutionPlanResponse: {
+      /** Blocked Reasons */
+      blocked_reasons: string[];
+      /** Client Fetch Count */
+      client_fetch_count: number;
+      /** Create Directory Count */
+      create_directory_count: number;
+      /** Current */
+      current: boolean;
+      /** Estimated Download Bytes Upper Bound */
+      estimated_download_bytes_upper_bound: number;
+      /** Execution Allowed */
+      execution_allowed: boolean;
+      /** Hardlink Count */
+      hardlink_count: number;
+      /** Id */
+      id: string;
+      /** Ready */
+      ready: boolean;
+      /** Side Effects Started */
+      side_effects_started: boolean;
+      /** Target Downloader Id */
+      target_downloader_id: string | null;
+      /** Target Root */
+      target_root: string;
+      /** Verification Level */
+      verification_level: string;
+    };
+    /** TaskExecutionPolicyInput */
+    TaskExecutionPolicyInput: {
+      /**
+       * Auto Retry Enabled
+       * @default true
+       */
+      auto_retry_enabled: boolean;
+      /**
+       * Debounce Seconds
+       * @default 30
+       */
+      debounce_seconds: number;
+      /** @default NEW_ONLY */
+      initial_scope: components['schemas']['TaskInitialScope'];
+      /**
+       * Max Auto Retries
+       * @default 3
+       */
+      max_auto_retries: number;
+      /**
+       * Only Completed Downloads
+       * @default true
+       */
+      only_completed_downloads: boolean;
+      /** @default SKIP */
+      overlap_policy: components['schemas']['TaskOverlapPolicy'];
+      /** Retry Intervals Seconds */
+      retry_intervals_seconds?: number[];
+      /**
+       * Stability Detection Enabled
+       * @default true
+       */
+      stability_detection_enabled: boolean;
+      /**
+       * Stability Wait Seconds
+       * @default 60
+       */
+      stability_wait_seconds: number;
+    };
+    /** TaskExecutionResponse */
+    TaskExecutionResponse: {
+      /** Config Snapshot */
+      config_snapshot: {
+        [key: string]: unknown;
+      };
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Discovered Count */
+      discovered_count: number;
+      /** Events */
+      events: components['schemas']['TaskExecutionEventResponse'][];
+      /** Failed Count */
+      failed_count: number;
+      /** Finished At */
+      finished_at: string | null;
+      /** Id */
+      id: string;
+      /** Items */
+      items: components['schemas']['TaskExecutionItemResponse'][];
+      /** Phase */
+      phase: string;
+      /** Skipped Count */
+      skipped_count: number;
+      /** Source Execution Id */
+      source_execution_id: string | null;
+      /** Started At */
+      started_at: string | null;
+      /** Status */
+      status: string;
+      /** Success Count */
+      success_count: number;
+      /** Task Definition Id */
+      task_definition_id: string | null;
+      /** Task Name */
+      task_name: string;
+      /** Trace Id */
+      trace_id: string;
+      /** Trigger */
+      trigger: string;
+    };
+    /** TaskExecutionSummaryResponse */
+    TaskExecutionSummaryResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Failed Count */
+      failed_count: number;
+      /** Finished At */
+      finished_at: string | null;
+      /** Id */
+      id: string;
+      /** Phase */
+      phase: string;
+      /** Skipped Count */
+      skipped_count: number;
+      /** Started At */
+      started_at: string | null;
+      /** Status */
+      status: string;
+      /** Success Count */
+      success_count: number;
+      /** Trigger */
+      trigger: string;
+    };
+    /** TaskFilterInput */
+    TaskFilterInput: {
+      /** Archive Extensions */
+      archive_extensions?: string[];
+      /** Exclude Names */
+      exclude_names?: string[];
+      /** File Types */
+      file_types?: string[];
+      /**
+       * Ignore Temp Files
+       * @default true
+       */
+      ignore_temp_files: boolean;
+      /** Include Name */
+      include_name?: string | null;
+      /**
+       * Include Subdirectories
+       * @default true
+       */
+      include_subdirectories: boolean;
+      /** Max Scan Depth */
+      max_scan_depth?: number | null;
+      /** Max Size Bytes */
+      max_size_bytes?: number | null;
+      /** Min Size Bytes */
+      min_size_bytes?: number | null;
+      /** Temp Patterns */
+      temp_patterns?: string[];
+      /** Video Extensions */
+      video_extensions?: string[];
+    };
+    /**
+     * TaskInitialScope
+     * @enum {string}
+     */
+    TaskInitialScope: 'NEW_ONLY' | 'INCLUDE_EXISTING';
     /** TaskListResponse */
     TaskListResponse: {
       /** Items */
       items: components['schemas']['TaskResponse'][];
+    };
+    /** TaskMonitorScanResponse */
+    TaskMonitorScanResponse: {
+      /** Discovered Count */
+      discovered_count: number;
+      execution: components['schemas']['TaskExecutionResponse'] | null;
+      /** New Count */
+      new_count: number;
+      /** Next Run At */
+      next_run_at: string | null;
+      /** Outcome */
+      outcome: string;
+      /** Task Definition Id */
+      task_definition_id: string;
+      /** Trigger */
+      trigger: string;
     };
     /** TaskMutationActionResponse */
     TaskMutationActionResponse: {
@@ -2629,6 +3375,25 @@ export interface components {
        */
       updated_at: string;
     };
+    /** TaskOutputPolicyInput */
+    TaskOutputPolicyInput: {
+      /** @default VERIFY_REUSE_OR_STOP */
+      conflict_policy: components['schemas']['TaskConflictPolicy'];
+      /** Output Directory */
+      output_directory: string;
+      /**
+       * Preserve Structure
+       * @default true
+       */
+      preserve_structure: boolean;
+      /** @default HARDLINK */
+      storage_mode: components['schemas']['TaskStorageMode'];
+    };
+    /**
+     * TaskOverlapPolicy
+     * @enum {string}
+     */
+    TaskOverlapPolicy: 'SKIP' | 'RUN_ONCE_AFTER';
     /** TaskResponse */
     TaskResponse: {
       /**
@@ -2714,6 +3479,23 @@ export interface components {
       /** Version */
       version: number;
     };
+    /** TaskSourceInput */
+    TaskSourceInput: {
+      /** Config */
+      config?: {
+        [key: string]: unknown;
+      };
+      /** Directory Path */
+      directory_path?: string | null;
+      /** Downloader Id */
+      downloader_id?: string | null;
+      kind: components['schemas']['TaskSourceKind'];
+    };
+    /**
+     * TaskSourceKind
+     * @enum {string}
+     */
+    TaskSourceKind: 'DOWNLOADER' | 'DIRECTORY';
     /**
      * TaskStatus
      * @enum {string}
@@ -2737,6 +3519,11 @@ export interface components {
       | 'CANCELLING'
       | 'ROLLING_BACK'
       | 'CANCELLED';
+    /**
+     * TaskStorageMode
+     * @enum {string}
+     */
+    TaskStorageMode: 'HARDLINK' | 'SYMLINK' | 'COPY';
     /** TaskUnitListResponse */
     TaskUnitListResponse: {
       /** Items */
@@ -3405,6 +4192,52 @@ export interface operations {
       cookie?: {
         packbreaker_session?: string | null;
         packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_downloader_torrents_api_v1_downloaders__downloader_id__torrents_get: {
+    parameters: {
+      query?: {
+        page?: number;
+        page_size?: number;
+        search?: string | null;
+        status?: string | null;
+        category?: string | null;
+        tag?: string | null;
+        tracker?: string | null;
+        save_path?: string | null;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        downloader_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
       };
     };
     requestBody?: never;
@@ -4494,6 +5327,11 @@ export interface operations {
         limit?: number;
         level?: ('DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL') | null;
         q?: string | null;
+        source?: ('SYSTEM' | 'TASK_EVENT') | null;
+        event_code?: string | null;
+        task_id?: string | null;
+        execution_id?: string | null;
+        trace_id?: string | null;
       };
       header?: {
         Authorization?: string | null;
@@ -4532,6 +5370,11 @@ export interface operations {
         limit?: number;
         level?: ('DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL') | null;
         q?: string | null;
+        source?: ('SYSTEM' | 'TASK_EVENT') | null;
+        event_code?: string | null;
+        task_id?: string | null;
+        execution_id?: string | null;
+        trace_id?: string | null;
       };
       header?: {
         Authorization?: string | null;
@@ -4691,6 +5534,613 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['SystemUpgradeActionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_task_definitions_api_v1_task_definitions_get: {
+    parameters: {
+      query?: {
+        kind?: components['schemas']['TaskDefinitionKind'] | null;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskDefinitionListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  create_task_definition_api_v1_task_definitions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskDefinitionCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskDefinitionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  preview_task_definition_cron_api_v1_task_definitions_cron_preview_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskCronPreviewRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskCronPreviewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  preview_task_source_directory_api_v1_task_definitions_directory_preview_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskDirectoryPreviewRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskDirectoryPreviewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  precheck_task_definition_api_v1_task_definitions_precheck_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskDefinitionCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskDefinitionPrecheckResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  browse_task_source_directories_api_v1_task_definitions_source_directories_get: {
+    parameters: {
+      query?: {
+        path?: string;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskDirectoryBrowseResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_task_definition_api_v1_task_definitions__definition_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        definition_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskDefinitionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  update_task_definition_api_v1_task_definitions__definition_id__put: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskDefinitionCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskDefinitionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  delete_task_definition_api_v1_task_definitions__definition_id__delete: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  act_on_task_definition_api_v1_task_definitions__definition_id__actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskDefinitionActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskDefinitionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_task_definition_executions_api_v1_task_definitions__definition_id__executions_get: {
+    parameters: {
+      query?: {
+        page?: number;
+        page_size?: number;
+        status?: string | null;
+        trigger?: string | null;
+        search?: string | null;
+        started_from?: string | null;
+        started_to?: string | null;
+      };
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        definition_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskExecutionListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  execute_manual_task_definition_api_v1_task_definitions__definition_id__executions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskExecutionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_task_definition_execution_api_v1_task_definitions__definition_id__executions__execution_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+      };
+      path: {
+        definition_id: string;
+        execution_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskExecutionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  create_task_definition_execution_plan_api_v1_task_definitions__definition_id__executions__execution_id__items__item_id__execution_plan_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+        execution_id: string;
+        item_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskExecutionPlanResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  retry_failed_task_definition_execution_api_v1_task_definitions__definition_id__executions__execution_id__retry_failed_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'Idempotency-Key'?: string | null;
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+        execution_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskExecutionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  scan_monitor_task_definition_api_v1_task_definitions__definition_id__scan_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        Authorization?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskMonitorScanResponse'];
         };
       };
       /** @description Validation Error */

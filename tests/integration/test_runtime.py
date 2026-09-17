@@ -30,7 +30,7 @@ def test_runtime_migrates_database_and_becomes_ready(tmp_path: Path) -> None:
         assert report.migrations == "ok"
         assert report.secrets == "ok"
         assert report.worker_slot == "ok"
-        assert report.current_revision == report.expected_revision == "0023_backup_policy"
+        assert report.current_revision == report.expected_revision == "0024_task_center_v015"
         assert runtime.engine is not None
         assert {
             "unpack_task",

@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr
 
@@ -311,6 +311,53 @@ async def list_downloader_tasks(
     _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
 ) -> dict[str, object]:
     return {"items": downloader_service(request).list_tasks(downloader_id)}
+
+
+@router.get("/downloaders/{downloader_id}/torrents")
+async def list_downloader_torrents(
+    downloader_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+    search: str | None = None,
+    torrent_status: str | None = Query(default=None, alias="status"),
+    category: str | None = None,
+    tag: str | None = None,
+    tracker: str | None = None,
+    save_path: str | None = None,
+) -> dict[str, object]:
+    result = await downloader_service(request).list_torrents(
+        downloader_id,
+        page=page,
+        page_size=page_size,
+        search=search,
+        status=torrent_status,
+        category=category,
+        tag=tag,
+        tracker=tracker,
+        save_path=save_path,
+    )
+    return {
+        "items": [
+            {
+                "torrent_hash": item.torrent_hash,
+                "name": item.name,
+                "status": item.status,
+                "progress": item.progress,
+                "size_bytes": item.size_bytes,
+                "category": item.category,
+                "tags": list(item.tags),
+                "tracker": item.tracker,
+                "save_path": item.save_path,
+                "content_path": item.content_path,
+            }
+            for item in result.items
+        ],
+        "page": result.page,
+        "page_size": result.page_size,
+        "total": result.total,
+    }
 
 
 @router.post("/downloaders/{downloader_id}/actions")

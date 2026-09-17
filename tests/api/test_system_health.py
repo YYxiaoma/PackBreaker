@@ -19,6 +19,8 @@ from backend.app.infrastructure.persistence.models import (
     Downloader,
     OperationJournal,
     Site,
+    TaskExecution,
+    TaskExecutionEvent,
     UnpackTask,
     new_uuid,
 )
@@ -173,7 +175,7 @@ def test_release_preflight_api_is_local_read_only_and_skips_backup_exercise(
         assert response.headers["cache-control"] == "no-store"
         payload = response.json()
         assert payload["status"] == "ready"
-        assert payload["app_version"] == "0.1.4"
+        assert payload["app_version"] == "0.1.5"
         codes = {item["code"] for item in payload["checks"]}
         assert {
             "CONFIG_DIR_OK",
@@ -323,5 +325,84 @@ def test_operational_log_query_and_export_are_bounded_and_redacted(tmp_path: Pat
         )
         assert client.get("/api/v1/system/logs", params={"limit": 501}).status_code == 422
         assert client.get("/api/v1/system/logs/export", params={"limit": 2001}).status_code == 422
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_system_logs_include_filterable_task_execution_events(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        now = datetime.now(UTC)
+        definition_id = new_uuid()
+        execution_id = new_uuid()
+        trace_id = new_uuid()
+        with app.state.runtime.session_factory() as session:
+            session.add(
+                TaskExecution(
+                    id=execution_id,
+                    task_definition_id=None,
+                    task_name="阶段 G 日志任务",
+                    trigger="MANUAL",
+                    status="PENDING",
+                    phase="WAITING",
+                    source_execution_id=None,
+                    trace_id=trace_id,
+                    config_snapshot={"task_definition_id": definition_id},
+                    discovered_count=1,
+                    success_count=0,
+                    failed_count=0,
+                    skipped_count=0,
+                    started_at=now,
+                    finished_at=None,
+                    created_at=now,
+                )
+            )
+            session.add(
+                TaskExecutionEvent(
+                    id=new_uuid(),
+                    execution_id=execution_id,
+                    event_code="TASK_UNPACK_RUN_MATERIALIZED",
+                    message="Safe unpack run created and waiting for preflight",
+                    trace_id=trace_id,
+                    context={
+                        "task_id": definition_id,
+                        "unpack_task_id": "synthetic-run-id",
+                        "api_key": "must-be-redacted",
+                    },
+                    created_at=now,
+                )
+            )
+            session.commit()
+
+        response = client.get(
+            "/api/v1/system/logs",
+            params={
+                "source": "TASK_EVENT",
+                "execution_id": execution_id,
+                "trace_id": trace_id,
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["count"] == 1
+        entry = body["items"][0]
+        assert entry["source"] == "TASK_EVENT"
+        assert entry["event_code"] == "TASK_UNPACK_RUN_MATERIALIZED"
+        assert entry["task_id"] == definition_id
+        assert entry["execution_id"] == execution_id
+        assert entry["trace_id"] == trace_id
+        assert entry["task_name"] == "阶段 G 日志任务"
+        assert entry["message"] == "Safe unpack run created and waiting for preflight"
+        assert entry["fields"]["api_key"] == "[REDACTED]"
+
+        exported = client.get(
+            "/api/v1/system/logs/export",
+            params={"source": "TASK_EVENT", "execution_id": execution_id},
+        )
+        assert exported.status_code == 200
+        exported_body = json.loads(exported.content)
+        assert exported_body["items"][0]["event_code"] == "TASK_UNPACK_RUN_MATERIALIZED"
+        assert exported_body["items"][0]["source"] == "TASK_EVENT"
+        assert b"must-be-redacted" not in exported.content
     finally:
         client.__exit__(None, None, None)

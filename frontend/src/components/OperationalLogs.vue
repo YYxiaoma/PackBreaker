@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue';
-import { Download, RefreshCw, Search, ShieldCheck } from '@lucide/vue';
+import { Download, RefreshCw, Search, ShieldCheck, X } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 import { toApiProblem } from '../api/client';
 import {
@@ -11,6 +11,9 @@ import {
   type OperationalLogList,
   type OperationalLogQuery,
 } from '../api/system';
+import { taskEventTranslation } from '../taskExecutionEvents';
+
+const LOG_CONTEXT_STORAGE_KEY = 'packbreaker.log-context.v1';
 
 const loading = ref(false);
 const exportLoading = ref(false);
@@ -18,11 +21,19 @@ const result = ref<OperationalLogList | null>(null);
 const filters = reactive<{
   q: string;
   level: '' | OperationalLogLevel;
+  source: '' | 'SYSTEM' | 'TASK_EVENT';
   window_minutes: number;
+  task_id: string;
+  execution_id: string;
+  trace_id: string;
 }>({
   q: '',
   level: '',
+  source: '',
   window_minutes: 60,
+  task_id: '',
+  execution_id: '',
+  trace_id: '',
 });
 
 function query(limit: number): OperationalLogQuery {
@@ -30,8 +41,42 @@ function query(limit: number): OperationalLogQuery {
     window_minutes: filters.window_minutes,
     limit,
     ...(filters.level ? { level: filters.level } : {}),
+    ...(filters.source ? { source: filters.source } : {}),
     ...(filters.q.trim() ? { q: filters.q.trim() } : {}),
+    ...(filters.task_id ? { task_id: filters.task_id } : {}),
+    ...(filters.execution_id ? { execution_id: filters.execution_id } : {}),
+    ...(filters.trace_id ? { trace_id: filters.trace_id } : {}),
   };
+}
+
+function loadContextFilter(): void {
+  const raw = sessionStorage.getItem(LOG_CONTEXT_STORAGE_KEY);
+  if (!raw) return;
+  sessionStorage.removeItem(LOG_CONTEXT_STORAGE_KEY);
+  try {
+    const context = JSON.parse(raw) as Record<string, unknown>;
+    filters.source = 'TASK_EVENT';
+    filters.task_id = typeof context.task_id === 'string' ? context.task_id : '';
+    filters.execution_id = typeof context.execution_id === 'string' ? context.execution_id : '';
+    filters.trace_id = typeof context.trace_id === 'string' ? context.trace_id : '';
+    if (typeof context.window_minutes === 'number') {
+      filters.window_minutes = Math.min(10080, Math.max(1, Math.ceil(context.window_minutes)));
+    }
+  } catch {
+    // Invalid navigation context is ignored; the log page remains usable.
+  }
+}
+
+function clearContextFilter(): void {
+  filters.task_id = '';
+  filters.execution_id = '';
+  filters.trace_id = '';
+  if (filters.source === 'TASK_EVENT') filters.source = '';
+  void refresh();
+}
+
+function hasContextFilter(): boolean {
+  return Boolean(filters.task_id || filters.execution_id || filters.trace_id);
 }
 
 async function refresh(): Promise<void> {
@@ -92,7 +137,10 @@ function formatBytes(value: number): string {
   return `${Math.round(value / 1024)} KiB`;
 }
 
-onMounted(() => void refresh());
+onMounted(() => {
+  loadContextFilter();
+  void refresh();
+});
 </script>
 
 <template>
@@ -129,6 +177,10 @@ onMounted(() => void refresh());
           :value="level"
         />
       </el-select>
+      <el-select v-model="filters.source" placeholder="全部来源" clearable @change="refresh">
+        <el-option label="系统运行日志" value="SYSTEM" />
+        <el-option label="任务执行事件" value="TASK_EVENT" />
+      </el-select>
       <el-select v-model="filters.window_minutes" @change="refresh">
         <el-option label="最近 15 分钟" :value="15" />
         <el-option label="最近 1 小时" :value="60" />
@@ -137,6 +189,16 @@ onMounted(() => void refresh());
         <el-option label="最近 7 天（上限）" :value="10080" />
       </el-select>
       <el-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</el-button>
+    </div>
+
+    <div v-if="hasContextFilter()" class="log-context-filter">
+      <span>执行上下文</span>
+      <code v-if="filters.task_id">task={{ filters.task_id }}</code>
+      <code v-if="filters.execution_id">execution={{ filters.execution_id }}</code>
+      <code v-if="filters.trace_id">trace={{ filters.trace_id }}</code>
+      <el-button link type="primary" @click="clearContextFilter"
+        ><X :size="13" />清除上下文</el-button
+      >
     </div>
 
     <section class="panel log-panel" v-loading="loading">
@@ -148,11 +210,26 @@ onMounted(() => void refresh());
         <time>{{ formatTimestamp(entry.timestamp) }}</time>
         <el-tag :type="tagType(entry.level)">{{ entry.level }}</el-tag>
         <div>
-          <b>{{ entry.message }}</b>
+          <template v-if="entry.source === 'TASK_EVENT'">
+            <b>{{ taskEventTranslation(entry.event_code).title }}</b>
+            <small class="technical-message">{{ entry.message }}</small>
+            <small class="event-meta">
+              {{ entry.event_code }}
+              <template v-if="!taskEventTranslation(entry.event_code).translated">
+                · 未翻译事件</template
+              >
+            </small>
+          </template>
+          <b v-else>{{ entry.message }}</b>
           <small
             >{{ entry.logger
             }}<template v-if="entry.exception"> · exception={{ entry.exception }}</template></small
           >
+          <small v-if="entry.source === 'TASK_EVENT'" class="log-links">
+            <template v-if="entry.task_name">任务：{{ entry.task_name }}</template>
+            <template v-if="entry.execution_id"> · execution={{ entry.execution_id }}</template>
+            <template v-if="entry.trace_id"> · trace={{ entry.trace_id }}</template>
+          </small>
           <small v-if="formatFields(entry)" class="log-fields">{{ formatFields(entry) }}</small>
         </div>
       </article>
@@ -194,6 +271,23 @@ onMounted(() => void refresh());
 .log-controls > .el-select {
   width: 170px;
 }
+.log-context-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 11px;
+}
+.log-context-filter > span {
+  color: var(--muted);
+}
+.log-context-filter code {
+  overflow-wrap: anywhere;
+}
 .log-panel {
   padding: 0 20px;
 }
@@ -228,6 +322,14 @@ onMounted(() => void refresh());
   font-size: 10px;
 }
 .log-fields {
+  font-family: Consolas, monospace;
+}
+.technical-message {
+  color: inherit !important;
+  font-size: 11px !important;
+}
+.event-meta,
+.log-links {
   font-family: Consolas, monospace;
 }
 @media (max-width: 800px) {

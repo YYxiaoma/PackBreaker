@@ -20,7 +20,12 @@ from backend.app.domain.preflight import (
     SiteAnalysisEvidence,
     search_query_signature,
 )
-from backend.app.domain.site_search import CandidateMeta, SearchQuery, build_search_queries
+from backend.app.domain.site_search import (
+    CandidateMeta,
+    SearchQuery,
+    SiteSearchCapabilities,
+    build_search_queries,
+)
 from backend.app.domain.task_units import TaskUnit
 from backend.app.domain.torrent import TorrentKind, TorrentMeta
 from backend.app.domain.verification import TorrentVerificationResult, VerificationLevel
@@ -118,7 +123,7 @@ class AnalysisService:
         planned_query_signatures = tuple(search_query_signature(query) for query in queries)
         if lifecycle is not None:
             task_version = lifecycle.enter_searching()
-        candidates, site_evidence = await self._search_sites(
+        candidates, site_evidence, capabilities_by_site = await self._search_sites(
             bindings,
             queries,
             lifecycle=lifecycle,
@@ -133,12 +138,24 @@ class AnalysisService:
             ),
         )
         score_by_key = {item.candidate_id: item.result for item in ranked}
-        selected_keys = {
-            item.candidate_id
-            for item in tuple(item for item in ranked if not item.result.rejected)[
-                : self._policy.max_candidates_to_verify
-            ]
-        }
+        selected_keys: set[str] = set()
+        selected_by_site: dict[str, int] = {}
+        for item in ranked:
+            if item.result.rejected:
+                continue
+            candidate = candidates[_split_candidate_key(item.candidate_id)]
+            capabilities = capabilities_by_site.get(candidate.site_id)
+            site_limit = (
+                capabilities.max_verification_candidates
+                if capabilities is not None and capabilities.max_verification_candidates is not None
+                else self._policy.max_candidates_to_verify
+            )
+            if selected_by_site.get(candidate.site_id, 0) >= site_limit:
+                continue
+            selected_keys.add(item.candidate_id)
+            selected_by_site[candidate.site_id] = selected_by_site.get(candidate.site_id, 0) + 1
+            if len(selected_keys) >= self._policy.max_candidates_to_verify:
+                break
 
         if lifecycle is not None:
             lifecycle.check_cancel_requested()
@@ -171,6 +188,7 @@ class AnalysisService:
                     unit,
                     inventory,
                     fallback_score=score_by_key[ranked_item.candidate_id],
+                    capabilities=capabilities_by_site.get(candidate.site_id),
                     lifecycle=lifecycle,
                 )
             )
@@ -246,9 +264,14 @@ class AnalysisService:
         queries: tuple[SearchQuery, ...],
         *,
         lifecycle: AnalysisLifecycle | None = None,
-    ) -> tuple[dict[tuple[str, str], CandidateMeta], tuple[SiteAnalysisEvidence, ...]]:
+    ) -> tuple[
+        dict[tuple[str, str], CandidateMeta],
+        tuple[SiteAnalysisEvidence, ...],
+        dict[str, SiteSearchCapabilities],
+    ]:
         candidates: dict[tuple[str, str], CandidateMeta] = {}
         sites: list[SiteAnalysisEvidence] = []
+        capabilities_by_site: dict[str, SiteSearchCapabilities] = {}
         for binding in bindings:
             if lifecycle is not None:
                 lifecycle.check_cancel_requested()
@@ -267,6 +290,7 @@ class AnalysisService:
                     )
                 )
                 continue
+            capabilities_by_site[binding.site_id] = capabilities
             if lifecycle is not None:
                 lifecycle.check_cancel_requested()
             query_limit = self._policy.max_queries_per_site
@@ -301,7 +325,7 @@ class AnalysisService:
                     tuple(errors),
                 )
             )
-        return candidates, tuple(sites)
+        return candidates, tuple(sites), capabilities_by_site
 
     async def _verify_candidate(
         self,
@@ -311,6 +335,7 @@ class AnalysisService:
         inventory: tuple[SourceFileCandidate, ...],
         *,
         fallback_score: CandidateScore,
+        capabilities: SiteSearchCapabilities | None = None,
         lifecycle: AnalysisLifecycle | None = None,
     ) -> CandidatePreflightEvidence:
         detailed = candidate
@@ -318,15 +343,16 @@ class AnalysisService:
         try:
             if lifecycle is not None:
                 lifecycle.check_cancel_requested()
-            details = await binding.adapter.fetch_details(candidate.torrent_id)
-            if lifecycle is not None:
-                lifecycle.check_cancel_requested()
-            if details.site_id != binding.site_id or details.torrent_id != candidate.torrent_id:
-                raise SiteAdapterError("SITE_IDENTITY_MISMATCH", "站点详情身份与搜索候选不一致")
-            detailed = details.candidate
-            current_score = score_candidate(unit.descriptor, detailed.descriptor)
-            if current_score.rejected:
-                return _unverified_evidence(detailed, current_score, selected=True)
+            if capabilities is None or not capabilities.search_results_are_complete:
+                details = await binding.adapter.fetch_details(candidate.torrent_id)
+                if lifecycle is not None:
+                    lifecycle.check_cancel_requested()
+                if details.site_id != binding.site_id or details.torrent_id != candidate.torrent_id:
+                    raise SiteAdapterError("SITE_IDENTITY_MISMATCH", "站点详情身份与搜索候选不一致")
+                detailed = details.candidate
+                current_score = score_candidate(unit.descriptor, detailed.descriptor)
+                if current_score.rejected:
+                    return _unverified_evidence(detailed, current_score, selected=True)
             payload = await binding.adapter.fetch_torrent(candidate.torrent_id)
             if lifecycle is not None:
                 lifecycle.check_cancel_requested()

@@ -172,10 +172,26 @@ describe('系统运维 API', () => {
       headers: {},
     });
 
-    await listSystemLogs({ window_minutes: 360, limit: 100, level: 'WARNING', q: 'trace-safe' });
+    await listSystemLogs({
+      window_minutes: 360,
+      limit: 100,
+      level: 'WARNING',
+      q: 'trace-safe',
+      source: 'TASK_EVENT',
+      execution_id: 'execution-1',
+      trace_id: 'trace-1',
+    });
 
     expect(get).toHaveBeenCalledWith('/system/logs', {
-      params: { window_minutes: 360, limit: 100, level: 'WARNING', q: 'trace-safe' },
+      params: {
+        window_minutes: 360,
+        limit: 100,
+        level: 'WARNING',
+        q: 'trace-safe',
+        source: 'TASK_EVENT',
+        execution_id: 'execution-1',
+        trace_id: 'trace-1',
+      },
     });
   });
 

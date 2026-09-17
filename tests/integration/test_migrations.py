@@ -40,6 +40,15 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
         "history_scan",
         "history_scan_file",
         "history_scan_materialization",
+        "task_definition",
+        "task_schedule",
+        "task_source",
+        "task_filter",
+        "task_output_policy",
+        "task_execution_policy",
+        "task_execution",
+        "task_execution_item",
+        "task_execution_event",
     }.issubset(set(inspector.get_table_names()))
     task_unique_names = {
         constraint["name"] for constraint in inspector.get_unique_constraints("unpack_task")
@@ -51,6 +60,23 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     task_columns = {column["name"]: column for column in inspector.get_columns("unpack_task")}
     assert task_columns["parent_task_id"]["nullable"] is True
     assert task_columns["run_number"]["nullable"] is False
+    task_definition_columns = {
+        column["name"]: column for column in inspector.get_columns("task_definition")
+    }
+    assert task_definition_columns["site_id"]["nullable"] is True
+    task_execution_columns = {
+        column["name"]: column for column in inspector.get_columns("task_execution")
+    }
+    assert task_execution_columns["task_definition_id"]["nullable"] is True
+    assert {"success_count", "failed_count", "skipped_count", "config_snapshot"}.issubset(
+        task_execution_columns
+    )
+    task_event_columns = {
+        column["name"] for column in inspector.get_columns("task_execution_event")
+    }
+    assert {"event_code", "message", "execution_id", "trace_id", "context"}.issubset(
+        task_event_columns
+    )
     history_scan_indexes = {index["name"]: index for index in inspector.get_indexes("history_scan")}
     assert history_scan_indexes["ix_history_scan_status_updated_at"]["unique"] == 0
     history_file_indexes = {

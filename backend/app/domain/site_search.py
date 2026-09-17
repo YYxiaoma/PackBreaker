@@ -68,10 +68,14 @@ class SiteSearchCapabilities:
     supports_detail_file_list: bool = False
     requires_download_token: bool = False
     min_request_interval_seconds: float = 0.0
+    search_results_are_complete: bool = False
+    max_verification_candidates: int | None = None
 
     def __post_init__(self) -> None:
         if self.min_request_interval_seconds < 0:
             raise ValueError("站点最小请求间隔不能为负数")
+        if self.max_verification_candidates is not None and self.max_verification_candidates < 1:
+            raise ValueError("站点验证候选上限必须大于等于 1")
 
 
 @dataclass(frozen=True, slots=True)
