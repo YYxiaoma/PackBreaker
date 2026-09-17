@@ -5,7 +5,9 @@ import os
 import stat
 import unicodedata
 from collections.abc import Callable
+from dataclasses import dataclass
 from hashlib import sha256
+from heapq import heappop, heappush
 from pathlib import Path
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
@@ -70,6 +72,100 @@ def scan_source_inventory(
     return tuple(sorted(candidates, key=lambda item: (item.relative_path, item.source_path)))
 
 
+@dataclass(frozen=True, slots=True)
+class SourceInventoryPage:
+    candidates: tuple[SourceFileCandidate, ...]
+    has_more: bool
+    next_cursor: str | None
+
+
+def scan_source_inventory_page(
+    root: Path,
+    *,
+    after: str | None,
+    limit: int,
+    cancel_check: Callable[[], None] | None = None,
+) -> SourceInventoryPage:
+    """按稳定字典序读取有界文件页，并跳过 cursor 之前的子树。"""
+
+    if limit <= 0:
+        raise ValueError("limit 必须大于 0")
+    _check_cancel(cancel_check)
+    root_stat = _lstat(root)
+    if not stat.S_ISDIR(root_stat.st_mode):
+        raise DomainViolation(
+            ErrorCode.PATH_MAPPING_INVALID, "源扫描根必须是普通目录且不能是符号链接"
+        )
+
+    flags = _directory_flags()
+    try:
+        root_fd = os.open(root, flags)
+    except OSError as exc:
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "无法读取源目录") from exc
+    try:
+        pending = _directory_names(root_fd, prefix="")
+        candidates: list[SourceFileCandidate] = []
+        while pending and len(candidates) < limit + 1:
+            _check_cancel(cancel_check)
+            relative_path = heappop(pending)
+            subtree_prefix = f"{relative_path}/"
+            may_contain_after = (
+                after is None
+                or relative_path > after
+                or subtree_prefix > after
+                or after.startswith(subtree_prefix)
+            )
+            if not may_contain_after:
+                continue
+
+            try:
+                observed = _stat_relative(root_fd, relative_path)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as exc:
+                raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "无法读取源路径状态") from exc
+            if stat.S_ISLNK(observed.st_mode):
+                continue
+            if stat.S_ISDIR(observed.st_mode):
+                if after is not None and not (
+                    subtree_prefix > after or after.startswith(subtree_prefix)
+                ):
+                    continue
+                try:
+                    child_fd = _open_directory_relative(root_fd, relative_path)
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+                except OSError as exc:
+                    raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "无法读取源目录") from exc
+                try:
+                    for child_path in _directory_names(child_fd, prefix=relative_path):
+                        heappush(pending, child_path)
+                finally:
+                    os.close(child_fd)
+                continue
+            if after is not None and relative_path <= after:
+                continue
+            if not stat.S_ISREG(observed.st_mode):
+                continue
+            normalized = _normalized_relative_string(relative_path)
+            source_path = root.joinpath(*normalized.split("/"))
+            candidates.append(
+                SourceFileCandidate(
+                    relative_path=normalized,
+                    source_path=str(source_path),
+                    length=observed.st_size,
+                    snapshot=_snapshot(observed),
+                )
+            )
+
+        has_more = len(candidates) > limit
+        page_candidates = tuple(candidates[:limit])
+        next_cursor = page_candidates[-1].relative_path if page_candidates else after
+        return SourceInventoryPage(page_candidates, has_more, next_cursor)
+    finally:
+        os.close(root_fd)
+
+
 def current_file_snapshot(path: Path) -> FileSnapshot:
     result = _lstat(path)
     if not stat.S_ISREG(result.st_mode):
@@ -93,6 +189,56 @@ def source_inventory_digest(candidates: tuple[SourceFileCandidate, ...]) -> str:
     ]
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return sha256(raw).hexdigest()
+
+
+def _directory_flags() -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    return flags
+
+
+def _directory_names(directory_fd: int, *, prefix: str) -> list[str]:
+    try:
+        with os.scandir(directory_fd) as iterator:
+            paths = [f"{prefix}/{entry.name}" if prefix else entry.name for entry in iterator]
+    except OSError as exc:
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "无法读取源目录") from exc
+    paths.sort()
+    return paths
+
+
+def _open_directory_relative(root_fd: int, relative_path: str) -> int:
+    current_fd = os.dup(root_fd)
+    try:
+        for part in relative_path.split("/"):
+            next_fd = os.open(part, _directory_flags(), dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+def _stat_relative(root_fd: int, relative_path: str) -> os.stat_result:
+    parts = relative_path.split("/")
+    current_fd = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            next_fd = os.open(part, _directory_flags(), dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return os.stat(parts[-1], dir_fd=current_fd, follow_symlinks=False)
+    finally:
+        os.close(current_fd)
+
+
+def _normalized_relative_string(value: str) -> str:
+    parts = tuple(unicodedata.normalize("NFC", part) for part in value.split("/"))
+    if not parts or any(not part or part in {".", ".."} for part in parts):
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "源相对路径无效")
+    return "/".join(parts)
 
 
 def _lstat(path: Path) -> os.stat_result:

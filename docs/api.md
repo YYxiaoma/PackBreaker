@@ -50,17 +50,16 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 - `POST /auth/logout` 在 CSRF 校验后持久化撤销当前会话；`GET /auth/me` 返回 `configured`、当前会话状态和权限，使前端可区分“尚未初始化管理员”与“已初始化但未登录”，不返回口令信息。会话明文 token 不入库。
 - 登录失败按来源摘要和单管理员账号双维度限速，不记录口令。
 
-### 3.2 自动化 API
+### 3.2 管理 API 访问
 
-- 管理员可通过受 CSRF 保护的管理会话生成具备名称、范围和过期时间的 API Token；创建响应只显示一次 `pbk_` 前缀明文，数据库仅保存 SHA-256 摘要。
-- 使用 `Authorization: Bearer <token>`；范围首版包含 `tasks:read`、`tasks:write`、`config:read`、`config:write`。范围不足返回 `403 API_TOKEN_SCOPE_FORBIDDEN`，过期或已撤销返回 `401 API_TOKEN_INVALID`。
-- `GET /api-tokens` 只返回元数据，不返回明文或摘要；`DELETE /api-tokens/{id}` 持久化撤销且重复撤销幂等。
-- `/system/status`、`/system/health`、`/system/release/preflight`、`/system/upgrade`、`/system/diagnostics/export`、`/system/logs`、`/system/logs/export` 与备份策略 GET 允许管理员会话或具备 `config:read` 的 API Token 访问。备份策略 PUT/立即备份与 `/system/upgrade/actions` 要求受 CSRF 保护的管理员会话或 `config:write` API Token；升级动作还强制 `Idempotency-Key`。发布预检 API 只检查本地配置、数据库、现有主密钥、`/data` 根和 docker.sock 风险，并显式跳过会产生临时文件的备份演练；升级状态会读取正式 GitHub Release manifest 与当前可用升级执行器状态（单容器一次性 helper 或兼容的独立 helper）；健康聚合只读已有证据，不主动触发外部探测；诊断 ZIP 只含白名单聚合字段；日志查询/导出有窗口、条数和容量边界并再次脱敏。
-- Webhook 不使用管理会话或 API Token，按第 8 节独立验签。
+- 当前所有管理 API 仅接受管理员会话；不再提供 API Token 创建、撤销或 `Authorization: Bearer` 鉴权。
+- GET/HEAD 管理端点要求有效管理员会话；其余管理端点同时要求管理员会话、CSRF Cookie 与 `X-CSRF-Token`。需要幂等保护的副作用动作仍额外要求 `Idempotency-Key`。
+- 旧版本数据库中可能仍存在历史 `api_token` 表以保证升级兼容，但运行时不再读取或认证其中记录。
+- Webhook 若后续实现，仍按第 8 节使用独立 HMAC/防重放机制，不复用管理会话。
 
 ## 4. 幂等、并发与分页
 
-- 创建任务、执行任务动作、创建历史扫描等副作用请求必须带 `Idempotency-Key`。
+- 创建任务、执行任务动作等副作用请求必须带 `Idempotency-Key`。
 - 服务端保存 key、调用方身份、请求摘要和响应结果；同 key 同请求返回原结果，同 key 不同请求返回 `409 IDEMPOTENCY_CONFLICT`。
 - 任务 `execute`/`cancel` 实际只保存 `Idempotency-Key` 的 SHA-256 摘要，不保存明文；receipt 在任何文件系统/qB 副作用前以 `PENDING` 提交。若进程在外部动作后、receipt 完成前崩溃，同键重放会再次进入既有幂等 coordinator 对账并补全 receipt，而不是根据 HTTP 超时猜测结果。安全可归类失败保存稳定 problem 字段并原样重放；未分类异常保留 `PENDING`。
 - 站点、下载器、规则等可编辑资源包含整数 `version`；更新和删除使用 `If-Match: "<version>"`，版本不一致返回 412。
@@ -79,18 +78,17 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 | GET | `/system/health` | 统一运维健康聚合；读取时不主动访问 PT、下载器或通知服务 |
 | GET | `/system/release/preflight` | 版本升级本地只读预检；检查配置/数据库/主密钥/数据根/docker.sock，跳过备份演练且不访问外部服务 |
 | GET | `/system/upgrade` | 查询当前版本、最新正式 Release/digest、当前升级执行器状态与自动升级阻断原因；`Cache-Control: no-store` |
-| POST | `/system/upgrade/actions` | `action=upgrade`；要求 `config:write`、管理会话 CSRF（如适用）和 `Idempotency-Key`，重新验证正式 Release、完整 preflight、创建升级前一致性备份后交给单容器临时 helper；无主容器 docker.sock 时可回退到兼容的独立 helper |
+| POST | `/system/upgrade/actions` | `action=upgrade`；要求管理员会话、CSRF 和 `Idempotency-Key`，重新验证正式 Release、完整 preflight、创建升级前一致性备份后交给单容器临时 helper；无主容器 docker.sock 时可回退到兼容的独立 helper |
 | GET | `/system/diagnostics/export` | 下载脱敏诊断 ZIP；只含聚合 health/manifest，不含日志、路径、URL、ID、业务 hash 或凭证 |
 | GET | `/system/logs` | 查询应用自身有界轮转日志；默认 60 分钟/200 条，最大 7 天/500 条，可按级别和安全关键词过滤 |
 | GET | `/system/logs/export` | 导出同一受控日志窗口，最多 2000 条；JSON 附件返回 SHA-256 与 `no-store` |
 | GET | `/system/backups/policy` | 读取计划备份策略、最近执行状态和 BackupDriver 状态；返回强 ETag |
-| PUT | `/system/backups/policy` | 更新计划备份开关/周期/保留策略；要求 `config:write`、CSRF（会话方式）和强 `If-Match` |
+| PUT | `/system/backups/policy` | 更新计划备份开关/周期/保留策略；要求管理员会话、CSRF 和强 `If-Match` |
 | POST | `/system/backups/actions` | `run_now` 立即创建一致性备份并应用当前保留策略；与计划任务互斥 |
 | POST | `/auth/setup` | 首次设置管理员口令 |
 | POST | `/auth/login` | 创建管理会话 |
 | POST | `/auth/logout` | 注销当前会话 |
 | GET | `/auth/me` | 管理员是否已初始化、当前会话与权限信息 |
-| GET/POST/DELETE | `/api-tokens` | 管理自动化 Token；列表不返回明文 |
 
 ### 5.2 站点
 
@@ -102,7 +100,7 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 | GET | `/sites/{site_id}/health` | 最近状态、熔断和限流信息 |
 | POST | `/sites/{site_id}/actions` | `enable`、`disable`、`refresh_capabilities`、`reset_circuit` |
 
-站点读取端点（含 health）允许管理员会话或 `config:read` API Token；创建、更新、删除、连接测试和 action 允许受 CSRF 保护的管理员会话或 `config:write` API Token。`reset_circuit` 必须携带当前强 `If-Match`，只清空当前配置 version 的熔断状态且不递增配置 version；它不会把连接探测状态改为 `OK`。health 仅暴露进程内 circuit/限流/cache/request 计数和稳定错误码，不返回 base URL、凭证、请求头或远端响应正文。
+站点读取端点（含 health）要求管理员会话；创建、更新、删除、连接测试和 action 还要求 CSRF。`reset_circuit` 必须携带当前强 `If-Match`，只清空当前配置 version 的熔断状态且不递增配置 version；它不会把连接探测状态改为 `OK`。health 仅暴露进程内 circuit/限流/cache/request 计数和稳定错误码，不返回 base URL、凭证、请求头或远端响应正文。
 
 凭证字段为只写对象。读取时只返回 `credential_configured`；传 `null` 表示保持不变，显式 `clear_credential` 才能删除。
 
@@ -117,7 +115,7 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 | GET | `/downloaders/{downloader_id}/tasks` | 只读查询下载器任务摘要 |
 | POST | `/downloaders/{downloader_id}/actions` | `enable`、`disable`、`refresh_capabilities` |
 
-下载器读取端点允许管理员会话或 `config:read` API Token；创建、更新、删除、连接测试、路径诊断和 action 允许受 CSRF 保护的管理员会话或 `config:write` API Token。PATCH、DELETE、enable/disable 使用 `If-Match: "<version>"`，缺失返回 428，版本冲突返回 412。凭证对象为只写字段：创建/更新时可提交 qB 用户名+密码、qB API Key 或 Transmission 用户名+密码；读取只返回 `credential_configured`。PATCH 中 `credential: null` 表示保持原凭证，只有 `clear_credential: true` 才清除。
+下载器读取端点要求管理员会话；创建、更新、删除、连接测试、路径诊断和 action 还要求 CSRF。PATCH、DELETE、enable/disable 使用 `If-Match: "<version>"`，缺失返回 428，版本冲突返回 412。凭证对象为只写字段：创建/更新时可提交 qB 用户名+密码、qB API Key 或 Transmission 用户名+密码；读取只返回 `credential_configured`。PATCH 中 `credential: null` 表示保持原凭证，只有 `clear_credential: true` 才清除。
 
 路径映射采用最长前缀规则；当前 M1 以 `PACKBREAKER_DATA_DIR` 作为允许根目录，后续配置层可进一步收窄 source roots。诊断请求的 `probes` 数组提交一组或多组“下载器视角的已存在测试文件 + 容器内目标目录”；响应逐项返回规则命中、容器可见性、设备 ID、文件类型、读写权限、双向映射和硬链接可行性，并返回 `all_mappings_verified`。只有每条配置映射都至少被一个成功 probe 覆盖时全局路径状态才为 `OK`，否则保持阻断，不能 enable。诊断允许创建并立即删除目标目录中的临时 hardlink 以验证内核能力，但不修改源文件字节；解析到允许根目录外的符号链接直接拒绝。
 
@@ -143,19 +141,19 @@ API 和前端只依赖 `code` 进行分支处理，不解析 `detail` 文本。�
 | GET | `/tasks/{task_id}/candidates` | 候选、评分、硬约束和验证状态 |
 | GET | `/tasks/{task_id}/preflight` | 最近一次不可变预演快照 |
 | GET | `/tasks/{task_id}/preflight/current` | 轻量判断最近预演是否仍匹配 task/source/site 输入 |
-| POST | `/tasks/{task_id}/actions` | 当前支持 `analyze`、`execute`、`cancel`；`execute`/`cancel` 要求 `tasks:write` 与 `Idempotency-Key`，管理会话另需 CSRF |
+| POST | `/tasks/{task_id}/actions` | 当前支持 `analyze`、`execute`、`cancel`；`execute`/`cancel` 要求管理员会话、CSRF 与 `Idempotency-Key` |
 | GET | `/tasks/{task_id}/events` | 读取持久化 `TaskEvent` 审计时间线；支持 `after_event_id` 增量游标与有界 `limit` |
 | GET | `/tasks/{task_id}/events/stream` | `text/event-stream` 任务事件流；支持 `Last-Event-ID`/`after_event_id` 续接，单次连接最多等待 20 秒 |
 | GET | `/operations/retention-plan` | 只读保留期安全预览；按 `retention_days`/`limit` 检查 `NOOP`/`ROLLED_BACK`、任务终态、任务/journal 年龄及 checkpoint/receipt/其他 journal 引用，不返回 operation payload |
 | GET | `/tasks/{task_id}/operations` | 当前任务 operation journal 的脱敏摘要；只返回固定类别、状态、时间与安全动作能力，不返回 target/intent/snapshot/幂等键 |
-| POST | `/tasks/{task_id}/operations/{journal_id}/actions` | 支持 `reconcile` 与单 journal `purge`；两者都要求 `tasks:write`、`Idempotency-Key`，管理会话另需 CSRF；`purge` 仅接受 `NOOP`/`ROLLED_BACK` 且写前重新证明 retention 安全门 |
+| POST | `/tasks/{task_id}/operations/{journal_id}/actions` | 支持 `reconcile` 与单 journal `purge`；两者都要求管理员会话、CSRF 与 `Idempotency-Key`；`purge` 仅接受 `NOOP`/`ROLLED_BACK` 且写前重新证明 retention 安全门 |
 | GET/POST | `/task-units/{unit_id}/decision` | 读取/追加版本化人工审核 revision；批准/拒绝候选或提交人工文件映射 |
 | GET | `/task-units/{unit_id}/decision/verification` | 读取当前审核 revision 的不可变重验证证据 |
 | POST | `/task-units/{unit_id}/decision/actions` | M2 当前实现 `reverify`；重新获取同一 torrent 并验证人工映射 |
 | GET/POST | `/task-units/{unit_id}/execution-gate` | 读取/刷新不可变 pre-execution gate；仅判断是否可进入后续安全准备，不启动副作用 |
 | GET/POST | `/task-units/{unit_id}/execution-plan` | 读取/生成不可变执行计划预览；POST 接受 `/data` 相对 `target_root` 与显式 `target_downloader_id`，并冻结目标 qB 配置版本/能力摘要/远端保存路径；此 API 自身不创建目录、硬链接或下载器任务 |
 
-`POST /tasks` 只登记任务身份并复用现有幂等键；重复的 task type、来源下载器、source hash 与 normalized unit key 组合返回同一任务，不会触发扫描、站点搜索或下载器写操作。M2 的手动 `analyze` 当前同步执行，只接受相对于服务端 `/data` 的 `source_root`；绝对路径、`..`、Windows drive、反斜杠和任意符号链接路径都会拒绝。Analyze 只允许从 `PENDING`、`RETRY` 或 `PAUSED` 开始，并通过短事务依次记录 `ANALYZING → SEARCHING → MATCHING → VERIFYING → PREFLIGHT`；站点请求、torrent 解析、文件扫描和 piece 哈希均不在数据库事务中执行。分析失败时仅在任务 version 仍由本次运行持有的情况下安全回到 `RETRY`。分析会持久化当前 inventory 下识别的 TaskUnit、最新 preflight 对应的 Candidate 证据和不可变 snapshot；snapshot 绑定进入 `PREFLIGHT` 后的最终 task version。`GET /preflight` 同时返回 `current` 与 `stale_reasons`；历史 snapshot 永不因过期而原位修改。人工审核 revision 每次保存完整当前状态，使用 `expected_version` 做乐观并发；只能引用当前 preflight 的 Candidate，硬冲突候选不能被人工批准绕过。人工映射首版只允许从当前 `AMBIGUOUS` 项的候选源文件集合中选择，并会标记 `requires_reverification=true`。`reverify` 会重新确认 preflight/current、source inventory、审核 revision 与站点身份，重新获取同一 torrent 并核对 metainfo digest，再应用人工映射执行 v1/v2/hybrid 内容验证；结果以只追加 `task_review_verification` 证据保存，不修改原 preflight/candidate 证据。首个有效 revision 仅允许从 `PREFLIGHT` 通过 `REVIEW_OPENED` 进入 `AWAITING_CONFIRMATION`；该唯一状态 bridge 不使同一 preflight 自身失效，其他 task version 变化仍会使其 stale。`execution-gate` 将 task/preflight/review/candidate/可选重验证证据绑定成稳定 digest；`FULL_VERIFIED` 可获得进入后续准备阶段的资格，`CLIENT_CHECK_REQUIRED` 也可获得资格但必须携带 `client_check_required=true`，`BLOCKED`、hard reject、stale、缺少批准候选或缺少必要重验证证据均失败关闭。Gate 本身只追加证据，响应固定 `side_effects_started=false`。通过 gate 后可生成只追加 `execution-plan`：服务端重新获取并核对同一 torrent metainfo，将验证映射转换为 HARDLINK/CLIENT_FETCH/PADDING/ZERO_LENGTH 计划，同时绑定显式目标 qBittorrent、配置 version、非秘密能力/路径映射 digest 与反向映射后的远端 save path；需要 CLIENT_VERIFYING 的计划还要求 force recheck/verify progress 能力已经明确探测。`GET execution-plan` 不访问站点，但会重新核对 gate/task/目标树与目标下载器绑定当前性。内部 runtime 现已串起 LINKING、暂停 ADDING、journal 化 CLIENT_VERIFYING tick 与 SEEDING/start 确认；内部合成主链只有在 qB 实际完整上行状态确认后才收敛到 `DONE`。FastAPI lifespan 会对已持久化的 `LINKING/ADDING/CLIENT_VERIFYING/SEEDING/ROLLING_BACK` 做一次有界启动恢复，并额外以 startup-only 模式扫描遗留的 `CANCELLING + COOPERATIVE_ANALYSIS`：后者只有在 checkpoint schema/mode/stage、原分析 stage/version、`analysis_version == task.version - 1`、最近 `CANCELLATION_STARTED` 事件、`remove=false/rollback=false` 与零 operation journal 全部吻合时才允许 `CANCELLING → CANCELLED`；资源式或畸形 CANCELLING 只会阻断。其余恢复只依据冻结 checkpoint/plan 调用既有幂等 coordinator，单个安全阻断不会使 readiness 失败，CLIENT_VERIFYING 仍只执行一个 tick。内部取消/回滚链已实现：已进入副作用阶段的任务可冻结 `remove_downloader_task` 与 `rollback_created_resources` 选项；qB 移除固定 `deleteFiles=false`，文件资源只按 operation journal 所有权逆序回滚，证据不确定或外部资源已变化时失败关闭。启动恢复后由 `ActiveTaskDriver` 按配置间隔继续串行执行同一有界 reconciliation，CLIENT_VERIFYING 因此无需重启应用即可继续轮询收敛；周期 driver 不启用 abandoned-analysis recovery，也不扫描 `CANCELLING`，避免在仍存活的分析协程到达安全检查点前抢先结束任务。driver tick 的未分类异常只记录脱敏异常类型并允许后续 tick。公开 `execute` 现在只接受属于当前 task 的 `execution_plan_id`，外层 receipt 落库后进入既有 LINKING coordinator；若 receipt 仍为 PENDING 而同一 plan 已被后台推进到后续阶段，重放凭 checkpoint/plan 绑定补记成功，不倒退执行。公开 `cancel` 要求显式携带 `remove_downloader_task` 与 `rollback_created_resources`，并按 task stage 分流到稳定零副作用取消、活动分析协作停止或 LINKING 之后的 journal-backed 资源取消；只有第三类进入既有 `TaskCancellationCoordinator`，其 qB 删除仍固定 `deleteFiles=false`。两种公开动作都受 `tasks:write`、管理会话 CSRF/或 bearer token scope、持久化 receipt 幂等与同状态 TaskEvent 审计保护。operation journal 状态会在同一数据库事务中投影为脱敏 TaskEvent：qB add/recheck/start/remove 公开固定 operation 名称与 journal 状态，不公开 downloader ID、torrent hash、save path、ownership tag、target/intent/snapshot；文件系统 routine intent/APPLIED/ROLLED_BACK 不逐文件发事件，LINKING/ROLLBACK 完成事件只汇总 hardlink/目录数量，`RECONCILE_REQUIRED` 与 `ROLLBACK_BLOCKED` 才逐 journal 暴露固定资源类别，避免大型包产生数千条成功噪音。前端审核抽屉已提供显式执行/取消入口：执行前重新读取 latest plan 并确认 `READY + CURRENT + AWAITING_CONFIRMATION`；未知网络结果保留同一幂等键供重试。取消面板默认不选择资源动作，明确解释 qB remove 固定 `deleteFiles=false` 与 journal-owned 文件回滚边界，且在回滚链接时要求同时移除下载器任务；`CANCELLING/ROLLING_BACK` 不允许重新冻结不同选项。TaskEvent 同时通过 JSON 增量历史与有界 SSE 暴露给管理 UI：事件按 `(created_at, id)` 稳定排序，游标必须属于当前 task；SSE 只发送 event id/type、from→to、审计 reason 与时间，不暴露 checkpoint、operation journal payload 或下载器响应，并设置 no-cache/no-buffering。审核抽屉与真实任务详情优先使用 SSE 驱动时间线/状态刷新，连接中断时才按事件游标做 2 秒增量轮询。首次 execute HTTP 结果未知时，即使 SSE 已显示任务进入后续状态，前端也只允许冻结原 plan ID 与原 Idempotency-Key 的同请求重放确认结果，不重新授权或切换计划。真实 qB/NAS 验收仍未执行。
+`POST /tasks` 只登记任务身份并复用现有幂等键；重复的 task type、来源下载器、source hash 与 normalized unit key 组合返回同一任务，不会触发扫描、站点搜索或下载器写操作。M2 的手动 `analyze` 当前同步执行，只接受相对于服务端 `/data` 的 `source_root`；绝对路径、`..`、Windows drive、反斜杠和任意符号链接路径都会拒绝。Analyze 只允许从 `PENDING`、`RETRY` 或 `PAUSED` 开始，并通过短事务依次记录 `ANALYZING → SEARCHING → MATCHING → VERIFYING → PREFLIGHT`；站点请求、torrent 解析、文件扫描和 piece 哈希均不在数据库事务中执行。分析失败时仅在任务 version 仍由本次运行持有的情况下安全回到 `RETRY`。分析会持久化当前 inventory 下识别的 TaskUnit、最新 preflight 对应的 Candidate 证据和不可变 snapshot；snapshot 绑定进入 `PREFLIGHT` 后的最终 task version。`GET /preflight` 同时返回 `current` 与 `stale_reasons`；历史 snapshot 永不因过期而原位修改。人工审核 revision 每次保存完整当前状态，使用 `expected_version` 做乐观并发；只能引用当前 preflight 的 Candidate，硬冲突候选不能被人工批准绕过。人工映射首版只允许从当前 `AMBIGUOUS` 项的候选源文件集合中选择，并会标记 `requires_reverification=true`。`reverify` 会重新确认 preflight/current、source inventory、审核 revision 与站点身份，重新获取同一 torrent 并核对 metainfo digest，再应用人工映射执行 v1/v2/hybrid 内容验证；结果以只追加 `task_review_verification` 证据保存，不修改原 preflight/candidate 证据。首个有效 revision 仅允许从 `PREFLIGHT` 通过 `REVIEW_OPENED` 进入 `AWAITING_CONFIRMATION`；该唯一状态 bridge 不使同一 preflight 自身失效，其他 task version 变化仍会使其 stale。`execution-gate` 将 task/preflight/review/candidate/可选重验证证据绑定成稳定 digest；`FULL_VERIFIED` 可获得进入后续准备阶段的资格，`CLIENT_CHECK_REQUIRED` 也可获得资格但必须携带 `client_check_required=true`，`BLOCKED`、hard reject、stale、缺少批准候选或缺少必要重验证证据均失败关闭。Gate 本身只追加证据，响应固定 `side_effects_started=false`。通过 gate 后可生成只追加 `execution-plan`：服务端重新获取并核对同一 torrent metainfo，将验证映射转换为 HARDLINK/CLIENT_FETCH/PADDING/ZERO_LENGTH 计划，同时绑定显式目标 qBittorrent、配置 version、非秘密能力/路径映射 digest 与反向映射后的远端 save path；需要 CLIENT_VERIFYING 的计划还要求 force recheck/verify progress 能力已经明确探测。`GET execution-plan` 不访问站点，但会重新核对 gate/task/目标树与目标下载器绑定当前性。内部 runtime 现已串起 LINKING、暂停 ADDING、journal 化 CLIENT_VERIFYING tick 与 SEEDING/start 确认；内部合成主链只有在 qB 实际完整上行状态确认后才收敛到 `DONE`。FastAPI lifespan 会对已持久化的 `LINKING/ADDING/CLIENT_VERIFYING/SEEDING/ROLLING_BACK` 做一次有界启动恢复，并额外以 startup-only 模式扫描遗留的 `CANCELLING + COOPERATIVE_ANALYSIS`：后者只有在 checkpoint schema/mode/stage、原分析 stage/version、`analysis_version == task.version - 1`、最近 `CANCELLATION_STARTED` 事件、`remove=false/rollback=false` 与零 operation journal 全部吻合时才允许 `CANCELLING → CANCELLED`；资源式或畸形 CANCELLING 只会阻断。其余恢复只依据冻结 checkpoint/plan 调用既有幂等 coordinator，单个安全阻断不会使 readiness 失败，CLIENT_VERIFYING 仍只执行一个 tick。内部取消/回滚链已实现：已进入副作用阶段的任务可冻结 `remove_downloader_task` 与 `rollback_created_resources` 选项；qB 移除固定 `deleteFiles=false`，文件资源只按 operation journal 所有权逆序回滚，证据不确定或外部资源已变化时失败关闭。启动恢复后由 `ActiveTaskDriver` 按配置间隔继续串行执行同一有界 reconciliation，CLIENT_VERIFYING 因此无需重启应用即可继续轮询收敛；周期 driver 不启用 abandoned-analysis recovery，也不扫描 `CANCELLING`，避免在仍存活的分析协程到达安全检查点前抢先结束任务。driver tick 的未分类异常只记录脱敏异常类型并允许后续 tick。公开 `execute` 现在只接受属于当前 task 的 `execution_plan_id`，外层 receipt 落库后进入既有 LINKING coordinator；若 receipt 仍为 PENDING 而同一 plan 已被后台推进到后续阶段，重放凭 checkpoint/plan 绑定补记成功，不倒退执行。公开 `cancel` 要求显式携带 `remove_downloader_task` 与 `rollback_created_resources`，并按 task stage 分流到稳定零副作用取消、活动分析协作停止或 LINKING 之后的 journal-backed 资源取消；只有第三类进入既有 `TaskCancellationCoordinator`，其 qB 删除仍固定 `deleteFiles=false`。两种公开动作都受管理员会话、CSRF、持久化 receipt 幂等与同状态 TaskEvent 审计保护。operation journal 状态会在同一数据库事务中投影为脱敏 TaskEvent：qB add/recheck/start/remove 公开固定 operation 名称与 journal 状态，不公开 downloader ID、torrent hash、save path、ownership tag、target/intent/snapshot；文件系统 routine intent/APPLIED/ROLLED_BACK 不逐文件发事件，LINKING/ROLLBACK 完成事件只汇总 hardlink/目录数量，`RECONCILE_REQUIRED` 与 `ROLLBACK_BLOCKED` 才逐 journal 暴露固定资源类别，避免大型包产生数千条成功噪音。前端审核抽屉已提供显式执行/取消入口：执行前重新读取 latest plan 并确认 `READY + CURRENT + AWAITING_CONFIRMATION`；未知网络结果保留同一幂等键供重试。取消面板默认不选择资源动作，明确解释 qB remove 固定 `deleteFiles=false` 与 journal-owned 文件回滚边界，且在回滚链接时要求同时移除下载器任务；`CANCELLING/ROLLING_BACK` 不允许重新冻结不同选项。TaskEvent 同时通过 JSON 增量历史与有界 SSE 暴露给管理 UI：事件按 `(created_at, id)` 稳定排序，游标必须属于当前 task；SSE 只发送 event id/type、from→to、审计 reason 与时间，不暴露 checkpoint、operation journal payload 或下载器响应，并设置 no-cache/no-buffering。审核抽屉与真实任务详情优先使用 SSE 驱动时间线/状态刷新，连接中断时才按事件游标做 2 秒增量轮询。首次 execute HTTP 结果未知时，即使 SSE 已显示任务进入后续状态，前端也只允许冻结原 plan ID 与原 Idempotency-Key 的同请求重放确认结果，不重新授权或切换计划。真实 qB/NAS 验收仍未执行。
 
 operation 对账中心坚持“重新证明而不是强制修改”。文件系统仅允许 `RECONCILE_REQUIRED` 的 `CREATE_DIRECTORY`/`CREATE_HARDLINK` 且已有 `after_snapshot` 时，通过 no-follow 网关重新读取当前对象并要求与完成快照完全一致。qBittorrent 仅允许曾经存在 `after_snapshot` 的 ADD/RECHECK/START journal：服务端重新取得原 downloader ID/version 对应的当前 binding，只调用 `get_torrents`，核对 torrent hash、save path、ownership tag，并分别要求 ADD 仍停止、RECHECK 处于 checking/可解释校验终态、START 仍处于完整上行状态；通过后才 CAS `RECONCILE_REQUIRED → APPLIED`，不会重发 add/recheck/start/stop/remove。HTTP 结果未知时外层 receipt 保持 PENDING，同一 actor/Idempotency-Key 重放只再次读取并证明已经 APPLIED 的对象后补全 receipt。qB REMOVE、无完成快照的未知结果、`ROLLBACK_BLOCKED` 与未知 operation type 仍只读展示且 `reconcile_supported=false`；当前“torrent 不存在”不能反推历史 remove 所有权。不存在人工 `set status`、强制删除或按当前路径/状态猜测历史所有权的 API。公开 operation 类别使用固定 allowlist，未知内部 operation type 只显示 `OTHER`。
 
@@ -163,16 +161,15 @@ operation journal 保留期清理与资源回滚严格分离。`GET /operations/
 
 公开 `cancel` 现在按“副作用是否已开始”分流但仍使用同一 receipt/Idempotency-Key 协议。`PENDING`、`PREFLIGHT`、`AWAITING_CONFIRMATION`、`PAUSED`、`RETRY` 只有在请求显式为 `remove_downloader_task=false`、`rollback_created_resources=false` 且该 task 不存在任何 operation journal 时，才允许在一个数据库事务中记录 `CANCELLING → CANCELLED`；该路径不要求 execution plan，因此 `TaskMutationActionResponse.execution_plan_id` 可为 `null`，也不会访问 qBittorrent 或文件系统。响应在 task 已 CANCELLED、receipt 仍 PENDING 的窗口丢失时，同一请求会依据专用 `NO_SIDE_EFFECTS` checkpoint 补全 receipt。`ANALYZING/SEARCHING/MATCHING/VERIFYING` 采用协作式取消：公开动作只冻结 `COOPERATIVE_ANALYSIS` checkpoint 并把当前 stage 转为 `CANCELLING`，同时绑定原分析 version；原分析执行流在站点 await、源目录扫描批次和 piece 校验批次的安全检查点重新读取该证据，确认没有 operation journal 后自行完成 `CANCELLING → CANCELLED`，不会由另一个请求线程直接抢改终态。源扫描与 piece 内容验证通过 worker thread 执行，避免长时间只读 I/O 阻塞 FastAPI 事件循环接收取消请求；piece 检查按固定批次触发取消查询，而不是每个 read chunk 访问 SQLite。`LINKING` 及之后继续使用 journal-backed qB remove/文件回滚链。
 
-### 5.5 历史扫描与修复
+### 5.5 修复
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET/POST | `/history-jobs` | 列表、创建历史扫描 |
-| GET | `/history-jobs/{job_id}` | 游标、统计和错误 |
-| POST | `/history-jobs/{job_id}/actions` | `pause`、`resume`、`cancel`、`retry_failed` |
 | GET/POST | `/repair-jobs` | 列表、根据任务创建修复作业 |
 | GET | `/repair-jobs/{job_id}` | 受影响文件/piece、隔离计划和结果 |
 | POST | `/repair-jobs/{job_id}/actions` | `approve`、`cancel`、`retry` |
+
+独立历史扫描 API 已退出运行时。既有目录的一次性处理使用任务中心手动目录任务；持续监控使用监控目录任务，`initial_scope=INCLUDE_EXISTING` 会先覆盖现有内容，再按 watermark 处理增量。目录监控的大目录遍历使用服务端持久化 cursor 分批续扫，不要求客户端维护历史扫描作业。
 
 ### 5.6 设置、通知、日志与升级
 
@@ -180,7 +177,7 @@ operation journal 保留期清理与资源回滚严格分离。`GET /operations/
 | --- | --- | --- |
 | GET/PATCH | `/settings/{namespace}` | 匹配、调度、安全和保留策略 |
 | GET/POST | `/notification-channels` | 通知渠道列表与创建；读取永不返回 Telegram token/chat ID 或 Server酱 SendKey |
-| PUT/DELETE | `/notification-channels/{id}` | 更新/删除通知渠道；要求 `config:write`、管理会话 CSRF 与 `If-Match` |
+| PUT/DELETE | `/notification-channels/{id}` | 更新/删除通知渠道；要求管理员会话、CSRF 与 `If-Match` |
 | POST | `/notification-channels/{id}/test` | 使用已加密凭证向真实 provider 发送固定脱敏测试消息；失败不回显远端响应正文 |
 | POST | `/notification-channels/{id}/actions` | `enable` / `disable`；启用前必须已有凭证且最近真实测试为 `OK` |
 | GET | `/logs` | 按级别、时间、任务、trace_id 查询结构化日志 |

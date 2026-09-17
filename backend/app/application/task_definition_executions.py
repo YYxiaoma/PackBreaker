@@ -53,7 +53,9 @@ from backend.app.infrastructure.persistence.models import (
 from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
 from backend.app.infrastructure.persistence.task_analysis_repositories import TaskUnitRepository
 from backend.app.infrastructure.source_inventory import (
+    SourceInventoryPage,
     scan_source_inventory,
+    scan_source_inventory_page,
     source_inventory_digest,
 )
 
@@ -408,12 +410,16 @@ class TaskDefinitionExecutionService:
         task_analysis_service: TaskAnalysisService,
         *,
         data_root: Path,
+        directory_scan_batch_size: int = 250,
     ) -> None:
         self._session_factory = session_factory
         self._downloader_service = downloader_service
         self._task_action_service = task_action_service
         self._task_analysis_service = task_analysis_service
         self._data_root = data_root.resolve(strict=False)
+        if directory_scan_batch_size <= 0:
+            raise ValueError("directory_scan_batch_size 必须大于 0")
+        self._directory_scan_batch_size = directory_scan_batch_size
 
     async def create_execution_plan(
         self,
@@ -763,6 +769,7 @@ class TaskDefinitionExecutionService:
             for schedule in schedules:
                 checkpoint = dict(schedule.scan_checkpoint or {})
                 queued = checkpoint.get("run_once_after_pending") is True
+                directory_scan_due = checkpoint.get("directory_scan_continuation") is True
                 stability_due = False
                 raw_stability_next = checkpoint.get("stability_next_check_at")
                 if isinstance(raw_stability_next, str):
@@ -782,7 +789,13 @@ class TaskDefinitionExecutionService:
                     if debounce_next is not None and debounce_next.tzinfo is not None:
                         debounce_due = debounce_next <= now
                 cron_due = schedule.next_run_at is None or schedule.next_run_at <= now
-                if not queued and not stability_due and not debounce_due and not cron_due:
+                if (
+                    not queued
+                    and not directory_scan_due
+                    and not stability_due
+                    and not debounce_due
+                    and not cron_due
+                ):
                     continue
                 due.append(
                     DueMonitorScan(
@@ -1092,18 +1105,6 @@ class TaskDefinitionExecutionService:
         trace_id: str,
         now: datetime,
     ) -> TaskMonitorScanView:
-        try:
-            candidates = await self._discover_monitor_candidates(snapshot)
-        except Exception:
-            self._update_monitor_schedule(
-                snapshot.definition.id,
-                trigger=trigger,
-                now=now,
-                checkpoint=None,
-                successful=False,
-            )
-            raise
-
         with self._session_factory() as session:
             schedule = session.scalar(
                 select(TaskSchedule).where(
@@ -1115,21 +1116,46 @@ class TaskDefinitionExecutionService:
             checkpoint = dict(schedule.scan_checkpoint or {})
 
         checkpoint.setdefault("schema_version", "packbreaker-monitor-watermark-v1")
+        try:
+            discovery = await self._discover_monitor_candidates(snapshot, checkpoint)
+        except Exception:
+            self._update_monitor_schedule(
+                snapshot.definition.id,
+                trigger=trigger,
+                now=now,
+                checkpoint=None,
+                successful=False,
+            )
+            raise
+        candidates = discovery.candidates
+        if discovery.directory_page is not None:
+            # Consume the continuation flag for the page being processed. It is set again
+            # only after this page is fully accounted for and more pages remain.
+            checkpoint["directory_scan_continuation"] = False
+            discovered_count = self._directory_scan_discovered_count(
+                checkpoint,
+                len(candidates),
+            )
+        else:
+            discovered_count = len(candidates)
         seen = {
             value
             for value in checkpoint.get("seen_object_keys", [])
             if isinstance(value, str) and value
         }
         initialized = checkpoint.get("watermark_initialized") is True
-        discovered_count = len(candidates)
         if not initialized and snapshot.policy.initial_scope == TaskInitialScope.NEW_ONLY.value:
-            checkpoint["watermark_initialized"] = True
-            checkpoint["seen_object_keys"] = sorted(
-                candidate.source_object_key for candidate in candidates
-            )
+            seen.update(candidate.source_object_key for candidate in candidates)
+            checkpoint["seen_object_keys"] = sorted(seen)
             checkpoint.pop("stability", None)
             checkpoint.pop("stability_next_check_at", None)
             checkpoint.pop("debounce_next_check_at", None)
+            has_more = self._advance_directory_scan(
+                checkpoint,
+                discovery,
+                discovered_count=discovered_count,
+            )
+            checkpoint["watermark_initialized"] = not has_more
             checkpoint["run_once_after_pending"] = False
             next_run_at = self._update_monitor_schedule(
                 snapshot.definition.id,
@@ -1141,7 +1167,7 @@ class TaskDefinitionExecutionService:
             return TaskMonitorScanView(
                 task_definition_id=snapshot.definition.id,
                 trigger=trigger.value,
-                outcome="BASELINE_ESTABLISHED",
+                outcome="BASELINE_CONTINUING" if has_more else "BASELINE_ESTABLISHED",
                 discovered_count=discovered_count,
                 new_count=0,
                 next_run_at=next_run_at,
@@ -1156,6 +1182,11 @@ class TaskDefinitionExecutionService:
             checkpoint.pop("stability", None)
             checkpoint.pop("stability_next_check_at", None)
             checkpoint.pop("debounce_next_check_at", None)
+            has_more = self._advance_directory_scan(
+                checkpoint,
+                discovery,
+                discovered_count=discovered_count,
+            )
             checkpoint["run_once_after_pending"] = False
             next_run_at = self._update_monitor_schedule(
                 snapshot.definition.id,
@@ -1167,7 +1198,7 @@ class TaskDefinitionExecutionService:
             return TaskMonitorScanView(
                 task_definition_id=snapshot.definition.id,
                 trigger=trigger.value,
-                outcome="NO_CHANGES",
+                outcome="SCAN_CONTINUING" if has_more else "NO_CHANGES",
                 discovered_count=discovered_count,
                 new_count=0,
                 next_run_at=next_run_at,
@@ -1368,6 +1399,15 @@ class TaskDefinitionExecutionService:
             item.source_object_key for item in materialized if item.unpack_task_id is not None
         )
         checkpoint["seen_object_keys"] = sorted(seen)
+        remaining_page_candidates = tuple(
+            candidate for candidate in candidates if candidate.source_object_key not in seen
+        )
+        if not remaining_page_candidates:
+            self._advance_directory_scan(
+                checkpoint,
+                discovery,
+                discovered_count=discovered_count,
+            )
         checkpoint["run_once_after_pending"] = False
         next_run_at = self._update_monitor_schedule(
             snapshot.definition.id,
@@ -1402,13 +1442,62 @@ class TaskDefinitionExecutionService:
             execution=execution,
         )
 
+    @staticmethod
+    def _directory_scan_discovered_count(
+        checkpoint: dict[str, Any],
+        page_candidate_count: int,
+    ) -> int:
+        state = checkpoint.get("directory_scan")
+        if not isinstance(state, dict):
+            return page_candidate_count
+        completed = state.get("discovered_count")
+        if not isinstance(completed, int) or completed < 0:
+            completed = 0
+        return completed + page_candidate_count
+
+    @staticmethod
+    def _advance_directory_scan(
+        checkpoint: dict[str, Any],
+        discovery: _MonitorDiscovery,
+        *,
+        discovered_count: int,
+    ) -> bool:
+        page = discovery.directory_page
+        if page is None:
+            return False
+        state = checkpoint.get("directory_scan")
+        state = {} if not isinstance(state, dict) else dict(state)
+        generation = state.get("generation")
+        if not isinstance(generation, int) or generation < 0:
+            generation = 0
+        if page.has_more:
+            if page.next_cursor is None:
+                raise RuntimeError("directory scan page has_more without cursor")
+            state["cursor"] = page.next_cursor
+            state["generation"] = generation
+            state["discovered_count"] = discovered_count
+            checkpoint["directory_scan_continuation"] = True
+        else:
+            state["cursor"] = None
+            state["generation"] = generation + 1
+            state["discovered_count"] = 0
+            checkpoint["directory_scan_continuation"] = False
+        checkpoint["directory_scan"] = state
+        return page.has_more
+
     async def _discover_monitor_candidates(
         self,
         snapshot: _DefinitionSnapshot,
-    ) -> tuple[_MonitorCandidate, ...]:
+        checkpoint: dict[str, Any],
+    ) -> _MonitorDiscovery:
         if snapshot.source.kind == TaskSourceKind.DOWNLOADER.value:
-            return await self._discover_monitor_downloader_candidates(snapshot)
-        return await asyncio.to_thread(self._discover_monitor_directory_candidates, snapshot)
+            candidates = await self._discover_monitor_downloader_candidates(snapshot)
+            return _MonitorDiscovery(candidates=candidates, directory_page=None)
+        return await asyncio.to_thread(
+            self._discover_monitor_directory_candidates,
+            snapshot,
+            checkpoint,
+        )
 
     async def _discover_monitor_downloader_candidates(
         self,
@@ -1455,15 +1544,26 @@ class TaskDefinitionExecutionService:
     def _discover_monitor_directory_candidates(
         self,
         snapshot: _DefinitionSnapshot,
-    ) -> tuple[_MonitorCandidate, ...]:
+        checkpoint: dict[str, Any],
+    ) -> _MonitorDiscovery:
         directory_path = snapshot.source.directory_path
         if directory_path is None:
             raise self._source_invalid("监控任务目录来源已丢失路径")
         root = self._resolve_directory_root(directory_path)
+        scan_state = checkpoint.get("directory_scan")
+        if not isinstance(scan_state, dict):
+            scan_state = {}
+        raw_cursor = scan_state.get("cursor")
+        cursor = raw_cursor if isinstance(raw_cursor, str) and raw_cursor else None
         try:
-            inventory = scan_source_inventory(root)
+            page = scan_source_inventory_page(
+                root,
+                after=cursor,
+                limit=self._directory_scan_batch_size,
+            )
         except DomainViolation as exc:
             raise self._source_invalid(str(exc)) from exc
+        inventory = page.candidates
         filtered = filter_source_inventory(snapshot.filters, inventory)
         units = identify_task_units(
             tuple(SourceTaskFile(item.relative_path, item.length) for item in filtered)
@@ -1491,7 +1591,7 @@ class TaskDefinitionExecutionService:
                     mtime_ns=source_file.snapshot.mtime_ns,
                 )
             )
-        return tuple(candidates)
+        return _MonitorDiscovery(candidates=tuple(candidates), directory_page=page)
 
     def _assert_monitor_runnable(self, snapshot: _DefinitionSnapshot) -> None:
         if snapshot.definition.kind != TaskDefinitionKind.MONITOR.value:
@@ -2199,6 +2299,12 @@ class _MonitorCandidate:
     all_units: tuple[TaskUnit, ...]
     inventory_digest: str
     mtime_ns: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _MonitorDiscovery:
+    candidates: tuple[_MonitorCandidate, ...]
+    directory_page: SourceInventoryPage | None
 
 
 def _monitor_lock(definition_id: str) -> asyncio.Lock:

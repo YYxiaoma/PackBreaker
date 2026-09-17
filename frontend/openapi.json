@@ -22,156 +22,6 @@
         "title": "AnalyzeTaskActionRequest",
         "type": "object"
       },
-      "ApiScope": {
-        "enum": [
-          "tasks:read",
-          "tasks:write",
-          "config:read",
-          "config:write"
-        ],
-        "title": "ApiScope",
-        "type": "string"
-      },
-      "ApiTokenCreateRequest": {
-        "properties": {
-          "expires_at": {
-            "format": "date-time",
-            "title": "Expires At",
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "scopes": {
-            "items": {
-              "$ref": "#/components/schemas/ApiScope"
-            },
-            "minItems": 1,
-            "title": "Scopes",
-            "type": "array"
-          }
-        },
-        "required": [
-          "name",
-          "scopes",
-          "expires_at"
-        ],
-        "title": "ApiTokenCreateRequest",
-        "type": "object"
-      },
-      "ApiTokenCreatedResponse": {
-        "properties": {
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "expires_at": {
-            "format": "date-time",
-            "title": "Expires At",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "scopes": {
-            "items": {
-              "$ref": "#/components/schemas/ApiScope"
-            },
-            "title": "Scopes",
-            "type": "array"
-          },
-          "token": {
-            "title": "Token",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "token",
-          "scopes",
-          "expires_at",
-          "created_at"
-        ],
-        "title": "ApiTokenCreatedResponse",
-        "type": "object"
-      },
-      "ApiTokenListResponse": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/ApiTokenViewResponse"
-            },
-            "title": "Items",
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "title": "ApiTokenListResponse",
-        "type": "object"
-      },
-      "ApiTokenViewResponse": {
-        "properties": {
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "expires_at": {
-            "format": "date-time",
-            "title": "Expires At",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "revoked_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Revoked At"
-          },
-          "scopes": {
-            "items": {
-              "$ref": "#/components/schemas/ApiScope"
-            },
-            "title": "Scopes",
-            "type": "array"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "scopes",
-          "expires_at",
-          "revoked_at",
-          "created_at"
-        ],
-        "title": "ApiTokenViewResponse",
-        "type": "object"
-      },
       "AuthStatusResponse": {
         "properties": {
           "authenticated": {
@@ -659,17 +509,6 @@
         "title": "DownloaderPatchRequest",
         "type": "object"
       },
-      "EpisodeKind": {
-        "enum": [
-          "SEASON_EPISODE",
-          "SEASON_RANGE",
-          "EPISODE",
-          "ABSOLUTE",
-          "SPECIALS"
-        ],
-        "title": "EpisodeKind",
-        "type": "string"
-      },
       "ExecuteTaskActionRequest": {
         "properties": {
           "action": {
@@ -1032,747 +871,6 @@
           }
         },
         "title": "HTTPValidationError",
-        "type": "object"
-      },
-      "HistoryMaterializationItemResponse": {
-        "properties": {
-          "materialization_id": {
-            "title": "Materialization Id",
-            "type": "string"
-          },
-          "normalized_unit_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Normalized Unit Key"
-          },
-          "reason_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason Code"
-          },
-          "scan_file_id": {
-            "title": "Scan File Id",
-            "type": "string"
-          },
-          "source_root": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Root"
-          },
-          "status": {
-            "$ref": "#/components/schemas/HistoryMaterializationStatus"
-          },
-          "task_created": {
-            "title": "Task Created",
-            "type": "boolean"
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id"
-          },
-          "unit_kind": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Unit Kind"
-          }
-        },
-        "required": [
-          "materialization_id",
-          "scan_file_id",
-          "status",
-          "reason_code",
-          "task_id",
-          "task_created",
-          "source_root",
-          "normalized_unit_key",
-          "unit_kind"
-        ],
-        "title": "HistoryMaterializationItemResponse",
-        "type": "object"
-      },
-      "HistoryMaterializationStatus": {
-        "enum": [
-          "MATERIALIZED",
-          "SKIPPED"
-        ],
-        "title": "HistoryMaterializationStatus",
-        "type": "string"
-      },
-      "HistoryMediaKind": {
-        "enum": [
-          "MOVIE",
-          "EPISODE"
-        ],
-        "title": "HistoryMediaKind",
-        "type": "string"
-      },
-      "HistoryScanActionRequest": {
-        "properties": {
-          "action": {
-            "enum": [
-              "start",
-              "pause",
-              "resume",
-              "cancel",
-              "scan",
-              "materialize"
-            ],
-            "title": "Action",
-            "type": "string"
-          },
-          "limit": {
-            "default": 100,
-            "maximum": 1000.0,
-            "minimum": 1.0,
-            "title": "Limit",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "action"
-        ],
-        "title": "HistoryScanActionRequest",
-        "type": "object"
-      },
-      "HistoryScanBatchResponse": {
-        "properties": {
-          "has_more": {
-            "title": "Has More",
-            "type": "boolean"
-          },
-          "processed_count": {
-            "title": "Processed Count",
-            "type": "integer"
-          },
-          "scan": {
-            "$ref": "#/components/schemas/HistoryScanResponse"
-          }
-        },
-        "required": [
-          "scan",
-          "processed_count",
-          "has_more"
-        ],
-        "title": "HistoryScanBatchResponse",
-        "type": "object"
-      },
-      "HistoryScanCreateRequest": {
-        "properties": {
-          "exclude_patterns": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 64,
-            "title": "Exclude Patterns",
-            "type": "array"
-          },
-          "extensions": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 32,
-            "minItems": 1,
-            "title": "Extensions",
-            "type": "array"
-          },
-          "media_kind": {
-            "$ref": "#/components/schemas/HistoryMediaKind"
-          },
-          "root_path": {
-            "maxLength": 2048,
-            "minLength": 1,
-            "title": "Root Path",
-            "type": "string"
-          }
-        },
-        "required": [
-          "root_path",
-          "media_kind",
-          "extensions"
-        ],
-        "title": "HistoryScanCreateRequest",
-        "type": "object"
-      },
-      "HistoryScanListResponse": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/HistoryScanResponse"
-            },
-            "title": "Items",
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "title": "HistoryScanListResponse",
-        "type": "object"
-      },
-      "HistoryScanMaterializeResponse": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/HistoryMaterializationItemResponse"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "processed_count": {
-            "title": "Processed Count",
-            "type": "integer"
-          },
-          "remaining_count": {
-            "title": "Remaining Count",
-            "type": "integer"
-          },
-          "scan": {
-            "$ref": "#/components/schemas/HistoryScanResponse"
-          },
-          "skipped_count": {
-            "title": "Skipped Count",
-            "type": "integer"
-          },
-          "task_created_count": {
-            "title": "Task Created Count",
-            "type": "integer"
-          },
-          "task_reused_count": {
-            "title": "Task Reused Count",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "scan",
-          "processed_count",
-          "task_created_count",
-          "task_reused_count",
-          "skipped_count",
-          "remaining_count",
-          "items"
-        ],
-        "title": "HistoryScanMaterializeResponse",
-        "type": "object"
-      },
-      "HistoryScanResponse": {
-        "properties": {
-          "changed_count": {
-            "title": "Changed Count",
-            "type": "integer"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cursor"
-          },
-          "discovered_count": {
-            "title": "Discovered Count",
-            "type": "integer"
-          },
-          "exclude_patterns": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Exclude Patterns",
-            "type": "array"
-          },
-          "extensions": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Extensions",
-            "type": "array"
-          },
-          "generation": {
-            "title": "Generation",
-            "type": "integer"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "last_completed_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Completed At"
-          },
-          "last_started_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Started At"
-          },
-          "media_kind": {
-            "$ref": "#/components/schemas/HistoryMediaKind"
-          },
-          "new_count": {
-            "title": "New Count",
-            "type": "integer"
-          },
-          "root_path": {
-            "title": "Root Path",
-            "type": "string"
-          },
-          "status": {
-            "$ref": "#/components/schemas/HistoryScanStatus"
-          },
-          "unchanged_count": {
-            "title": "Unchanged Count",
-            "type": "integer"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "title": "Updated At",
-            "type": "string"
-          },
-          "version": {
-            "title": "Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "root_path",
-          "media_kind",
-          "extensions",
-          "exclude_patterns",
-          "status",
-          "generation",
-          "cursor",
-          "discovered_count",
-          "new_count",
-          "changed_count",
-          "unchanged_count",
-          "version",
-          "last_started_at",
-          "last_completed_at",
-          "created_at",
-          "updated_at"
-        ],
-        "title": "HistoryScanResponse",
-        "type": "object"
-      },
-      "HistoryScanStatus": {
-        "enum": [
-          "READY",
-          "SCANNING",
-          "PAUSED",
-          "CANCELLED",
-          "DONE"
-        ],
-        "title": "HistoryScanStatus",
-        "type": "string"
-      },
-      "HistoryTaskBatchActionRequest": {
-        "properties": {
-          "action": {
-            "const": "analyze",
-            "title": "Action",
-            "type": "string"
-          },
-          "task_ids": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 10,
-            "minItems": 1,
-            "title": "Task Ids",
-            "type": "array"
-          }
-        },
-        "required": [
-          "action",
-          "task_ids"
-        ],
-        "title": "HistoryTaskBatchActionRequest",
-        "type": "object"
-      },
-      "HistoryTaskBatchAnalyzeItemResponse": {
-        "properties": {
-          "attempted": {
-            "title": "Attempted",
-            "type": "boolean"
-          },
-          "error_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error Code"
-          },
-          "source_root": {
-            "title": "Source Root",
-            "type": "string"
-          },
-          "succeeded": {
-            "title": "Succeeded",
-            "type": "boolean"
-          },
-          "task_id": {
-            "title": "Task Id",
-            "type": "string"
-          },
-          "task_status": {
-            "$ref": "#/components/schemas/TaskStatus"
-          }
-        },
-        "required": [
-          "task_id",
-          "source_root",
-          "attempted",
-          "succeeded",
-          "task_status",
-          "error_code"
-        ],
-        "title": "HistoryTaskBatchAnalyzeItemResponse",
-        "type": "object"
-      },
-      "HistoryTaskBatchAnalyzeResponse": {
-        "properties": {
-          "action": {
-            "const": "analyze",
-            "default": "analyze",
-            "title": "Action",
-            "type": "string"
-          },
-          "attempted_count": {
-            "title": "Attempted Count",
-            "type": "integer"
-          },
-          "failed_count": {
-            "title": "Failed Count",
-            "type": "integer"
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/HistoryTaskBatchAnalyzeItemResponse"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "skipped_count": {
-            "title": "Skipped Count",
-            "type": "integer"
-          },
-          "succeeded_count": {
-            "title": "Succeeded Count",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "attempted_count",
-          "succeeded_count",
-          "failed_count",
-          "skipped_count",
-          "items"
-        ],
-        "title": "HistoryTaskBatchAnalyzeResponse",
-        "type": "object"
-      },
-      "HistoryTaskResultListResponse": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/HistoryTaskResultResponse"
-            },
-            "title": "Items",
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "title": "HistoryTaskResultListResponse",
-        "type": "object"
-      },
-      "HistoryTaskResultResponse": {
-        "properties": {
-          "analysis_eligible": {
-            "title": "Analysis Eligible",
-            "type": "boolean"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "episode_end": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Episode End"
-          },
-          "episode_group_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Episode Group Key"
-          },
-          "episode_kind": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/EpisodeKind"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "episode_label": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Episode Label"
-          },
-          "episode_season": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Episode Season"
-          },
-          "episode_start": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Episode Start"
-          },
-          "episode_variant_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Episode Variant Key"
-          },
-          "has_preflight": {
-            "title": "Has Preflight",
-            "type": "boolean"
-          },
-          "materialization_id": {
-            "title": "Materialization Id",
-            "type": "string"
-          },
-          "materialization_status": {
-            "$ref": "#/components/schemas/HistoryMaterializationStatus"
-          },
-          "normalized_unit_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Normalized Unit Key"
-          },
-          "reason_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason Code"
-          },
-          "relative_path": {
-            "title": "Relative Path",
-            "type": "string"
-          },
-          "scan_file_id": {
-            "title": "Scan File Id",
-            "type": "string"
-          },
-          "snapshot_digest": {
-            "title": "Snapshot Digest",
-            "type": "string"
-          },
-          "source_root": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Root"
-          },
-          "task_error_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Error Code"
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id"
-          },
-          "task_status": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TaskStatus"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "task_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Version"
-          },
-          "unit_kind": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Unit Kind"
-          },
-          "variant_count": {
-            "title": "Variant Count",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "materialization_id",
-          "scan_file_id",
-          "relative_path",
-          "snapshot_digest",
-          "materialization_status",
-          "reason_code",
-          "task_id",
-          "source_root",
-          "normalized_unit_key",
-          "unit_kind",
-          "episode_kind",
-          "episode_season",
-          "episode_start",
-          "episode_end",
-          "episode_label",
-          "episode_group_key",
-          "episode_variant_key",
-          "variant_count",
-          "task_status",
-          "task_version",
-          "task_error_code",
-          "analysis_eligible",
-          "has_preflight",
-          "created_at"
-        ],
-        "title": "HistoryTaskResultResponse",
         "type": "object"
       },
       "LoginResponse": {
@@ -6521,227 +5619,6 @@
   },
   "openapi": "3.1.0",
   "paths": {
-    "/api/v1/api-tokens": {
-      "get": {
-        "operationId": "list_api_tokens_api_v1_api_tokens_get",
-        "parameters": [
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiTokenListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Api Tokens",
-        "tags": [
-          "auth"
-        ]
-      },
-      "post": {
-        "operationId": "create_api_token_api_v1_api_tokens_post",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Csrf-Token"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_csrf",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Csrf"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ApiTokenCreateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiTokenCreatedResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Api Token",
-        "tags": [
-          "auth"
-        ]
-      }
-    },
-    "/api/v1/api-tokens/{token_id}": {
-      "delete": {
-        "operationId": "revoke_api_token_api_v1_api_tokens__token_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "token_id",
-            "required": true,
-            "schema": {
-              "title": "Token Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Csrf-Token"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_csrf",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Csrf"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Revoke Api Token",
-        "tags": [
-          "auth"
-        ]
-      }
-    },
     "/api/v1/auth/login": {
       "post": {
         "operationId": "login_api_v1_auth_login_post",
@@ -6952,22 +5829,6 @@
         "operationId": "list_downloaders_api_v1_downloaders_get",
         "parameters": [
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -7016,22 +5877,6 @@
       "post": {
         "operationId": "create_downloader_api_v1_downloaders_post",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "header",
             "name": "X-CSRF-Token",
@@ -7148,22 +5993,6 @@
           },
           {
             "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
             "schema": {
@@ -7244,22 +6073,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -7327,22 +6140,6 @@
                 }
               ],
               "title": "If-Match"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -7461,22 +6258,6 @@
           },
           {
             "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
             "schema": {
@@ -7571,22 +6352,6 @@
             "schema": {
               "title": "Downloader Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -7692,22 +6457,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -7765,22 +6514,6 @@
             "schema": {
               "title": "Downloader Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -7995,22 +6728,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -8103,664 +6820,10 @@
         ]
       }
     },
-    "/api/v1/history-scans": {
-      "get": {
-        "operationId": "list_history_scans_api_v1_history_scans_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HistoryScanListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List History Scans",
-        "tags": [
-          "history-scans"
-        ]
-      },
-      "post": {
-        "operationId": "create_history_scan_api_v1_history_scans_post",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Csrf-Token"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_csrf",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Csrf"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HistoryScanCreateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HistoryScanResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create History Scan",
-        "tags": [
-          "history-scans"
-        ]
-      }
-    },
-    "/api/v1/history-scans/{scan_id}": {
-      "get": {
-        "operationId": "get_history_scan_api_v1_history_scans__scan_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "scan_id",
-            "required": true,
-            "schema": {
-              "title": "Scan Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HistoryScanResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get History Scan",
-        "tags": [
-          "history-scans"
-        ]
-      }
-    },
-    "/api/v1/history-scans/{scan_id}/actions": {
-      "post": {
-        "operationId": "history_scan_action_api_v1_history_scans__scan_id__actions_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "scan_id",
-            "required": true,
-            "schema": {
-              "title": "Scan Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "If-Match",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "If-Match"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Csrf-Token"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_csrf",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Csrf"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HistoryScanActionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/HistoryScanResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/HistoryScanBatchResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/HistoryScanMaterializeResponse"
-                    }
-                  ],
-                  "title": "Response History Scan Action Api V1 History Scans  Scan Id  Actions Post"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "History Scan Action",
-        "tags": [
-          "history-scans"
-        ]
-      }
-    },
-    "/api/v1/history-scans/{scan_id}/tasks": {
-      "get": {
-        "operationId": "list_history_scan_tasks_api_v1_history_scans__scan_id__tasks_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "scan_id",
-            "required": true,
-            "schema": {
-              "title": "Scan Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 500,
-              "maximum": 1000,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "task_status",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/TaskStatus"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Task Status"
-            }
-          },
-          {
-            "in": "query",
-            "name": "materialization_status",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/HistoryMaterializationStatus"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Materialization Status"
-            }
-          },
-          {
-            "in": "query",
-            "name": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 200,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Query"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HistoryTaskResultListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List History Scan Tasks",
-        "tags": [
-          "history-scans"
-        ]
-      }
-    },
-    "/api/v1/history-scans/{scan_id}/tasks/actions": {
-      "post": {
-        "operationId": "history_scan_task_action_api_v1_history_scans__scan_id__tasks_actions_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "scan_id",
-            "required": true,
-            "schema": {
-              "title": "Scan Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Csrf-Token"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_csrf",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Csrf"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HistoryTaskBatchActionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HistoryTaskBatchAnalyzeResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "History Scan Task Action",
-        "tags": [
-          "history-scans"
-        ]
-      }
-    },
     "/api/v1/notification-channels": {
       "get": {
         "operationId": "list_notification_channels_api_v1_notification_channels_get",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "cookie",
             "name": "packbreaker_session",
@@ -8810,22 +6873,6 @@
       "post": {
         "operationId": "create_notification_channel_api_v1_notification_channels_post",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "header",
             "name": "X-CSRF-Token",
@@ -8942,22 +6989,6 @@
           },
           {
             "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
             "schema": {
@@ -9051,22 +7082,6 @@
                 }
               ],
               "title": "If-Match"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -9185,22 +7200,6 @@
           },
           {
             "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
             "schema": {
@@ -9299,22 +7298,6 @@
           },
           {
             "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
             "schema": {
@@ -9409,22 +7392,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -9498,22 +7465,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -9563,22 +7514,6 @@
         "operationId": "list_sites_api_v1_sites_get",
         "parameters": [
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -9625,22 +7560,6 @@
       "post": {
         "operationId": "create_site_api_v1_sites_post",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "header",
             "name": "X-CSRF-Token",
@@ -9759,22 +7678,6 @@
           },
           {
             "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
             "schema": {
@@ -9855,22 +7758,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -9940,22 +7827,6 @@
                 }
               ],
               "title": "If-Match"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -10076,22 +7947,6 @@
           },
           {
             "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
             "schema": {
@@ -10189,22 +8044,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -10260,22 +8099,6 @@
             "schema": {
               "title": "Site Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -10359,22 +8182,6 @@
       "post": {
         "operationId": "backup_action_api_v1_system_backups_actions_post",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "header",
             "name": "X-CSRF-Token",
@@ -10467,22 +8274,6 @@
         "operationId": "get_backup_policy_api_v1_system_backups_policy_get",
         "parameters": [
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -10543,22 +8334,6 @@
                 }
               ],
               "title": "If-Match"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -10654,22 +8429,6 @@
         "operationId": "export_system_diagnostics_api_v1_system_diagnostics_export_get",
         "parameters": [
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -10717,22 +8476,6 @@
         "description": "聚合已有本地/依赖证据；不会主动访问 PT、下载器或通知渠道。",
         "operationId": "system_health_api_v1_system_health_get",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "cookie",
             "name": "packbreaker_session",
@@ -10933,22 +8676,6 @@
                 }
               ],
               "title": "Trace Id"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -11154,22 +8881,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -11217,22 +8928,6 @@
         "description": "只做本地发布预检；不连接外部服务，也不创建备份演练文件。",
         "operationId": "release_preflight_api_v1_system_release_preflight_get",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "cookie",
             "name": "packbreaker_session",
@@ -11282,22 +8977,6 @@
       "get": {
         "operationId": "system_status_api_v1_system_status_get",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "cookie",
             "name": "packbreaker_session",
@@ -11349,22 +9028,6 @@
       "get": {
         "operationId": "system_upgrade_status_api_v1_system_upgrade_get",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "cookie",
             "name": "packbreaker_session",
@@ -11428,22 +9091,6 @@
                 }
               ],
               "title": "Idempotency-Key"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -11554,22 +9201,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -11616,22 +9247,6 @@
       "post": {
         "operationId": "create_task_definition_api_v1_task_definitions_post",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "header",
             "name": "X-CSRF-Token",
@@ -11724,22 +9339,6 @@
         "operationId": "preview_task_definition_cron_api_v1_task_definitions_cron_preview_post",
         "parameters": [
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -11798,22 +9397,6 @@
       "post": {
         "operationId": "preview_task_source_directory_api_v1_task_definitions_directory_preview_post",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "header",
             "name": "X-CSRF-Token",
@@ -11905,22 +9488,6 @@
       "post": {
         "operationId": "precheck_task_definition_api_v1_task_definitions_precheck_post",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "header",
             "name": "X-CSRF-Token",
@@ -12024,22 +9591,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -12095,22 +9646,6 @@
             "schema": {
               "title": "Definition Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -12195,22 +9730,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -12264,22 +9783,6 @@
             "schema": {
               "title": "Definition Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -12380,22 +9883,6 @@
             "schema": {
               "title": "Definition Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -12607,22 +10094,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -12676,22 +10147,6 @@
             "schema": {
               "title": "Definition Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -12794,22 +10249,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -12883,22 +10322,6 @@
             "schema": {
               "title": "Item Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -13018,22 +10441,6 @@
           },
           {
             "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
             "schema": {
@@ -13120,22 +10527,6 @@
             "schema": {
               "title": "Definition Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -13229,22 +10620,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -13298,22 +10673,6 @@
             "schema": {
               "title": "Unit Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -13418,22 +10777,6 @@
           },
           {
             "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
             "schema": {
@@ -13533,22 +10876,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -13607,22 +10934,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -13676,22 +10987,6 @@
             "schema": {
               "title": "Unit Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -13785,22 +11080,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -13854,22 +11133,6 @@
             "schema": {
               "title": "Unit Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -13982,22 +11245,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -14069,22 +11316,6 @@
                 }
               ],
               "title": "Idempotency-Key"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -14205,22 +11436,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -14267,22 +11482,6 @@
       "post": {
         "operationId": "create_task_api_v1_tasks_post",
         "parameters": [
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
           {
             "in": "header",
             "name": "X-CSRF-Token",
@@ -14384,22 +11583,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -14471,22 +11654,6 @@
                 }
               ],
               "title": "Idempotency-Key"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -14617,22 +11784,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -14714,22 +11865,6 @@
               "default": 100,
               "title": "Limit",
               "type": "integer"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -14823,22 +11958,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -14890,22 +12009,6 @@
             "schema": {
               "title": "Task Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -14989,22 +12092,6 @@
                 }
               ],
               "title": "Idempotency-Key"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -15138,22 +12225,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
             "in": "cookie",
             "name": "packbreaker_session",
             "required": false,
@@ -15209,22 +12280,6 @@
             "schema": {
               "title": "Task Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -15299,22 +12354,6 @@
                 }
               ],
               "title": "Idempotency-Key"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {
@@ -15425,22 +12464,6 @@
           },
           {
             "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
             "schema": {
@@ -15527,22 +12550,6 @@
             "schema": {
               "title": "Task Id",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           },
           {

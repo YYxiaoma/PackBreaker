@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field, SecretStr
 from backend.app.api.dependencies import (
     AccessPrincipal,
     notification_service,
-    require_admin_csrf_or_scope,
-    require_admin_or_scope,
+    require_admin_csrf_principal,
+    require_admin_principal,
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.notifications import (
@@ -20,7 +20,6 @@ from backend.app.application.notifications import (
     NotificationChannelUpdate,
     NotificationChannelView,
 )
-from backend.app.domain.auth import ApiScope
 from backend.app.domain.notification import (
     NotificationChannelKind,
     ServerChanCredential,
@@ -28,8 +27,8 @@ from backend.app.domain.notification import (
 )
 
 router = APIRouter(tags=["notifications"])
-CONFIG_READ_ACCESS = require_admin_or_scope(ApiScope.CONFIG_READ)
-CONFIG_WRITE_ACCESS = require_admin_csrf_or_scope(ApiScope.CONFIG_WRITE)
+CONFIG_READ_ACCESS = require_admin_principal
+CONFIG_WRITE_ACCESS = require_admin_csrf_principal
 
 
 class TelegramCredentialInput(BaseModel):

@@ -10,8 +10,8 @@ from starlette.responses import StreamingResponse
 
 from backend.app.api.dependencies import (
     AccessPrincipal,
-    require_admin_csrf_or_scope,
-    require_admin_or_scope,
+    require_admin_csrf_principal,
+    require_admin_principal,
     task_action_service,
     task_analysis_service,
     task_event_service,
@@ -50,7 +50,6 @@ from backend.app.application.tasks import (
     TaskUnitView,
     TaskView,
 )
-from backend.app.domain.auth import ApiScope
 from backend.app.domain.operation import OperationKind, OperationStatus
 from backend.app.domain.repair import (
     RepairActionKind,
@@ -64,8 +63,8 @@ from backend.app.domain.torrent import TorrentKind
 from backend.app.domain.verification import DownloaderKind, FileMappingState, PieceStatus
 
 router = APIRouter(tags=["tasks"])
-TASKS_READ_ACCESS = require_admin_or_scope(ApiScope.TASKS_READ)
-TASKS_WRITE_ACCESS = require_admin_csrf_or_scope(ApiScope.TASKS_WRITE)
+TASKS_READ_ACCESS = require_admin_principal
+TASKS_WRITE_ACCESS = require_admin_csrf_principal
 
 
 class TaskCreateRequest(BaseModel):

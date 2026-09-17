@@ -259,36 +259,28 @@ const path = require('node:path');
       backupPolicy={...backupPolicy,last_attempt_at:createdAt,last_success_at:createdAt,last_error_code:null};
       return fulfillJson(route,{created:true,created_at:createdAt,database_file:'packbreaker-e2e.db',database_size_bytes:4096,retention_deleted_count:0,retention_blocked_count:0,retention_error_code:null,skipped_reason:null});
     });
-    let historyScan;
-    let historyBatchCount=0;
-    const scanView=(overrides={})=>({
-      id:'history-e2e',root_path:'/data/movies',media_kind:'MOVIE',extensions:['.mkv'],exclude_patterns:['sample'],status:'READY',generation:0,cursor:null,discovered_count:0,new_count:0,changed_count:0,unchanged_count:0,version:1,last_started_at:null,last_completed_at:null,created_at:now(),updated_at:now(),...overrides,
-    });
-    await page.route('**/api/v1/history-scans**',route=>{
+    const taskDefinitions=[
+      {
+        id:'definition-manual-e2e',name:'手动拆包 E2E',kind:'MANUAL',status:'ENABLED',site_id:'site-e2e-mteam',site_name:'M-Team E2E',site_available:true,
+        source_kind:'DIRECTORY',source_downloader_id:null,source_downloader_name:null,source_directory:'downloads/manual-e2e',source_available:true,
+        source_config:{selected_files:[{relative_path:'Movie.E2E.mkv',size_bytes:1073741824,device:1,inode:11,mtime_ns:1}]},cron_expression:null,timezone:null,last_scan_at:null,last_successful_scan_at:null,next_run_at:null,
+        file_types:['VIDEO'],video_extensions:['.mkv','.mp4'],archive_extensions:[],min_size_bytes:null,max_size_bytes:null,include_name:null,exclude_names:['sample','trailer'],ignore_temp_files:true,temp_patterns:['*.part','*.tmp','*.!qB'],include_subdirectories:true,max_scan_depth:null,
+        output_directory:'output/manual-e2e',storage_mode:'HARDLINK',preserve_structure:true,conflict_policy:'VERIFY_REUSE_OR_STOP',stability_detection_enabled:true,stability_wait_seconds:30,only_completed_downloads:true,initial_scope:'NEW_ONLY',debounce_seconds:30,overlap_policy:'SKIP',auto_retry_enabled:true,max_auto_retries:3,retry_intervals_seconds:[60,300,900],
+        latest_execution:{id:'execution-manual-e2e',status:'COMPLETED',phase:'DONE',trigger:'MANUAL',success_count:1,failed_count:0,skipped_count:0,created_at:now(),started_at:now(),finished_at:now()},version:1,created_at:now(),updated_at:now(),
+      },
+      {
+        id:'definition-monitor-e2e',name:'监控拆包 E2E',kind:'MONITOR',status:'ENABLED',site_id:'site-e2e-mteam',site_name:'M-Team E2E',site_available:true,
+        source_kind:'DIRECTORY',source_downloader_id:null,source_downloader_name:null,source_directory:'downloads/monitor-e2e',source_available:true,
+        source_config:{},cron_expression:'0 */2 * * *',timezone:'Asia/Shanghai',last_scan_at:now(),last_successful_scan_at:now(),next_run_at:now(),
+        file_types:['VIDEO'],video_extensions:['.mkv','.mp4'],archive_extensions:[],min_size_bytes:null,max_size_bytes:null,include_name:null,exclude_names:['sample','trailer'],ignore_temp_files:true,temp_patterns:['*.part','*.tmp','*.!qB'],include_subdirectories:true,max_scan_depth:null,
+        output_directory:'output/monitor-e2e',storage_mode:'HARDLINK',preserve_structure:true,conflict_policy:'VERIFY_REUSE_OR_STOP',stability_detection_enabled:true,stability_wait_seconds:30,only_completed_downloads:true,initial_scope:'INCLUDE_EXISTING',debounce_seconds:30,overlap_policy:'SKIP',auto_retry_enabled:true,max_auto_retries:3,retry_intervals_seconds:[60,300,900],
+        latest_execution:null,version:1,created_at:now(),updated_at:now(),
+      },
+    ];
+    await page.route('**/api/v1/task-definitions',route=>{
       const request=route.request();
-      const url=new URL(request.url());
-      if(url.pathname==='/api/v1/history-scans'&&request.method()==='GET')return fulfillJson(route,{items:historyScan?[historyScan]:[]});
-      if(url.pathname==='/api/v1/history-scans'&&request.method()==='POST'){
-        const body=request.postDataJSON();
-        historyScan=scanView({root_path:body.root_path,media_kind:body.media_kind,extensions:body.extensions,exclude_patterns:body.exclude_patterns??[]});
-        return fulfillJson(route,historyScan,201);
-      }
-      if(url.pathname==='/api/v1/history-scans/history-e2e/actions'&&request.method()==='POST'){
-        assert.ok(historyScan,'历史扫描动作前必须先创建扫描');
-        assert.equal(request.headers()['if-match'],`\"${historyScan.version}\"`,'历史扫描动作必须绑定当前强 If-Match');
-        const body=request.postDataJSON();
-        if(body.action==='start'){
-          historyScan={...historyScan,status:'SCANNING',generation:1,version:historyScan.version+1,last_started_at:now(),updated_at:now()};
-          return fulfillJson(route,historyScan);
-        }
-        if(body.action==='scan'){
-          historyBatchCount+=1;
-          const done=historyBatchCount>=2;
-          historyScan={...historyScan,status:done?'DONE':'SCANNING',cursor:done?'movie-002.mkv':'movie-001.mkv',discovered_count:historyBatchCount,new_count:historyBatchCount,version:historyScan.version+1,last_completed_at:done?now():null,updated_at:now()};
-          return fulfillJson(route,{scan:historyScan,processed_count:1,has_more:!done});
-        }
-      }
-      return fulfillJson(route,{code:'NOT_FOUND',detail:'E2E history route not found'},404);
+      if(request.method()==='GET')return fulfillJson(route,{items:taskDefinitions});
+      return fulfillJson(route,{code:'METHOD_NOT_ALLOWED',detail:'E2E task definition method'},405);
     });
     const e2eDownloader={
       id:'qb-e2e',name:'qB E2E',type:'QBITTORRENT',base_url:'http://qb-e2e.local',credential_configured:true,
@@ -599,8 +591,20 @@ const path = require('node:path');
     await page.screenshot({path:path.join(output,'overview-dark-1440.png'),fullPage:true});
     await page.getByRole('button',{name:'切换浅色主题',exact:true}).click();
     console.log(`总览首屏 ${overviewFirstPaintMs}ms；已检查 1920/1440/1280/390 四档布局与深色系统服务卡`);
+    const showLegacyRuns=async()=>{
+      await page.getByText('现有执行引擎任务（兼容区）',{exact:true}).click();
+      const loadButton=page.getByRole('button',{name:'加载现有 Run 列表',exact:true});
+      if(await loadButton.count())await loadButton.click();
+      await page.getByPlaceholder('搜索 UUID、source hash、unit key…').waitFor();
+    };
     await page.getByRole('button',{name:'任务中心',exact:true}).click();
     await page.getByRole('heading',{name:'任务中心',exact:true,level:1}).waitFor();
+    await page.getByText('手动拆包 E2E',{exact:true}).waitFor();
+    await page.getByText('监控拆包任务',{exact:true}).click();
+    await page.getByText('监控拆包 E2E',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'立即扫描',exact:true}).count(),1,'监控拆包任务应提供立即扫描入口');
+    await page.getByText('手动拆包任务',{exact:true}).click();
+    await showLegacyRuns();
     await page.getByPlaceholder('搜索 UUID、source hash、unit key…').fill('不存在');
     await page.getByText('暂无任务').waitFor();
     await page.getByPlaceholder('搜索 UUID、source hash、unit key…').fill('');
@@ -676,6 +680,7 @@ const path = require('node:path');
     // 阻断/对账操作中心：响应丢失后即使 SSE 已显示 APPLIED，也只能使用原 journal + 原幂等键确认结果。
     await page.locator('nav').getByRole('button',{name:'任务中心',exact:false}).click();
     await page.getByRole('heading',{name:'任务中心',exact:true,level:1}).waitFor();
+    await showLegacyRuns();
     const reconcileRow=page.locator('.el-table__row').filter({hasText:'task-e2e-reconcile'});
     await reconcileRow.getByRole('button',{name:'分析',exact:true}).click();
     await page.getByRole('heading',{name:'阻断 / 对账操作中心',exact:true}).waitFor();
@@ -716,7 +721,7 @@ const path = require('node:path');
     assert.equal(siteTestCalls,1,'站点连接测试应只调用一次');
     assert.equal(await page.getByText(/连接恢复/).count(),0,'reset-circuit 不得伪造远端连接恢复文案');
 
-    for(const name of ['总览','预演与确认','历史辅种','站点管理','下载器','清理与对账','日志','系统设置']){
+    for(const name of ['总览','预演与确认','站点管理','下载器','清理与对账','日志','系统设置']){
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
       assert.equal(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`${name} 桌面溢出`);
@@ -730,11 +735,6 @@ const path = require('node:path');
     assert.equal(backupRuns,1,'备份管理页立即备份只应提交一次');
     assert.equal(await page.getByRole('button',{name:/恢复/}).count(),0,'在线管理页不得提供数据库恢复按钮');
 
-    await page.locator('nav').getByRole('button',{name:'历史辅种',exact:true}).click();
-    await page.getByRole('button',{name:'新建扫描',exact:true}).click();
-    await page.getByRole('button',{name:'创建并开始扫描',exact:true}).click();
-    await page.getByRole('button',{name:'推进扫描',exact:true}).click();
-    await page.getByRole('button',{name:'推进扫描',exact:true}).click();
     await page.locator('nav').getByRole('button',{name:'清理与对账',exact:true}).click();
     await page.getByRole('heading',{name:'清理 / 对账报告',exact:true}).waitFor();
     await page.getByText('journal-maintenance-manual',{exact:false}).waitFor();
@@ -767,7 +767,7 @@ const path = require('node:path');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'移动配置页横向溢出');
     await page.getByRole('button',{name:'切换深色主题',exact:true}).click();
     await page.screenshot({path:path.join(output,'mobile-dark.png'),fullPage:true});
-    for(const name of ['总览','任务中心','预演与确认','历史辅种','下载器','清理与对账','日志','系统设置']){
+    for(const name of ['总览','任务中心','预演与确认','下载器','清理与对账','日志','系统设置']){
       await page.getByRole('button',{name:'展开导航',exact:true}).click();
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
@@ -775,6 +775,6 @@ const path = require('node:path');
     }
     assert.deepEqual(unmockedApiCalls,[],'浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端');
     assert.deepEqual(errors,[]);
-    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、真实站点 health/reset/启用、状态自动刷新、9 页导航、计划备份管理、品牌版本后台检查红点与单容器一次性 helper 一键升级、历史扫描、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题；未显式 mock 的 API 请求全部失败关闭。');
+    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、真实站点 health/reset/启用、状态自动刷新、任务中心大目录监控能力、计划备份管理、品牌版本后台检查红点与单容器一次性 helper 一键升级、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题；未显式 mock 的 API 请求全部失败关闭。');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1});

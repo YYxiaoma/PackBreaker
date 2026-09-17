@@ -21,7 +21,6 @@ erDiagram
     UNPACK_TASK ||--o{ TASK_EVENT : records
     UNPACK_TASK ||--o{ OPERATION_JOURNAL : executes
     UNPACK_TASK ||--o{ REPAIR_JOB : repairs
-    HISTORY_JOB ||--o{ UNPACK_TASK : creates
     SECRET ||--o{ SITE : protects
     SECRET ||--o{ DOWNLOADER : protects
     SECRET ||--o{ NOTIFICATION_CHANNEL : protects
@@ -35,7 +34,7 @@ erDiagram
 | --- | --- | --- |
 | `administrator` | id、password_hash、created_at、updated_at | 首版固定单管理员；只保存 Argon2id 哈希，不保存口令明文 |
 | `admin_session` | administrator_id、token_digest、csrf_digest、expires_at、revoked_at、created_at | session/CSRF 明文 token 不入库；撤销和过期状态持久化 |
-| `api_token` | name、token_digest、scopes、expires_at、revoked_at、created_at | 明文只在创建响应出现一次；摘要唯一；scope 使用稳定枚举；过期/撤销状态持久化 |
+| `api_token`（旧版本兼容表） | name、token_digest、scopes、expires_at、revoked_at、created_at | 当前运行时不再提供 Token 创建、撤销或 Bearer 鉴权；历史表仅保留升级兼容，不应新增记录 |
 | `site` | name、adapter_type、base_url、secret_id、timeout、retry、rate_limit、enabled、automation_enabled | name 唯一；未绑定凭证不得启用自动化 |
 | `downloader` | name、type、base_url、secret_id、monitor_rules、path_mappings、capabilities、connection_status、path_mapping_status、enabled、version | name 唯一；凭证只通过 secret_id 关联；配置修改用 version 乐观并发；连接与路径映射均通过后才可启用自动化 |
 | `notification_channel` | type、name、secret_id、config、enabled | 测试成功与启用状态分别保存 |
@@ -60,7 +59,6 @@ erDiagram
 | `operation_journal` | task_id、idempotency_key、operation_type、target、intent、status、before_snapshot、after_snapshot | idempotency_key 唯一；成功动作必须可对账 |
 | `task_action_receipt` | task_id、actor_kind/id、idempotency_key_digest、action、request_digest、state、response/error payload | 同一 actor + 幂等键唯一；只保存键摘要；PENDING 可在未知结果后安全重放既有 coordinator |
 | `repair_job` | task_id、mode、affected_files、affected_pieces、status、result | 写入修复前必须保存硬链接隔离证据 |
-| `history_job` | roots、include_types、excludes、cursor、status、statistics | 游标持久化，支持暂停和断点恢复 |
 | `webhook_receipt` | key_id、nonce、timestamp、idempotency_key、body_digest、status | nonce 与幂等键在有效窗口内唯一 |
 | `notification_delivery` | channel_id、event_key、payload_digest、status、attempts、next_retry_at | event_key 防止重复通知 |
 
@@ -139,6 +137,7 @@ stateDiagram-v2
 - 操作日志在其创建资源仍存在时不得删除。
 - 清理数据库前先确认不存在关联的活动任务、回滚任务或外部资源。
 - 数据库备份使用 SQLite Backup API 或等价的一致性快照，不能在 WAL 活跃时只复制主数据库文件。
+- 旧版本创建的 `history_scan`、`history_scan_file`、`history_scan_materialization` 表可在升级后的数据库中继续存在以保持迁移链兼容，但当前运行时不映射、不读取也不新增这些记录；历史目录能力已由任务中心的手动/监控任务接管。
 
 ## 8. 迁移规则
 

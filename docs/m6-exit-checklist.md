@@ -51,7 +51,7 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 ## 7. 统一健康与诊断导出
 
 - `GET /api/v1/system/health` 只汇总已存在的本地证据，不因读取健康状态而触发 PT、qBittorrent、Transmission 或通知渠道网络请求，也不遍历媒体树。`/health/ready` 继续只决定当前实例能否安全运行；单个外部依赖离线只在聚合健康中形成 warning，不让容器失去 readiness。
-- 聚合项覆盖 runtime、配置卷/数据卷剩余空间、普通备份新鲜度与计划备份状态、RETRY/陈旧活动任务、`RECONCILE_REQUIRED`/`ROLLBACK_BLOCKED`/陈旧未收敛 operation、启用站点的持久探测与熔断状态、启用下载器的连接/路径诊断、通知渠道/DEAD 投递及任务/历史/通知/备份四个后台 driver。
+- 聚合项覆盖 runtime、配置卷/数据卷剩余空间、普通备份新鲜度与计划备份状态、RETRY/陈旧活动任务、`RECONCILE_REQUIRED`/`ROLLBACK_BLOCKED`/陈旧未收敛 operation、启用站点的持久探测与熔断状态、启用下载器的连接/路径诊断、通知渠道/DEAD 投递及任务/通知/备份三个后台 driver。
 - `GET /api/v1/system/diagnostics/export` 生成内存 ZIP，只包含白名单 `health.json` 与 `manifest.json`。不读取或打包运行日志、配置文件、secret、站点名/URL、下载器地址、路径、任务 ID、source/torrent hash 或媒体内容，并返回 bundle SHA-256 与 `Cache-Control: no-store`。
 - 自动化 canary 会把合成 URL、路径、hash、任务 ID 和伪凭证写入底层记录，再证明健康 JSON 与诊断 ZIP 只保留聚合计数，原值均不可见。
 - 前端“总览”已经移除旧合成态势，直接消费 typed `/system/health`，按 `ok/warning/blocked` 展示九类健康卡片，并提供安全诊断包下载；30 秒刷新只读取已有证据。
@@ -65,14 +65,14 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 
 ## 9. 计划备份与管理入口
 
-- `backup_policy` 是 SQLite 中的单例版本化策略，默认 `enabled=false`；周期 1～168 小时、保留 1～3650 天、至少保留 1～100 份。配置更新要求 `config:write` + CSRF（或对应 API Token）并携带强 `If-Match`；后台执行时间与错误状态不会自行递增配置 version。
+- `backup_policy` 是 SQLite 中的单例版本化策略，默认 `enabled=false`；周期 1～168 小时、保留 1～3650 天、至少保留 1～100 份。配置更新要求管理员会话 + CSRF 并携带强 `If-Match`；后台执行时间与错误状态不会自行递增配置 version。
 - BackupDriver 每分钟默认检查一次是否到期；实际备份仍调用同一 SQLite 一致性快照与安全 retention 实现。手动“立即备份”和计划备份共用同一进程内互斥锁，重叠请求返回 busy 而不会并发制造第二份快照。
 - “系统设置 → 备份恢复”已接真实策略 API、Driver 状态和手动一致性备份。页面不提供在线数据库恢复；恢复仍要求停止活动实例后使用维护 CLI，且 `secret.key` 必须独立保管。
 
 ## 10. 版本升级安全入口
 
 - `GET /api/v1/system/release/preflight` 复用 release preflight 的本地检查，但固定 `exercise_backup=false`，因此页面刷新不会创建/删除备份演练文件；返回配置目录、SQLite head/integrity、现有主密钥、`/data` 根与 docker.sock 风险，不访问 PT/下载器/通知，也不遍历媒体树。
-- `GET /api/v1/system/upgrade` 展示当前版本、最新正式 Release/digest 与当前升级执行器 phase/阻断原因；`POST /api/v1/system/upgrade/actions` 要求 `config:write`、管理会话 CSRF（如适用）和 `Idempotency-Key`，并在交给 helper 前重新确认 Release、跑完整 preflight、创建一致性备份。
+- `GET /api/v1/system/upgrade` 展示当前版本、最新正式 Release/digest 与当前升级执行器 phase/阻断原因；`POST /api/v1/system/upgrade/actions` 要求管理员会话、CSRF 和 `Idempotency-Key`，并在交给 helper 前重新确认 Release、跑完整 preflight、创建一致性备份。
 - 单容器易用模式由主 PackBreaker 挂载 docker.sock，只在用户确认升级后创建一次性 `AutoRemove` helper；helper 创建切换瞬间静止数据库备份、按 allowlist 重建容器配置、等待 Docker healthcheck，并在失败时恢复旧数据库/旧容器。若不授予主容器 docker.sock，原独立 `packbreaker-updater` Unix socket + token 模式仍可作为兼容路径。
 - 自动升级当前只支持可安全重建的单容器/单网络拓扑；Docker Compose 管理标签、AutoRemove、container namespace、多网络、显式静态 IP/MAC 等失败关闭。无可用升级执行器时仍可按不可变 digest runbook 手工升级/回滚。
 - CI `updater-e2e` 真实 Docker 门禁从 `release-baseline.json` 的正式不可变 baseline 出发，通过 Runner 内临时 registry 验证成功替换和“候选修改数据库后 healthcheck 失败”的自动容器/数据库回滚；当前真实 job 仍走独立 helper，单容器一次性 helper 已有专项合成门禁并需在下一次正式发布前补入同一真实 Docker job。所有门禁均不使用生产 `/config`、PT、下载器或媒体目录。

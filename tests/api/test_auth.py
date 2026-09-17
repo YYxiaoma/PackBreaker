@@ -49,6 +49,17 @@ def test_auth_status_distinguishes_setup_from_logged_out(tmp_path: Path) -> None
         }
 
 
+def test_api_tokens_are_removed_and_bearer_header_does_not_authenticate(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    with TestClient(create_app(settings=settings), base_url="https://testserver") as client:
+        assert client.get("/api/v1/api-tokens").status_code == 404
+        response = client.get(
+            "/api/v1/system/status",
+            headers={"Authorization": "Bearer pbk_removed-feature-token"},
+        )
+        assert response.status_code == 401
+
+
 def test_setup_can_only_complete_once(tmp_path: Path) -> None:
     with TestClient(
         create_app(settings=_settings(tmp_path)), base_url="https://testserver"

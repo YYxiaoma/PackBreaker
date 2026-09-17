@@ -18,6 +18,27 @@ if database_url:
 target_metadata = Base.metadata
 
 
+_LEGACY_COMPATIBILITY_TABLES = {
+    "api_token",
+    "history_scan",
+    "history_scan_file",
+    "history_scan_materialization",
+}
+
+
+def _include_object(
+    object_: object, name: str | None, type_: str, reflected: bool, compare_to: object | None
+) -> bool:
+    """保留历史迁移创建但已退出运行时模型的兼容表，不把它误判为待删除 schema。"""
+
+    if not reflected or compare_to is not None:
+        return True
+    if type_ == "table" and name in _LEGACY_COMPATIBILITY_TABLES:
+        return False
+    table = getattr(object_, "table", None)
+    return getattr(table, "name", None) not in _LEGACY_COMPATIBILITY_TABLES
+
+
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
@@ -26,6 +47,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=_include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -41,6 +63,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=_include_object,
             render_as_batch=connection.dialect.name == "sqlite",
         )
         with context.begin_transaction():

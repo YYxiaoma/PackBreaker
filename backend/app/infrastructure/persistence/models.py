@@ -14,11 +14,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.app.domain.history_scan import (
-    HistoryMaterializationStatus,
-    HistoryMediaKind,
-    HistoryScanStatus,
-)
 from backend.app.domain.notification import (
     NotificationChannelKind,
     NotificationDeliveryState,
@@ -62,11 +57,6 @@ _NOTIFICATION_DELIVERY_STATE_SQL = ", ".join(
     f"'{state.value}'" for state in NotificationDeliveryState
 )
 _NOTIFICATION_SEVERITY_SQL = ", ".join(f"'{severity.value}'" for severity in NotificationSeverity)
-_HISTORY_MEDIA_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in HistoryMediaKind)
-_HISTORY_SCAN_STATUS_SQL = ", ".join(f"'{status.value}'" for status in HistoryScanStatus)
-_HISTORY_MATERIALIZATION_STATUS_SQL = ", ".join(
-    f"'{status.value}'" for status in HistoryMaterializationStatus
-)
 _TASK_DEFINITION_KIND_SQL = ", ".join(f"'{value.value}'" for value in TaskDefinitionKind)
 _TASK_DEFINITION_STATUS_SQL = ", ".join(f"'{value.value}'" for value in TaskDefinitionStatus)
 _TASK_SOURCE_KIND_SQL = ", ".join(f"'{value.value}'" for value in TaskSourceKind)
@@ -125,22 +115,6 @@ class AdminSession(Base):
     )
     token_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     csrf_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
-    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
-
-
-class ApiToken(Base):
-    __tablename__ = "api_token"
-    __table_args__ = (
-        Index("ix_api_token_expires_at", "expires_at"),
-        Index("ix_api_token_revoked_at", "revoked_at"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
-    name: Mapped[str] = mapped_column(String(80), nullable=False)
-    token_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
@@ -479,121 +453,6 @@ class TaskExecutionEvent(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     trace_id: Mapped[str] = mapped_column(String(36), nullable=False)
     context: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
-
-
-class HistoryScan(Base):
-    __tablename__ = "history_scan"
-    __table_args__ = (
-        CheckConstraint(f"media_kind IN ({_HISTORY_MEDIA_KIND_SQL})", name="media_kind"),
-        CheckConstraint(f"status IN ({_HISTORY_SCAN_STATUS_SQL})", name="status"),
-        CheckConstraint("generation >= 0", name="generation_nonnegative"),
-        CheckConstraint("discovered_count >= 0", name="discovered_count_nonnegative"),
-        CheckConstraint("new_count >= 0", name="new_count_nonnegative"),
-        CheckConstraint("changed_count >= 0", name="changed_count_nonnegative"),
-        CheckConstraint("unchanged_count >= 0", name="unchanged_count_nonnegative"),
-        CheckConstraint("version >= 1", name="version_positive"),
-        UniqueConstraint(
-            "root_relative_path",
-            "media_kind",
-            name="uq_history_scan_root_media_kind",
-        ),
-        Index("ix_history_scan_status_updated_at", "status", "updated_at"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
-    root_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
-    media_kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    extensions: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    exclude_patterns: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False)
-    generation: Mapped[int] = mapped_column(nullable=False, default=0)
-    cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
-    discovered_count: Mapped[int] = mapped_column(nullable=False, default=0)
-    new_count: Mapped[int] = mapped_column(nullable=False, default=0)
-    changed_count: Mapped[int] = mapped_column(nullable=False, default=0)
-    unchanged_count: Mapped[int] = mapped_column(nullable=False, default=0)
-    version: Mapped[int] = mapped_column(nullable=False, default=1)
-    last_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    last_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
-    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
-
-
-class HistoryScanFile(Base):
-    __tablename__ = "history_scan_file"
-    __table_args__ = (
-        UniqueConstraint("scan_id", "relative_path", name="uq_history_scan_file_scan_path"),
-        Index("ix_history_scan_file_scan_generation", "scan_id", "last_seen_generation"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
-    scan_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("history_scan.id", ondelete="CASCADE"), nullable=False
-    )
-    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
-    device: Mapped[int] = mapped_column(nullable=False)
-    inode: Mapped[int] = mapped_column(nullable=False)
-    size: Mapped[int] = mapped_column(nullable=False)
-    mtime_ns: Mapped[int] = mapped_column(nullable=False)
-    snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    last_seen_generation: Mapped[int] = mapped_column(nullable=False)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
-    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
-
-
-class HistoryScanMaterialization(Base):
-    __tablename__ = "history_scan_materialization"
-    __table_args__ = (
-        CheckConstraint(
-            f"status IN ({_HISTORY_MATERIALIZATION_STATUS_SQL})",
-            name="status",
-        ),
-        CheckConstraint(
-            "(status = 'MATERIALIZED' AND task_id IS NOT NULL) OR "
-            "(status = 'SKIPPED' AND task_id IS NULL)",
-            name="task_consistency",
-        ),
-        UniqueConstraint(
-            "scan_file_id",
-            "snapshot_digest",
-            name="uq_history_scan_materialization_file_snapshot",
-        ),
-        Index(
-            "ix_history_scan_materialization_scan_created_at",
-            "scan_id",
-            "created_at",
-        ),
-        Index(
-            "ix_history_scan_materialization_scan_episode_group",
-            "scan_id",
-            "episode_group_key",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
-    scan_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("history_scan.id", ondelete="RESTRICT"), nullable=False
-    )
-    scan_file_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("history_scan_file.id", ondelete="RESTRICT"), nullable=False
-    )
-    snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False)
-    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    task_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("unpack_task.id", ondelete="RESTRICT"), nullable=True
-    )
-    source_root: Mapped[str | None] = mapped_column(Text, nullable=True)
-    normalized_unit_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    unit_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    episode_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    episode_season: Mapped[int | None] = mapped_column(nullable=True)
-    episode_start: Mapped[int | None] = mapped_column(nullable=True)
-    episode_end: Mapped[int | None] = mapped_column(nullable=True)
-    episode_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    episode_group_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    episode_variant_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 

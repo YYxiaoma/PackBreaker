@@ -126,7 +126,7 @@
     },
     {
       "id": "V1-014",
-      "criterion": "公开 `execute`/`cancel` 必须覆盖管理会话 CSRF 与 API Token `tasks:write`",
+      "criterion": "公开 `execute`/`cancel` 必须要求管理会话 CSRF",
       "status": "covered",
       "evidence": [
         {"path": "tests/api/test_tasks.py", "contains": "test_public_execute_cancel_actions_enforce_csrf_idempotency_and_explicit_options"},

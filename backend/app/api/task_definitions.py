@@ -6,8 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.api.dependencies import (
     AccessPrincipal,
-    require_admin_csrf_or_scope,
-    require_admin_or_scope,
+    require_admin_csrf_principal,
+    require_admin_principal,
     task_definition_execution_service,
     task_definition_service,
 )
@@ -27,7 +27,6 @@ from backend.app.application.task_definitions import (
     TaskOutputPolicyCreate,
     TaskSourceCreate,
 )
-from backend.app.domain.auth import ApiScope
 from backend.app.domain.task_definition import (
     DEFAULT_ARCHIVE_EXTENSIONS,
     DEFAULT_EXCLUDE_NAMES,
@@ -46,8 +45,8 @@ from backend.app.domain.task_definition import (
 )
 
 router = APIRouter(tags=["task-definitions"])
-TASKS_READ_ACCESS = require_admin_or_scope(ApiScope.TASKS_READ)
-TASKS_WRITE_ACCESS = require_admin_csrf_or_scope(ApiScope.TASKS_WRITE)
+TASKS_READ_ACCESS = require_admin_principal
+TASKS_WRITE_ACCESS = require_admin_csrf_principal
 
 
 def _describe_cron(value: str) -> str:

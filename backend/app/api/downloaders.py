@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field, SecretStr
 from backend.app.api.dependencies import (
     AccessPrincipal,
     downloader_service,
-    require_admin_csrf_or_scope,
-    require_admin_or_scope,
+    require_admin_csrf_principal,
+    require_admin_principal,
 )
 from backend.app.application.downloaders import (
     DownloaderUpdate,
@@ -20,13 +20,12 @@ from backend.app.application.downloaders import (
     PathDiagnosticResult,
 )
 from backend.app.application.errors import ApplicationError
-from backend.app.domain.auth import ApiScope
 from backend.app.domain.downloader import DownloaderCredential, PathMappingRule
 from backend.app.domain.verification import DownloaderKind
 
 router = APIRouter(tags=["downloaders"])
-CONFIG_READ_ACCESS = require_admin_or_scope(ApiScope.CONFIG_READ)
-CONFIG_WRITE_ACCESS = require_admin_csrf_or_scope(ApiScope.CONFIG_WRITE)
+CONFIG_READ_ACCESS = require_admin_principal
+CONFIG_WRITE_ACCESS = require_admin_csrf_principal
 
 
 class DownloaderCredentialInput(BaseModel):

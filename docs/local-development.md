@@ -2,9 +2,9 @@
 
 ## 1. 当前状态
 
-仓库已有 `frontend/` Vue 3 / TypeScript 交互界面与演示流程测试，并已开始建立 `backend/` M1 安全骨架。当前后端能力包含任务状态转换、幂等键、qB/TR 校验安全门、FastAPI 应用入口、`X-Trace-Id` 传播、启动配置、单实例锁、`/api/v1/health/live` 与 `/api/v1/health/ready`，SQLite WAL / SQLAlchemy / Alembic 持久化与任务/操作日志 repository，管理员首次初始化、Argon2id 口令哈希、持久会话、CSRF、API Token、可信代理、安全响应头、AES-256-GCM secret store，以及下载器 CRUD、qB/TR 只读连接探测和路径映射诊断。前端已用 Axios + Pinia 接入管理员首次初始化/登录/退出、API Token 管理和下载器真实配置 API；M1 的下载器适配器仍只允许连接/能力读取，不提供任何任务写方法。其他业务页面、站点适配器与生产辅种执行仍属于后续工作。界面覆盖边界见 [prototype.md](./prototype.md)。
+仓库已有 `frontend/` Vue 3 / TypeScript 交互界面与完整 FastAPI 后端。当前安全入口采用单管理员初始化/登录、Argon2id 口令哈希、持久会话和 CSRF；API Token 与 Bearer 自动化访问已经移除。其余能力包含任务状态转换、幂等键、qB/TR 校验安全门、`X-Trace-Id` 传播、单实例锁、SQLite WAL / SQLAlchemy / Alembic 持久化、可信代理、安全响应头、AES-256-GCM secret store、站点/下载器管理及任务执行链。
 
-当前已可执行：前端 `install`、`dev`、`lint`（Prettier 格式检查）、`typecheck`、`test`、`build`、`api:types` 与 `test:e2e`。浏览器检查要求本地 5173 开发服务已启动，默认使用已安装 Microsoft Edge；可设置 `PB_BROWSER=chrome` 使用 Chrome。Vite 开发服务把 `/api` 代理到本机 8000 端口，生产部署则继续使用 FastAPI 同源入口。`src/demo.ts` 仍只服务合成任务页面；认证/API Token 已直接复用生成 OpenAPI schema 类型，下载器响应因当前服务端仍使用通用响应字典，暂时保留手写 strict view 类型。
+当前已可执行：前端 `install`、`dev`、`lint`（Prettier 格式检查）、`typecheck`、`test`、`build`、`api:types` 与 `test:e2e`。浏览器检查要求本地 5173 开发服务已启动，默认使用已安装 Microsoft Edge；可设置 `PB_BROWSER=chrome` 使用 Chrome。Vite 开发服务把 `/api` 代理到本机 8000 端口，生产部署则继续使用 FastAPI 同源入口。
 Docker 镜像设置 `PACKBREAKER_FRONTEND_DIR=/app/frontend/dist`，FastAPI 只在该配置显式存在时服务 `/` 与 `/assets/*`；开发模式默认不设置此变量，因此 Vite 仍独立运行。镜像入口显式关闭 Uvicorn 的通用 proxy-header 解释，继续只接受应用层 `PACKBREAKER_TRUSTED_PROXIES` 白名单。
 
 ## 2. 开发环境

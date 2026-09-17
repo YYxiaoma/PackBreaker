@@ -209,7 +209,7 @@ flowchart LR
 仓库固定 `release-baseline.json` 作为上一正式镜像的不可变升级输入；它是下一候选版本兼容门禁的基线，而不等同于“最新 Release”展示通道。普通 CI container gate 与正式 tag release 在发布后续镜像前都会运行 `scripts/check-release-upgrade.sh`，真实验证 baseline → 当前候选 → 恢复 baseline；正式 tag workflow 还会运行 updater helper 的真实 Docker 自动升级/回滚 E2E。
 
 - 版本与目标镜像只信任正式 GitHub Release manifest 中的官方 `ghcr.io/yyxiaoma/packbreaker@sha256:<digest>`；`stable` 和版本 tag 只用于发现/导航。
-- `GET /system/upgrade` 会读取当前正式 Release、目标 digest 和当前可用升级执行器状态；`POST /system/upgrade/actions` 要求 `config:write`、管理员 CSRF（会话模式）和 `Idempotency-Key`。
+- `GET /system/upgrade` 会读取当前正式 Release、目标 digest 和当前可用升级执行器状态；`POST /system/upgrade/actions` 要求管理员会话、CSRF 和 `Idempotency-Key`。
 - 写入升级请求前，主服务重新读取正式 Release、执行完整本地 preflight 并创建一致性升级前备份；页面上的旧目标 digest 已变化时直接拒绝。
 - 单容器模式由主服务通过 Docker API 启动一次性 `AutoRemove` helper；helper 使用当前镜像中的受限升级程序，目标只接受正式 Release 的官方不可变 digest。兼容的独立 updater helper 仍可作为不授予主容器 docker.sock 的替代方案。
 - helper inspect 当前 `packbreaker` 容器，只复制允许的端口、环境变量、挂载、restart policy、单网络等配置；一次性模式会继续保留主容器的 docker.sock 挂载，以便未来版本仍可一键升级。Docker Compose 管理标签、`AutoRemove`、`container:<id>` namespace/网络和多网络、显式静态 IP/MAC 等无法安全重建的部署失败关闭。
@@ -221,7 +221,7 @@ flowchart LR
 
 - runtime 同时向 stdout 与 `/config/logs/packbreaker.jsonl` 输出同一格式的单行 JSON。stdout 继续由 Docker/宿主日志驱动负责保留；应用文件采用容量轮转，默认单文件 2 MiB + 4 个备份（近似总容量 10 MiB），分别可由 `PACKBREAKER_LOG_FILE_MAX_BYTES`、`PACKBREAKER_LOG_FILE_BACKUP_COUNT` 调整。日志目录强制 0700、文件 0600，写入/读取均拒绝跟随符号链接。
 - 应用 HTTP 日志只记录 trace_id、方法、路径（不含 query）、状态、来源摘要与耗时；异常只记录异常类型。INFO 记录业务阶段与结果，DEBUG 也不得输出秘密、torrent payload 和第三方原始响应。通用脱敏会屏蔽敏感 key/value；URL 只保留 origin，不保留 userinfo、path、query 或 fragment；单条 message/fields 也有大小上限。
-- `GET /api/v1/system/health` 要求管理员会话或 `config:read` API Token，只汇总已有证据：runtime readiness、配置/数据卷剩余空间、普通备份新鲜度、任务积压、operation 对账风险、站点熔断/最近连接状态、下载器连接/路径诊断、通知与后台 driver。读取该端点不会主动连接 PT、qB/TR、通知服务，也不会遍历 `/data` 媒体树。
+- `GET /api/v1/system/health` 要求管理员会话，只汇总已有证据：runtime readiness、配置/数据卷剩余空间、普通备份新鲜度、任务积压、operation 对账风险、站点熔断/最近连接状态、下载器连接/路径诊断、通知与后台 driver。读取该端点不会主动连接 PT、qB/TR、通知服务，也不会遍历 `/data` 媒体树。
 - `/health/ready` 与 `/system/health` 语义分离：前者决定实例能否安全承载工作，后者表达运维告警。站点或下载器离线不会把容器 readiness 变成失败。
 - `GET /api/v1/system/diagnostics/export` 使用同一 `config:read` 权限，内存生成只包含 `health.json`/`manifest.json` 的 ZIP，响应 `Cache-Control: no-store` 与内容 SHA-256。诊断包仍与日志导出严格分离，不读取运行日志、配置文件、secret 或媒体，也不输出 URL、业务路径、任务 ID、source/torrent hash。
 - `GET /api/v1/system/logs` 读取应用自身轮转 JSONL，默认最近 60 分钟/200 条；允许窗口最大 7 天、单次最多 500 条，并支持级别和最长 128 字符安全关键词过滤。`GET /api/v1/system/logs/export` 复用同一筛选规则，导出硬上限 2000 条，返回内容 SHA-256 和 `Cache-Control: no-store`。读取端再次执行脱敏，因此历史格式异常或人为写入的敏感字段不能直接透传到 API。

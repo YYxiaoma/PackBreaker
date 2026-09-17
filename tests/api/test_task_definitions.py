@@ -435,6 +435,216 @@ def test_monitor_immediate_scan_establishes_watermark_and_materializes_only_new_
         client.__exit__(None, None, None)
 
 
+def test_directory_monitor_resumes_large_scan_from_persisted_cursor(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        site_id = _create_ready_site(app)
+        incoming = app.state.settings.data_dir / "incoming"
+        incoming.mkdir(parents=True)
+        for name in (
+            "A.Movie.2020.1080p.mkv",
+            "B.Movie.2021.1080p.mkv",
+            "C.Movie.2022.1080p.mkv",
+            "D.Movie.2023.1080p.mkv",
+            "E.Movie.2024.1080p.mkv",
+        ):
+            (incoming / name).write_bytes(name.encode())
+
+        payload = _monitor_payload(site_id)
+        payload["execution_policy"] = {
+            "stability_detection_enabled": False,
+            "debounce_seconds": 0,
+            "initial_scope": "NEW_ONLY",
+        }
+        created = client.post(
+            "/api/v1/task-definitions",
+            headers=_csrf(client),
+            json=payload,
+        )
+        assert created.status_code == 201
+        definition_id = cast(str, created.json()["id"])
+        service = app.state.task_definition_execution_service
+        service._directory_scan_batch_size = 2  # noqa: SLF001 - force multiple bounded pages
+
+        first = client.post(
+            f"/api/v1/task-definitions/{definition_id}/scan",
+            headers=_csrf(client),
+        )
+        assert first.status_code == 200
+        assert first.json()["outcome"] == "BASELINE_CONTINUING"
+        assert first.json()["discovered_count"] == 2
+        with app.state.runtime.session_factory() as session:
+            schedule = session.scalar(
+                select(TaskSchedule).where(TaskSchedule.task_definition_id == definition_id)
+            )
+            assert schedule is not None
+            checkpoint = schedule.scan_checkpoint
+            assert checkpoint["watermark_initialized"] is False
+            assert checkpoint["directory_scan_continuation"] is True
+            assert checkpoint["directory_scan"]["cursor"] == "B.Movie.2021.1080p.mkv"
+            assert checkpoint["directory_scan"]["discovered_count"] == 2
+
+        due = service.list_due_monitor_scans(now=datetime.now(UTC), limit=10)
+        assert [(item.task_definition_id, item.trigger) for item in due] == [
+            (definition_id, TaskExecutionTrigger.IMMEDIATE_SCAN)
+        ]
+
+        second = client.post(
+            f"/api/v1/task-definitions/{definition_id}/scan",
+            headers=_csrf(client),
+        )
+        assert second.status_code == 200
+        assert second.json()["outcome"] == "BASELINE_CONTINUING"
+        assert second.json()["discovered_count"] == 4
+
+        third = client.post(
+            f"/api/v1/task-definitions/{definition_id}/scan",
+            headers=_csrf(client),
+        )
+        assert third.status_code == 200
+        assert third.json()["outcome"] == "BASELINE_ESTABLISHED"
+        assert third.json()["discovered_count"] == 5
+        with app.state.runtime.session_factory() as session:
+            schedule = session.scalar(
+                select(TaskSchedule).where(TaskSchedule.task_definition_id == definition_id)
+            )
+            assert schedule is not None
+            checkpoint = schedule.scan_checkpoint
+            assert checkpoint["watermark_initialized"] is True
+            assert checkpoint["directory_scan_continuation"] is False
+            assert checkpoint["directory_scan"]["cursor"] is None
+            assert checkpoint["directory_scan"]["generation"] == 1
+            assert checkpoint["directory_scan"]["discovered_count"] == 0
+            assert len(checkpoint["seen_object_keys"]) == 5
+
+        new_movie = incoming / "Z.Movie.2026.2160p.mkv"
+        new_movie.write_bytes(b"new-video")
+        sweep_one = client.post(
+            f"/api/v1/task-definitions/{definition_id}/scan",
+            headers=_csrf(client),
+        )
+        assert sweep_one.status_code == 200
+        assert sweep_one.json()["outcome"] == "SCAN_CONTINUING"
+        sweep_two = client.post(
+            f"/api/v1/task-definitions/{definition_id}/scan",
+            headers=_csrf(client),
+        )
+        assert sweep_two.status_code == 200
+        assert sweep_two.json()["outcome"] == "SCAN_CONTINUING"
+        sweep_three = client.post(
+            f"/api/v1/task-definitions/{definition_id}/scan",
+            headers=_csrf(client),
+        )
+        assert sweep_three.status_code == 200
+        assert sweep_three.json()["outcome"] == "MATERIALIZED"
+        assert sweep_three.json()["discovered_count"] == 6
+        assert sweep_three.json()["new_count"] == 1
+        assert [item["name"] for item in sweep_three.json()["execution"]["items"]] == [
+            "Z.Movie.2026.2160p.mkv"
+        ]
+        with app.state.runtime.session_factory() as session:
+            schedule = session.scalar(
+                select(TaskSchedule).where(TaskSchedule.task_definition_id == definition_id)
+            )
+            assert schedule is not None
+            assert schedule.scan_checkpoint["directory_scan"]["cursor"] is None
+            assert schedule.scan_checkpoint["directory_scan"]["generation"] == 2
+            assert schedule.scan_checkpoint["directory_scan_continuation"] is False
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_directory_monitor_does_not_advance_cursor_while_page_waits_for_stability(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        site_id = _create_ready_site(app)
+        incoming = app.state.settings.data_dir / "incoming"
+        incoming.mkdir(parents=True)
+        first_movie = incoming / "A.Movie.2026.1080p.mkv"
+        second_movie = incoming / "B.Movie.2026.1080p.mkv"
+        first_movie.write_bytes(b"first")
+        second_movie.write_bytes(b"second")
+        observed = first_movie.stat()
+        modified_at = datetime.fromtimestamp(observed.st_mtime_ns / 1_000_000_000, tz=UTC)
+
+        payload = _monitor_payload(site_id)
+        payload["execution_policy"] = {
+            "stability_detection_enabled": True,
+            "stability_wait_seconds": 60,
+            "debounce_seconds": 0,
+            "initial_scope": "INCLUDE_EXISTING",
+        }
+        created = client.post(
+            "/api/v1/task-definitions",
+            headers=_csrf(client),
+            json=payload,
+        )
+        assert created.status_code == 201
+        definition_id = cast(str, created.json()["id"])
+        service = app.state.task_definition_execution_service
+        service._directory_scan_batch_size = 1  # noqa: SLF001 - exercise page retry semantics
+
+        waiting = asyncio.run(
+            service.scan_monitor(
+                definition_id,
+                trigger=TaskExecutionTrigger.IMMEDIATE_SCAN,
+                trace_id="paged-stability-wait",
+                now=modified_at + timedelta(seconds=1),
+            )
+        )
+        assert waiting.outcome == "STABILITY_WAIT"
+        with app.state.runtime.session_factory() as session:
+            schedule = session.scalar(
+                select(TaskSchedule).where(TaskSchedule.task_definition_id == definition_id)
+            )
+            assert schedule is not None
+            checkpoint = schedule.scan_checkpoint
+            assert checkpoint.get("directory_scan_continuation") is False
+            assert checkpoint.get("directory_scan", {}).get("cursor") is None
+
+        ready = asyncio.run(
+            service.scan_monitor(
+                definition_id,
+                trigger=TaskExecutionTrigger.IMMEDIATE_SCAN,
+                trace_id="paged-stability-ready",
+                now=modified_at + timedelta(seconds=61),
+            )
+        )
+        assert ready.outcome == "MATERIALIZED"
+        assert ready.execution is not None
+        assert [item.name for item in ready.execution.items] == ["A.Movie.2026.1080p.mkv"]
+        with app.state.runtime.session_factory() as session:
+            schedule = session.scalar(
+                select(TaskSchedule).where(TaskSchedule.task_definition_id == definition_id)
+            )
+            assert schedule is not None
+            checkpoint = schedule.scan_checkpoint
+            assert checkpoint["directory_scan_continuation"] is True
+            assert checkpoint["directory_scan"]["cursor"] == "A.Movie.2026.1080p.mkv"
+
+        next_page = asyncio.run(
+            service.scan_monitor(
+                definition_id,
+                trigger=TaskExecutionTrigger.IMMEDIATE_SCAN,
+                trace_id="paged-stability-next",
+                now=modified_at + timedelta(seconds=61),
+            )
+        )
+        assert next_page.outcome == "STABILITY_WAIT"
+        with app.state.runtime.session_factory() as session:
+            schedule = session.scalar(
+                select(TaskSchedule).where(TaskSchedule.task_definition_id == definition_id)
+            )
+            assert schedule is not None
+            checkpoint = schedule.scan_checkpoint
+            assert checkpoint["directory_scan_continuation"] is False
+            assert checkpoint["directory_scan"]["cursor"] == "A.Movie.2026.1080p.mkv"
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_run_once_after_queue_survives_finishing_scan_and_is_consumed_by_next_scan(
     tmp_path: Path,
 ) -> None:

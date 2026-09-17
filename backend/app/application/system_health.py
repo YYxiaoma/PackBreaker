@@ -10,7 +10,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.backup_schedule import BackupDriverState
-from backend.app.application.history_scan_driver import HistoryScanDriverState
 from backend.app.application.notification_driver import NotificationDriverState
 from backend.app.application.task_driver import ActiveTaskDriverState
 from backend.app.config import AppSettings
@@ -103,7 +102,6 @@ class SystemHealthService:
         self,
         *,
         task_driver: ActiveTaskDriverState,
-        history_driver: HistoryScanDriverState,
         notification_driver: NotificationDriverState,
         backup_driver: BackupDriverState,
         now: datetime | None = None,
@@ -120,7 +118,7 @@ class SystemHealthService:
             await self._site_check(database),
             self._downloader_check(database),
             self._notification_check(database),
-            self._worker_check(task_driver, history_driver, notification_driver, backup_driver),
+            self._worker_check(task_driver, notification_driver, backup_driver),
         ]
         return SystemHealthReport(timestamp, app_version(), tuple(checks))
 
@@ -435,16 +433,16 @@ class SystemHealthService:
     def _worker_check(
         self,
         task: ActiveTaskDriverState,
-        history: HistoryScanDriverState,
         notification: NotificationDriverState,
         backup: BackupDriverState,
     ) -> SystemHealthCheck:
-        running = task.running and history.running and notification.running and backup.running
-        errors = (
-            task.consecutive_errors
-            + history.consecutive_errors
-            + notification.consecutive_errors
-            + backup.consecutive_errors
+        running = task.running and notification.running and backup.running
+        errors = sum(
+            (
+                task.consecutive_errors,
+                notification.consecutive_errors,
+                backup.consecutive_errors,
+            )
         )
         if not running:
             status: HealthStatus = "blocked"
@@ -457,7 +455,7 @@ class SystemHealthService:
         else:
             status = "ok"
             code = "BACKGROUND_WORKERS_OK"
-            detail = "任务、历史扫描、通知和计划备份 driver 均在运行且无连续错误"
+            detail = "任务、通知和计划备份 driver 均在运行且无连续错误"
         return SystemHealthCheck(
             "workers",
             status,
@@ -465,11 +463,9 @@ class SystemHealthService:
             detail,
             {
                 "task_running": task.running,
-                "history_running": history.running,
                 "notification_running": notification.running,
                 "backup_running": backup.running,
                 "task_consecutive_errors": task.consecutive_errors,
-                "history_consecutive_errors": history.consecutive_errors,
                 "notification_consecutive_errors": notification.consecutive_errors,
                 "backup_consecutive_errors": backup.consecutive_errors,
             },

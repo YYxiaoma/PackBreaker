@@ -4,41 +4,6 @@
  */
 
 export interface paths {
-  '/api/v1/api-tokens': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** List Api Tokens */
-    get: operations['list_api_tokens_api_v1_api_tokens_get'];
-    put?: never;
-    /** Create Api Token */
-    post: operations['create_api_token_api_v1_api_tokens_post'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/api-tokens/{token_id}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post?: never;
-    /** Revoke Api Token */
-    delete: operations['revoke_api_token_api_v1_api_tokens__token_id__delete'];
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/v1/auth/login': {
     parameters: {
       query?: never;
@@ -263,92 +228,6 @@ export interface paths {
     get: operations['ready_api_v1_health_ready_get'];
     put?: never;
     post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/history-scans': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** List History Scans */
-    get: operations['list_history_scans_api_v1_history_scans_get'];
-    put?: never;
-    /** Create History Scan */
-    post: operations['create_history_scan_api_v1_history_scans_post'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/history-scans/{scan_id}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Get History Scan */
-    get: operations['get_history_scan_api_v1_history_scans__scan_id__get'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/history-scans/{scan_id}/actions': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** History Scan Action */
-    post: operations['history_scan_action_api_v1_history_scans__scan_id__actions_post'];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/history-scans/{scan_id}/tasks': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** List History Scan Tasks */
-    get: operations['list_history_scan_tasks_api_v1_history_scans__scan_id__tasks_get'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/history-scans/{scan_id}/tasks/actions': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** History Scan Task Action */
-    post: operations['history_scan_task_action_api_v1_history_scans__scan_id__tasks_actions_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1299,70 +1178,6 @@ export interface components {
       /** Source Root */
       source_root: string;
     };
-    /**
-     * ApiScope
-     * @enum {string}
-     */
-    ApiScope: 'tasks:read' | 'tasks:write' | 'config:read' | 'config:write';
-    /** ApiTokenCreateRequest */
-    ApiTokenCreateRequest: {
-      /**
-       * Expires At
-       * Format: date-time
-       */
-      expires_at: string;
-      /** Name */
-      name: string;
-      /** Scopes */
-      scopes: components['schemas']['ApiScope'][];
-    };
-    /** ApiTokenCreatedResponse */
-    ApiTokenCreatedResponse: {
-      /**
-       * Created At
-       * Format: date-time
-       */
-      created_at: string;
-      /**
-       * Expires At
-       * Format: date-time
-       */
-      expires_at: string;
-      /** Id */
-      id: string;
-      /** Name */
-      name: string;
-      /** Scopes */
-      scopes: components['schemas']['ApiScope'][];
-      /** Token */
-      token: string;
-    };
-    /** ApiTokenListResponse */
-    ApiTokenListResponse: {
-      /** Items */
-      items: components['schemas']['ApiTokenViewResponse'][];
-    };
-    /** ApiTokenViewResponse */
-    ApiTokenViewResponse: {
-      /**
-       * Created At
-       * Format: date-time
-       */
-      created_at: string;
-      /**
-       * Expires At
-       * Format: date-time
-       */
-      expires_at: string;
-      /** Id */
-      id: string;
-      /** Name */
-      name: string;
-      /** Revoked At */
-      revoked_at: string | null;
-      /** Scopes */
-      scopes: components['schemas']['ApiScope'][];
-    };
     /** AuthStatusResponse */
     AuthStatusResponse: {
       /** Authenticated */
@@ -1504,11 +1319,6 @@ export interface components {
       path_mappings?: components['schemas']['PathMappingInput'][] | null;
       type?: components['schemas']['DownloaderKind'] | null;
     };
-    /**
-     * EpisodeKind
-     * @enum {string}
-     */
-    EpisodeKind: 'SEASON_EPISODE' | 'SEASON_RANGE' | 'EPISODE' | 'ABSOLUTE' | 'SPECIALS';
     /** ExecuteTaskActionRequest */
     ExecuteTaskActionRequest: {
       /**
@@ -1630,233 +1440,6 @@ export interface components {
     HTTPValidationError: {
       /** Detail */
       detail?: components['schemas']['ValidationError'][];
-    };
-    /** HistoryMaterializationItemResponse */
-    HistoryMaterializationItemResponse: {
-      /** Materialization Id */
-      materialization_id: string;
-      /** Normalized Unit Key */
-      normalized_unit_key: string | null;
-      /** Reason Code */
-      reason_code: string | null;
-      /** Scan File Id */
-      scan_file_id: string;
-      /** Source Root */
-      source_root: string | null;
-      status: components['schemas']['HistoryMaterializationStatus'];
-      /** Task Created */
-      task_created: boolean;
-      /** Task Id */
-      task_id: string | null;
-      /** Unit Kind */
-      unit_kind: string | null;
-    };
-    /**
-     * HistoryMaterializationStatus
-     * @enum {string}
-     */
-    HistoryMaterializationStatus: 'MATERIALIZED' | 'SKIPPED';
-    /**
-     * HistoryMediaKind
-     * @enum {string}
-     */
-    HistoryMediaKind: 'MOVIE' | 'EPISODE';
-    /** HistoryScanActionRequest */
-    HistoryScanActionRequest: {
-      /**
-       * Action
-       * @enum {string}
-       */
-      action: 'start' | 'pause' | 'resume' | 'cancel' | 'scan' | 'materialize';
-      /**
-       * Limit
-       * @default 100
-       */
-      limit: number;
-    };
-    /** HistoryScanBatchResponse */
-    HistoryScanBatchResponse: {
-      /** Has More */
-      has_more: boolean;
-      /** Processed Count */
-      processed_count: number;
-      scan: components['schemas']['HistoryScanResponse'];
-    };
-    /** HistoryScanCreateRequest */
-    HistoryScanCreateRequest: {
-      /** Exclude Patterns */
-      exclude_patterns?: string[];
-      /** Extensions */
-      extensions: string[];
-      media_kind: components['schemas']['HistoryMediaKind'];
-      /** Root Path */
-      root_path: string;
-    };
-    /** HistoryScanListResponse */
-    HistoryScanListResponse: {
-      /** Items */
-      items: components['schemas']['HistoryScanResponse'][];
-    };
-    /** HistoryScanMaterializeResponse */
-    HistoryScanMaterializeResponse: {
-      /** Items */
-      items: components['schemas']['HistoryMaterializationItemResponse'][];
-      /** Processed Count */
-      processed_count: number;
-      /** Remaining Count */
-      remaining_count: number;
-      scan: components['schemas']['HistoryScanResponse'];
-      /** Skipped Count */
-      skipped_count: number;
-      /** Task Created Count */
-      task_created_count: number;
-      /** Task Reused Count */
-      task_reused_count: number;
-    };
-    /** HistoryScanResponse */
-    HistoryScanResponse: {
-      /** Changed Count */
-      changed_count: number;
-      /**
-       * Created At
-       * Format: date-time
-       */
-      created_at: string;
-      /** Cursor */
-      cursor: string | null;
-      /** Discovered Count */
-      discovered_count: number;
-      /** Exclude Patterns */
-      exclude_patterns: string[];
-      /** Extensions */
-      extensions: string[];
-      /** Generation */
-      generation: number;
-      /** Id */
-      id: string;
-      /** Last Completed At */
-      last_completed_at: string | null;
-      /** Last Started At */
-      last_started_at: string | null;
-      media_kind: components['schemas']['HistoryMediaKind'];
-      /** New Count */
-      new_count: number;
-      /** Root Path */
-      root_path: string;
-      status: components['schemas']['HistoryScanStatus'];
-      /** Unchanged Count */
-      unchanged_count: number;
-      /**
-       * Updated At
-       * Format: date-time
-       */
-      updated_at: string;
-      /** Version */
-      version: number;
-    };
-    /**
-     * HistoryScanStatus
-     * @enum {string}
-     */
-    HistoryScanStatus: 'READY' | 'SCANNING' | 'PAUSED' | 'CANCELLED' | 'DONE';
-    /** HistoryTaskBatchActionRequest */
-    HistoryTaskBatchActionRequest: {
-      /**
-       * Action
-       * @constant
-       */
-      action: 'analyze';
-      /** Task Ids */
-      task_ids: string[];
-    };
-    /** HistoryTaskBatchAnalyzeItemResponse */
-    HistoryTaskBatchAnalyzeItemResponse: {
-      /** Attempted */
-      attempted: boolean;
-      /** Error Code */
-      error_code: string | null;
-      /** Source Root */
-      source_root: string;
-      /** Succeeded */
-      succeeded: boolean;
-      /** Task Id */
-      task_id: string;
-      task_status: components['schemas']['TaskStatus'];
-    };
-    /** HistoryTaskBatchAnalyzeResponse */
-    HistoryTaskBatchAnalyzeResponse: {
-      /**
-       * Action
-       * @default analyze
-       * @constant
-       */
-      action: 'analyze';
-      /** Attempted Count */
-      attempted_count: number;
-      /** Failed Count */
-      failed_count: number;
-      /** Items */
-      items: components['schemas']['HistoryTaskBatchAnalyzeItemResponse'][];
-      /** Skipped Count */
-      skipped_count: number;
-      /** Succeeded Count */
-      succeeded_count: number;
-    };
-    /** HistoryTaskResultListResponse */
-    HistoryTaskResultListResponse: {
-      /** Items */
-      items: components['schemas']['HistoryTaskResultResponse'][];
-    };
-    /** HistoryTaskResultResponse */
-    HistoryTaskResultResponse: {
-      /** Analysis Eligible */
-      analysis_eligible: boolean;
-      /**
-       * Created At
-       * Format: date-time
-       */
-      created_at: string;
-      /** Episode End */
-      episode_end: number | null;
-      /** Episode Group Key */
-      episode_group_key: string | null;
-      episode_kind: components['schemas']['EpisodeKind'] | null;
-      /** Episode Label */
-      episode_label: string | null;
-      /** Episode Season */
-      episode_season: number | null;
-      /** Episode Start */
-      episode_start: number | null;
-      /** Episode Variant Key */
-      episode_variant_key: string | null;
-      /** Has Preflight */
-      has_preflight: boolean;
-      /** Materialization Id */
-      materialization_id: string;
-      materialization_status: components['schemas']['HistoryMaterializationStatus'];
-      /** Normalized Unit Key */
-      normalized_unit_key: string | null;
-      /** Reason Code */
-      reason_code: string | null;
-      /** Relative Path */
-      relative_path: string;
-      /** Scan File Id */
-      scan_file_id: string;
-      /** Snapshot Digest */
-      snapshot_digest: string;
-      /** Source Root */
-      source_root: string | null;
-      /** Task Error Code */
-      task_error_code: string | null;
-      /** Task Id */
-      task_id: string | null;
-      task_status: components['schemas']['TaskStatus'] | null;
-      /** Task Version */
-      task_version: number | null;
-      /** Unit Kind */
-      unit_kind: string | null;
-      /** Variant Count */
-      variant_count: number;
     };
     /** LoginResponse */
     LoginResponse: {
@@ -3638,109 +3221,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-  list_api_tokens_api_v1_api_tokens_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: {
-        packbreaker_session?: string | null;
-      };
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiTokenListResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  create_api_token_api_v1_api_tokens_post: {
-    parameters: {
-      query?: never;
-      header?: {
-        'X-CSRF-Token'?: string | null;
-      };
-      path?: never;
-      cookie?: {
-        packbreaker_session?: string | null;
-        packbreaker_csrf?: string | null;
-      };
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ApiTokenCreateRequest'];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['ApiTokenCreatedResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  revoke_api_token_api_v1_api_tokens__token_id__delete: {
-    parameters: {
-      query?: never;
-      header?: {
-        'X-CSRF-Token'?: string | null;
-      };
-      path: {
-        token_id: string;
-      };
-      cookie?: {
-        packbreaker_session?: string | null;
-        packbreaker_csrf?: string | null;
-      };
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      204: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
   login_api_v1_auth_login_post: {
     parameters: {
       query?: never;
@@ -3873,9 +3353,7 @@ export interface operations {
   list_downloaders_api_v1_downloaders_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -3909,7 +3387,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path?: never;
@@ -3947,9 +3424,7 @@ export interface operations {
   get_downloader_api_v1_downloaders__downloader_id__get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         downloader_id: string;
       };
@@ -3984,7 +3459,6 @@ export interface operations {
       query?: never;
       header?: {
         'If-Match'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -4020,7 +3494,6 @@ export interface operations {
       query?: never;
       header?: {
         'If-Match'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -4062,7 +3535,6 @@ export interface operations {
       query?: never;
       header?: {
         'If-Match'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -4103,7 +3575,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -4145,9 +3616,7 @@ export interface operations {
   list_downloader_tasks_api_v1_downloaders__downloader_id__tasks_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         downloader_id: string;
       };
@@ -4183,7 +3652,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -4230,9 +3698,7 @@ export interface operations {
         tracker?: string | null;
         save_path?: string | null;
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         downloader_id: string;
       };
@@ -4306,245 +3772,10 @@ export interface operations {
       };
     };
   };
-  list_history_scans_api_v1_history_scans_get: {
-    parameters: {
-      query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
-      path?: never;
-      cookie?: {
-        packbreaker_session?: string | null;
-      };
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HistoryScanListResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  create_history_scan_api_v1_history_scans_post: {
-    parameters: {
-      query?: never;
-      header?: {
-        Authorization?: string | null;
-        'X-CSRF-Token'?: string | null;
-      };
-      path?: never;
-      cookie?: {
-        packbreaker_session?: string | null;
-        packbreaker_csrf?: string | null;
-      };
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['HistoryScanCreateRequest'];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HistoryScanResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  get_history_scan_api_v1_history_scans__scan_id__get: {
-    parameters: {
-      query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
-      path: {
-        scan_id: string;
-      };
-      cookie?: {
-        packbreaker_session?: string | null;
-      };
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HistoryScanResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  history_scan_action_api_v1_history_scans__scan_id__actions_post: {
-    parameters: {
-      query?: never;
-      header?: {
-        'If-Match'?: string | null;
-        Authorization?: string | null;
-        'X-CSRF-Token'?: string | null;
-      };
-      path: {
-        scan_id: string;
-      };
-      cookie?: {
-        packbreaker_session?: string | null;
-        packbreaker_csrf?: string | null;
-      };
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['HistoryScanActionRequest'];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json':
-            | components['schemas']['HistoryScanResponse']
-            | components['schemas']['HistoryScanBatchResponse']
-            | components['schemas']['HistoryScanMaterializeResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  list_history_scan_tasks_api_v1_history_scans__scan_id__tasks_get: {
-    parameters: {
-      query?: {
-        limit?: number;
-        task_status?: components['schemas']['TaskStatus'] | null;
-        materialization_status?: components['schemas']['HistoryMaterializationStatus'] | null;
-        query?: string | null;
-      };
-      header?: {
-        Authorization?: string | null;
-      };
-      path: {
-        scan_id: string;
-      };
-      cookie?: {
-        packbreaker_session?: string | null;
-      };
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HistoryTaskResultListResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  history_scan_task_action_api_v1_history_scans__scan_id__tasks_actions_post: {
-    parameters: {
-      query?: never;
-      header?: {
-        Authorization?: string | null;
-        'X-CSRF-Token'?: string | null;
-      };
-      path: {
-        scan_id: string;
-      };
-      cookie?: {
-        packbreaker_session?: string | null;
-        packbreaker_csrf?: string | null;
-      };
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['HistoryTaskBatchActionRequest'];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HistoryTaskBatchAnalyzeResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
   list_notification_channels_api_v1_notification_channels_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -4578,7 +3809,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path?: never;
@@ -4618,7 +3848,6 @@ export interface operations {
       query?: never;
       header?: {
         'If-Match'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -4660,7 +3889,6 @@ export interface operations {
       query?: never;
       header?: {
         'If-Match'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -4696,7 +3924,6 @@ export interface operations {
       query?: never;
       header?: {
         'If-Match'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -4737,7 +3964,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -4777,9 +4003,7 @@ export interface operations {
       query?: {
         limit?: number;
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -4813,9 +4037,7 @@ export interface operations {
         retention_days?: number;
         limit?: number;
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -4846,9 +4068,7 @@ export interface operations {
   list_sites_api_v1_sites_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -4880,7 +4100,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path?: never;
@@ -4918,9 +4137,7 @@ export interface operations {
   get_site_api_v1_sites__site_id__get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         site_id: string;
       };
@@ -4955,7 +4172,6 @@ export interface operations {
       query?: never;
       header?: {
         'If-Match'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -4991,7 +4207,6 @@ export interface operations {
       query?: never;
       header?: {
         'If-Match'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -5033,7 +4248,6 @@ export interface operations {
       query?: never;
       header?: {
         'If-Match'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -5073,9 +4287,7 @@ export interface operations {
   get_site_health_api_v1_sites__site_id__health_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         site_id: string;
       };
@@ -5109,7 +4321,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -5146,7 +4357,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path?: never;
@@ -5184,9 +4394,7 @@ export interface operations {
   get_backup_policy_api_v1_system_backups_policy_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5219,7 +4427,6 @@ export interface operations {
       query?: never;
       header?: {
         'If-Match'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path?: never;
@@ -5257,9 +4464,7 @@ export interface operations {
   export_system_diagnostics_api_v1_system_diagnostics_export_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5290,9 +4495,7 @@ export interface operations {
   system_health_api_v1_system_health_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5333,9 +4536,7 @@ export interface operations {
         execution_id?: string | null;
         trace_id?: string | null;
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5376,9 +4577,7 @@ export interface operations {
         execution_id?: string | null;
         trace_id?: string | null;
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5409,9 +4608,7 @@ export interface operations {
   release_preflight_api_v1_system_release_preflight_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5442,9 +4639,7 @@ export interface operations {
   system_status_api_v1_system_status_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5477,9 +4672,7 @@ export interface operations {
   system_upgrade_status_api_v1_system_upgrade_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5512,7 +4705,6 @@ export interface operations {
       query?: never;
       header?: {
         'Idempotency-Key'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path?: never;
@@ -5552,9 +4744,7 @@ export interface operations {
       query?: {
         kind?: components['schemas']['TaskDefinitionKind'] | null;
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5586,7 +4776,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path?: never;
@@ -5624,9 +4813,7 @@ export interface operations {
   preview_task_definition_cron_api_v1_task_definitions_cron_preview_post: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5662,7 +4849,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path?: never;
@@ -5701,7 +4887,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path?: never;
@@ -5741,9 +4926,7 @@ export interface operations {
       query?: {
         path?: string;
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -5774,9 +4957,7 @@ export interface operations {
   get_task_definition_api_v1_task_definitions__definition_id__get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         definition_id: string;
       };
@@ -5810,7 +4991,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -5851,7 +5031,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -5886,7 +5065,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -5934,9 +5112,7 @@ export interface operations {
         started_from?: string | null;
         started_to?: string | null;
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         definition_id: string;
       };
@@ -5970,7 +5146,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6006,9 +5181,7 @@ export interface operations {
   get_task_definition_execution_api_v1_task_definitions__definition_id__executions__execution_id__get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         definition_id: string;
         execution_id: string;
@@ -6043,7 +5216,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6083,7 +5255,6 @@ export interface operations {
       query?: never;
       header?: {
         'Idempotency-Key'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6121,7 +5292,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6157,9 +5327,7 @@ export interface operations {
   get_task_unit_decision_api_v1_task_units__unit_id__decision_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         unit_id: string;
       };
@@ -6193,7 +5361,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6234,7 +5401,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6274,9 +5440,7 @@ export interface operations {
   get_task_unit_review_verification_api_v1_task_units__unit_id__decision_verification_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         unit_id: string;
       };
@@ -6309,9 +5473,7 @@ export interface operations {
   get_task_unit_execution_gate_api_v1_task_units__unit_id__execution_gate_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         unit_id: string;
       };
@@ -6345,7 +5507,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6381,9 +5542,7 @@ export interface operations {
   get_task_unit_execution_plan_api_v1_task_units__unit_id__execution_plan_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         unit_id: string;
       };
@@ -6417,7 +5576,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6459,9 +5617,7 @@ export interface operations {
       query?: {
         mode?: components['schemas']['RepairMode'];
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         unit_id: string;
       };
@@ -6496,7 +5652,6 @@ export interface operations {
       query?: never;
       header?: {
         'Idempotency-Key'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6539,9 +5694,7 @@ export interface operations {
         status?: components['schemas']['TaskStatus'] | null;
         limit?: number;
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path?: never;
       cookie?: {
         packbreaker_session?: string | null;
@@ -6573,7 +5726,6 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path?: never;
@@ -6611,9 +5763,7 @@ export interface operations {
   get_task_api_v1_tasks__task_id__get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         task_id: string;
       };
@@ -6648,7 +5798,6 @@ export interface operations {
       query?: never;
       header?: {
         'Idempotency-Key'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6693,9 +5842,7 @@ export interface operations {
   list_task_candidates_api_v1_tasks__task_id__candidates_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         task_id: string;
       };
@@ -6731,9 +5878,7 @@ export interface operations {
         after_event_id?: string | null;
         limit?: number;
       };
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         task_id: string;
       };
@@ -6770,7 +5915,6 @@ export interface operations {
       };
       header?: {
         'Last-Event-ID'?: string | null;
-        Authorization?: string | null;
       };
       path: {
         task_id: string;
@@ -6804,9 +5948,7 @@ export interface operations {
   list_task_operations_api_v1_tasks__task_id__operations_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         task_id: string;
       };
@@ -6841,7 +5983,6 @@ export interface operations {
       query?: never;
       header?: {
         'Idempotency-Key'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6886,9 +6027,7 @@ export interface operations {
   get_task_preflight_api_v1_tasks__task_id__preflight_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         task_id: string;
       };
@@ -6921,9 +6060,7 @@ export interface operations {
   get_task_preflight_current_api_v1_tasks__task_id__preflight_current_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         task_id: string;
       };
@@ -6958,7 +6095,6 @@ export interface operations {
       query?: never;
       header?: {
         'Idempotency-Key'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -6996,7 +6132,6 @@ export interface operations {
       query?: never;
       header?: {
         'Idempotency-Key'?: string | null;
-        Authorization?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {
@@ -7032,9 +6167,7 @@ export interface operations {
   list_task_units_api_v1_tasks__task_id__units_get: {
     parameters: {
       query?: never;
-      header?: {
-        Authorization?: string | null;
-      };
+      header?: never;
       path: {
         task_id: string;
       };

@@ -1066,6 +1066,14 @@ async function scanDefinition(item: TaskDefinition): Promise<void> {
     await refresh();
     if (result.outcome === 'BASELINE_ESTABLISHED') {
       ElMessage.success(`首次扫描基线已建立，记录 ${result.discovered_count} 个现有对象`);
+    } else if (result.outcome === 'BASELINE_CONTINUING') {
+      ElMessage.info(
+        `大目录基线扫描进行中，已累计扫描 ${result.discovered_count} 个对象，将自动续扫下一批`,
+      );
+    } else if (result.outcome === 'SCAN_CONTINUING') {
+      ElMessage.info(
+        `大目录扫描进行中，已累计扫描 ${result.discovered_count} 个对象，将自动续扫下一批`,
+      );
     } else if (result.outcome === 'MATERIALIZED') {
       ElMessage.success(`发现 ${result.new_count} 个新对象，已进入安全执行链`);
     } else if (result.outcome === 'STABILITY_WAIT') {

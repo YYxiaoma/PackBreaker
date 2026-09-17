@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -572,51 +572,6 @@ def test_path_diagnostic_rejects_symlink_escape(tmp_path: Path) -> None:
         assert response.json()["code"] == "PATH_MAPPING_INVALID"
         assert str(outside) not in response.text
         assert list(target_dir.iterdir()) == []
-    finally:
-        client.__exit__(None, None, None)
-
-
-def test_config_write_token_can_manage_downloaders_without_csrf(tmp_path: Path) -> None:
-    client, app = _authenticated_client(tmp_path)
-    try:
-        expires_at = (datetime.now(UTC) + timedelta(days=1)).isoformat()
-        write_response = client.post(
-            "/api/v1/api-tokens",
-            headers=_csrf(client),
-            json={"name": "config-writer", "scopes": ["config:write"], "expires_at": expires_at},
-        )
-        read_response = client.post(
-            "/api/v1/api-tokens",
-            headers=_csrf(client),
-            json={"name": "config-reader", "scopes": ["config:read"], "expires_at": expires_at},
-        )
-        assert write_response.status_code == read_response.status_code == 201
-        write_token = write_response.json()["token"]
-        read_token = read_response.json()["token"]
-
-        source_root = app.state.settings.data_dir / "source"
-        source_root.mkdir(exist_ok=True)
-        payload = {
-            "name": "Token qB",
-            "type": "QBITTORRENT",
-            "base_url": "http://qb.invalid:8080",
-            "path_mappings": [
-                {"remote_prefix": "/downloads", "container_prefix": str(source_root)}
-            ],
-        }
-        denied = client.post(
-            "/api/v1/downloaders",
-            headers={"Authorization": f"Bearer {read_token}"},
-            json=payload,
-        )
-        assert denied.status_code == 403
-
-        created = client.post(
-            "/api/v1/downloaders",
-            headers={"Authorization": f"Bearer {write_token}"},
-            json=payload,
-        )
-        assert created.status_code == 201
     finally:
         client.__exit__(None, None, None)
 

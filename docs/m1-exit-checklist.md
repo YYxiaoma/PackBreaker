@@ -20,7 +20,7 @@ HHClub 外部输入已关闭：已确认当前主站为 `https://hhanclub.net`�
 | --- | --- | --- |
 | Python/uv、FastAPI、配置与结构化日志 | ✅ | `uv.lock`、`backend/app/server.py`、`backend/app/infrastructure/app_logging.py` |
 | SQLAlchemy、SQLite WAL、Alembic、实例锁、repository | ✅ | `backend/app/infrastructure/persistence/`、`tests/integration/test_runtime.py`、`tests/integration/test_migrations.py` |
-| 管理员初始化、会话、CSRF、API Token | ✅ | `tests/api/test_auth.py`、`tests/api/test_automation_access.py` |
+| 管理员初始化、会话、CSRF | ✅ | `tests/api/test_auth.py` |
 | AES-256-GCM secret store 与统一日志脱敏 | ✅ | `tests/unit/test_security.py`、`tests/unit/test_app_logging.py`、`tests/integration/test_encrypted_store.py` |
 | 任务/事件/操作日志模型与安全状态转换 | ✅ | `tests/integration/test_persistence.py`、领域状态机单元测试 |
 

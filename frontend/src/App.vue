@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   ListChecks,
   GitBranch,
-  History,
   Globe,
   HardDrive,
   ShieldCheck,
@@ -46,7 +45,6 @@ const nav = [
   { name: '总览', icon: LayoutDashboard },
   { name: '任务中心', icon: ListChecks },
   { name: '预演与确认', icon: GitBranch },
-  { name: '历史辅种', icon: History },
   { name: '站点管理', icon: Globe },
   { name: '下载器', icon: HardDrive },
   { name: '清理与对账', icon: ShieldCheck },
@@ -66,10 +64,6 @@ const pageCopy: Record<string, { eyebrow: string; description: string }> = {
     eyebrow: '人工审核',
     description: '集中检查候选证据、当前性与风险，在执行前完成最终确认。',
   },
-  历史辅种: {
-    eyebrow: '历史资源',
-    description: '扫描既有媒体并转换为受控任务，持续补齐可安全复用的辅种机会。',
-  },
   站点管理: {
     eyebrow: '连接与规则',
     description: '管理 PT 站点连接、凭证状态、能力探测与可靠性保护。',
@@ -88,7 +82,7 @@ const pageCopy: Record<string, { eyebrow: string; description: string }> = {
   },
   系统设置: {
     eyebrow: '系统配置',
-    description: '管理通知、安全集成、自动化访问与数据库备份策略。',
+    description: '管理通知与数据库备份恢复策略。',
   },
 };
 const initialRoute = location.hash.slice(1) ? decodeURIComponent(location.hash.slice(1)) : '总览';

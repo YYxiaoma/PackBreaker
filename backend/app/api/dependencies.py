@@ -1,13 +1,10 @@
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal, cast
 
 from fastapi import Cookie, Header, Request
 
 from backend.app.application.auth import AuthIdentity, AuthService
-from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.downloaders import DownloaderService
-from backend.app.application.history_scans import HistoryScanService
 from backend.app.application.notifications import NotificationService
 from backend.app.application.sites import SiteService
 from backend.app.application.task_actions import TaskActionService
@@ -18,7 +15,6 @@ from backend.app.application.task_operations import TaskOperationService
 from backend.app.application.task_repair_actions import TaskRepairActionService
 from backend.app.application.task_repairs import TaskRepairPlanService
 from backend.app.application.tasks import TaskAnalysisService
-from backend.app.domain.auth import ApiScope
 
 SESSION_COOKIE = "packbreaker_session"
 CSRF_COOKIE = "packbreaker_csrf"
@@ -26,17 +22,12 @@ CSRF_COOKIE = "packbreaker_csrf"
 
 @dataclass(frozen=True, slots=True)
 class AccessPrincipal:
-    kind: Literal["admin_session", "api_token"]
+    kind: Literal["admin_session"]
     subject_id: str
-    scopes: frozenset[ApiScope]
 
 
 def auth_service(request: Request) -> AuthService:
     return cast(AuthService, request.app.state.auth_service)
-
-
-def api_token_service(request: Request) -> ApiTokenService:
-    return cast(ApiTokenService, request.app.state.api_token_service)
 
 
 def downloader_service(request: Request) -> DownloaderService:
@@ -45,10 +36,6 @@ def downloader_service(request: Request) -> DownloaderService:
 
 def notification_service(request: Request) -> NotificationService:
     return cast(NotificationService, request.app.state.notification_service)
-
-
-def history_scan_service(request: Request) -> HistoryScanService:
-    return cast(HistoryScanService, request.app.state.history_scan_service)
 
 
 def site_service(request: Request) -> SiteService:
@@ -118,63 +105,23 @@ async def require_admin_csrf(
     )
 
 
-def require_admin_or_scope(
-    scope: ApiScope,
-) -> Callable[..., Awaitable[AccessPrincipal]]:
-    async def dependency(
-        request: Request,
-        authorization: str | None = Header(default=None, alias="Authorization"),
-        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
-    ) -> AccessPrincipal:
-        if authorization is not None:
-            scheme, separator, credentials = authorization.partition(" ")
-            if separator != " " or scheme.lower() != "bearer" or not credentials:
-                from backend.app.application.auth import AuthError
-
-                raise AuthError(
-                    code="API_TOKEN_INVALID",
-                    status=401,
-                    title="API Token 无效",
-                    detail="Authorization 必须使用 Bearer Token",
-                )
-            identity = api_token_service(request).authenticate(credentials, scope)
-            return AccessPrincipal("api_token", identity.token_id, identity.scopes)
-
-        admin = auth_service(request).require_session(session_token)
-        return AccessPrincipal("admin_session", admin.session_id, frozenset(ApiScope))
-
-    return dependency
+async def require_admin_principal(
+    request: Request,
+    session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+) -> AccessPrincipal:
+    admin = auth_service(request).require_session(session_token)
+    return AccessPrincipal("admin_session", admin.session_id)
 
 
-def require_admin_csrf_or_scope(
-    scope: ApiScope,
-) -> Callable[..., Awaitable[AccessPrincipal]]:
-    async def dependency(
-        request: Request,
-        authorization: str | None = Header(default=None, alias="Authorization"),
-        session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
-        csrf_cookie: str | None = Cookie(default=None, alias=CSRF_COOKIE),
-        csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
-    ) -> AccessPrincipal:
-        if authorization is not None:
-            scheme, separator, credentials = authorization.partition(" ")
-            if separator != " " or scheme.lower() != "bearer" or not credentials:
-                from backend.app.application.auth import AuthError
-
-                raise AuthError(
-                    code="API_TOKEN_INVALID",
-                    status=401,
-                    title="API Token 无效",
-                    detail="Authorization 必须使用 Bearer Token",
-                )
-            identity = api_token_service(request).authenticate(credentials, scope)
-            return AccessPrincipal("api_token", identity.token_id, identity.scopes)
-
-        admin = auth_service(request).require_csrf(
-            token=session_token,
-            csrf_cookie=csrf_cookie,
-            csrf_header=csrf_header,
-        )
-        return AccessPrincipal("admin_session", admin.session_id, frozenset(ApiScope))
-
-    return dependency
+async def require_admin_csrf_principal(
+    request: Request,
+    session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    csrf_cookie: str | None = Cookie(default=None, alias=CSRF_COOKIE),
+    csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
+) -> AccessPrincipal:
+    admin = auth_service(request).require_csrf(
+        token=session_token,
+        csrf_cookie=csrf_cookie,
+        csrf_header=csrf_header,
+    )
+    return AccessPrincipal("admin_session", admin.session_id)

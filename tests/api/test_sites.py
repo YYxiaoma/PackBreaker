@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -289,7 +288,7 @@ def test_hhclub_cookie_is_encrypted_and_drives_read_only_connection_probe(tmp_pa
         client.__exit__(None, None, None)
 
 
-def test_site_health_reset_and_config_scopes_are_safe_and_versioned(tmp_path: Path) -> None:
+def test_site_health_reset_is_safe_and_versioned(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     canary = "PACKBREAKER-SITE-HEALTH-CANARY-a72c"
     try:
@@ -341,44 +340,12 @@ def test_site_health_reset_and_config_scopes_are_safe_and_versioned(tmp_path: Pa
         assert stale.status_code == 412
         assert stale.json()["code"] == "SITE_VERSION_CONFLICT"
 
-        expires_at = (datetime.now(UTC) + timedelta(days=1)).isoformat()
-        write_token_response = client.post(
-            "/api/v1/api-tokens",
-            headers=_csrf(client),
-            json={
-                "name": "site-health-writer",
-                "scopes": ["config:write"],
-                "expires_at": expires_at,
-            },
-        )
-        read_token_response = client.post(
-            "/api/v1/api-tokens",
-            headers=_csrf(client),
-            json={
-                "name": "site-health-reader",
-                "scopes": ["config:read"],
-                "expires_at": expires_at,
-            },
-        )
-        assert write_token_response.status_code == read_token_response.status_code == 201
-        write_token = write_token_response.json()["token"]
-        read_token = read_token_response.json()["token"]
-
-        read_health = client.get(
-            f"/api/v1/sites/{site_id}/health",
-            headers={"Authorization": f"Bearer {read_token}"},
-        )
+        read_health = client.get(f"/api/v1/sites/{site_id}/health")
         assert read_health.status_code == 200
-        denied_reset = client.post(
-            f"/api/v1/sites/{site_id}/actions",
-            headers={"Authorization": f"Bearer {read_token}", "If-Match": '"1"'},
-            json={"action": "reset_circuit"},
-        )
-        assert denied_reset.status_code == 403
 
         reset = client.post(
             f"/api/v1/sites/{site_id}/actions",
-            headers={"Authorization": f"Bearer {write_token}", "If-Match": '"1"'},
+            headers={**_csrf(client), "If-Match": '"1"'},
             json={"action": "reset_circuit"},
         )
         assert reset.status_code == 200

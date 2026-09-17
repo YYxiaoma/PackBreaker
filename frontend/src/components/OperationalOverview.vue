@@ -12,7 +12,6 @@ import {
   GitBranch,
   Globe,
   HardDrive,
-  History,
   ListChecks,
   RefreshCw,
   Search,
@@ -83,7 +82,6 @@ const metricLabels: Record<string, string> = {
   config_free_ratio: '配置卷剩余比例',
   data_free_ratio: '数据卷剩余比例',
   task_consecutive_errors: '任务 Driver 连续错误',
-  history_consecutive_errors: '历史 Driver 连续错误',
   notification_consecutive_errors: '通知 Driver 连续错误',
 };
 
@@ -189,8 +187,6 @@ const recentTasks = computed(() =>
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
     .slice(0, 5),
 );
-
-const historyDriverErrors = computed(() => metricNumber('workers', 'history_consecutive_errors'));
 
 function versionStatusLabel(): string {
   if (!upgrade.value) return '检查中';
@@ -603,21 +599,12 @@ onUnmounted(() => {
             </button>
             <button @click="go('系统设置')">
               <span class="quick-icon green"><Settings2 :size="20" /></span><b>系统设置</b
-              ><small>通知、备份与安全集成</small>
+              ><small>通知与备份恢复</small>
             </button>
           </div>
         </article>
 
         <aside class="summary-stack">
-          <button class="summary-mini" @click="go('历史辅种')">
-            <span class="summary-icon green"><History :size="22" /></span>
-            <div>
-              <small>历史辅种</small
-              ><strong>{{ historyDriverErrors ? '需关注' : '运行正常' }}</strong
-              ><span>历史扫描 Driver 连续错误 {{ historyDriverErrors }} 次</span>
-            </div>
-            <ArrowRight :size="16" />
-          </button>
           <button class="summary-mini" @click="go('日志')">
             <span class="summary-icon purple"><ScrollText :size="22" /></span>
             <div>

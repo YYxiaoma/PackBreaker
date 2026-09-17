@@ -77,7 +77,6 @@ def test_ready_endpoint_is_healthy_inside_lifespan(tmp_path: Path) -> None:
         response = client.get("/api/v1/health/ready")
         recovery_report = app.state.task_recovery_report
         assert app.state.task_driver.running is True
-        assert app.state.history_scan_driver.running is True
 
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
@@ -91,7 +90,6 @@ def test_ready_endpoint_is_healthy_inside_lifespan(tmp_path: Path) -> None:
     assert recovery_report.blocked_count == 0
     assert recovery_report.truncated is False
     assert app.state.task_driver.running is False
-    assert app.state.history_scan_driver.running is False
     assert not app.state.runtime.started
 
 

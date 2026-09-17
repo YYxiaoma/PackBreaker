@@ -10,17 +10,14 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
 from backend.app.api.auth import router as auth_router
-from backend.app.api.automation_access import router as api_token_router
 from backend.app.api.downloaders import router as downloader_router
 from backend.app.api.health import router as health_router
-from backend.app.api.history_scans import router as history_scan_router
 from backend.app.api.notifications import router as notification_router
 from backend.app.api.sites import router as site_router
 from backend.app.api.system import router as system_router
 from backend.app.api.task_definitions import router as task_definition_router
 from backend.app.api.tasks import router as task_router
 from backend.app.application.auth import AuthService
-from backend.app.application.automation_access import ApiTokenService
 from backend.app.application.backup_schedule import BackupDriver, BackupScheduleService
 from backend.app.application.downloader_operations import (
     QbittorrentAddOperationService,
@@ -32,8 +29,6 @@ from backend.app.application.downloader_operations import (
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import FilesystemOperationService
-from backend.app.application.history_scan_driver import HistoryScanDriver
-from backend.app.application.history_scans import HistoryScanService
 from backend.app.application.notification_driver import NotificationDriver
 from backend.app.application.notifications import NotificationService
 from backend.app.application.repair_downloader_operations import RepairDownloadOperationService
@@ -125,7 +120,6 @@ def create_app(
         resolved_runtime.start()
         app.state.runtime = resolved_runtime
         app.state.auth_service = AuthService(resolved_runtime.session_factory)
-        app.state.api_token_service = ApiTokenService(resolved_runtime.session_factory)
         secret_store = SecretStore(
             resolved_runtime.session_factory,
             resolved_runtime.secret_cipher,
@@ -139,11 +133,6 @@ def create_app(
             data_root=resolved_settings.data_dir,
         )
         app.state.downloader_service = downloader_service
-        history_scan_service = HistoryScanService(
-            resolved_runtime.session_factory,
-            data_root=resolved_settings.data_dir,
-        )
-        app.state.history_scan_service = history_scan_service
         qbit_operations = QbittorrentAddOperationService(resolved_runtime.session_factory)
         app.state.qbittorrent_add_operation_service = qbit_operations
         qbit_recheck_operations = QbittorrentRecheckOperationService(
@@ -293,6 +282,7 @@ def create_app(
             task_action_service,
             task_analysis_service,
             data_root=resolved_settings.data_dir,
+            directory_scan_batch_size=resolved_settings.task_definition_directory_scan_batch_size,
         )
         app.state.task_definition_execution_service = task_definition_execution_service
         task_recovery_coordinator = TaskRecoveryCoordinator(
@@ -343,14 +333,6 @@ def create_app(
         )
         app.state.task_definition_driver = task_definition_driver
         task_definition_driver.start()
-        history_scan_driver = HistoryScanDriver(
-            history_scan_service,
-            interval_seconds=resolved_settings.history_scan_driver_interval_seconds,
-            scan_limit=resolved_settings.history_scan_driver_limit,
-            batch_size=resolved_settings.history_scan_driver_batch_size,
-        )
-        app.state.history_scan_driver = history_scan_driver
-        history_scan_driver.start()
         notification_driver = NotificationDriver(
             notification_service,
             interval_seconds=resolved_settings.notification_driver_interval_seconds,
@@ -374,7 +356,6 @@ def create_app(
         finally:
             await backup_driver.stop()
             await notification_driver.stop()
-            await history_scan_driver.stop()
             await task_definition_driver.stop()
             await task_driver.stop()
             resolved_runtime.stop()
@@ -461,11 +442,9 @@ def create_app(
         )
         return response
 
-    app.include_router(api_token_router, prefix="/api/v1")
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(downloader_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
-    app.include_router(history_scan_router, prefix="/api/v1")
     app.include_router(notification_router, prefix="/api/v1")
     app.include_router(site_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")

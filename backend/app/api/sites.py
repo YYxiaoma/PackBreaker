@@ -7,19 +7,18 @@ from pydantic import BaseModel, Field, SecretStr
 
 from backend.app.api.dependencies import (
     AccessPrincipal,
-    require_admin_csrf_or_scope,
-    require_admin_or_scope,
+    require_admin_csrf_principal,
+    require_admin_principal,
     site_service,
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import SiteUpdate, SiteView
-from backend.app.domain.auth import ApiScope
 from backend.app.domain.site_config import SiteCredentialKind, SiteKind, SiteProbeStatus
 from backend.app.infrastructure.site_reliability import SiteReliabilityHealth
 
 router = APIRouter(tags=["sites"])
-CONFIG_READ_ACCESS = require_admin_or_scope(ApiScope.CONFIG_READ)
-CONFIG_WRITE_ACCESS = require_admin_csrf_or_scope(ApiScope.CONFIG_WRITE)
+CONFIG_READ_ACCESS = require_admin_principal
+CONFIG_WRITE_ACCESS = require_admin_csrf_principal
 
 
 class SiteViewResponse(BaseModel):
