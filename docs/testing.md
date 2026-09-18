@@ -34,7 +34,7 @@
 
 真实验收不进入普通 CI，也不保存站点凭证、tracker 或原始 `.torrent`。2026-09-13 已在隔离的真实目录与 Transmission 4.1.3 上完成两条正式任务：M-Team 单文件候选通过 `FULL_VERIFIED → HARDLINK → TRANSMISSION_ADD → TRANSMISSION_VERIFY → TRANSMISSION_START → DONE`；HHClub 三文件候选先完成 7321 个 v1 piece 的全量校验，再通过 `1 CREATE_DIRECTORY + 3 CREATE_HARDLINK + TRANSMISSION_ADD + TRANSMISSION_VERIFY + TRANSMISSION_START` 全部 `APPLIED` 并收敛到 `DONE`。同日 qBittorrent v5.2.3 / WebAPI 2.15.1 的真实认证兼容问题修复后，The Reader 三文件候选经正式 analyze/review/gate/plan 完成 `FULL_VERIFIED → 1 CREATE_DIRECTORY + 3 CREATE_HARDLINK → QBITTORRENT_ADD(skip-check) → QBITTORRENT_START → DONE`；真实 ADD 遇到的异步 stop 收敛阻断通过公开只读 reconcile 恢复，START 已生效但 journal 未确认的窗口又通过真实进程重启安全恢复为 `APPLIED`，没有重复 add/start。三条真实任务最终均处于客户端做种状态，源文件 device/inode/size/mtime 与 preflight 快照一致，仅 hardlink link count 按预期增加。
 
-2026-09-18 又针对 v0.1.6 candidate 完成一轮无副作用现场验收：真实 v0.1.5 SQLite 通过一致性副本升级到 0026_ai_agent_v016 且任务、下载器、站点、管理员密码哈希与 Secret 引用保持一致；qBittorrent 5.2.3 / WebAPI 2.15.1 与 Transmission 4.1.3 / RPC 6.0.1 的连接和运行指标通过；M-Team 与 HHClub 的用户详情只读读取通过。HDTime 当前由 Cloudflare 返回 HTTP 500，浏览器仿真后仍为 SITE_UNAVAILABLE，因此不伪记为通过。完整证据和待外部条件项见 [v0.1.6 真实环境验收记录](./v0.1.6-real-environment-acceptance.md)。
+2026-09-18 在 v0.1.6 正式发布前完成一轮无副作用现场验收：真实 v0.1.5 SQLite 通过一致性副本升级到 0026_ai_agent_v016 且任务、下载器、站点、管理员密码哈希与 Secret 引用保持一致；qBittorrent 5.2.3 / WebAPI 2.15.1 与 Transmission 4.1.3 / RPC 6.0.1 的连接和运行指标通过；M-Team 与 HHClub 的用户详情只读读取通过。HDTime 当前由 Cloudflare 返回 HTTP 500，浏览器仿真后仍为 SITE_UNAVAILABLE，因此不伪记为通过。随后 Release workflow run `35297829243` 完成真实 Docker 升级/回滚与 updater E2E，并正式发布 v0.1.6。完整证据和待外部条件项见 [v0.1.6 真实环境验收记录](./v0.1.6-real-environment-acceptance.md)。
 
 ## 4. 合成语料
 

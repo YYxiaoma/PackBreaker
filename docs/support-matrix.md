@@ -10,7 +10,7 @@
 | Linux 其他架构 | 未声明支持 | 尚无构建、恢复和性能验收矩阵。 |
 | Windows / macOS 原生生产运行 | 未声明支持 | 可用于开发，但 v1.0 生产部署以 Linux 容器为边界。 |
 
-当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.5`，Release workflow run `35201356258` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:da340a835290a60b977a6a5ab8aedf9c5225f794d623a43d7a579de1d7a4919e`。当前源码为 `v0.1.6` candidate；本地与浏览器自动化继续承担功能和安全门，正式容器升级/回滚证据由下一次 Release workflow 生成。
+当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.6`，Release workflow run `35297829243` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:b250b4dd945648fca884989d4c6ce14692dea839d4364f462d6080806357f13d`。当前源码保持 v0.1.6 版本线；正式容器升级/回滚与 updater helper 证据已由该 Release workflow 取得。
 
 ## 2. 下载器
 
@@ -29,7 +29,7 @@
 | HDTime | Cookie；NexusPHP 搜索、详情与 torrent 获取已有契约/真实验收。 |
 | HHClub | Cookie；仅接受当前主站 `https://hhanclub.net`，新版 div 卡片搜索、`cat[]` 分类、详情与下载链路已有契约/真实验收。 |
 
-v0.1.6 Profile Registry 另外列出以下**待适配**类型，但它们当前不能创建配置、保存凭证或执行临时 probe：KeepFrds（`https://pt.keepfrds.com`）、HDHome（`https://hdhome.org`）、UBits（`https://ubits.club`）、HDFans（`https://hdfans.org`）、BTSCHOOL（`https://pt.btschool.club`）、PTTime（`https://www.pttime.org`）和 Rousi Pro（`https://rousi.pro`）。前六项按 NexusPHP/Cookie profile 建模；Rousi Pro 按独立 Passkey/Bearer profile 建模。所有这些 profile 的 `support_status` 均为 `PENDING_ADAPTER`，只有完成 PackBreaker Adapter、契约测试与真实只读验收后才可扩大上表的正式支持集合。
+v0.1.6 Profile Registry 另外列出以下**待适配**类型，但它们当前不能创建配置、保存凭证或执行临时 probe：KeepFrds（`https://pt.keepfrds.com`）、HDHome（`https://hdhome.org`）、UBits（`https://ubits.club`）、HDFans（`https://hdfans.org`）、BTSCHOOL（`https://pt.btschool.club`）、PTTime（`https://www.pttime.org`）和 Rousi Pro（`https://rousi.pro`）。前六项按 NexusPHP/Cookie profile 建模；Rousi Pro 暂归 `API_KEY` 凭证类型但仍无正式 Adapter。所有这些 profile 的 `support_status` 均为 `PENDING_ADAPTER`，只有完成 PackBreaker Adapter、契约测试与真实只读验收后才可扩大上表的正式支持集合。
 
 站点凭证只写入加密 secret store，管理 API/UI 不回显已保存明文。站点临时故障、鉴权失败和限流不会成为放宽 torrent 内容验证的理由。
 
@@ -49,7 +49,7 @@ v0.1.6 Profile Registry 另外列出以下**待适配**类型，但它们当前�
 - 数据库升级先创建 `pre-upgrade` 一致性快照，在同文件系统临时副本完成迁移与验证后再原子切换。
 - 生产回滚不依赖 Alembic 原地 downgrade；旧镜像不能读取新 schema 时必须恢复兼容的升级前/离线备份。
 - `v0.1.2` Release workflow run `34937718889` 已真实跑绿 `v0.1.1` 基线启动/备份 → `v0.1.2` 候选接管/readiness → 用 `v0.1.1` 镜像恢复旧备份 → `v0.1.1` 再次 readiness，并额外通过独立 updater helper 的真实成功升级与故障候选自动数据库/容器回滚。
-- `release-baseline.json` 当前固定正式 `v0.1.5` digest；`v0.1.6` candidate 必须继续以该最新 published baseline 做相邻版本升级/回滚门禁后才允许进入正式发布。
+- `release-baseline.json` 当前固定正式 `v0.1.6` digest；后续候选版本必须以该最新 published baseline 做相邻版本升级/回滚门禁后才允许进入正式发布。
 - `v0.1.2` 正式提供独立 updater helper 的 Web 一键升级链路。自动容器替换只承诺单个 PackBreaker 容器、唯一可写 `/config`、官方 GHCR 镜像、可安全重建的端口/环境/挂载/restart policy 和单网络配置；Docker Compose 管理标签、复杂 namespace、多网络、显式静态 IP/MAC 或 AutoRemove 容器失败关闭。
 
 ## 6. 兼容承诺原则

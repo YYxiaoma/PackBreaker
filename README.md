@@ -10,7 +10,7 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11"></a>
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64"></a>
-  <img src="https://img.shields.io/badge/v0.1.6-candidate-F59E0B" alt="v0.1.6 candidate">
+  <img src="https://img.shields.io/badge/v0.1.6-released-2563EB" alt="v0.1.6 released">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 
@@ -375,9 +375,9 @@ uv run python scripts/test.py
 
 ## 📊 当前状态
 
-当前 `main` 对应 **v0.1.6 candidate**；最新正式 Release 仍以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中已发布版本为准。
+**v0.1.6 已正式发布。** 当前 `main` 保持 v0.1.6 版本线并包含发布后的文档/基线更新；正式部署身份以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中的 release manifest 与不可变 image digest 为准。
 
-v0.1.6 candidate 当前自动化与现场证据包括：
+v0.1.6 当前自动化、现场与正式发布证据包括：
 
 - 后端 722 tests passed
 - 前端 15 个测试文件 / 76 tests passed
@@ -387,6 +387,8 @@ v0.1.6 candidate 当前自动化与现场证据包括：
 - M-TEAM / HHClub 真实用户详情读取通过
 - v0.1.5 数据库副本升级到 v0.1.6 migration head 通过
 - AI Secret canary 证明原始敏感值不会进入 Provider Tool 上下文
+- Release workflow run `35297829243` 已完成真实 Docker 升级/回滚、updater helper E2E、SBOM、release manifest 与 GitHub Release 发布
+- 正式不可变镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:b250b4dd945648fca884989d4c6ce14692dea839d4364f462d6080806357f13d`
 
 完整支持边界和已知限制请看：
 
