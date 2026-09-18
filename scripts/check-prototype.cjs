@@ -96,12 +96,17 @@ const path = require('node:path');
     };
     const taskOperations={
       'task-e2e-execute':[],
-      'task-e2e-cancel':[],
+      'task-e2e-cancel':[
+        {id:'journal-maintenance-manual',task_id:'task-e2e-cancel',kind:'OTHER',status:'RECONCILE_REQUIRED',attention_required:true,reconcile_supported:false,created_at:now(),updated_at:now()},
+        {id:'journal-maintenance-blocked',task_id:'task-e2e-cancel',kind:'FILESYSTEM_HARDLINK',status:'ROLLED_BACK',attention_required:false,reconcile_supported:false,created_at:now(),updated_at:now()},
+      ],
       'task-e2e-reconcile':[
         {id:'journal-reconcile-fs',task_id:'task-e2e-reconcile',kind:'FILESYSTEM_HARDLINK',status:'RECONCILE_REQUIRED',attention_required:true,reconcile_supported:true,created_at:now(),updated_at:now()},
         {id:'journal-reconcile-qb',task_id:'task-e2e-reconcile',kind:'QBITTORRENT_ADD',status:'ROLLBACK_BLOCKED',attention_required:true,reconcile_supported:false,created_at:now(),updated_at:now()},
       ],
-      'task-e2e-pre-cancel':[],
+      'task-e2e-pre-cancel':[
+        {id:'journal-maintenance-noop',task_id:'task-e2e-pre-cancel',kind:'FILESYSTEM_DIRECTORY',status:'NOOP',attention_required:false,reconcile_supported:false,created_at:now(),updated_at:now()},
+      ],
       'task-e2e-analysis-cancel':[],
     };
     const taskUnit=id=>({
@@ -272,7 +277,8 @@ const path = require('node:path');
         source_config:{selected_files:[{relative_path:'Movie.E2E.mkv',size_bytes:1073741824,device:1,inode:11,mtime_ns:1}]},cron_expression:null,timezone:null,last_scan_at:null,last_successful_scan_at:null,next_run_at:null,
         file_types:['VIDEO'],video_extensions:['.mkv','.mp4'],archive_extensions:[],min_size_bytes:null,max_size_bytes:null,include_name:null,exclude_names:['sample','trailer'],ignore_temp_files:true,temp_patterns:['*.part','*.tmp','*.!qB'],include_subdirectories:true,max_scan_depth:null,
         output_directory:'output/manual-e2e',storage_mode:'HARDLINK',preserve_structure:true,conflict_policy:'VERIFY_REUSE_OR_STOP',stability_detection_enabled:true,stability_wait_seconds:30,only_completed_downloads:true,initial_scope:'NEW_ONLY',debounce_seconds:30,overlap_policy:'SKIP',auto_retry_enabled:true,max_auto_retries:3,retry_intervals_seconds:[60,300,900],
-        latest_execution:{id:'execution-manual-e2e',status:'COMPLETED',phase:'DONE',trigger:'MANUAL',success_count:1,failed_count:0,skipped_count:0,created_at:now(),started_at:now(),finished_at:now()},version:1,created_at:now(),updated_at:now(),
+        high_risk_preauthorization_enabled:false,high_risk_allowed_action_kinds:[],
+        latest_execution:{id:'execution-manual-e2e',status:'RUNNING',phase:'AWAITING_CONFIRMATION',trigger:'MANUAL',success_count:0,failed_count:0,skipped_count:0,created_at:now(),started_at:now(),finished_at:null},version:1,created_at:now(),updated_at:now(),
       },
       {
         id:'definition-monitor-e2e',name:'监控拆包 E2E',kind:'MONITOR',status:'ENABLED',site_id:'site-e2e-mteam',site_name:'M-Team E2E',site_available:true,
@@ -280,13 +286,201 @@ const path = require('node:path');
         source_config:{},cron_expression:'0 */2 * * *',timezone:'Asia/Shanghai',last_scan_at:now(),last_successful_scan_at:now(),next_run_at:now(),
         file_types:['VIDEO'],video_extensions:['.mkv','.mp4'],archive_extensions:[],min_size_bytes:null,max_size_bytes:null,include_name:null,exclude_names:['sample','trailer'],ignore_temp_files:true,temp_patterns:['*.part','*.tmp','*.!qB'],include_subdirectories:true,max_scan_depth:null,
         output_directory:'output/monitor-e2e',storage_mode:'HARDLINK',preserve_structure:true,conflict_policy:'VERIFY_REUSE_OR_STOP',stability_detection_enabled:true,stability_wait_seconds:30,only_completed_downloads:true,initial_scope:'INCLUDE_EXISTING',debounce_seconds:30,overlap_policy:'SKIP',auto_retry_enabled:true,max_auto_retries:3,retry_intervals_seconds:[60,300,900],
+        high_risk_preauthorization_enabled:false,high_risk_allowed_action_kinds:[],
         latest_execution:null,version:1,created_at:now(),updated_at:now(),
       },
     ];
+    const taskDefinitionExecution=()=>({
+      id:'execution-manual-e2e',
+      status:'RUNNING',
+      phase:'AWAITING_CONFIRMATION',
+      trigger:'MANUAL',
+      success_count:0,
+      failed_count:0,
+      skipped_count:0,
+      created_at:now(),
+      started_at:now(),
+      finished_at:null,
+      task_definition_id:'definition-manual-e2e',
+      task_name:'手动拆包 E2E',
+      source_execution_id:null,
+      discovered_count:4,
+      trace_id:'trace-execution-manual-e2e',
+      config_snapshot:{site_id:'site-e2e-mteam'},
+      items:[
+        {
+          id:'execution-item-manual-e2e',
+          unpack_task_id:'task-e2e-execute',
+          source_object_key:'movie:execute',
+          name:'E2E task execute',
+          source:'downloads/manual-e2e',
+          size_bytes:1073741824,
+          phase:'AWAITING_CONFIRMATION',
+          progress:40,
+          result:null,
+          error_code:null,
+          error_summary_zh:null,
+          technical_detail:null,
+          retryable:false,
+          retry_count:0,
+          lifecycle_stage:'REVIEW',
+          risk_level:'MEDIUM',
+          authorization_status:'REVIEW_REQUIRED',
+          execution_plan_id:'plan-task-e2e-execute',
+          execution_plan_ready:true,
+          side_effects_started:false,
+          lifecycle_blocked_reasons:[],
+          risk_summary:null,
+          approval:null,
+          closure:{
+            status:'OPEN',
+            filesystem_status:'PENDING',
+            downloader_status:'PENDING',
+            operation_attention_count:0,
+            reconcile_required_count:0,
+            rollback_blocked_count:0,
+            retention_candidate_count:0,
+            manual_attention_required:false,
+            issue_codes:[],
+          },
+        },
+        {
+          id:'execution-item-cancel-e2e',
+          unpack_task_id:'task-e2e-cancel',
+          source_object_key:'movie:cancel',
+          name:'E2E task cancel',
+          source:'downloads/manual-e2e',
+          size_bytes:1073741824,
+          phase:'LINKING',
+          progress:55,
+          result:null,
+          error_code:null,
+          error_summary_zh:null,
+          technical_detail:null,
+          retryable:false,
+          retry_count:0,
+          lifecycle_stage:'LINKING',
+          risk_level:'MEDIUM',
+          authorization_status:'AUTHORIZED',
+          execution_plan_id:'plan-task-e2e-cancel',
+          execution_plan_ready:true,
+          side_effects_started:true,
+          lifecycle_blocked_reasons:[],
+          risk_summary:null,
+          approval:null,
+          closure:{
+            status:'OPEN',
+            filesystem_status:'ACTIVE',
+            downloader_status:'ACTIVE',
+            operation_attention_count:0,
+            reconcile_required_count:0,
+            rollback_blocked_count:0,
+            retention_candidate_count:0,
+            manual_attention_required:false,
+            issue_codes:[],
+          },
+        },
+        {
+          id:'execution-item-reconcile-e2e',
+          unpack_task_id:'task-e2e-reconcile',
+          source_object_key:'movie:reconcile',
+          name:'E2E task reconcile',
+          source:'downloads/manual-e2e',
+          size_bytes:1073741824,
+          phase:'LINKING',
+          progress:55,
+          result:null,
+          error_code:null,
+          error_summary_zh:null,
+          technical_detail:null,
+          retryable:false,
+          retry_count:0,
+          lifecycle_stage:'LINKING',
+          risk_level:'MEDIUM',
+          authorization_status:'AUTHORIZED',
+          execution_plan_id:'plan-task-e2e-reconcile',
+          execution_plan_ready:true,
+          side_effects_started:true,
+          lifecycle_blocked_reasons:['OPERATION_RECONCILE_REQUIRED'],
+          risk_summary:null,
+          approval:null,
+          closure:{
+            status:'NEEDS_ATTENTION',
+            filesystem_status:'RECONCILE_REQUIRED',
+            downloader_status:'ROLLBACK_BLOCKED',
+            operation_attention_count:2,
+            reconcile_required_count:1,
+            rollback_blocked_count:1,
+            retention_candidate_count:0,
+            manual_attention_required:true,
+            issue_codes:['OPERATION_RECONCILE_REQUIRED'],
+          },
+        },
+        {
+          id:'execution-item-retention-e2e',
+          unpack_task_id:'task-e2e-pre-cancel',
+          source_object_key:'movie:retention',
+          name:'E2E task retention',
+          source:'downloads/manual-e2e',
+          size_bytes:1073741824,
+          phase:'DONE',
+          progress:100,
+          result:'CANCELLED',
+          error_code:null,
+          error_summary_zh:null,
+          technical_detail:null,
+          retryable:false,
+          retry_count:0,
+          lifecycle_stage:'CANCELLED',
+          risk_level:'LOW',
+          authorization_status:'NOT_REQUIRED',
+          execution_plan_id:null,
+          execution_plan_ready:null,
+          side_effects_started:false,
+          lifecycle_blocked_reasons:[],
+          risk_summary:null,
+          approval:null,
+          closure:{
+            status:'CLOSED',
+            filesystem_status:'CLEAN',
+            downloader_status:'CLEAN',
+            operation_attention_count:0,
+            reconcile_required_count:0,
+            rollback_blocked_count:0,
+            retention_candidate_count:1,
+            manual_attention_required:false,
+            issue_codes:[],
+          },
+        },
+      ],
+      events:[],
+    });
     await page.route('**/api/v1/task-definitions',route=>{
       const request=route.request();
       if(request.method()==='GET')return fulfillJson(route,{items:taskDefinitions});
       return fulfillJson(route,{code:'METHOD_NOT_ALLOWED',detail:'E2E task definition method'},405);
+    });
+    await page.route('**/api/v1/task-definitions/definition-manual-e2e/executions**',route=>{
+      const request=route.request();
+      const url=new URL(request.url());
+      if(request.method()!=='GET')return route.fallback();
+      if(url.pathname==='/api/v1/task-definitions/definition-manual-e2e/executions'){
+        const execution=taskDefinitionExecution();
+        return fulfillJson(route,{
+          items:[{
+            id:execution.id,status:execution.status,phase:execution.phase,trigger:execution.trigger,
+            success_count:execution.success_count,failed_count:execution.failed_count,skipped_count:execution.skipped_count,
+            created_at:execution.created_at,started_at:execution.started_at,finished_at:execution.finished_at,
+            task_definition_id:execution.task_definition_id,task_name:execution.task_name,
+            source_execution_id:execution.source_execution_id,discovered_count:execution.discovered_count,trace_id:execution.trace_id,
+          }],
+          page:1,page_size:20,total:1,
+        });
+      }
+      if(url.pathname==='/api/v1/task-definitions/definition-manual-e2e/executions/execution-manual-e2e'){
+        return fulfillJson(route,taskDefinitionExecution());
+      }
+      return route.fallback();
     });
     const e2eDownloader={
       id:'qb-e2e',name:'qB E2E',type:'QBITTORRENT',base_url:'http://qb-e2e.local',credential_configured:true,
@@ -379,9 +573,10 @@ const path = require('node:path');
     }));
     await page.route('**/api/v1/task-units/**',async route=>{
       const url=new URL(route.request().url());
-      const match=url.pathname.match(/\/api\/v1\/task-units\/unit-(task-e2e-(?:execute|cancel))\/(.+)$/);
+      const match=url.pathname.match(/\/api\/v1\/task-units\/unit-(task-e2e-(?:execute|cancel|reconcile|pre-cancel))\/(.+)$/);
       if(!match)return route.fallback();
       const id=match[1],tail=match[2];
+      if(id==='task-e2e-pre-cancel'&&tail==='decision')return fulfillJson(route,{code:'REVIEW_NOT_FOUND',detail:'E2E retention task has no review'},404);
       if(tail==='decision')return fulfillJson(route,review(id));
       if(tail==='decision/verification')return fulfillJson(route,verification(id));
       if(tail==='execution-gate')return fulfillJson(route,gate(id));
@@ -666,11 +861,21 @@ const path = require('node:path');
     await page.getByText('CANCELLATION_COMPLETED',{exact:true}).waitFor({timeout:7000});
     await page.keyboard.press('Escape');
 
-    // 真实动作 UI：首次 execute 响应丢失后必须复用同一幂等键，随后由 TaskEvent SSE 自动收敛到 DONE。
-    await page.locator('nav').getByRole('button',{name:'预演与确认',exact:true}).click();
-    await page.getByRole('heading',{name:'预演与确认',exact:true,level:1}).waitFor();
-    const executeRow=page.locator('.el-table__row').filter({hasText:'task-e2e-execute'});
-    await executeRow.getByRole('button',{name:'审核 / 证据',exact:true}).click();
+    // v0.1.8 已移除独立“预演与确认 / 清理与对账”入口；审核、执行、对账和收尾都必须从任务中心当前 Run 进入。
+    assert.equal(await page.locator('nav').getByRole('button',{name:'预演与确认',exact:true}).count(),0,'旧“预演与确认”导航必须删除');
+    assert.equal(await page.locator('nav').getByRole('button',{name:'清理与对账',exact:true}).count(),0,'旧“清理与对账”导航必须删除');
+    await page.getByRole('heading',{name:'任务中心',exact:true,level:1}).waitFor();
+
+    // 真实动作 UI：从统一“任务执行详情 → 审核 / 对账”进入；首次 execute 响应丢失后必须复用同一幂等键，随后由 TaskEvent SSE 自动收敛到 DONE。
+    const definitionRow=page.locator('.el-table__row').filter({hasText:'手动拆包 E2E'}).first();
+    await definitionRow.getByRole('button',{name:'查看',exact:true}).click();
+    const definitionDrawer=page.locator('.el-drawer').filter({hasText:'任务详情 · 手动拆包 E2E'}).last();
+    await definitionDrawer.getByRole('tab',{name:'执行记录',exact:true}).click();
+    const executionHistoryRow=definitionDrawer.locator('.el-table__row').filter({hasText:'手动执行'}).first();
+    await executionHistoryRow.getByRole('button',{name:'查看',exact:true}).click();
+    const executionDrawer=page.locator('.el-drawer').filter({hasText:'执行记录详情'}).last();
+    await executionDrawer.getByRole('tab',{name:'审核 / 对账',exact:true}).click();
+    await executionDrawer.getByRole('heading',{name:'审核、校验与对账',exact:true,level:3}).waitFor();
     await page.getByRole('button',{name:'确认并执行当前计划',exact:true}).click();
     await page.locator('.el-message-box').getByRole('button',{name:'执行当前计划',exact:true}).click();
     await page.getByText(/API_UNAVAILABLE/).waitFor();
@@ -682,12 +887,13 @@ const path = require('node:path');
     await page.getByText('QBITTORRENT_RECHECK_APPLIED',{exact:true}).waitFor({timeout:12000});
     await page.getByText('QBITTORRENT_START_APPLIED',{exact:true}).waitFor({timeout:12000});
     await page.getByText('QBITTORRENT_SEEDING_CONFIRMED',{exact:true}).waitFor({timeout:12000});
-    await page.locator('.review-identity').filter({hasText:'task-e2e-execute'}).getByText(/DONE · v5/).waitFor({timeout:12000});
-    await page.keyboard.press('Escape');
+    await page.getByText('任务当前为 DONE，不允许修改审核结果',{exact:true}).waitFor({timeout:12000});
 
-    // 取消 UI：禁止仅回滚文件；显式 qB remove + rollback 后由 TaskEvent SSE 收敛到 CANCELLED。
-    const cancelRow=page.locator('.el-table__row').filter({hasText:'task-e2e-cancel'});
-    await cancelRow.getByRole('button',{name:'审核 / 证据',exact:true}).click();
+    // 同一统一执行详情中切换到底层 cancel Run：禁止仅回滚文件；显式 qB remove + rollback 后由 TaskEvent SSE 收敛到 CANCELLED。
+    const evidenceSelector=executionDrawer.locator('.execution-evidence-selector .el-select');
+    await evidenceSelector.click();
+    await page.getByText('E2E task cancel · OPEN',{exact:true}).click();
+    await executionDrawer.getByRole('heading',{name:'审核、校验与对账',exact:true,level:3}).waitFor();
     const rollbackCheckbox=page.locator('.cancellation-option').filter({hasText:'回滚 PackBreaker 创建的 hardlink'}).locator('.el-checkbox');
     const removeCheckbox=page.locator('.cancellation-option').filter({hasText:'移除 PackBreaker 创建的 qBittorrent 任务'}).locator('.el-checkbox');
     await rollbackCheckbox.click();
@@ -703,16 +909,19 @@ const path = require('node:path');
     assert.equal(cancelBodies[0].rollback_created_resources,true);
     await page.getByText('QBITTORRENT_REMOVE_APPLIED',{exact:true}).waitFor({timeout:7000});
     await page.getByText('ROLLBACK_COMPLETED',{exact:true}).waitFor({timeout:7000});
-    await page.locator('.review-identity').filter({hasText:'task-e2e-cancel'}).getByText(/CANCELLED/).waitFor({timeout:7000});
-    await page.keyboard.press('Escape');
+    await page.getByText('任务当前为 CANCELLED，不允许修改审核结果',{exact:true}).waitFor({timeout:7000});
 
-    // 阻断/对账操作中心：响应丢失后即使 SSE 已显示 APPLIED，也只能使用原 journal + 原幂等键确认结果。
-    await page.locator('nav').getByRole('button',{name:'任务中心',exact:false}).click();
-    await page.getByRole('heading',{name:'任务中心',exact:true,level:1}).waitFor();
-    await showLegacyRuns();
-    const reconcileRow=page.locator('.el-table__row').filter({hasText:'task-e2e-reconcile'});
-    await reconcileRow.getByRole('button',{name:'分析',exact:true}).click();
-    await page.getByRole('heading',{name:'阻断 / 对账操作中心',exact:true}).waitFor();
+    // 当前 cancel Run 的 operation/retention 证据仍按任务隔离展示，不再依赖独立清理页。
+    await page.getByText('journal-maintenance-manual',{exact:false}).waitFor();
+    await page.getByText('当前状态没有可自动证明的安全恢复动作',{exact:true}).waitFor();
+    await page.getByText('journal-maintenance-blocked',{exact:false}).waitFor();
+    await page.getByText('任务仍引用该 journal',{exact:true}).first().waitFor();
+    assert.equal(await page.getByText('/private/maintenance/secret',{exact:true}).count(),0,'任务操作中心不得暴露私有路径');
+
+    // 阻断/对账：切换到 reconcile Run。响应丢失后即使 SSE 已显示 APPLIED，也只能使用原 journal + 原幂等键确认结果。
+    await evidenceSelector.click();
+    await page.getByText('E2E task reconcile · NEEDS_ATTENTION',{exact:true}).click();
+    await executionDrawer.getByRole('heading',{name:'校验 / 对账 / 收尾',exact:true,level:3}).waitFor();
     assert.equal(await page.getByText('/private/reconcile/movie.mkv',{exact:true}).count(),0,'operation 摘要不得暴露路径');
     await page.getByText('qB 添加',{exact:true}).waitFor();
     const fsReconcileButton=page.getByRole('button',{name:'重新检查',exact:true});
@@ -725,7 +934,29 @@ const path = require('node:path');
     await page.getByText(/证据重新验证完成：APPLIED/).waitFor();
     assert.equal(reconcileKeys.length,2,'响应丢失后的 reconcile 应重试一次');
     assert.equal(reconcileKeys[0],reconcileKeys[1],'响应丢失后的 reconcile 必须复用相同 Idempotency-Key');
-    await page.keyboard.press('Escape');
+
+    // 统一任务生命周期内的 retention/purge：切换到已终态且满足 retention-plan 的 Run。
+    await evidenceSelector.click();
+    await page.getByText('E2E task retention · CLOSED',{exact:true}).click();
+    await executionDrawer.getByRole('heading',{name:'校验 / 对账 / 收尾',exact:true,level:3}).waitFor();
+    await page.getByText('journal-maintenance-noop',{exact:false}).waitFor();
+    const retentionPurgeButton=page.getByRole('button',{name:'清理历史 payload',exact:true});
+    assert.equal(await retentionPurgeButton.count(),1,'只有 retention-plan eligible journal 才显示 purge 按钮');
+    assert.equal(await page.getByText('/private/maintenance/secret',{exact:true}).count(),0,'任务操作中心不得暴露私有路径');
+    await retentionPurgeButton.click();
+    await page.locator('.el-message-box').getByRole('button',{name:'重新验证并清理 payload',exact:true}).click();
+    await page.getByText('清理响应结果未知；请使用当前操作继续重试确认',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'重试确认清理结果',exact:true}).click();
+    await page.getByText(/Journal payload 已安全清理/).waitFor();
+    assert.equal(retentionKeys.length,2,'retention purge 响应丢失后应重试一次');
+    assert.equal(retentionKeys[0],retentionKeys[1],'retention purge 必须复用相同 Idempotency-Key');
+    assert.equal(retentionBodies[0].retention_days,30);
+    assert.equal(await page.getByRole('button',{name:'清理历史 payload',exact:true}).count(),0,'purge 确认后实时预览不得继续显示已清理 journal');
+
+    await executionDrawer.locator('.el-drawer__close-btn').click();
+    await executionDrawer.waitFor({state:'hidden'});
+    await definitionDrawer.locator('.el-drawer__close-btn').click();
+    await definitionDrawer.waitFor({state:'hidden'});
 
     // 真实站点管理：health 不伪造、reset 仅重置熔断器、启用使用当前强版本，保存凭证不回显。
     await page.locator('nav').getByRole('button',{name:'站点管理',exact:true}).click();
@@ -750,7 +981,7 @@ const path = require('node:path');
     assert.equal(siteTestCalls,1,'站点连接测试应只调用一次');
     assert.equal(await page.getByText(/连接恢复/).count(),0,'reset-circuit 不得伪造远端连接恢复文案');
 
-    for(const name of ['总览','预演与确认','站点管理','下载器','清理与对账','日志','系统设置','关于']){
+    for(const name of ['总览','任务中心','站点管理','下载器','日志','系统设置','关于']){
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
       assert.equal(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`${name} 桌面溢出`);
@@ -764,28 +995,6 @@ const path = require('node:path');
     assert.equal(backupRuns,1,'备份管理页立即备份只应提交一次');
     assert.equal(await page.getByRole('button',{name:/恢复/}).count(),0,'在线管理页不得提供数据库恢复按钮');
 
-    await page.locator('nav').getByRole('button',{name:'清理与对账',exact:true}).click();
-    await page.getByRole('heading',{name:'清理 / 对账报告',exact:true}).waitFor();
-    await page.getByText('journal-maintenance-manual',{exact:false}).waitFor();
-    await page.getByText('缺少可安全自动证明的完成证据，或该操作类型没有自动对账器。',{exact:true}).waitFor();
-    const retentionPreview=page.locator('section.panel').filter({has:page.getByRole('heading',{name:'保留期安全预览',exact:true})});
-    await retentionPreview.getByText('journal-maintenance-noop',{exact:false}).waitFor();
-    await page.getByText('维护报告候选概览',{exact:true}).waitFor();
-    await retentionPreview.getByText('journal-maintenance-blocked',{exact:false}).waitFor();
-    await retentionPreview.getByText('任务仍在使用该记录',{exact:true}).first().waitFor();
-    const retentionPurgeButton=retentionPreview.getByRole('button',{name:'清理 payload',exact:true});
-    assert.equal(await retentionPurgeButton.count(),1,'只有 retention-plan eligible journal 才显示 purge 按钮');
-    assert.equal(await page.getByText('/private/maintenance/secret',{exact:true}).count(),0,'维护报告不得暴露私有路径');
-    await retentionPurgeButton.click();
-    await page.locator('.el-message-box').getByRole('button',{name:'重新验证并清理 payload',exact:true}).click();
-    await page.getByText('上一次清理结果未知',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'重试确认同一清理请求',exact:true}).click();
-    await page.getByText(/Journal payload 已安全清理/).waitFor();
-    assert.equal(retentionKeys.length,2,'retention purge 响应丢失后应重试一次');
-    assert.equal(retentionKeys[0],retentionKeys[1],'retention purge 必须复用相同 Idempotency-Key');
-    assert.equal(retentionBodies[0].retention_days,30);
-    assert.equal(await page.getByRole('button',{name:'清理 payload',exact:true}).count(),0,'purge 确认后实时预览不得继续显示已清理 journal');
-    await page.getByRole('button',{name:'刷新报告',exact:true}).click();
     await page.locator('nav').getByRole('button',{name:'任务中心',exact:false}).click();
     await page.setViewportSize({width:390,height:844});
     await page.waitForFunction(()=>document.querySelector('.sidebar').getBoundingClientRect().right<=0); await page.locator('.el-message').last().waitFor({state:'hidden'}); await page.screenshot({path:path.join(output,'mobile.png'),fullPage:true});
@@ -798,7 +1007,7 @@ const path = require('node:path');
     await userDrawer.getByText('深色',{exact:true}).click();
     await page.keyboard.press('Escape');
     await page.screenshot({path:path.join(output,'mobile-dark.png'),fullPage:true});
-    for(const name of ['总览','任务中心','预演与确认','下载器','清理与对账','日志','系统设置','关于']){
+    for(const name of ['总览','任务中心','站点管理','下载器','日志','系统设置','关于']){
       await page.getByRole('button',{name:'展开导航',exact:true}).click();
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
