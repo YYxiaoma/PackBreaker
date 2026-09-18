@@ -1,0 +1,58 @@
+name: Candidate Docker E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/candidate-docker-e2e.yml"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "backend/app/**"
+      - "scripts/check-updater-e2e.sh"
+      - "scripts/validate_release_baseline.py"
+      - "release-baseline.json"
+      - "compose.yaml"
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-docker-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  updater-e2e:
+    name: Compose / updater real Docker E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate published release baseline
+        run: python3 scripts/validate_release_baseline.py
+
+      - name: Log in to GHCR for baseline image reads
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build current main as local candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          docker build \
+            --build-arg VERSION="$version" \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --tag packbreaker:candidate-docker-e2e \
+            .
+
+      - name: Exercise real updater, rollback, and Compose-label preservation
+        run: bash scripts/check-updater-e2e.sh packbreaker:candidate-docker-e2e
