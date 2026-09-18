@@ -13,14 +13,27 @@ from uuid import NAMESPACE_URL, uuid5
 from weakref import WeakValueDictionary
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
-from backend.app.application.task_actions import RerunTaskAction, TaskActionActor, TaskActionService
+from backend.app.application.task_actions import (
+    ExecuteTaskAction,
+    RerunTaskAction,
+    TaskActionActor,
+    TaskActionService,
+)
 from backend.app.application.tasks import ExecutionPlanView, TaskAnalysisService
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.file_mapping import SourceFileCandidate
+from backend.app.domain.operation import OperationKind, OperationStatus, operation_kind
+from backend.app.domain.task_approval import (
+    TaskApprovalDecisionSource,
+    TaskApprovalState,
+    build_task_risk_summary,
+    preauthorization_covers,
+)
 from backend.app.domain.task_definition import (
     TaskDefinitionKind,
     TaskDefinitionStatus,
@@ -33,10 +46,19 @@ from backend.app.domain.task_definition import (
     TaskStorageMode,
     next_cron_run,
 )
+from backend.app.domain.task_lifecycle import (
+    TaskLifecycleAuthorization,
+    TaskLifecycleProjection,
+    TaskLifecycleRiskLevel,
+    TaskLifecycleStage,
+    project_task_lifecycle,
+)
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, TaskUnit, identify_task_units
 from backend.app.infrastructure.persistence.models import (
+    OperationJournal,
     Site,
+    TaskApprovalRecord,
     TaskDefinition,
     TaskExecution,
     TaskExecutionEvent,
@@ -44,6 +66,7 @@ from backend.app.infrastructure.persistence.models import (
     TaskExecutionPolicy,
     TaskFilter,
     TaskOutputPolicy,
+    TaskRiskSummaryRecord,
     TaskSchedule,
     TaskSource,
     UnpackTask,
@@ -51,7 +74,10 @@ from backend.app.infrastructure.persistence.models import (
     utc_now,
 )
 from backend.app.infrastructure.persistence.repositories import TaskCreate, TaskRepository
-from backend.app.infrastructure.persistence.task_analysis_repositories import TaskUnitRepository
+from backend.app.infrastructure.persistence.task_analysis_repositories import (
+    TaskExecutionPlanRepository,
+    TaskUnitRepository,
+)
 from backend.app.infrastructure.source_inventory import (
     SourceInventoryPage,
     scan_source_inventory,
@@ -142,6 +168,37 @@ def filter_source_inventory(
 
 
 @dataclass(frozen=True, slots=True)
+class TaskRiskSummaryView:
+    id: str
+    execution_plan_id: str
+    plan_digest: str
+    risk_level: str
+    reason_codes: tuple[str, ...]
+    action_kinds: tuple[str, ...]
+    hardlink_count: int
+    client_fetch_count: int
+    create_directory_count: int
+    estimated_download_bytes_upper_bound: int
+    risk_digest: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TaskApprovalView:
+    id: str
+    execution_plan_id: str
+    plan_digest: str
+    state: str
+    decision_source: str | None
+    actor_kind: str | None
+    actor_id: str | None
+    decision_note: str | None
+    decided_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class TaskExecutionItemView:
     id: str
     unpack_task_id: str | None
@@ -157,6 +214,29 @@ class TaskExecutionItemView:
     technical_detail: str | None
     retryable: bool
     retry_count: int
+    lifecycle_stage: str
+    risk_level: str
+    authorization_status: str
+    execution_plan_id: str | None
+    execution_plan_ready: bool | None
+    side_effects_started: bool
+    lifecycle_blocked_reasons: tuple[str, ...]
+    risk_summary: TaskRiskSummaryView | None
+    approval: TaskApprovalView | None
+    closure: TaskExecutionClosureView
+
+
+@dataclass(frozen=True, slots=True)
+class TaskExecutionClosureView:
+    status: str
+    filesystem_status: str
+    downloader_status: str
+    operation_attention_count: int
+    reconcile_required_count: int
+    rollback_blocked_count: int
+    retention_candidate_count: int
+    manual_attention_required: bool
+    issue_codes: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +322,138 @@ class DueMonitorScan:
     trigger: TaskExecutionTrigger
 
 
+@dataclass(frozen=True, slots=True)
+class DueLifecycleAdvance:
+    task_definition_id: str
+    execution_id: str
+
+
+_FILESYSTEM_OPERATION_KINDS = frozenset(
+    {
+        OperationKind.FILESYSTEM_DIRECTORY,
+        OperationKind.FILESYSTEM_HARDLINK,
+        OperationKind.FILESYSTEM_REPAIR_ISOLATION,
+        OperationKind.FILESYSTEM_REPAIR_CLEANUP,
+    }
+)
+_DOWNLOADER_OPERATION_KINDS = frozenset(
+    kind
+    for kind in OperationKind
+    if kind not in _FILESYSTEM_OPERATION_KINDS and kind is not OperationKind.OTHER
+)
+_CLOSURE_ATTENTION_STATUSES = frozenset(
+    {
+        OperationStatus.INTENT_RECORDED,
+        OperationStatus.ROLLBACK_PENDING,
+        OperationStatus.RECONCILE_REQUIRED,
+        OperationStatus.ROLLBACK_BLOCKED,
+    }
+)
+_RETENTION_CANDIDATE_STATUSES = frozenset({OperationStatus.NOOP, OperationStatus.ROLLED_BACK})
+
+
+def _task_execution_closure(
+    session: Session,
+    task: UnpackTask | None,
+) -> TaskExecutionClosureView:
+    if task is None:
+        return TaskExecutionClosureView(
+            status="ATTENTION_REQUIRED",
+            filesystem_status="UNKNOWN",
+            downloader_status="UNKNOWN",
+            operation_attention_count=1,
+            reconcile_required_count=0,
+            rollback_blocked_count=0,
+            retention_candidate_count=0,
+            manual_attention_required=True,
+            issue_codes=("UNPACK_TASK_NOT_FOUND",),
+        )
+    try:
+        task_status = TaskStatus(task.status)
+    except ValueError:
+        return TaskExecutionClosureView(
+            status="ATTENTION_REQUIRED",
+            filesystem_status="UNKNOWN",
+            downloader_status="UNKNOWN",
+            operation_attention_count=1,
+            reconcile_required_count=0,
+            rollback_blocked_count=0,
+            retention_candidate_count=0,
+            manual_attention_required=True,
+            issue_codes=("TASK_STATUS_UNKNOWN",),
+        )
+    if task_status not in {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+        return TaskExecutionClosureView(
+            status="PENDING",
+            filesystem_status="PENDING",
+            downloader_status="PENDING",
+            operation_attention_count=0,
+            reconcile_required_count=0,
+            rollback_blocked_count=0,
+            retention_candidate_count=0,
+            manual_attention_required=False,
+            issue_codes=(),
+        )
+
+    journals = tuple(
+        session.scalars(
+            select(OperationJournal)
+            .where(OperationJournal.task_id == task.id)
+            .order_by(OperationJournal.created_at, OperationJournal.id)
+        )
+    )
+    statuses = tuple(OperationStatus(journal.status) for journal in journals)
+    attention = tuple(status for status in statuses if status in _CLOSURE_ATTENTION_STATUSES)
+    reconcile_required_count = sum(
+        status is OperationStatus.RECONCILE_REQUIRED for status in statuses
+    )
+    rollback_blocked_count = sum(status is OperationStatus.ROLLBACK_BLOCKED for status in statuses)
+    retention_candidate_count = sum(status in _RETENTION_CANDIDATE_STATUSES for status in statuses)
+
+    filesystem_statuses: list[OperationStatus] = []
+    downloader_statuses: list[OperationStatus] = []
+    unknown_attention = False
+    for journal, status in zip(journals, statuses, strict=True):
+        kind = operation_kind(journal.operation_type)
+        if kind in _FILESYSTEM_OPERATION_KINDS:
+            filesystem_statuses.append(status)
+        elif kind in _DOWNLOADER_OPERATION_KINDS:
+            downloader_statuses.append(status)
+        elif status in _CLOSURE_ATTENTION_STATUSES:
+            unknown_attention = True
+
+    def subsystem_status(values: list[OperationStatus]) -> str:
+        if any(value in _CLOSURE_ATTENTION_STATUSES for value in values):
+            return "ATTENTION_REQUIRED"
+        if values:
+            return "OK"
+        return "NOT_APPLICABLE"
+
+    issue_codes: list[str] = []
+    if OperationStatus.INTENT_RECORDED in attention:
+        issue_codes.append("OPERATION_INTENT_INCOMPLETE")
+    if OperationStatus.ROLLBACK_PENDING in attention:
+        issue_codes.append("OPERATION_ROLLBACK_PENDING")
+    if OperationStatus.RECONCILE_REQUIRED in attention:
+        issue_codes.append("OPERATION_RECONCILE_REQUIRED")
+    if OperationStatus.ROLLBACK_BLOCKED in attention:
+        issue_codes.append("OPERATION_ROLLBACK_BLOCKED")
+    if unknown_attention:
+        issue_codes.append("OPERATION_KIND_UNKNOWN")
+
+    return TaskExecutionClosureView(
+        status="ATTENTION_REQUIRED" if attention else "COMPLETE",
+        filesystem_status=subsystem_status(filesystem_statuses),
+        downloader_status=subsystem_status(downloader_statuses),
+        operation_attention_count=len(attention),
+        reconcile_required_count=reconcile_required_count,
+        rollback_blocked_count=rollback_blocked_count,
+        retention_candidate_count=retention_candidate_count,
+        manual_attention_required=rollback_blocked_count > 0 or unknown_attention,
+        issue_codes=tuple(issue_codes),
+    )
+
+
 def reconcile_task_execution(
     session: Session,
     record: TaskExecution,
@@ -278,12 +490,19 @@ def reconcile_task_execution(
             continue
         status = TaskStatus(task.status)
         if status is TaskStatus.DONE:
+            closure = _task_execution_closure(session, task)
             item.phase = TaskExecutionPhase.COMPLETED.value
             item.progress = 100
-            item.result = "SUCCESS"
-            item.error_code = None
-            item.error_summary_zh = None
-            item.retryable = False
+            if closure.status == "ATTENTION_REQUIRED":
+                item.result = "PARTIAL_FAILED"
+                item.error_code = "TASK_FINALIZATION_ATTENTION_REQUIRED"
+                item.error_summary_zh = "执行已完成，但自动校验或对账发现需要处理的异常"
+                item.retryable = False
+            else:
+                item.result = "SUCCESS"
+                item.error_code = None
+                item.error_summary_zh = None
+                item.retryable = False
         elif status is TaskStatus.FAILED:
             item.phase = TaskExecutionPhase.FAILED.value
             item.result = "FAILED"
@@ -334,16 +553,17 @@ def reconcile_task_execution(
 
     record.discovered_count = len(items)
     record.success_count = sum(item.result == "SUCCESS" for item in items)
-    record.failed_count = sum(item.result == "FAILED" for item in items)
+    partial_failed_count = sum(item.result == "PARTIAL_FAILED" for item in items)
+    record.failed_count = sum(item.result in {"FAILED", "PARTIAL_FAILED"} for item in items)
     record.skipped_count = sum(item.result == "SKIPPED" for item in items)
     terminal = bool(items) and all(
-        item.result in {"SUCCESS", "FAILED", "SKIPPED"} for item in items
+        item.result in {"SUCCESS", "FAILED", "PARTIAL_FAILED", "SKIPPED"} for item in items
     )
     if terminal:
-        if record.failed_count == len(items):
+        if record.failed_count == len(items) and partial_failed_count == 0:
             record.status = TaskExecutionStatus.FAILED.value
             record.phase = TaskExecutionPhase.FAILED.value
-        elif record.failed_count:
+        elif record.failed_count or partial_failed_count:
             record.status = TaskExecutionStatus.PARTIAL_FAILED.value
             record.phase = TaskExecutionPhase.COMPLETED.value
         else:
@@ -447,37 +667,485 @@ class TaskDefinitionExecutionService:
                 title="缺少目标下载器",
                 detail="目录来源任务必须显式选择目标下载器后才能生成安全执行计划",
             )
-        with self._session_factory() as session:
-            execution = session.get(TaskExecution, execution_id)
-            item = session.get(TaskExecutionItem, item_id)
-            if (
-                execution is None
-                or execution.task_definition_id != definition_id
-                or item is None
-                or item.execution_id != execution_id
-                or item.unpack_task_id is None
-            ):
-                raise ApplicationError(
-                    code="TASK_EXECUTION_ITEM_NOT_FOUND",
-                    status=404,
-                    title="执行对象不存在",
-                    detail="未找到属于当前任务执行且已物化安全 Run 的执行对象",
-                )
-            units = TaskUnitRepository(session).list_latest(item.unpack_task_id)
-            normalized_key = item.source_object_key.rsplit(":", 1)[-1]
-            matching_units = [unit for unit in units if unit.normalized_unit_key == normalized_key]
-            if len(matching_units) != 1:
-                raise ApplicationError(
-                    code="TASK_EXECUTION_UNIT_NOT_FOUND",
-                    status=409,
-                    title="无法定位安全执行单元",
-                    detail="当前执行对象不能唯一映射到底层 TaskUnit，拒绝猜测生成执行计划",
-                )
-            unit_id = matching_units[0].id
+        unit_id, _task_id = self._execution_item_unit(
+            definition_id=definition_id,
+            execution_id=execution_id,
+            item_id=item_id,
+        )
         return await self._task_analysis_service.create_execution_plan(
             unit_id,
             target_root=snapshot.output.output_directory,
             target_downloader_id=target_downloader_id,
+        )
+
+    def _ensure_risk_and_approval(
+        self,
+        *,
+        definition_id: str,
+        unit_id: str,
+        task_id: str,
+        plan: ExecutionPlanView,
+    ) -> tuple[TaskRiskSummaryView, TaskApprovalView | None]:
+        action_kinds = tuple(
+            str(action["kind"]) for action in plan.actions if isinstance(action.get("kind"), str)
+        )
+        summary = build_task_risk_summary(
+            execution_plan_id=plan.id,
+            plan_digest=plan.plan_digest,
+            action_kinds=action_kinds,
+            blocked_reasons=plan.blocked_reasons,
+            hardlink_count=plan.hardlink_count,
+            client_fetch_count=plan.client_fetch_count,
+            create_directory_count=plan.create_directory_count,
+            estimated_download_bytes_upper_bound=plan.estimated_download_bytes_upper_bound,
+        )
+        with self._session_factory() as session:
+            now = utc_now()
+            stale_pending = tuple(
+                session.scalars(
+                    select(TaskApprovalRecord).where(
+                        TaskApprovalRecord.task_id == task_id,
+                        TaskApprovalRecord.execution_plan_id != plan.id,
+                        TaskApprovalRecord.state == TaskApprovalState.PENDING.value,
+                    )
+                )
+            )
+            for stale in stale_pending:
+                stale.state = TaskApprovalState.EXPIRED.value
+                stale.actor_kind = "SYSTEM"
+                stale.actor_id = "execution-plan-superseded"
+                stale.decision_note = "Execution Plan superseded before approval"
+                stale.decided_at = now
+                stale.updated_at = now
+
+            risk_record = session.scalar(
+                select(TaskRiskSummaryRecord).where(
+                    TaskRiskSummaryRecord.execution_plan_id == plan.id
+                )
+            )
+            if risk_record is None:
+                candidate = TaskRiskSummaryRecord(
+                    id=new_uuid(),
+                    task_id=task_id,
+                    task_unit_id=unit_id,
+                    execution_plan_id=plan.id,
+                    plan_digest=plan.plan_digest,
+                    risk_level=summary.risk_level.value,
+                    reason_codes=list(summary.reason_codes),
+                    action_kinds=list(summary.action_kinds),
+                    hardlink_count=summary.hardlink_count,
+                    client_fetch_count=summary.client_fetch_count,
+                    create_directory_count=summary.create_directory_count,
+                    estimated_download_bytes_upper_bound=(
+                        summary.estimated_download_bytes_upper_bound
+                    ),
+                    risk_digest=summary.risk_digest,
+                    created_at=utc_now(),
+                )
+                try:
+                    with session.begin_nested():
+                        session.add(candidate)
+                        session.flush()
+                    risk_record = candidate
+                except IntegrityError:
+                    risk_record = session.scalar(
+                        select(TaskRiskSummaryRecord).where(
+                            TaskRiskSummaryRecord.execution_plan_id == plan.id
+                        )
+                    )
+            if risk_record is None:
+                raise RuntimeError("risk summary disappeared during create-or-get")
+            if (
+                risk_record.plan_digest != plan.plan_digest
+                or risk_record.risk_digest != summary.risk_digest
+            ):
+                raise ApplicationError(
+                    code="TASK_RISK_SUMMARY_STALE",
+                    status=409,
+                    title="风险摘要已失效",
+                    detail="当前风险摘要与 Execution Plan digest 不一致，拒绝继续授权",
+                )
+
+            approval_record = session.scalar(
+                select(TaskApprovalRecord).where(TaskApprovalRecord.execution_plan_id == plan.id)
+            )
+            if summary.risk_level is TaskLifecycleRiskLevel.HIGH and approval_record is None:
+                definition = session.get(TaskDefinition, definition_id)
+                policy = session.scalar(
+                    select(TaskExecutionPolicy).where(
+                        TaskExecutionPolicy.task_definition_id == definition_id
+                    )
+                )
+                preauthorized = bool(
+                    definition is not None
+                    and definition.kind == TaskDefinitionKind.MONITOR.value
+                    and policy is not None
+                    and preauthorization_covers(
+                        enabled=policy.high_risk_preauthorization_enabled,
+                        allowed_action_kinds=tuple(policy.high_risk_allowed_action_kinds),
+                        action_kinds=summary.action_kinds,
+                    )
+                )
+                candidate_approval = TaskApprovalRecord(
+                    id=new_uuid(),
+                    task_id=task_id,
+                    task_unit_id=unit_id,
+                    execution_plan_id=plan.id,
+                    risk_summary_id=risk_record.id,
+                    plan_digest=plan.plan_digest,
+                    state=(
+                        TaskApprovalState.APPROVED.value
+                        if preauthorized
+                        else TaskApprovalState.PENDING.value
+                    ),
+                    decision_source=(
+                        TaskApprovalDecisionSource.PREAUTHORIZED.value if preauthorized else None
+                    ),
+                    actor_kind="SYSTEM" if preauthorized else None,
+                    actor_id="task-definition-policy" if preauthorized else None,
+                    decision_note=(
+                        "Matched monitor high-risk action allowlist" if preauthorized else None
+                    ),
+                    idempotency_key_digest=None,
+                    decided_at=now if preauthorized else None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                try:
+                    with session.begin_nested():
+                        session.add(candidate_approval)
+                        session.flush()
+                    approval_record = candidate_approval
+                except IntegrityError:
+                    approval_record = session.scalar(
+                        select(TaskApprovalRecord).where(
+                            TaskApprovalRecord.execution_plan_id == plan.id
+                        )
+                    )
+            if approval_record is not None and approval_record.plan_digest != plan.plan_digest:
+                raise ApplicationError(
+                    code="TASK_APPROVAL_STALE",
+                    status=409,
+                    title="审批证据已失效",
+                    detail="当前 Approval 与 Execution Plan digest 不一致，拒绝继续执行",
+                )
+            risk_view = self._risk_summary_view(risk_record)
+            approval_view = (
+                self._approval_view(approval_record) if approval_record is not None else None
+            )
+            session.commit()
+            return risk_view, approval_view
+
+    async def advance_execution(
+        self,
+        definition_id: str,
+        execution_id: str,
+        *,
+        actor: TaskActionActor,
+        idempotency_key: str | None,
+    ) -> TaskExecutionView:
+        normalized_key = _require_lifecycle_idempotency_key(idempotency_key)
+        current = self.get_execution(execution_id)
+        if current.task_definition_id != definition_id:
+            raise ApplicationError(
+                code="TASK_EXECUTION_NOT_FOUND",
+                status=404,
+                title="执行记录不存在",
+                detail="未找到该任务定义下的指定执行记录",
+            )
+        for item in current.items:
+            if item.unpack_task_id is None or item.result is not None:
+                continue
+            await self._advance_execution_item(
+                definition_id=definition_id,
+                execution_id=execution_id,
+                item_id=item.id,
+                actor=actor,
+                idempotency_key=normalized_key,
+            )
+        return self.get_execution(execution_id)
+
+    async def decide_execution_approval(
+        self,
+        definition_id: str,
+        execution_id: str,
+        item_id: str,
+        *,
+        execution_plan_id: str,
+        approve: bool,
+        note: str | None,
+        actor: TaskActionActor,
+        idempotency_key: str | None,
+        decision_source: TaskApprovalDecisionSource = TaskApprovalDecisionSource.WEB,
+    ) -> TaskExecutionView:
+        normalized_key = _require_lifecycle_idempotency_key(idempotency_key)
+        normalized_note = note.strip() if note is not None else None
+        if normalized_note == "":
+            normalized_note = None
+        if normalized_note is not None and len(normalized_note) > 500:
+            raise ApplicationError(
+                code="TASK_APPROVAL_NOTE_INVALID",
+                status=422,
+                title="审批备注无效",
+                detail="审批备注不能超过 500 个字符",
+            )
+        unit_id, task_id = self._execution_item_unit(
+            definition_id=definition_id,
+            execution_id=execution_id,
+            item_id=item_id,
+        )
+        task = self._load_unpack_task(task_id)
+        if TaskStatus(task.status) is not TaskStatus.AWAITING_CONFIRMATION:
+            raise ApplicationError(
+                code="TASK_APPROVAL_NOT_READY",
+                status=409,
+                title="当前任务不可审批",
+                detail="只有已经通过候选审核并等待执行确认的任务才能进行高风险审批",
+            )
+        plan = await self.create_execution_plan(definition_id, execution_id, item_id)
+        if (
+            plan.id != execution_plan_id
+            or not plan.current
+            or not plan.ready
+            or plan.blocked_reasons
+        ):
+            raise ApplicationError(
+                code="TASK_APPROVAL_PLAN_STALE",
+                status=409,
+                title="审批计划已失效",
+                detail="页面中的 Execution Plan 已不是当前可执行计划，请刷新后重新确认",
+            )
+        risk_summary, approval = self._ensure_risk_and_approval(
+            definition_id=definition_id,
+            unit_id=unit_id,
+            task_id=task_id,
+            plan=plan,
+        )
+        if risk_summary.risk_level != TaskLifecycleRiskLevel.HIGH.value or approval is None:
+            raise ApplicationError(
+                code="TASK_APPROVAL_NOT_REQUIRED",
+                status=409,
+                title="当前计划不需要高风险审批",
+                detail="只有 HIGH 风险 Execution Plan 才能使用审批接口",
+            )
+
+        desired_state = (
+            TaskApprovalState.APPROVED.value if approve else TaskApprovalState.REJECTED.value
+        )
+        key_digest = sha256(normalized_key.encode()).hexdigest()
+        with self._session_factory() as session:
+            record = session.scalar(
+                select(TaskApprovalRecord).where(
+                    TaskApprovalRecord.execution_plan_id == execution_plan_id
+                )
+            )
+            if record is None or record.plan_digest != plan.plan_digest:
+                raise ApplicationError(
+                    code="TASK_APPROVAL_PLAN_STALE",
+                    status=409,
+                    title="审批计划已失效",
+                    detail="Approval 与当前 Execution Plan digest 不一致",
+                )
+            if record.state != TaskApprovalState.PENDING.value:
+                replay = (
+                    record.state == desired_state
+                    and record.idempotency_key_digest == key_digest
+                    and record.actor_kind == actor.kind
+                    and record.actor_id == actor.subject_id
+                    and record.decision_source == decision_source.value
+                )
+                if not replay:
+                    raise ApplicationError(
+                        code="TASK_APPROVAL_ALREADY_DECIDED",
+                        status=409,
+                        title="该计划已经完成审批",
+                        detail="同一 Execution Plan 的审批决定不可被后续请求覆盖",
+                    )
+            else:
+                now = utc_now()
+                record.state = desired_state
+                record.decision_source = decision_source.value
+                record.actor_kind = actor.kind
+                record.actor_id = actor.subject_id
+                record.decision_note = normalized_note
+                record.idempotency_key_digest = key_digest
+                record.decided_at = now
+                record.updated_at = now
+                session.commit()
+
+        self._append_lifecycle_event(
+            execution_id=execution_id,
+            event_code=("TASK_APPROVAL_APPROVED" if approve else "TASK_APPROVAL_REJECTED"),
+            message=(
+                f"{decision_source.value} approval authorized the current execution plan"
+                if approve
+                else f"{decision_source.value} approval rejected the current execution plan"
+            ),
+            context={
+                "execution_item_id": item_id,
+                "execution_plan_id": execution_plan_id,
+                "risk_digest": risk_summary.risk_digest,
+                "decision": desired_state,
+                "actor_kind": actor.kind,
+                "actor_id": actor.subject_id,
+                "decision_source": decision_source.value,
+            },
+        )
+        if approve:
+            await self._advance_execution_item(
+                definition_id=definition_id,
+                execution_id=execution_id,
+                item_id=item_id,
+                actor=actor,
+                idempotency_key=normalized_key,
+            )
+        return self.get_execution(execution_id)
+
+    async def _advance_execution_item(
+        self,
+        *,
+        definition_id: str,
+        execution_id: str,
+        item_id: str,
+        actor: TaskActionActor,
+        idempotency_key: str,
+    ) -> None:
+        unit_id, task_id = self._execution_item_unit(
+            definition_id=definition_id,
+            execution_id=execution_id,
+            item_id=item_id,
+        )
+        task = self._load_unpack_task(task_id)
+        status = TaskStatus(task.status)
+        if status in {TaskStatus.PENDING, TaskStatus.RETRY}:
+            source_root = task.checkpoint.get("source_root")
+            if not isinstance(source_root, str) or not source_root:
+                raise ApplicationError(
+                    code="TASK_LIFECYCLE_SOURCE_ROOT_MISSING",
+                    status=409,
+                    title="统一任务生命周期缺少来源快照",
+                    detail="安全 Run 缺少 materialize 阶段冻结的 source_root，拒绝猜测分析路径",
+                )
+            await self._task_analysis_service.analyze(task.id, source_root=source_root)
+            self._append_lifecycle_event(
+                execution_id=execution_id,
+                event_code="TASK_LIFECYCLE_ANALYZED",
+                message="Lifecycle analysis and preflight completed without starting side effects",
+                context={"execution_item_id": item_id, "unpack_task_id": task.id},
+            )
+            task = self._load_unpack_task(task_id)
+            status = TaskStatus(task.status)
+
+        if status is not TaskStatus.AWAITING_CONFIRMATION:
+            return
+
+        gate = self._task_analysis_service.refresh_execution_gate(unit_id)
+        if not gate.current or not gate.eligible:
+            self._append_lifecycle_event(
+                execution_id=execution_id,
+                event_code="TASK_LIFECYCLE_GATE_BLOCKED",
+                message="Lifecycle stopped because the execution gate is not eligible",
+                context={
+                    "execution_item_id": item_id,
+                    "blocked_reasons": list(gate.blocked_reasons),
+                },
+            )
+            return
+
+        plan = await self.create_execution_plan(definition_id, execution_id, item_id)
+        risk_summary, approval = self._ensure_risk_and_approval(
+            definition_id=definition_id,
+            unit_id=unit_id,
+            task_id=task_id,
+            plan=plan,
+        )
+        risk = TaskLifecycleRiskLevel(risk_summary.risk_level)
+        if not plan.current or not plan.ready or plan.blocked_reasons:
+            self._append_lifecycle_event(
+                execution_id=execution_id,
+                event_code="TASK_LIFECYCLE_PLAN_BLOCKED",
+                message="Lifecycle stopped because the execution plan is not ready",
+                context={
+                    "execution_item_id": item_id,
+                    "execution_plan_id": plan.id,
+                    "blocked_reasons": list(plan.blocked_reasons),
+                },
+            )
+            return
+        if risk is not TaskLifecycleRiskLevel.LOW:
+            if approval is not None and approval.state == TaskApprovalState.REJECTED.value:
+                self._append_lifecycle_event(
+                    execution_id=execution_id,
+                    event_code="TASK_LIFECYCLE_APPROVAL_REJECTED",
+                    message="Lifecycle stopped because the current execution plan was rejected",
+                    context={
+                        "execution_item_id": item_id,
+                        "execution_plan_id": plan.id,
+                        "risk_level": risk.value,
+                        "approval_id": approval.id,
+                    },
+                )
+                return
+            if approval is not None and approval.state == TaskApprovalState.APPROVED.value:
+                self._append_lifecycle_event(
+                    execution_id=execution_id,
+                    event_code=(
+                        "TASK_LIFECYCLE_PREAUTHORIZED"
+                        if approval.decision_source
+                        == TaskApprovalDecisionSource.PREAUTHORIZED.value
+                        else "TASK_LIFECYCLE_APPROVED"
+                    ),
+                    message="High-risk current execution plan has valid approval evidence",
+                    context={
+                        "execution_item_id": item_id,
+                        "execution_plan_id": plan.id,
+                        "risk_level": risk.value,
+                        "approval_id": approval.id,
+                        "decision_source": approval.decision_source,
+                    },
+                )
+            else:
+                self._append_lifecycle_event(
+                    execution_id=execution_id,
+                    event_code="TASK_LIFECYCLE_APPROVAL_REQUIRED",
+                    message=(
+                        "Lifecycle stopped before side effects because explicit approval "
+                        "is required"
+                    ),
+                    context={
+                        "execution_item_id": item_id,
+                        "execution_plan_id": plan.id,
+                        "risk_level": risk.value,
+                        "approval_id": approval.id if approval is not None else None,
+                    },
+                )
+                return
+
+        await self._task_action_service.execute(
+            ExecuteTaskAction(task_id=task_id, execution_plan_id=plan.id),
+            actor=actor,
+            idempotency_key=_lifecycle_item_idempotency_key(
+                idempotency_key,
+                execution_id=execution_id,
+                item_id=item_id,
+                plan_id=plan.id,
+            ),
+        )
+        self._append_lifecycle_event(
+            execution_id=execution_id,
+            event_code=(
+                "TASK_LIFECYCLE_AUTO_AUTHORIZED"
+                if risk is TaskLifecycleRiskLevel.LOW
+                else "TASK_LIFECYCLE_APPROVED_EXECUTION"
+            ),
+            message=(
+                "Current execution plan was authorized and handed to the journal-backed executor"
+            ),
+            context={
+                "execution_item_id": item_id,
+                "execution_plan_id": plan.id,
+                "risk_level": risk.value,
+            },
         )
 
     async def materialize_manual(self, definition_id: str, *, trace_id: str) -> TaskExecutionView:
@@ -607,6 +1275,24 @@ class TaskDefinitionExecutionService:
                 )
             )
             session.commit()
+            item_views_list: list[TaskExecutionItemView] = []
+            for item in items:
+                closure = self._closure_evidence(session, item)
+                lifecycle, risk_summary, approval = self._lifecycle_evidence(
+                    session,
+                    item,
+                    closure=closure,
+                )
+                item_views_list.append(
+                    self._item_view(
+                        item,
+                        lifecycle,
+                        risk_summary=risk_summary,
+                        approval=approval,
+                        closure=closure,
+                    )
+                )
+            item_views = tuple(item_views_list)
             return TaskExecutionView(
                 id=record.id,
                 task_definition_id=record.task_definition_id,
@@ -624,9 +1310,255 @@ class TaskDefinitionExecutionService:
                 finished_at=record.finished_at,
                 created_at=record.created_at,
                 config_snapshot=dict(record.config_snapshot or {}),
-                items=tuple(self._item_view(item) for item in items),
+                items=item_views,
                 events=tuple(self._event_view(event) for event in events),
             )
+
+    def _execution_item_unit(
+        self,
+        *,
+        definition_id: str,
+        execution_id: str,
+        item_id: str,
+    ) -> tuple[str, str]:
+        with self._session_factory() as session:
+            execution = session.get(TaskExecution, execution_id)
+            item = session.get(TaskExecutionItem, item_id)
+            if (
+                execution is None
+                or execution.task_definition_id != definition_id
+                or item is None
+                or item.execution_id != execution_id
+                or item.unpack_task_id is None
+            ):
+                raise ApplicationError(
+                    code="TASK_EXECUTION_ITEM_NOT_FOUND",
+                    status=404,
+                    title="执行对象不存在",
+                    detail="未找到属于当前任务执行且已物化安全 Run 的执行对象",
+                )
+            task = session.get(UnpackTask, item.unpack_task_id)
+            if task is None:
+                raise ApplicationError(
+                    code="TASK_EXECUTION_RUN_NOT_FOUND",
+                    status=409,
+                    title="底层安全 Run 不存在",
+                    detail="执行对象绑定的底层安全 Run 已不存在，不能继续推进生命周期",
+                )
+            units = TaskUnitRepository(session).list_latest(task.id)
+            matching_units = [
+                unit for unit in units if unit.normalized_unit_key == task.normalized_unit_key
+            ]
+            if len(matching_units) != 1:
+                raise ApplicationError(
+                    code="TASK_EXECUTION_UNIT_NOT_FOUND",
+                    status=409,
+                    title="无法定位安全执行单元",
+                    detail="当前执行对象不能唯一映射到底层 TaskUnit，拒绝猜测生成执行计划",
+                )
+            return matching_units[0].id, task.id
+
+    def _load_unpack_task(self, task_id: str) -> UnpackTask:
+        with self._session_factory() as session:
+            task = session.get(UnpackTask, task_id)
+            if task is None:
+                raise ApplicationError(
+                    code="TASK_EXECUTION_RUN_NOT_FOUND",
+                    status=409,
+                    title="底层安全 Run 不存在",
+                    detail="执行对象绑定的底层安全 Run 已不存在，不能继续推进生命周期",
+                )
+            session.expunge(task)
+            return task
+
+    def _append_lifecycle_event(
+        self,
+        *,
+        execution_id: str,
+        event_code: str,
+        message: str,
+        context: dict[str, Any],
+    ) -> None:
+        with self._session_factory() as session:
+            execution = session.get(TaskExecution, execution_id)
+            if execution is None:
+                raise ApplicationError(
+                    code="TASK_EXECUTION_NOT_FOUND",
+                    status=404,
+                    title="执行记录不存在",
+                    detail="统一生命周期写入事件时执行记录已不存在",
+                )
+            recent_same_code = tuple(
+                session.scalars(
+                    select(TaskExecutionEvent)
+                    .where(
+                        TaskExecutionEvent.execution_id == execution_id,
+                        TaskExecutionEvent.event_code == event_code,
+                    )
+                    .order_by(TaskExecutionEvent.created_at.desc(), TaskExecutionEvent.id.desc())
+                    .limit(20)
+                )
+            )
+            if any(dict(event.context or {}) == context for event in recent_same_code):
+                return
+            self._event(
+                session,
+                execution_id=execution_id,
+                trace_id=execution.trace_id,
+                event_code=event_code,
+                message=message,
+                context=context,
+            )
+            session.commit()
+
+    @staticmethod
+    def _lifecycle_evidence(
+        session: Session,
+        item: TaskExecutionItem,
+        *,
+        closure: TaskExecutionClosureView,
+    ) -> tuple[TaskLifecycleProjection, TaskRiskSummaryView | None, TaskApprovalView | None]:
+        if item.unpack_task_id is None:
+            return (
+                TaskLifecycleProjection(
+                    stage=TaskLifecycleStage.COMPLETE,
+                    risk_level=TaskLifecycleRiskLevel.UNKNOWN,
+                    authorization=TaskLifecycleAuthorization.COMPLETE,
+                    execution_plan_id=None,
+                    plan_ready=None,
+                    side_effects_started=False,
+                    blocked_reasons=(),
+                ),
+                None,
+                None,
+            )
+        task = session.get(UnpackTask, item.unpack_task_id)
+        if task is None:
+            return (
+                TaskLifecycleProjection(
+                    stage=TaskLifecycleStage.COMPLETE,
+                    risk_level=TaskLifecycleRiskLevel.UNKNOWN,
+                    authorization=TaskLifecycleAuthorization.BLOCKED,
+                    execution_plan_id=None,
+                    plan_ready=None,
+                    side_effects_started=False,
+                    blocked_reasons=("UNPACK_TASK_NOT_FOUND",),
+                ),
+                None,
+                None,
+            )
+        units = TaskUnitRepository(session).list_latest(task.id)
+        unit = next(
+            (value for value in units if value.normalized_unit_key == task.normalized_unit_key),
+            None,
+        )
+        plan = TaskExecutionPlanRepository(session).latest(unit.id) if unit is not None else None
+        risk_record = (
+            session.scalar(
+                select(TaskRiskSummaryRecord).where(
+                    TaskRiskSummaryRecord.execution_plan_id == plan.id
+                )
+            )
+            if plan is not None
+            else None
+        )
+        approval_record = (
+            session.scalar(
+                select(TaskApprovalRecord).where(TaskApprovalRecord.execution_plan_id == plan.id)
+            )
+            if plan is not None
+            else None
+        )
+        action_kinds: tuple[str, ...] = ()
+        blocked_reasons: tuple[str, ...] = ()
+        if plan is not None:
+            raw_actions = plan.payload.get("actions")
+            if isinstance(raw_actions, list):
+                action_kinds = tuple(
+                    kind
+                    for value in raw_actions
+                    if isinstance(value, dict) and isinstance((kind := value.get("kind")), str)
+                )
+            blocked_reasons = tuple(plan.blocked_reasons)
+        try:
+            status = TaskStatus(task.status)
+        except ValueError:
+            return (
+                TaskLifecycleProjection(
+                    stage=TaskLifecycleStage.FINALIZE,
+                    risk_level=TaskLifecycleRiskLevel.UNKNOWN,
+                    authorization=TaskLifecycleAuthorization.BLOCKED,
+                    execution_plan_id=plan.id if plan is not None else None,
+                    plan_ready=plan.ready if plan is not None else None,
+                    side_effects_started=False,
+                    blocked_reasons=("TASK_STATUS_UNKNOWN",),
+                ),
+                (
+                    TaskDefinitionExecutionService._risk_summary_view(risk_record)
+                    if risk_record is not None
+                    else None
+                ),
+                (
+                    TaskDefinitionExecutionService._approval_view(approval_record)
+                    if approval_record is not None
+                    else None
+                ),
+            )
+        projection = project_task_lifecycle(
+            status=status,
+            execution_plan_id=plan.id if plan is not None else None,
+            plan_ready=plan.ready if plan is not None else None,
+            plan_action_kinds=action_kinds,
+            blocked_reasons=blocked_reasons,
+            approval_state=approval_record.state if approval_record is not None else None,
+        )
+        if (
+            status in {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
+            and closure.status == "ATTENTION_REQUIRED"
+        ):
+            projection = TaskLifecycleProjection(
+                stage=TaskLifecycleStage.FINALIZE,
+                risk_level=projection.risk_level,
+                authorization=TaskLifecycleAuthorization.BLOCKED,
+                execution_plan_id=projection.execution_plan_id,
+                plan_ready=projection.plan_ready,
+                side_effects_started=projection.side_effects_started,
+                blocked_reasons=tuple(
+                    dict.fromkeys((*projection.blocked_reasons, *closure.issue_codes))
+                ),
+            )
+        return (
+            projection,
+            (
+                TaskDefinitionExecutionService._risk_summary_view(risk_record)
+                if risk_record is not None
+                else None
+            ),
+            (
+                TaskDefinitionExecutionService._approval_view(approval_record)
+                if approval_record is not None
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _closure_evidence(
+        session: Session,
+        item: TaskExecutionItem,
+    ) -> TaskExecutionClosureView:
+        if item.unpack_task_id is None:
+            return TaskExecutionClosureView(
+                status="COMPLETE",
+                filesystem_status="NOT_APPLICABLE",
+                downloader_status="NOT_APPLICABLE",
+                operation_attention_count=0,
+                reconcile_required_count=0,
+                rollback_blocked_count=0,
+                retention_candidate_count=0,
+                manual_attention_required=False,
+                issue_codes=(),
+            )
+        return _task_execution_closure(session, session.get(UnpackTask, item.unpack_task_id))
 
     def list_executions(
         self,
@@ -810,6 +1742,50 @@ class TaskDefinitionExecutionService:
                 if len(due) >= limit:
                     break
             return tuple(due)
+
+    def list_due_lifecycle_advances(self, *, limit: int) -> tuple[DueLifecycleAdvance, ...]:
+        if limit <= 0:
+            raise ValueError("limit 必须大于 0")
+        due: list[DueLifecycleAdvance] = []
+        seen_execution_ids: set[str] = set()
+        with self._session_factory() as session:
+            items = tuple(
+                session.scalars(
+                    select(TaskExecutionItem)
+                    .where(
+                        TaskExecutionItem.unpack_task_id.is_not(None),
+                        TaskExecutionItem.result.is_(None),
+                    )
+                    .order_by(TaskExecutionItem.created_at, TaskExecutionItem.id)
+                    .limit(2000)
+                )
+            )
+            for item in items:
+                if item.execution_id in seen_execution_ids or item.unpack_task_id is None:
+                    continue
+                execution = session.get(TaskExecution, item.execution_id)
+                task = session.get(UnpackTask, item.unpack_task_id)
+                if (
+                    execution is None
+                    or execution.task_definition_id is None
+                    or task is None
+                    or task.status
+                    not in {
+                        TaskStatus.PENDING.value,
+                        TaskStatus.AWAITING_CONFIRMATION.value,
+                    }
+                ):
+                    continue
+                seen_execution_ids.add(execution.id)
+                due.append(
+                    DueLifecycleAdvance(
+                        task_definition_id=execution.task_definition_id,
+                        execution_id=execution.id,
+                    )
+                )
+                if len(due) >= limit:
+                    break
+        return tuple(due)
 
     def list_due_auto_retries(
         self,
@@ -2217,7 +3193,33 @@ class TaskDefinitionExecutionService:
             session.commit()
 
     @staticmethod
-    def _item_view(item: TaskExecutionItem) -> TaskExecutionItemView:
+    def _item_view(
+        item: TaskExecutionItem,
+        lifecycle: TaskLifecycleProjection | None = None,
+        risk_summary: TaskRiskSummaryView | None = None,
+        approval: TaskApprovalView | None = None,
+        closure: TaskExecutionClosureView | None = None,
+    ) -> TaskExecutionItemView:
+        resolved = lifecycle or TaskLifecycleProjection(
+            stage=TaskLifecycleStage.DISCOVER,
+            risk_level=TaskLifecycleRiskLevel.UNKNOWN,
+            authorization=TaskLifecycleAuthorization.NOT_READY,
+            execution_plan_id=None,
+            plan_ready=None,
+            side_effects_started=False,
+            blocked_reasons=(),
+        )
+        resolved_closure = closure or TaskExecutionClosureView(
+            status="PENDING",
+            filesystem_status="PENDING",
+            downloader_status="PENDING",
+            operation_attention_count=0,
+            reconcile_required_count=0,
+            rollback_blocked_count=0,
+            retention_candidate_count=0,
+            manual_attention_required=False,
+            issue_codes=(),
+        )
         return TaskExecutionItemView(
             id=item.id,
             unpack_task_id=item.unpack_task_id,
@@ -2233,6 +3235,49 @@ class TaskDefinitionExecutionService:
             technical_detail=item.technical_detail,
             retryable=item.retryable,
             retry_count=item.retry_count,
+            lifecycle_stage=resolved.stage.value,
+            risk_level=resolved.risk_level.value,
+            authorization_status=resolved.authorization.value,
+            execution_plan_id=resolved.execution_plan_id,
+            execution_plan_ready=resolved.plan_ready,
+            side_effects_started=resolved.side_effects_started,
+            lifecycle_blocked_reasons=resolved.blocked_reasons,
+            risk_summary=risk_summary,
+            approval=approval,
+            closure=resolved_closure,
+        )
+
+    @staticmethod
+    def _risk_summary_view(record: TaskRiskSummaryRecord) -> TaskRiskSummaryView:
+        return TaskRiskSummaryView(
+            id=record.id,
+            execution_plan_id=record.execution_plan_id,
+            plan_digest=record.plan_digest,
+            risk_level=record.risk_level,
+            reason_codes=tuple(record.reason_codes),
+            action_kinds=tuple(record.action_kinds),
+            hardlink_count=record.hardlink_count,
+            client_fetch_count=record.client_fetch_count,
+            create_directory_count=record.create_directory_count,
+            estimated_download_bytes_upper_bound=record.estimated_download_bytes_upper_bound,
+            risk_digest=record.risk_digest,
+            created_at=record.created_at,
+        )
+
+    @staticmethod
+    def _approval_view(record: TaskApprovalRecord) -> TaskApprovalView:
+        return TaskApprovalView(
+            id=record.id,
+            execution_plan_id=record.execution_plan_id,
+            plan_digest=record.plan_digest,
+            state=record.state,
+            decision_source=record.decision_source,
+            actor_kind=record.actor_kind,
+            actor_id=record.actor_id,
+            decision_note=record.decision_note,
+            decided_at=record.decided_at,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
         )
 
     @staticmethod
@@ -2336,3 +3381,46 @@ def _directory_monitor_object_key(
         )
     ).encode()
     return sha256(payload).hexdigest()
+
+
+def _require_lifecycle_idempotency_key(value: str | None) -> str:
+    if value is None:
+        raise ApplicationError(
+            code="IDEMPOTENCY_KEY_REQUIRED",
+            status=400,
+            title="缺少幂等键",
+            detail="推进统一任务生命周期必须携带 Idempotency-Key",
+        )
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 200
+        or normalized != value
+        or any(ord(char) < 0x21 or ord(char) > 0x7E for char in normalized)
+    ):
+        raise ApplicationError(
+            code="IDEMPOTENCY_KEY_INVALID",
+            status=422,
+            title="幂等键无效",
+            detail="Idempotency-Key 必须是 1..200 个不含空白/控制字符的可见 ASCII 字符",
+        )
+    return normalized
+
+
+def _lifecycle_item_idempotency_key(
+    base_key: str,
+    *,
+    execution_id: str,
+    item_id: str,
+    plan_id: str,
+) -> str:
+    payload = "\0".join(
+        (
+            "packbreaker-task-lifecycle-v1",
+            base_key,
+            execution_id,
+            item_id,
+            plan_id,
+        )
+    ).encode()
+    return f"lifecycle-{sha256(payload).hexdigest()}"

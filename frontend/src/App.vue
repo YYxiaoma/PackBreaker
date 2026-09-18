@@ -4,10 +4,8 @@ import {
   Box,
   LayoutDashboard,
   ListChecks,
-  GitBranch,
   Globe,
   HardDrive,
-  ShieldCheck,
   ScrollText,
   Settings,
   Info,
@@ -17,9 +15,8 @@ import {
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import TaskDefinitionCenter from './components/TaskDefinitionCenter.vue';
-import PreflightReviewCenter from './components/PreflightReviewCenter.vue';
 import OperationalOverview from './components/OperationalOverview.vue';
-import Management from './components/Management.vue';
+import WorkspaceManagement from './components/WorkspaceManagement.vue';
 import AuthGate from './components/AuthGate.vue';
 import PasswordChangeGate from './components/PasswordChangeGate.vue';
 import UserMenuDrawer from './components/UserMenuDrawer.vue';
@@ -27,6 +24,7 @@ import VersionPopover from './components/VersionPopover.vue';
 import AboutPage from './components/AboutPage.vue';
 import { AUTH_REQUIRED_EVENT } from './api/client';
 import { getAdminInboxUnreadCount } from './api/notifications';
+import { normalizePrimaryRoute, type PrimaryRoute } from './navigation';
 import { useAuthStore } from './stores/auth';
 
 type ThemeMode = 'light' | 'dark' | 'system';
@@ -71,13 +69,11 @@ function handleSystemThemeChange(event: MediaQueryListEvent): void {
   systemDark.value = event.matches;
 }
 
-const nav = [
+const nav: Array<{ name: PrimaryRoute; icon: typeof LayoutDashboard }> = [
   { name: '总览', icon: LayoutDashboard },
   { name: '任务中心', icon: ListChecks },
-  { name: '预演与确认', icon: GitBranch },
   { name: '站点管理', icon: Globe },
   { name: '下载器', icon: HardDrive },
-  { name: '清理与对账', icon: ShieldCheck },
   { name: '日志', icon: ScrollText },
   { name: '系统设置', icon: Settings },
   { name: '关于', icon: Info },
@@ -91,10 +87,6 @@ const pageCopy: Record<string, { eyebrow: string; description: string }> = {
     eyebrow: '自动化工作流',
     description: '查看任务状态、分析进度与安全操作入口，保持处理链路清晰可追踪。',
   },
-  预演与确认: {
-    eyebrow: '人工审核',
-    description: '集中检查候选证据、当前性与风险，在执行前完成最终确认。',
-  },
   站点管理: {
     eyebrow: '连接与规则',
     description: '管理 PT 站点连接、凭证状态、能力探测与可靠性保护。',
@@ -102,10 +94,6 @@ const pageCopy: Record<string, { eyebrow: string; description: string }> = {
   下载器: {
     eyebrow: '连接与规则',
     description: '统一管理下载器实例、路径映射、连接探测与运行边界。',
-  },
-  清理与对账: {
-    eyebrow: '安全维护',
-    description: '预览可清理记录与对账风险，只在证据充分时执行受控维护。',
   },
   日志: {
     eyebrow: '可观测性',
@@ -121,7 +109,7 @@ const pageCopy: Record<string, { eyebrow: string; description: string }> = {
   },
 };
 const initialRoute = location.hash.slice(1) ? decodeURIComponent(location.hash.slice(1)) : '总览';
-const route = ref(nav.some((item) => item.name === initialRoute) ? initialRoute : '总览');
+const route = ref<PrimaryRoute>(normalizePrimaryRoute(initialRoute));
 const currentPageCopy = computed(
   () => pageCopy[route.value] ?? { eyebrow: '工作空间', description: '' },
 );
@@ -133,7 +121,7 @@ watch(route, (v) => {
 });
 window.addEventListener('hashchange', () => {
   const next = decodeURIComponent(location.hash.slice(1));
-  if (nav.some((n) => n.name === next)) route.value = next;
+  route.value = normalizePrimaryRoute(next);
 });
 watch(
   dark,
@@ -253,19 +241,17 @@ function openVersionPopover(): void {
             <span>安全模式</span>
           </div>
         </div>
-        <TaskDefinitionCenter v-if="route === '任务中心'" @navigate="route = $event" />
-        <PreflightReviewCenter v-else-if="route === '预演与确认'" />
+        <TaskDefinitionCenter
+          v-if="route === '任务中心'"
+          @navigate="route = normalizePrimaryRoute($event)"
+        />
         <OperationalOverview
           v-else-if="route === '总览'"
-          @navigate="route = $event"
+          @navigate="route = normalizePrimaryRoute($event)"
           @open-version="openVersionPopover"
         />
         <AboutPage v-else-if="route === '关于'" @open-version="openVersionPopover" />
-        <Management
-          v-show="!['任务中心', '预演与确认', '总览', '关于'].includes(route)"
-          :page="route"
-          @navigate="route = $event"
-        />
+        <WorkspaceManagement v-show="!['任务中心', '总览', '关于'].includes(route)" :page="route" />
         <footer><span>PackBreaker</span></footer>
       </main>
     </div>

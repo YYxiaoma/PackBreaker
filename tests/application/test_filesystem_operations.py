@@ -171,6 +171,75 @@ def test_execute_hardlink_journals_directories_and_is_idempotent(
     assert {item.status for item in journals} == {OperationStatus.APPLIED.value}
 
 
+def test_execute_hardlink_journals_missing_target_root_and_replays_safely(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    source = data_root / "source" / "movie.mkv"
+    source.parent.mkdir()
+    source.write_bytes(b"synthetic-media-content")
+    request = _request(data_root, task_id)
+
+    first = service.execute_hardlink(request)
+
+    target_root = data_root / "target"
+    target = target_root / "Pack" / "Season 01" / "movie.mkv"
+    assert target_root.is_dir()
+    assert target.exists()
+    assert target.stat().st_ino == source.stat().st_ino
+    assert len(first.directory_journal_ids) == 3
+
+    replayed = service.execute_hardlink(request)
+    assert replayed.replayed is True
+    assert replayed.hardlink_journal_id == first.hardlink_journal_id
+    assert replayed.directory_journal_ids == first.directory_journal_ids
+
+    journals = _journals(factory)
+    assert [item.operation_type for item in journals].count(CREATE_DIRECTORY_OPERATION) == 3
+    assert [item.operation_type for item in journals].count(CREATE_HARDLINK_OPERATION) == 1
+    assert {item.status for item in journals} == {OperationStatus.APPLIED.value}
+
+    service.rollback_journal(first.hardlink_journal_id)
+    for journal_id in reversed(first.directory_journal_ids):
+        service.rollback_journal(journal_id)
+    assert not target_root.exists()
+
+
+def test_missing_target_root_uses_nearest_existing_directory_as_creation_anchor(
+    filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
+) -> None:
+    service, factory, data_root, task_id = filesystem_service
+    source = data_root / "mounted" / "source" / "movie.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"synthetic-media-content")
+    request = HardlinkExecutionRequest(
+        task_id=task_id,
+        candidate_key="d" * 64,
+        source_relative_path="mounted/source/movie.mkv",
+        target_root_relative_path="mounted/output/new-root",
+        target_relative_path="movie.mkv",
+        expected_source_snapshot=_source_snapshot(source),
+    )
+
+    result = service.execute_hardlink(request)
+
+    assert (data_root / "mounted" / "output" / "new-root" / "movie.mkv").exists()
+    assert len(result.directory_journal_ids) == 2
+    with factory() as session:
+        directories = list(
+            session.scalars(
+                select(OperationJournal)
+                .where(
+                    OperationJournal.task_id == task_id,
+                    OperationJournal.operation_type == CREATE_DIRECTORY_OPERATION,
+                )
+                .order_by(OperationJournal.created_at)
+            )
+        )
+    assert [item.target["target_root"] for item in directories] == ["mounted", "mounted"]
+    assert [item.target["relative_path"] for item in directories] == ["output", "output/new-root"]
+
+
 def test_crash_after_temporary_hardlink_can_resume_safely(
     filesystem_service: tuple[FilesystemOperationService, sessionmaker[Session], Path, str],
 ) -> None:

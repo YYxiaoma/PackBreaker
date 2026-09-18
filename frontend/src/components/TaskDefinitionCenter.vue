@@ -12,8 +12,10 @@ import {
 } from '../api/downloaders';
 import { listSites, type Site } from '../api/sites';
 import {
+  advanceTaskDefinitionExecution,
   browseTaskDirectories,
   createTaskDefinition,
+  decideTaskDefinitionExecutionApproval,
   deleteTaskDefinition,
   executeManualTaskDefinition,
   getTaskDefinitionExecution,
@@ -43,7 +45,9 @@ import {
   type TaskStorageMode,
 } from '../api/taskDefinitions';
 import { taskEventTranslation } from '../taskExecutionEvents';
+import { taskLifecycleAdvanceFeedback } from '../taskLifecycleFeedback';
 import LegacyTaskCenter from './TaskCenter.vue';
+import TaskExecutionEvidencePanel from './TaskExecutionEvidencePanel.vue';
 
 const emit = defineEmits<{ navigate: [page: string] }>();
 const LOG_CONTEXT_STORAGE_KEY = 'packbreaker.log-context.v1';
@@ -84,6 +88,8 @@ interface Draft {
   overlapPolicy: TaskOverlapPolicy;
   autoRetryEnabled: boolean;
   maxAutoRetries: number;
+  highRiskPreauthorizationEnabled: boolean;
+  highRiskAllowedActionKinds: string;
 }
 
 const definitions = ref<TaskDefinition[]>([]);
@@ -97,6 +103,8 @@ const hydratingDraft = ref(false);
 const executing = ref<Record<string, boolean>>({});
 const scanning = ref<Record<string, boolean>>({});
 const retrying = ref<Record<string, boolean>>({});
+const advancingExecution = ref(false);
+const decidingApproval = ref<Record<string, boolean>>({});
 const togglingPause = ref<Record<string, boolean>>({});
 const dialogVisible = ref(false);
 const legacyVisible = ref(false);
@@ -114,6 +122,7 @@ const executionSearch = ref('');
 const executionTimeRange = ref<[Date, Date] | null>(null);
 const executionDrawerVisible = ref(false);
 const activeExecution = ref<TaskExecution | null>(null);
+const executionEvidenceTaskId = ref('');
 const torrentDrawerVisible = ref(false);
 const torrentLoading = ref(false);
 const torrentItems = ref<DownloaderTorrent[]>([]);
@@ -150,6 +159,24 @@ let cronPreviewTimer: ReturnType<typeof setTimeout> | null = null;
 let cronPreviewSequence = 0;
 
 const draft = reactive<Draft>(freshDraft());
+
+const executionEvidenceItems = computed(() =>
+  (activeExecution.value?.items ?? []).flatMap((item) =>
+    item.unpack_task_id
+      ? [{ itemId: item.id, taskId: item.unpack_task_id, name: item.name, closure: item.closure }]
+      : [],
+  ),
+);
+
+watch(
+  executionEvidenceItems,
+  (items) => {
+    if (!items.some((item) => item.taskId === executionEvidenceTaskId.value)) {
+      executionEvidenceTaskId.value = items[0]?.taskId ?? '';
+    }
+  },
+  { immediate: true },
+);
 
 const manualCount = computed(
   () => definitions.value.filter((item) => item.kind === 'MANUAL').length,
@@ -333,6 +360,8 @@ function freshDraft(): Draft {
     overlapPolicy: 'SKIP',
     autoRetryEnabled: true,
     maxAutoRetries: 3,
+    highRiskPreauthorizationEnabled: false,
+    highRiskAllowedActionKinds: '',
   };
 }
 
@@ -471,6 +500,8 @@ function hydrateDraft(item: TaskDefinition, clone: boolean): void {
     overlapPolicy: item.overlap_policy,
     autoRetryEnabled: item.auto_retry_enabled,
     maxAutoRetries: item.max_auto_retries,
+    highRiskPreauthorizationEnabled: item.high_risk_preauthorization_enabled,
+    highRiskAllowedActionKinds: item.high_risk_allowed_action_kinds.join(', '),
   });
   void nextTick(() => {
     hydratingDraft.value = false;
@@ -899,6 +930,14 @@ function validateDraft(): boolean {
     ElMessage.warning('监控任务必须填写 Cron 表达式');
     return false;
   }
+  if (
+    draft.kind === 'MONITOR' &&
+    draft.highRiskPreauthorizationEnabled &&
+    !draft.highRiskAllowedActionKinds.trim()
+  ) {
+    ElMessage.warning('开启高风险预授权时必须填写允许的 action kind 白名单');
+    return false;
+  }
   if (!draft.fileTypes.length) {
     ElMessage.warning('至少选择一种文件类型');
     return false;
@@ -977,6 +1016,19 @@ function createPayload(): TaskDefinitionCreateInput {
       auto_retry_enabled: draft.autoRetryEnabled,
       max_auto_retries: draft.maxAutoRetries,
       retry_intervals_seconds: [60, 300, 900],
+      high_risk_preauthorization_enabled:
+        draft.kind === 'MONITOR' && draft.highRiskPreauthorizationEnabled,
+      high_risk_allowed_action_kinds:
+        draft.kind === 'MONITOR' && draft.highRiskPreauthorizationEnabled
+          ? Array.from(
+              new Set(
+                draft.highRiskAllowedActionKinds
+                  .split(',')
+                  .map((value) => value.trim().toUpperCase())
+                  .filter(Boolean),
+              ),
+            )
+          : [],
     },
   };
 }
@@ -1044,7 +1096,7 @@ async function executeDefinition(item: TaskDefinition): Promise<void> {
     executionDrawerVisible.value = true;
     await refresh();
     const materialized = execution.items.filter((value) => value.unpack_task_id).length;
-    ElMessage.success(`已物化 ${materialized} 个安全 Run，等待预演与人工确认`);
+    ElMessage.success(`已物化 ${materialized} 个安全 Run，已进入统一安全生命周期`);
   } catch (caught) {
     ElMessage.error(toApiProblem(caught).message);
   } finally {
@@ -1140,6 +1192,102 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
     retrying.value = next;
   }
 }
+
+async function advanceActiveExecution(): Promise<void> {
+  const execution = activeExecution.value;
+  const definitionId = execution?.task_definition_id;
+  if (!execution || !definitionId || advancingExecution.value) return;
+  advancingExecution.value = true;
+  try {
+    const updated = await advanceTaskDefinitionExecution(
+      definitionId,
+      execution.id,
+      `task-lifecycle-${execution.id}-${crypto.randomUUID()}`,
+    );
+    activeExecution.value = updated;
+    if (detailDefinition.value?.id === definitionId) await loadExecutionHistory();
+    await refresh();
+    const feedback = taskLifecycleAdvanceFeedback(updated.items);
+    if (feedback.level === 'info') ElMessage.info(feedback.message);
+    else if (feedback.level === 'warning') ElMessage.warning(feedback.message);
+    else ElMessage.success(feedback.message);
+  } catch (caught) {
+    ElMessage.error(toApiProblem(caught).message);
+  } finally {
+    advancingExecution.value = false;
+  }
+}
+
+async function decideApproval(
+  item: TaskExecution['items'][number],
+  approve: boolean,
+): Promise<void> {
+  const execution = activeExecution.value;
+  const definitionId = execution?.task_definition_id;
+  const approval = item.approval;
+  const risk = item.risk_summary;
+  if (
+    !execution ||
+    !definitionId ||
+    !item.execution_plan_id ||
+    !approval ||
+    approval.state !== 'PENDING' ||
+    !risk ||
+    decidingApproval.value[item.id]
+  ) {
+    return;
+  }
+  const actionKinds = risk.action_kinds.join(', ') || '无';
+  const reasons = risk.reason_codes.join(', ') || '无';
+  const bytes = formatBytes(risk.estimated_download_bytes_upper_bound);
+  const body = approve
+    ? '确认批准当前高风险执行计划？\n\nAction：' +
+      actionKinds +
+      '\n风险原因：' +
+      reasons +
+      '\n预计最多下载：' +
+      bytes +
+      '\n\n审批仅绑定当前 Plan digest；计划变化后需重新审批。'
+    : '确认拒绝当前高风险执行计划？\n\nAction：' +
+      actionKinds +
+      '\n风险原因：' +
+      reasons +
+      '\n\n拒绝后该 Plan 的审批决定不可覆盖。';
+  try {
+    await ElMessageBox.confirm(body, approve ? '批准高风险计划' : '拒绝高风险计划', {
+      type: approve ? 'warning' : 'error',
+      confirmButtonText: approve ? '确认批准' : '确认拒绝',
+      cancelButtonText: '取消',
+    });
+  } catch (caught) {
+    if (caught === 'cancel' || caught === 'close') return;
+    throw caught;
+  }
+
+  decidingApproval.value = { ...decidingApproval.value, [item.id]: true };
+  try {
+    const updated = await decideTaskDefinitionExecutionApproval(
+      definitionId,
+      execution.id,
+      item.id,
+      {
+        execution_plan_id: item.execution_plan_id,
+        decision: approve ? 'APPROVE' : 'REJECT',
+      },
+      'approval-' + execution.id + '-' + item.id + '-' + crypto.randomUUID(),
+    );
+    activeExecution.value = updated;
+    if (detailDefinition.value?.id === definitionId) await loadExecutionHistory();
+    await refresh();
+    ElMessage.success(approve ? '当前 Plan 已批准并继续安全执行链' : '当前 Plan 已拒绝');
+  } catch (caught) {
+    ElMessage.error(toApiProblem(caught).message);
+  } finally {
+    const next = { ...decidingApproval.value };
+    delete next[item.id];
+    decidingApproval.value = next;
+  }
+}
 </script>
 
 <template>
@@ -1147,7 +1295,7 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
     <div class="section-toolbar">
       <div>
         <h2>任务中心</h2>
-        <p>任务定义与每次执行分离；现有安全执行 Run 保留在下方兼容区。</p>
+        <p>任务定义与每次执行分离；扫描、计划、授权、执行与校验逐步收口到统一安全生命周期。</p>
       </div>
       <div class="toolbar-actions">
         <el-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</el-button>
@@ -1624,6 +1772,31 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
                   :max="3"
                 />
               </el-form-item>
+              <el-form-item v-if="draft.kind === 'MONITOR'" label="高风险预授权">
+                <div>
+                  <el-switch
+                    v-model="draft.highRiskPreauthorizationEnabled"
+                    active-text="按 action 白名单预授权"
+                  />
+                  <small class="field-hint">
+                    默认关闭。只会批准白名单明确覆盖的 HIGH 风险 action；未知或新增 action
+                    仍需人工审批。
+                  </small>
+                </div>
+              </el-form-item>
+              <el-form-item v-if="draft.kind === 'MONITOR'" label="预授权 Action">
+                <div>
+                  <el-input
+                    v-model="draft.highRiskAllowedActionKinds"
+                    :disabled="!draft.highRiskPreauthorizationEnabled"
+                    placeholder="例如 FUTURE_HIGH_RISK_ACTION，多个用逗号分隔"
+                  />
+                  <small class="field-hint">
+                    使用后端 Execution Plan 的 action kind；审批仍绑定具体 Plan
+                    digest，不是永久放开任务。
+                  </small>
+                </div>
+              </el-form-item>
             </div>
           </el-collapse-item>
         </el-collapse>
@@ -1740,6 +1913,21 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
                 <p>
                   自动重试：{{ detailDefinition.auto_retry_enabled ? '开启' : '关闭' }} · 最多
                   {{ detailDefinition.max_auto_retries }} 次
+                </p>
+                <p v-if="detailDefinition.kind === 'MONITOR'">
+                  高风险预授权：{{
+                    detailDefinition.high_risk_preauthorization_enabled ? '开启' : '关闭'
+                  }}
+                </p>
+                <p
+                  v-if="
+                    detailDefinition.kind === 'MONITOR' &&
+                    detailDefinition.high_risk_preauthorization_enabled
+                  "
+                >
+                  Action 白名单：{{
+                    detailDefinition.high_risk_allowed_action_kinds.join(', ') || '未配置'
+                  }}
                 </p>
               </section>
               <section>
@@ -1870,7 +2058,7 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
         <el-alert
           v-if="activeExecution.status === 'PENDING'"
           title="已进入安全执行链，尚未执行副作用"
-          description="底层 Run 当前为 PENDING/等待预演。后续仍需完成站点匹配、Preflight 与人工确认，才会进入硬链接/下载器写入阶段。"
+          description="可使用“推进生命周期”继续只读分析与计划生成；候选证据需要人工确认时会停在审核边界，高风险动作也会在副作用前停止。"
           type="success"
           :closable="false"
           show-icon
@@ -1937,7 +2125,57 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
                   {{ scope.row.size_bytes === null ? '—' : formatBytes(scope.row.size_bytes) }}
                 </template>
               </el-table-column>
-              <el-table-column label="阶段" width="115" prop="phase" />
+              <el-table-column label="生命周期" min-width="155">
+                <template #default="scope">
+                  <div class="primary-cell">
+                    <b>{{ scope.row.lifecycle_stage }}</b>
+                    <small>{{ scope.row.phase }}</small>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="风险 / 授权" min-width="170">
+                <template #default="scope">
+                  <div class="primary-cell">
+                    <b>{{ scope.row.risk_level }}</b>
+                    <small>{{ scope.row.authorization_status }}</small>
+                    <small v-if="scope.row.risk_summary">
+                      {{ scope.row.risk_summary.reason_codes.join(', ') }}
+                    </small>
+                    <small v-if="scope.row.execution_plan_id">
+                      Plan: {{ scope.row.execution_plan_id }} ·
+                      {{ scope.row.execution_plan_ready ? 'READY' : 'NOT_READY' }}
+                    </small>
+                    <small v-if="scope.row.approval">
+                      Approval: {{ scope.row.approval.state }}
+                      <template v-if="scope.row.approval.decision_source">
+                        · {{ scope.row.approval.decision_source }}
+                      </template>
+                    </small>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="校验 / 收尾" min-width="190">
+                <template #default="scope">
+                  <div class="primary-cell">
+                    <b>{{ scope.row.closure.status }}</b>
+                    <small>
+                      FS {{ scope.row.closure.filesystem_status }} · DL
+                      {{ scope.row.closure.downloader_status }}
+                    </small>
+                    <small v-if="scope.row.closure.operation_attention_count">
+                      Attention {{ scope.row.closure.operation_attention_count }} · Reconcile
+                      {{ scope.row.closure.reconcile_required_count }} · Blocked
+                      {{ scope.row.closure.rollback_blocked_count }}
+                    </small>
+                    <small v-if="scope.row.closure.retention_candidate_count">
+                      Retention candidate {{ scope.row.closure.retention_candidate_count }}
+                    </small>
+                    <small v-if="scope.row.closure.issue_codes.length" class="execution-error">
+                      {{ scope.row.closure.issue_codes.join(', ') }}
+                    </small>
+                  </div>
+                </template>
+              </el-table-column>
               <el-table-column label="进度" width="85">
                 <template #default="scope">{{
                   scope.row.progress === null ? '—' : `${scope.row.progress}%`
@@ -1945,7 +2183,14 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
               </el-table-column>
               <el-table-column label="结果 / 错误" min-width="210">
                 <template #default="scope">
-                  {{ scope.row.result || '等待预演' }}
+                  {{
+                    scope.row.result ||
+                    (scope.row.authorization_status === 'REVIEW_REQUIRED'
+                      ? '等待候选确认'
+                      : scope.row.authorization_status === 'APPROVAL_REQUIRED'
+                        ? '等待高风险授权'
+                        : '处理中')
+                  }}
                   <small v-if="scope.row.error_summary_zh" class="execution-error">
                     {{ scope.row.error_code }} · {{ scope.row.error_summary_zh }}
                   </small>
@@ -1961,7 +2206,58 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
                   <span v-else>—</span>
                 </template>
               </el-table-column>
+              <el-table-column label="审批" min-width="155" fixed="right">
+                <template #default="scope">
+                  <div
+                    v-if="
+                      scope.row.authorization_status === 'APPROVAL_REQUIRED' &&
+                      scope.row.approval?.state === 'PENDING'
+                    "
+                    class="toolbar-actions"
+                  >
+                    <el-button
+                      link
+                      type="primary"
+                      :loading="Boolean(decidingApproval[scope.row.id])"
+                      @click="decideApproval(scope.row, true)"
+                    >
+                      批准
+                    </el-button>
+                    <el-button
+                      link
+                      type="danger"
+                      :disabled="Boolean(decidingApproval[scope.row.id])"
+                      @click="decideApproval(scope.row, false)"
+                    >
+                      拒绝
+                    </el-button>
+                  </div>
+                  <span v-else-if="scope.row.approval">
+                    {{ scope.row.approval.state }}
+                  </span>
+                  <span v-else>—</span>
+                </template>
+              </el-table-column>
             </el-table>
+          </el-tab-pane>
+          <el-tab-pane label="审核 / 对账">
+            <div v-if="executionEvidenceItems.length" class="execution-evidence-selector">
+              <span>当前 Run</span>
+              <el-select v-model="executionEvidenceTaskId" filterable>
+                <el-option
+                  v-for="item in executionEvidenceItems"
+                  :key="item.itemId"
+                  :label="`${item.name} · ${item.closure.status}`"
+                  :value="item.taskId"
+                />
+              </el-select>
+            </div>
+            <TaskExecutionEvidencePanel
+              v-if="executionEvidenceTaskId"
+              :key="executionEvidenceTaskId"
+              :task-id="executionEvidenceTaskId"
+            />
+            <el-empty v-else description="当前执行没有可关联的底层安全 Run" />
           </el-tab-pane>
           <el-tab-pane label="执行时间线">
             <el-timeline class="execution-timeline">
@@ -1990,6 +2286,18 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
         </el-tabs>
         <div class="execution-drawer-actions">
           <el-button @click="openExecutionLogs">查看关联日志</el-button>
+          <el-button
+            type="primary"
+            :loading="advancingExecution"
+            :disabled="
+              ['COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED'].includes(
+                activeExecution.status,
+              )
+            "
+            @click="advanceActiveExecution"
+          >
+            推进生命周期
+          </el-button>
           <el-button
             type="warning"
             :disabled="activeExecution.failed_count === 0"
@@ -2464,6 +2772,19 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+.execution-evidence-selector {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.execution-evidence-selector > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.execution-evidence-selector :deep(.el-select) {
+  min-width: min(520px, 70vw);
 }
 .definition-detail-head,
 .definition-detail-head > div,

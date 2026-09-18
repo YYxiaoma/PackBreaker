@@ -1626,33 +1626,65 @@ class TaskAnalysisService:
         actions: tuple[ExecutionPlanAction, ...],
     ) -> _TargetLayout:
         try:
-            root_stat = target_root.stat(follow_symlinks=False)
+            data_root_stat = self._data_root.stat(follow_symlinks=False)
         except OSError as exc:
             raise ApplicationError(
                 code="EXECUTION_PLAN_TARGET_ROOT_NOT_FOUND",
                 status=404,
                 title="目标根目录不可用",
-                detail="目标根目录在执行计划检查期间不可见",
+                detail="数据根目录在执行计划检查期间不可见",
             ) from exc
-        if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
-            raise _execution_target_root_invalid("目标根必须是真实目录且不能是符号链接")
+        if stat.S_ISLNK(data_root_stat.st_mode) or not stat.S_ISDIR(data_root_stat.st_mode):
+            raise _execution_target_root_invalid("数据根目录必须是真实目录且不能是符号链接")
+        try:
+            base = self._data_root.resolve(strict=True)
+            target_parts = target_root.relative_to(base).parts
+        except (OSError, ValueError) as exc:
+            raise _execution_target_root_invalid("target_root 必须位于数据根目录内") from exc
 
-        device = root_stat.st_dev
+        current_root = base
+        device = data_root_stat.st_dev
         directories: set[str] = set()
         blockers: set[ExecutionPlanBlockReason] = set()
+        missing_root = False
+        unsafe_root = False
+        for index, part in enumerate(target_parts):
+            relative = "/".join(target_parts[: index + 1])
+            if missing_root:
+                directories.add(relative)
+                continue
+            candidate = current_root / part
+            try:
+                item_stat = candidate.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                missing_root = True
+                directories.add(relative)
+                continue
+            except OSError:
+                blockers.add(ExecutionPlanBlockReason.TARGET_PARENT_UNSAFE)
+                unsafe_root = True
+                break
+            if stat.S_ISLNK(item_stat.st_mode) or not stat.S_ISDIR(item_stat.st_mode):
+                blockers.add(ExecutionPlanBlockReason.TARGET_PARENT_UNSAFE)
+                unsafe_root = True
+                break
+            current_root = candidate
+            device = item_stat.st_dev
+
         for action in actions:
             parts = action.torrent_path.split("/")
             current = target_root
-            missing_parent = False
-            unsafe_parent = False
+            missing_parent = missing_root
+            unsafe_parent = unsafe_root
             for index, part in enumerate(parts[:-1]):
-                current = current / part
-                relative = "/".join(parts[: index + 1])
+                relative_parts = (*target_parts, *parts[: index + 1])
+                relative = "/".join(relative_parts)
                 if missing_parent:
                     directories.add(relative)
                     continue
                 if unsafe_parent:
                     break
+                current = current / part
                 try:
                     item_stat = current.stat(follow_symlinks=False)
                 except FileNotFoundError:
@@ -2175,18 +2207,19 @@ class TaskAnalysisService:
         except OSError as exc:
             raise _execution_target_root_invalid("数据根目录不可用") from exc
 
-        current = self._data_root
+        current = base
+        missing_started = False
         for index, part in enumerate(parts):
             current = current / part
+            if missing_started:
+                continue
             try:
                 item_stat = current.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                missing_started = True
+                continue
             except OSError as exc:
-                raise ApplicationError(
-                    code="EXECUTION_PLAN_TARGET_ROOT_NOT_FOUND",
-                    status=404,
-                    title="目标根目录不存在",
-                    detail="target_root 指向的目录不可见",
-                ) from exc
+                raise _execution_target_root_invalid("target_root 无法安全检查") from exc
             if stat.S_ISLNK(item_stat.st_mode):
                 raise _execution_target_root_invalid("target_root 不能经过符号链接")
             if not stat.S_ISDIR(item_stat.st_mode):
@@ -2196,9 +2229,9 @@ class TaskAnalysisService:
                     else "target_root 必须指向目录"
                 )
                 raise _execution_target_root_invalid(detail)
-        resolved = current.resolve(strict=True)
-        if not resolved.is_relative_to(base) or not resolved.is_dir():
-            raise _execution_target_root_invalid("target_root 必须解析到 /data 内的真实目录")
+        resolved = base.joinpath(*parts)
+        if not resolved.is_relative_to(base):
+            raise _execution_target_root_invalid("target_root 必须解析到 /data 内")
         return ("." if not parts else "/".join(parts), resolved)
 
     @staticmethod

@@ -301,6 +301,10 @@
           "provider_kind": {
             "$ref": "#/components/schemas/AIProviderKind"
           },
+          "telegram_approval_enabled": {
+            "title": "Telegram Approval Enabled",
+            "type": "boolean"
+          },
           "telegram_consecutive_errors": {
             "title": "Telegram Consecutive Errors",
             "type": "integer"
@@ -337,6 +341,7 @@
           "model",
           "last_test_at",
           "telegram_enabled",
+          "telegram_approval_enabled",
           "telegram_driver_running",
           "telegram_last_update_id",
           "telegram_consecutive_errors",
@@ -391,6 +396,10 @@
             "title": "Allowed User Ids",
             "type": "array"
           },
+          "approval_enabled": {
+            "title": "Approval Enabled",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -436,6 +445,7 @@
         "required": [
           "notification_channel_id",
           "enabled",
+          "approval_enabled",
           "allowed_chat_ids",
           "allowed_user_ids",
           "idle_timeout_minutes",
@@ -465,6 +475,11 @@
             "maxItems": 100,
             "title": "Allowed User Ids",
             "type": "array"
+          },
+          "approval_enabled": {
+            "default": false,
+            "title": "Approval Enabled",
+            "type": "boolean"
           },
           "enabled": {
             "default": false,
@@ -4362,6 +4377,143 @@
         "title": "SystemUpgradeStatusResponse",
         "type": "object"
       },
+      "TaskApprovalDecisionRequest": {
+        "properties": {
+          "decision": {
+            "enum": [
+              "APPROVE",
+              "REJECT"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "execution_plan_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Execution Plan Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "execution_plan_id",
+          "decision"
+        ],
+        "title": "TaskApprovalDecisionRequest",
+        "type": "object"
+      },
+      "TaskApprovalResponse": {
+        "properties": {
+          "actor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Kind"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "decision_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Source"
+          },
+          "execution_plan_id": {
+            "title": "Execution Plan Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "plan_digest": {
+            "title": "Plan Digest",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "execution_plan_id",
+          "plan_digest",
+          "state",
+          "decision_source",
+          "actor_kind",
+          "actor_id",
+          "decision_note",
+          "decided_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "TaskApprovalResponse",
+        "type": "object"
+      },
       "TaskCandidateListResponse": {
         "properties": {
           "items": {
@@ -4782,6 +4934,17 @@
             "title": "File Types",
             "type": "array"
           },
+          "high_risk_allowed_action_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "High Risk Allowed Action Kinds",
+            "type": "array"
+          },
+          "high_risk_preauthorization_enabled": {
+            "title": "High Risk Preauthorization Enabled",
+            "type": "boolean"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -5089,6 +5252,8 @@
           "auto_retry_enabled",
           "max_auto_retries",
           "retry_intervals_seconds",
+          "high_risk_preauthorization_enabled",
+          "high_risk_allowed_action_kinds",
           "latest_execution",
           "version",
           "created_at",
@@ -5283,6 +5448,62 @@
         "title": "TaskEventResponse",
         "type": "object"
       },
+      "TaskExecutionClosureResponse": {
+        "properties": {
+          "downloader_status": {
+            "title": "Downloader Status",
+            "type": "string"
+          },
+          "filesystem_status": {
+            "title": "Filesystem Status",
+            "type": "string"
+          },
+          "issue_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Issue Codes",
+            "type": "array"
+          },
+          "manual_attention_required": {
+            "title": "Manual Attention Required",
+            "type": "boolean"
+          },
+          "operation_attention_count": {
+            "title": "Operation Attention Count",
+            "type": "integer"
+          },
+          "reconcile_required_count": {
+            "title": "Reconcile Required Count",
+            "type": "integer"
+          },
+          "retention_candidate_count": {
+            "title": "Retention Candidate Count",
+            "type": "integer"
+          },
+          "rollback_blocked_count": {
+            "title": "Rollback Blocked Count",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "filesystem_status",
+          "downloader_status",
+          "operation_attention_count",
+          "reconcile_required_count",
+          "rollback_blocked_count",
+          "retention_candidate_count",
+          "manual_attention_required",
+          "issue_codes"
+        ],
+        "title": "TaskExecutionClosureResponse",
+        "type": "object"
+      },
       "TaskExecutionEventResponse": {
         "properties": {
           "context": {
@@ -5325,6 +5546,23 @@
       },
       "TaskExecutionItemResponse": {
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskApprovalResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "authorization_status": {
+            "title": "Authorization Status",
+            "type": "string"
+          },
+          "closure": {
+            "$ref": "#/components/schemas/TaskExecutionClosureResponse"
+          },
           "error_code": {
             "anyOf": [
               {
@@ -5347,8 +5585,41 @@
             ],
             "title": "Error Summary Zh"
           },
+          "execution_plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Plan Id"
+          },
+          "execution_plan_ready": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Plan Ready"
+          },
           "id": {
             "title": "Id",
+            "type": "string"
+          },
+          "lifecycle_blocked_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lifecycle Blocked Reasons",
+            "type": "array"
+          },
+          "lifecycle_stage": {
+            "title": "Lifecycle Stage",
             "type": "string"
           },
           "name": {
@@ -5387,6 +5658,24 @@
           },
           "retryable": {
             "title": "Retryable",
+            "type": "boolean"
+          },
+          "risk_level": {
+            "title": "Risk Level",
+            "type": "string"
+          },
+          "risk_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskRiskSummaryResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "side_effects_started": {
+            "title": "Side Effects Started",
             "type": "boolean"
           },
           "size_bytes": {
@@ -5445,7 +5734,17 @@
           "error_summary_zh",
           "technical_detail",
           "retryable",
-          "retry_count"
+          "retry_count",
+          "lifecycle_stage",
+          "risk_level",
+          "authorization_status",
+          "execution_plan_id",
+          "execution_plan_ready",
+          "side_effects_started",
+          "lifecycle_blocked_reasons",
+          "risk_summary",
+          "approval",
+          "closure"
         ],
         "title": "TaskExecutionItemResponse",
         "type": "object"
@@ -5691,6 +5990,19 @@
             "minimum": 0.0,
             "title": "Debounce Seconds",
             "type": "integer"
+          },
+          "high_risk_allowed_action_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "High Risk Allowed Action Kinds",
+            "type": "array"
+          },
+          "high_risk_preauthorization_enabled": {
+            "default": false,
+            "title": "High Risk Preauthorization Enabled",
+            "type": "boolean"
           },
           "initial_scope": {
             "$ref": "#/components/schemas/TaskInitialScope",
@@ -6666,6 +6978,81 @@
           "created_at"
         ],
         "title": "TaskReviewResponse",
+        "type": "object"
+      },
+      "TaskRiskSummaryResponse": {
+        "properties": {
+          "action_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Action Kinds",
+            "type": "array"
+          },
+          "client_fetch_count": {
+            "title": "Client Fetch Count",
+            "type": "integer"
+          },
+          "create_directory_count": {
+            "title": "Create Directory Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "estimated_download_bytes_upper_bound": {
+            "title": "Estimated Download Bytes Upper Bound",
+            "type": "integer"
+          },
+          "execution_plan_id": {
+            "title": "Execution Plan Id",
+            "type": "string"
+          },
+          "hardlink_count": {
+            "title": "Hardlink Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "plan_digest": {
+            "title": "Plan Digest",
+            "type": "string"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reason Codes",
+            "type": "array"
+          },
+          "risk_digest": {
+            "title": "Risk Digest",
+            "type": "string"
+          },
+          "risk_level": {
+            "title": "Risk Level",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "execution_plan_id",
+          "plan_digest",
+          "risk_level",
+          "reason_codes",
+          "action_kinds",
+          "hardlink_count",
+          "client_fetch_count",
+          "create_directory_count",
+          "estimated_download_bytes_upper_bound",
+          "risk_digest",
+          "created_at"
+        ],
+        "title": "TaskRiskSummaryResponse",
         "type": "object"
       },
       "TaskSourceInput": {
@@ -13010,6 +13397,255 @@
           }
         },
         "summary": "Get Task Definition Execution",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/{definition_id}/executions/{execution_id}/advance": {
+      "post": {
+        "operationId": "advance_task_definition_execution_api_v1_task_definitions__definition_id__executions__execution_id__advance_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Advance Task Definition Execution",
+        "tags": [
+          "task-definitions"
+        ]
+      }
+    },
+    "/api/v1/task-definitions/{definition_id}/executions/{execution_id}/items/{item_id}/approval": {
+      "post": {
+        "operationId": "decide_task_definition_execution_approval_api_v1_task_definitions__definition_id__executions__execution_id__items__item_id__approval_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskApprovalDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Task Definition Execution Approval",
         "tags": [
           "task-definitions"
         ]

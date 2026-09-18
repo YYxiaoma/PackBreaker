@@ -15,8 +15,6 @@ export type TaskOperationReconcileAction =
   components['schemas']['TaskOperationReconcileActionResponse'];
 export type TaskOperationPurgeAction = components['schemas']['TaskOperationPurgeActionResponse'];
 export type TaskOperationAction = TaskOperationReconcileAction | TaskOperationPurgeAction;
-export type OperationMaintenanceReport =
-  components['schemas']['OperationMaintenanceReportResponse'];
 export type OperationRetentionPlan = components['schemas']['OperationRetentionPlanResponse'];
 export type TaskOperationPurgeInput = components['schemas']['TaskOperationPurgeActionRequest'];
 export type TaskRecord = components['schemas']['TaskResponse'];
@@ -91,23 +89,6 @@ export async function listTaskOperations(taskId: string): Promise<TaskOperation[
       `${taskPath(taskId)}/operations`,
     );
     return response.data.items;
-  } catch (error) {
-    throw toApiProblem(error);
-  }
-}
-
-export async function getOperationMaintenanceReport(
-  limit = 100,
-): Promise<OperationMaintenanceReport> {
-  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
-    throw new Error('limit 必须位于 1..500');
-  }
-  try {
-    const response = await apiClient.get<OperationMaintenanceReport>(
-      '/operations/maintenance-report',
-      { params: { limit } },
-    );
-    return response.data;
   } catch (error) {
     throw toApiProblem(error);
   }

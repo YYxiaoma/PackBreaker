@@ -161,10 +161,17 @@ class FilesystemOperationService:
         )
         target_relative = self._gateway.normalize_relative_path(request.target_relative_path)
         target_parts = target_relative.split("/")
-        directory_journal_ids = self._validate_existing_directory_journals(
+        directory_journal_ids = self._ensure_target_root_directories(
             request,
             target_root_relative_path=target_root_relative,
-            target_parts=target_parts,
+            fault_hook=fault_hook,
+        )
+        directory_journal_ids.extend(
+            self._validate_existing_directory_journals(
+                request,
+                target_root_relative_path=target_root_relative,
+                target_parts=target_parts,
+            )
         )
         hardlink_key = file_operation_key(
             candidate_key=request.candidate_key,
@@ -974,6 +981,118 @@ class FilesystemOperationService:
             )
             if journal.status is OperationStatus.APPLIED:
                 self._assert_applied_directory(journal)
+        return journal_ids
+
+    def _ensure_target_root_directories(
+        self,
+        request: HardlinkExecutionRequest,
+        *,
+        target_root_relative_path: str,
+        fault_hook: Callable[[str], None] | None,
+    ) -> list[str]:
+        if target_root_relative_path == ".":
+            return []
+        parts = target_root_relative_path.split("/")
+        anchor_depth = 0
+        anchor_relative = "."
+        for depth in range(len(parts), 0, -1):
+            candidate = "/".join(parts[:depth])
+            try:
+                self._gateway.assert_directory(relative_path=candidate)
+            except DomainViolation:
+                continue
+            anchor_depth = depth
+            anchor_relative = candidate
+            break
+        journal_ids: list[str] = []
+        for depth in range(1, len(parts) + 1):
+            full_relative = "/".join(parts[:depth])
+            key = file_operation_key(
+                candidate_key=request.candidate_key,
+                operation_type=CREATE_DIRECTORY_OPERATION,
+                normalized_target_path=full_relative,
+            )
+            existing = self._load_by_key(key)
+            if existing is not None:
+                journal_ids.append(existing.id)
+                existing_target_root = _required_text(existing.target, "target_root")
+                existing_relative = _required_text(existing.target, "relative_path")
+                self._assert_same_directory_intent(
+                    existing,
+                    request=request,
+                    target_root_relative_path=existing_target_root,
+                    directory_relative_path=existing_relative,
+                )
+                if existing.status is OperationStatus.APPLIED:
+                    self._assert_applied_directory(existing)
+                    continue
+                if existing.status is not OperationStatus.INTENT_RECORDED:
+                    raise _journal_not_executable(existing)
+                creation_root = existing_target_root
+                directory_relative = existing_relative
+            else:
+                if depth <= anchor_depth:
+                    continue
+                creation_root = anchor_relative
+                directory_relative = "/".join(parts[anchor_depth:depth])
+
+            try:
+                inspection = self._gateway.inspect_directory_creation(
+                    target_root_relative_path=creation_root,
+                    directory_relative_path=directory_relative,
+                )
+            except DomainViolation as exc:
+                if (
+                    existing is not None
+                    and existing.status is OperationStatus.INTENT_RECORDED
+                    and exc.code is ErrorCode.TARGET_CONFLICT
+                ):
+                    self._transition_if_current(
+                        existing.id,
+                        OperationStatus.INTENT_RECORDED,
+                        OperationStatus.RECONCILE_REQUIRED,
+                    )
+                raise
+
+            if existing is None:
+                journal, _ = self._record_intent(
+                    OperationIntent(
+                        task_id=request.task_id,
+                        idempotency_key=key,
+                        operation_type=CREATE_DIRECTORY_OPERATION,
+                        target={
+                            "target_root": creation_root,
+                            "relative_path": directory_relative,
+                        },
+                        intent={
+                            "schema_version": FILESYSTEM_OPERATION_SCHEMA_VERSION,
+                            "resource_kind": "directory",
+                        },
+                        before_snapshot={
+                            "parent": inspection.parent_snapshot.to_payload(),
+                            "target_absent": True,
+                        },
+                    )
+                )
+                journal_ids.append(journal.id)
+            else:
+                journal = existing
+
+            created = self._gateway.create_directory(
+                target_root_relative_path=creation_root,
+                directory_relative_path=directory_relative,
+                expected_parent_snapshot=inspection.parent_snapshot,
+            )
+            _call_fault_hook(
+                fault_hook,
+                f"after_target_root_directory_created:{directory_relative}",
+            )
+            self._transition(
+                journal.id,
+                OperationStatus.INTENT_RECORDED,
+                OperationStatus.APPLIED,
+                after_snapshot=created.to_payload(),
+            )
         return journal_ids
 
     def _load_by_key(self, key: str) -> _JournalView | None:

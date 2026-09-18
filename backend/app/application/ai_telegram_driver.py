@@ -10,6 +10,7 @@ from typing import Protocol
 
 from backend.app.application.ai_telegram import AITelegramBindingView, AITelegramService
 from backend.app.application.notifications import NotificationService
+from backend.app.application.task_telegram_approvals import TaskTelegramApprovalService
 from backend.app.infrastructure.adapters.telegram_ai import (
     TelegramAIClient,
     TelegramAIClientFactory,
@@ -33,6 +34,8 @@ class AITelegramDriverReport:
     failed_count: int
     rate_limited_count: int
     last_update_id: int
+    approval_requested_count: int = 0
+    approval_processed_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +60,7 @@ class AITelegramDriver:
         poll_timeout_seconds: int = 20,
         poll_limit: int = 20,
         client_factory: TelegramAIClientFactoryPort | None = None,
+        approval_service: TaskTelegramApprovalService | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         if interval_seconds <= 0:
@@ -71,6 +75,7 @@ class AITelegramDriver:
         self._poll_timeout_seconds = poll_timeout_seconds
         self._poll_limit = poll_limit
         self._client_factory = client_factory or TelegramAIClientFactory()
+        self._approval_service = approval_service
         self._logger = logger or logging.getLogger("packbreaker.ai.telegram")
         self._stop_event = asyncio.Event()
         self._runner: asyncio.Task[None] | None = None
@@ -141,13 +146,33 @@ class AITelegramDriver:
 
     async def _poll_once(self) -> AITelegramDriverReport:
         binding = self._service.get()
-        if not binding.enabled or binding.notification_channel_id is None:
+        if (
+            not binding.enabled
+            and not binding.approval_enabled
+            or binding.notification_channel_id is None
+        ):
             return AITelegramDriverReport(0, 0, 0, 0, 0, binding.last_update_id)
         runtime = self._notification_service.telegram_ai_runtime(binding.notification_channel_id)
         client = self._client_factory.create(
             bot_token=runtime.credential.bot_token,
             proxy_url=runtime.proxy_url,
         )
+        approval_requested = 0
+        if binding.approval_enabled:
+            if self._approval_service is None:
+                raise RuntimeError("Telegram approval 已启用但审批服务未配置")
+            for request in self._approval_service.list_pending_requests(limit=self._poll_limit):
+                sent = await client.send_message(
+                    chat_id=runtime.credential.chat_id,
+                    text=request.message_text,
+                    reply_markup=request.reply_markup,
+                )
+                if self._approval_service.mark_notified(
+                    request.approval_id,
+                    chat_id=sent.chat_id,
+                    message_id=sent.message_id,
+                ):
+                    approval_requested += 1
         updates = await client.poll(
             offset=binding.last_update_id + 1,
             timeout_seconds=self._poll_timeout_seconds,
@@ -158,10 +183,68 @@ class AITelegramDriver:
         replied = 0
         failed = 0
         rate_limited = 0
+        approval_processed = 0
         last_update_id = binding.last_update_id
         for update in updates:
             scanned += 1
             try:
+                if update.callback_query_id is not None or update.callback_data is not None:
+                    if update.callback_query_id is None:
+                        failed += 1
+                        continue
+                    if not binding.approval_enabled or self._approval_service is None:
+                        await client.answer_callback_query(
+                            callback_query_id=update.callback_query_id,
+                            text="Telegram 审批未启用",
+                            show_alert=True,
+                        )
+                        continue
+                    if not self._service.is_authorized(binding, update):
+                        await client.answer_callback_query(
+                            callback_query_id=update.callback_query_id,
+                            text="当前 Telegram 身份没有审批权限",
+                            show_alert=True,
+                        )
+                        continue
+                    authorized += 1
+                    if update.callback_data is None:
+                        await client.answer_callback_query(
+                            callback_query_id=update.callback_query_id,
+                            text="审批按钮数据无效",
+                            show_alert=True,
+                        )
+                        failed += 1
+                        continue
+                    callback = await self._approval_service.handle_callback(
+                        callback_data=update.callback_data,
+                        callback_query_id=update.callback_query_id,
+                        chat_id=update.chat_id,
+                        user_id=update.user_id,
+                    )
+                    approval_processed += 1
+                    await client.answer_callback_query(
+                        callback_query_id=update.callback_query_id,
+                        text=callback.answer_text,
+                        show_alert=False,
+                    )
+                    if callback.detail_text is not None and update.chat_id is not None:
+                        await client.send_message(
+                            chat_id=update.chat_id,
+                            text=callback.detail_text,
+                        )
+                        replied += 1
+                    if (
+                        callback.remove_keyboard
+                        and update.chat_id is not None
+                        and update.message_id is not None
+                    ):
+                        await client.clear_inline_keyboard(
+                            chat_id=update.chat_id,
+                            message_id=update.message_id,
+                        )
+                    continue
+                if not binding.enabled:
+                    continue
                 if self._service.is_authorized(binding, update) and update.text:
                     authorized += 1
                     if self._is_rate_limited(binding, update):
@@ -197,6 +280,8 @@ class AITelegramDriver:
             failed_count=failed,
             rate_limited_count=rate_limited,
             last_update_id=last_update_id,
+            approval_requested_count=approval_requested,
+            approval_processed_count=approval_processed,
         )
 
     def _is_rate_limited(

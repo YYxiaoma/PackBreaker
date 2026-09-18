@@ -15,7 +15,11 @@ from backend.app.application.task_definition_executions import (
     filter_source_inventory,
     reconcile_task_execution,
 )
-from backend.app.domain.downloader import PathMappingRule, map_remote_path
+from backend.app.domain.downloader import (
+    PathMappingRule,
+    map_remote_path,
+    reverse_map_container_path_unique,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.task_definition import (
     DEFAULT_ARCHIVE_EXTENSIONS,
@@ -91,6 +95,8 @@ class TaskExecutionPolicyCreate:
     auto_retry_enabled: bool = True
     max_auto_retries: int = 3
     retry_intervals_seconds: tuple[int, ...] = DEFAULT_RETRY_INTERVALS_SECONDS
+    high_risk_preauthorization_enabled: bool = False
+    high_risk_allowed_action_kinds: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +183,8 @@ class TaskDefinitionView:
     auto_retry_enabled: bool
     max_auto_retries: int
     retry_intervals_seconds: tuple[int, ...]
+    high_risk_preauthorization_enabled: bool
+    high_risk_allowed_action_kinds: tuple[str, ...]
     latest_execution: TaskExecutionSummaryView | None
     version: int
     created_at: datetime
@@ -412,6 +420,38 @@ class TaskDefinitionService:
                 else:
                     add("DOWNLOADER", "OK", "下载器", "下载器连接和路径映射均已验证通过")
 
+                if normalized_output is not None:
+                    try:
+                        mappings = [
+                            PathMappingRule(
+                                remote_prefix=item["remote_prefix"],
+                                container_prefix=item["container_prefix"],
+                            )
+                            for item in downloader.path_mappings
+                        ]
+                        intended_output = (self._data_root / normalized_output).resolve(
+                            strict=False
+                        )
+                        remote_output = reverse_map_container_path_unique(
+                            intended_output,
+                            mappings,
+                            allowed_root=self._data_root,
+                        )
+                    except (DomainViolation, KeyError, TypeError, ValueError):
+                        add(
+                            "OUTPUT_DOWNLOADER_MAPPING",
+                            "BLOCKED",
+                            "输出目录映射",
+                            "输出目录无法唯一映射到目标下载器，请选择已配置路径映射范围内的目录",
+                        )
+                    else:
+                        add(
+                            "OUTPUT_DOWNLOADER_MAPPING",
+                            "OK",
+                            "输出目录映射",
+                            f"输出目录可安全映射到下载器路径 {remote_output}",
+                        )
+
         if (
             output_anchor is not None
             and request.output_policy.storage_mode is TaskStorageMode.HARDLINK
@@ -450,7 +490,7 @@ class TaskDefinitionService:
 
         if filters is not None and request.kind is TaskDefinitionKind.MONITOR:
             try:
-                self._validate_execution_policy(request.execution_policy)
+                self._validate_execution_policy(request.execution_policy, kind=request.kind)
             except ApplicationError as exc:
                 add("EXECUTION_POLICY", "BLOCKED", "执行策略", exc.detail)
             else:
@@ -617,7 +657,7 @@ class TaskDefinitionService:
             output_record.updated_at = now
 
             policy = request.execution_policy
-            self._validate_execution_policy(policy)
+            self._validate_execution_policy(policy, kind=request.kind)
             policy_record.stability_detection_enabled = policy.stability_detection_enabled
             policy_record.stability_wait_seconds = policy.stability_wait_seconds
             policy_record.only_completed_downloads = policy.only_completed_downloads
@@ -627,6 +667,12 @@ class TaskDefinitionService:
             policy_record.auto_retry_enabled = policy.auto_retry_enabled
             policy_record.max_auto_retries = policy.max_auto_retries
             policy_record.retry_intervals_seconds = list(policy.retry_intervals_seconds)
+            policy_record.high_risk_preauthorization_enabled = (
+                policy.high_risk_preauthorization_enabled
+            )
+            policy_record.high_risk_allowed_action_kinds = list(
+                policy.high_risk_allowed_action_kinds
+            )
             policy_record.updated_at = now
 
             schedule = session.scalar(
@@ -857,7 +903,7 @@ class TaskDefinitionService:
                 )
             )
             policy = request.execution_policy
-            self._validate_execution_policy(policy)
+            self._validate_execution_policy(policy, kind=request.kind)
             session.add(
                 TaskExecutionPolicy(
                     id=new_uuid(),
@@ -871,6 +917,8 @@ class TaskDefinitionService:
                     auto_retry_enabled=policy.auto_retry_enabled,
                     max_auto_retries=policy.max_auto_retries,
                     retry_intervals_seconds=list(policy.retry_intervals_seconds),
+                    high_risk_preauthorization_enabled=(policy.high_risk_preauthorization_enabled),
+                    high_risk_allowed_action_kinds=list(policy.high_risk_allowed_action_kinds),
                     created_at=now,
                     updated_at=now,
                 )
@@ -1122,7 +1170,12 @@ class TaskDefinitionService:
             raise self._invalid("已选择种子快照格式无效")
         return result
 
-    def _validate_execution_policy(self, policy: TaskExecutionPolicyCreate) -> None:
+    def _validate_execution_policy(
+        self,
+        policy: TaskExecutionPolicyCreate,
+        *,
+        kind: TaskDefinitionKind,
+    ) -> None:
         if policy.stability_wait_seconds < 0 or policy.stability_wait_seconds > 86400:
             raise self._invalid("文件稳定等待时间必须位于 0..86400 秒")
         if policy.debounce_seconds < 0 or policy.debounce_seconds > 86400:
@@ -1133,6 +1186,23 @@ class TaskDefinitionService:
             raise self._invalid("自动重试间隔数量不能少于最大自动重试次数")
         if any(value <= 0 or value > 86400 for value in policy.retry_intervals_seconds):
             raise self._invalid("自动重试间隔必须位于 1..86400 秒")
+        allowed_kinds = tuple(dict.fromkeys(policy.high_risk_allowed_action_kinds))
+        if kind is not TaskDefinitionKind.MONITOR and (
+            policy.high_risk_preauthorization_enabled or allowed_kinds
+        ):
+            raise self._invalid("高风险预授权只允许配置在监控拆包任务")
+        if policy.high_risk_preauthorization_enabled and not allowed_kinds:
+            raise self._invalid("开启高风险预授权时必须至少选择一个允许的 action kind")
+        if not policy.high_risk_preauthorization_enabled and allowed_kinds:
+            raise self._invalid("未开启高风险预授权时不能保留 action kind 白名单")
+        for value in allowed_kinds:
+            if (
+                not value
+                or len(value) > 64
+                or value != value.upper()
+                or not value.replace("_", "").isalnum()
+            ):
+                raise self._invalid("高风险预授权 action kind 必须使用大写字母、数字或下划线")
 
     def _validate_output_policy(self, policy: TaskOutputPolicyCreate) -> None:
         if policy.storage_mode is not TaskStorageMode.HARDLINK:
@@ -1247,6 +1317,8 @@ class TaskDefinitionService:
             auto_retry_enabled=policy.auto_retry_enabled,
             max_auto_retries=policy.max_auto_retries,
             retry_intervals_seconds=tuple(policy.retry_intervals_seconds),
+            high_risk_preauthorization_enabled=policy.high_risk_preauthorization_enabled,
+            high_risk_allowed_action_kinds=tuple(policy.high_risk_allowed_action_kinds),
             latest_execution=(
                 TaskExecutionSummaryView(
                     id=latest.id,

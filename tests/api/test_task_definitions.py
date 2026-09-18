@@ -77,6 +77,8 @@ def test_monitor_task_definition_persists_v015_defaults_and_cron(tmp_path: Path)
         assert body["overlap_policy"] == "SKIP"
         assert body["max_auto_retries"] == 3
         assert body["retry_intervals_seconds"] == [60, 300, 900]
+        assert body["high_risk_preauthorization_enabled"] is False
+        assert body["high_risk_allowed_action_kinds"] == []
         assert body["latest_execution"] is None
 
         listed = client.get("/api/v1/task-definitions", params={"kind": "MONITOR"})
@@ -164,6 +166,20 @@ def test_task_definition_requires_user_name_and_valid_monitor_cron(tmp_path: Pat
         assert rejected_file_type.status_code == 422
         assert rejected_file_type.json()["code"] == "TASK_DEFINITION_INVALID"
         assert "仅支持视频文件" in rejected_file_type.json()["detail"]
+
+        invalid_preauthorization = _monitor_payload(site_id)
+        invalid_preauthorization["execution_policy"] = {
+            "high_risk_preauthorization_enabled": True,
+            "high_risk_allowed_action_kinds": [],
+        }
+        rejected_preauthorization = client.post(
+            "/api/v1/task-definitions",
+            headers=_csrf(client),
+            json=invalid_preauthorization,
+        )
+        assert rejected_preauthorization.status_code == 422
+        assert rejected_preauthorization.json()["code"] == "TASK_DEFINITION_INVALID"
+        assert "action kind" in rejected_preauthorization.json()["detail"]
     finally:
         client.__exit__(None, None, None)
 
@@ -195,7 +211,7 @@ def test_task_definition_precheck_reports_statuses_without_persisting(tmp_path: 
                     "target_downloader_id": target_downloader_id,
                 },
             },
-            "output_policy": {"output_directory": "output"},
+            "output_policy": {"output_directory": "source/output"},
         }
         before = client.get("/api/v1/task-definitions").json()["items"]
         precheck = client.post(
@@ -210,8 +226,26 @@ def test_task_definition_precheck_reports_statuses_without_persisting(tmp_path: 
         assert any(
             item["code"] == "DOWNLOADER" and item["status"] == "OK" for item in body["items"]
         )
+        assert any(
+            item["code"] == "OUTPUT_DOWNLOADER_MAPPING" and item["status"] == "OK"
+            for item in body["items"]
+        )
         assert any(item["code"] == "HARDLINK_FILESYSTEM" for item in body["items"])
         assert client.get("/api/v1/task-definitions").json()["items"] == before
+
+        unmapped_payload = dict(payload)
+        unmapped_payload["output_policy"] = {"output_directory": "unmapped-output"}
+        unmapped = client.post(
+            "/api/v1/task-definitions/precheck",
+            headers=_csrf(client),
+            json=unmapped_payload,
+        )
+        assert unmapped.status_code == 200
+        assert unmapped.json()["status"] == "BLOCKED"
+        assert any(
+            item["code"] == "OUTPUT_DOWNLOADER_MAPPING" and item["status"] == "BLOCKED"
+            for item in unmapped.json()["items"]
+        )
 
         blocked_payload = dict(payload)
         blocked_payload["output_policy"] = {
@@ -812,6 +846,32 @@ def test_directory_browser_preview_and_manual_snapshot_execution_are_safe(tmp_pa
         assert [item["relative_path"] for item in preview_body["files"]] == ["Movie.2026.1080p.mkv"]
         selected = preview_body["files"]
 
+        rejected_manual_preauthorization = client.post(
+            "/api/v1/task-definitions",
+            headers=_csrf(client),
+            json={
+                "name": "手动任务禁止预授权",
+                "kind": "MANUAL",
+                "site_id": site_id,
+                "source": {
+                    "kind": "DIRECTORY",
+                    "directory_path": "incoming",
+                    "config": {
+                        "selected_files": selected,
+                        "target_downloader_id": target_downloader_id,
+                    },
+                },
+                "output_policy": {"output_directory": "output"},
+                "execution_policy": {
+                    "high_risk_preauthorization_enabled": True,
+                    "high_risk_allowed_action_kinds": ["DELETE_SOURCE"],
+                },
+            },
+        )
+        assert rejected_manual_preauthorization.status_code == 422
+        assert rejected_manual_preauthorization.json()["code"] == "TASK_DEFINITION_INVALID"
+        assert "只允许配置在监控拆包任务" in rejected_manual_preauthorization.json()["detail"]
+
         created = client.post(
             "/api/v1/task-definitions",
             headers=_csrf(client),
@@ -840,8 +900,25 @@ def test_directory_browser_preview_and_manual_snapshot_execution_are_safe(tmp_pa
         execution_body = executed.json()
         assert execution_body["status"] == "PENDING"
         assert len(execution_body["items"]) == 1
+        assert execution_body["items"][0]["lifecycle_stage"] == "ANALYZE"
+        assert execution_body["items"][0]["risk_level"] == "UNKNOWN"
+        assert execution_body["items"][0]["authorization_status"] == "NOT_READY"
+        assert execution_body["items"][0]["execution_plan_id"] is None
+        assert execution_body["items"][0]["side_effects_started"] is False
         item_id = cast(str, execution_body["items"][0]["id"])
         unpack_task_id = cast(str, execution_body["items"][0]["unpack_task_id"])
+        due_lifecycle = app.state.task_definition_execution_service.list_due_lifecycle_advances(
+            limit=10
+        )
+        assert [(item.task_definition_id, item.execution_id) for item in due_lifecycle] == [
+            (definition_id, execution_body["id"])
+        ]
+        missing_idempotency = client.post(
+            f"/api/v1/task-definitions/{definition_id}/executions/{execution_body['id']}/advance",
+            headers=_csrf(client),
+        )
+        assert missing_idempotency.status_code == 400
+        assert missing_idempotency.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
         plan_before_review = client.post(
             f"/api/v1/task-definitions/{definition_id}/executions/{execution_body['id']}/items/{item_id}/execution-plan",
             headers=_csrf(client),
@@ -1061,7 +1138,7 @@ def test_manual_downloader_task_materializes_selected_torrent_into_safe_pending_
                         ],
                     },
                 },
-                "output_policy": {"output_directory": "output"},
+                "output_policy": {"output_directory": "source/output"},
             },
         )
         assert precheck.status_code == 200

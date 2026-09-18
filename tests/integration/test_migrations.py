@@ -35,6 +35,8 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
         "task_review_verification",
         "task_execution_gate",
         "task_execution_plan",
+        "task_risk_summary",
+        "task_approval",
         "notification_channel",
         "notification_outbox",
         "admin_notification",
@@ -76,6 +78,13 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert {"success_count", "failed_count", "skipped_count", "config_snapshot"}.issubset(
         task_execution_columns
     )
+    task_execution_policy_columns = {
+        column["name"] for column in inspector.get_columns("task_execution_policy")
+    }
+    assert {
+        "high_risk_preauthorization_enabled",
+        "high_risk_allowed_action_kinds",
+    }.issubset(task_execution_policy_columns)
     task_event_columns = {
         column["name"] for column in inspector.get_columns("task_execution_event")
     }
@@ -182,6 +191,27 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("task_execution_plan")
     } == {"uq_task_execution_plan_plan_digest"}
+    assert {
+        constraint["name"] for constraint in inspector.get_unique_constraints("task_risk_summary")
+    } == {
+        "uq_task_risk_summary_execution_plan",
+        "uq_task_risk_summary_risk_digest",
+    }
+    assert {
+        constraint["name"] for constraint in inspector.get_unique_constraints("task_approval")
+    } == {"uq_task_approval_execution_plan"}
+    task_approval_columns = {column["name"] for column in inspector.get_columns("task_approval")}
+    assert {
+        "telegram_notified_at",
+        "telegram_chat_id",
+        "telegram_message_id",
+    }.issubset(task_approval_columns)
+    task_approval_checks = [
+        str(constraint["sqltext"])
+        for constraint in inspector.get_check_constraints("task_approval")
+    ]
+    assert any("EXPIRED" in value for value in task_approval_checks)
+    assert any("TELEGRAM" in value for value in task_approval_checks)
     site_columns = {column["name"] for column in inspector.get_columns("site")}
     assert "credential_kind" in site_columns
     assert {
@@ -249,6 +279,200 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
         "last_test_at",
         "version",
     }.issubset(ai_setting_columns)
+    ai_binding_columns = {column["name"] for column in inspector.get_columns("ai_channel_binding")}
+    assert "approval_enabled" in ai_binding_columns
+    engine.dispose()
+
+
+def test_v017_database_upgrades_with_high_risk_preauthorization_disabled(tmp_path: Path) -> None:
+    database_path = tmp_path / "v017-to-v018.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database_path)
+    command.upgrade(config, "0026_ai_agent_v016")
+
+    engine = create_engine(sqlite_database_url(database_path))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO task_definition "
+                "(id, name, kind, status, site_id, version, created_at, updated_at) "
+                "VALUES ('definition-v017', 'legacy monitor', 'MONITOR', 'ENABLED', NULL, 1, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO task_execution_policy "
+                "(id, task_definition_id, stability_detection_enabled, stability_wait_seconds, "
+                "only_completed_downloads, initial_scope, debounce_seconds, overlap_policy, "
+                "auto_retry_enabled, max_auto_retries, retry_intervals_seconds, "
+                "created_at, updated_at) VALUES "
+                "('policy-v017', 'definition-v017', 1, 60, 1, 'NEW_ONLY', 30, 'SKIP', "
+                "1, 3, '[60,300,900]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    command.upgrade(config, "head")
+    command.check(config)
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT high_risk_preauthorization_enabled, high_risk_allowed_action_kinds "
+                "FROM task_execution_policy WHERE id = 'policy-v017'"
+            )
+        ).one()
+    assert row == (0, "[]")
+    engine.dispose()
+
+
+def test_v018_stage_c_database_upgrades_with_telegram_approval_disabled(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "stage-c-to-stage-d.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database_path)
+    command.upgrade(config, "0027_task_approval_v018")
+
+    engine = create_engine(sqlite_database_url(database_path))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO ai_channel_binding "
+                "(id, kind, notification_channel_id, enabled, allowed_chat_ids, "
+                "allowed_user_ids, idle_timeout_minutes, max_context_messages, "
+                "last_update_id, version, created_at, updated_at) VALUES "
+                "('telegram', 'TELEGRAM', NULL, 0, '[]', '[]', 60, 20, 0, 1, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    command.upgrade(config, "head")
+    command.check(config)
+    with engine.connect() as connection:
+        approval_enabled = connection.scalar(
+            text("SELECT approval_enabled FROM ai_channel_binding WHERE id = 'telegram'")
+        )
+    assert approval_enabled == 0
+    engine.dispose()
+
+
+def test_v017_single_telegram_channel_is_reused_without_enabling_new_capabilities(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "v017-telegram-reuse.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database_path)
+    command.upgrade(config, "0026_ai_agent_v016")
+
+    engine = create_engine(sqlite_database_url(database_path))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO notification_channel "
+                "(id, name, type, secret_id, task_link_base_url, aggregation_window_seconds, "
+                "event_types, proxy_enabled, proxy_host, proxy_port, proxy_username, "
+                "proxy_secret_id, connection_status, enabled, version, last_test_at, "
+                "created_at, updated_at) VALUES "
+                "('legacy-telegram', 'legacy telegram', 'TELEGRAM', NULL, NULL, 300, "
+                "'[]', 1, 'proxy.example', 8080, NULL, NULL, 'OK', 1, 7, NULL, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    command.upgrade(config, "head")
+    command.check(config)
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT notification_channel_id, enabled, approval_enabled, "
+                "allowed_chat_ids, allowed_user_ids, last_update_id, version "
+                "FROM ai_channel_binding WHERE id = 'telegram'"
+            )
+        ).one()
+    assert row == ("legacy-telegram", 0, 0, "[]", "[]", 0, 1)
+    engine.dispose()
+
+
+def test_v017_existing_telegram_binding_is_preserved_and_approval_stays_disabled(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "v017-existing-telegram-binding.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database_path)
+    command.upgrade(config, "0026_ai_agent_v016")
+
+    engine = create_engine(sqlite_database_url(database_path))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO notification_channel "
+                "(id, name, type, secret_id, task_link_base_url, aggregation_window_seconds, "
+                "event_types, proxy_enabled, proxy_host, proxy_port, proxy_username, "
+                "proxy_secret_id, connection_status, enabled, version, last_test_at, "
+                "created_at, updated_at) VALUES "
+                "('legacy-telegram', 'legacy telegram', 'TELEGRAM', NULL, NULL, 300, "
+                "'[]', 0, NULL, NULL, NULL, NULL, 'OK', 1, 3, NULL, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO ai_channel_binding "
+                "(id, kind, notification_channel_id, enabled, allowed_chat_ids, "
+                "allowed_user_ids, idle_timeout_minutes, max_context_messages, "
+                "last_update_id, version, created_at, updated_at) VALUES "
+                "('telegram', 'TELEGRAM', 'legacy-telegram', 1, :chat_ids, :user_ids, "
+                "90, 12, 456, 5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ),
+            {"chat_ids": '["123"]', "user_ids": '["88"]'},
+        )
+
+    command.upgrade(config, "head")
+    command.check(config)
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT notification_channel_id, enabled, approval_enabled, "
+                "allowed_chat_ids, allowed_user_ids, idle_timeout_minutes, "
+                "max_context_messages, last_update_id, version "
+                "FROM ai_channel_binding WHERE id = 'telegram'"
+            )
+        ).one()
+    assert row == ("legacy-telegram", 1, 0, '["123"]', '["88"]', 90, 12, 456, 5)
+    engine.dispose()
+
+
+def test_v017_multiple_telegram_channels_are_not_ambiguously_auto_bound(tmp_path: Path) -> None:
+    database_path = tmp_path / "v017-multiple-telegram.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database_path)
+    command.upgrade(config, "0026_ai_agent_v016")
+
+    engine = create_engine(sqlite_database_url(database_path))
+    with engine.begin() as connection:
+        for channel_id in ("telegram-a", "telegram-b"):
+            connection.execute(
+                text(
+                    "INSERT INTO notification_channel "
+                    "(id, name, type, secret_id, task_link_base_url, aggregation_window_seconds, "
+                    "event_types, proxy_enabled, connection_status, enabled, version, "
+                    "created_at, updated_at) VALUES "
+                    "(:id, :name, 'TELEGRAM', NULL, NULL, 300, '[]', 0, 'UNTESTED', "
+                    "0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ),
+                {"id": channel_id, "name": channel_id},
+            )
+
+    command.upgrade(config, "head")
+    command.check(config)
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT notification_channel_id, enabled, approval_enabled "
+                "FROM ai_channel_binding WHERE id = 'telegram'"
+            )
+        ).one()
+    assert row == (None, 0, 0)
     engine.dispose()
 
 

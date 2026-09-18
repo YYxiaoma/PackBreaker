@@ -84,6 +84,7 @@ class AIAgentStatusResponse(BaseModel):
     model: str
     last_test_at: datetime | None
     telegram_enabled: bool
+    telegram_approval_enabled: bool
     telegram_driver_running: bool
     telegram_last_update_id: int
     telegram_consecutive_errors: int
@@ -93,6 +94,7 @@ class AIAgentStatusResponse(BaseModel):
 class AITelegramBindingResponse(BaseModel):
     notification_channel_id: str | None
     enabled: bool
+    approval_enabled: bool
     allowed_chat_ids: list[str]
     allowed_user_ids: list[str]
     idle_timeout_minutes: int
@@ -106,6 +108,7 @@ class AITelegramBindingResponse(BaseModel):
 class AITelegramBindingUpdateRequest(BaseModel):
     notification_channel_id: str | None = Field(default=None, max_length=36)
     enabled: bool = False
+    approval_enabled: bool = False
     allowed_chat_ids: list[str] = Field(default_factory=list, max_length=100)
     allowed_user_ids: list[str] = Field(default_factory=list, max_length=100)
     idle_timeout_minutes: int = Field(default=60, ge=5, le=10080)
@@ -176,6 +179,7 @@ def _telegram_view(record: AITelegramBindingView) -> AITelegramBindingResponse:
     return AITelegramBindingResponse(
         notification_channel_id=record.notification_channel_id,
         enabled=record.enabled,
+        approval_enabled=record.approval_enabled,
         allowed_chat_ids=list(record.allowed_chat_ids),
         allowed_user_ids=list(record.allowed_user_ids),
         idle_timeout_minutes=record.idle_timeout_minutes,
@@ -300,6 +304,7 @@ async def get_ai_agent_status(
         model=current.model,
         last_test_at=current.last_test_at,
         telegram_enabled=telegram.enabled,
+        telegram_approval_enabled=telegram.approval_enabled,
         telegram_driver_running=driver_state.running,
         telegram_last_update_id=telegram.last_update_id,
         telegram_consecutive_errors=driver_state.consecutive_errors,
@@ -326,6 +331,7 @@ async def update_ai_telegram_binding(
         AITelegramBindingUpdate(
             notification_channel_id=payload.notification_channel_id,
             enabled=payload.enabled,
+            approval_enabled=payload.approval_enabled,
             allowed_chat_ids=tuple(payload.allowed_chat_ids),
             allowed_user_ids=tuple(payload.allowed_user_ids),
             idle_timeout_minutes=payload.idle_timeout_minutes,

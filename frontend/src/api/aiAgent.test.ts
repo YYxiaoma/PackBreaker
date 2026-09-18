@@ -30,6 +30,7 @@ const settings: AIAgentSettings = {
 const telegramBinding: AITelegramBinding = {
   notification_channel_id: 'telegram-channel',
   enabled: true,
+  approval_enabled: true,
   allowed_chat_ids: ['-100123'],
   allowed_user_ids: ['88'],
   idle_timeout_minutes: 60,
@@ -99,6 +100,7 @@ describe('AI Agent API', () => {
     const payload = {
       notification_channel_id: 'telegram-channel',
       enabled: true,
+      approval_enabled: true,
       allowed_chat_ids: ['-100123'],
       allowed_user_ids: ['88'],
       idle_timeout_minutes: 60,

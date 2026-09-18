@@ -39,7 +39,51 @@ const TASK_EVENT_TRANSLATIONS: Record<string, Omit<TaskEventTranslation, 'transl
   },
   TASK_UNPACK_RUN_MATERIALIZED: {
     title: '已创建安全拆包 Run',
-    description: '拆包 Run 已创建，正在等待后续分析、预演与人工确认。',
+    description: '拆包 Run 已创建，等待统一生命周期继续分析、计划与授权。',
+  },
+  TASK_LIFECYCLE_ANALYZED: {
+    title: '分析与预检完成',
+    description: '只读分析与 Preflight 已完成，尚未开始真实副作用。',
+  },
+  TASK_LIFECYCLE_GATE_BLOCKED: {
+    title: '执行门阻断',
+    description: 'Execution Gate 未满足安全条件，生命周期已在副作用前停止。',
+  },
+  TASK_LIFECYCLE_PLAN_BLOCKED: {
+    title: '执行计划阻断',
+    description: 'Execution Plan 当前不可安全执行，生命周期已停止。',
+  },
+  TASK_LIFECYCLE_APPROVAL_REQUIRED: {
+    title: '等待高风险授权',
+    description: '计划需要额外授权，当前没有执行对应副作用。',
+  },
+  TASK_LIFECYCLE_APPROVAL_REJECTED: {
+    title: '高风险计划已拒绝',
+    description: '当前 Execution Plan 已被拒绝，生命周期保持在真实副作用之前。',
+  },
+  TASK_LIFECYCLE_PREAUTHORIZED: {
+    title: '监控预授权命中',
+    description: '当前高风险 action 被监控任务的显式白名单覆盖，并绑定本次 Plan digest。',
+  },
+  TASK_LIFECYCLE_APPROVED: {
+    title: '高风险计划已批准',
+    description: '当前 Execution Plan 已获得有效审批证据，可以继续进入既有安全执行器。',
+  },
+  TASK_APPROVAL_APPROVED: {
+    title: 'Web 审批通过',
+    description: '管理员通过 Web 批准了当前 Plan；该决定只绑定当前 Plan digest。',
+  },
+  TASK_APPROVAL_REJECTED: {
+    title: 'Web 审批拒绝',
+    description: '管理员通过 Web 拒绝了当前 Plan；该 Plan 的决定不能被后续覆盖。',
+  },
+  TASK_LIFECYCLE_APPROVED_EXECUTION: {
+    title: '已审批计划开始执行',
+    description: '有效审批后的计划已交给既有 journal-backed 安全执行链。',
+  },
+  TASK_LIFECYCLE_AUTO_AUTHORIZED: {
+    title: '低风险计划已授权',
+    description: '当前低风险计划已交给既有 journal-backed 安全执行链。',
   },
   TASK_SOURCE_OBJECT_REJECTED: {
     title: '来源对象处理失败',

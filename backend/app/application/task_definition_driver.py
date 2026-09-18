@@ -8,8 +8,10 @@ from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
 
+from backend.app.application.task_actions import TaskActionActor
 from backend.app.application.task_definition_executions import (
     AutoRetryRequest,
+    DueLifecycleAdvance,
     DueMonitorScan,
     TaskMonitorScanView,
 )
@@ -32,6 +34,17 @@ class TaskDefinitionAutomationPort(Protocol):
         trace_id: str,
         now: datetime | None = None,
     ) -> TaskMonitorScanView: ...
+
+    def list_due_lifecycle_advances(self, *, limit: int) -> tuple[DueLifecycleAdvance, ...]: ...
+
+    async def advance_execution(
+        self,
+        definition_id: str,
+        execution_id: str,
+        *,
+        actor: TaskActionActor,
+        idempotency_key: str | None,
+    ) -> object: ...
 
     def list_due_auto_retries(
         self,
@@ -58,6 +71,9 @@ class TaskDefinitionDriverReport:
     debounce_wait_count: int
     overlap_count: int
     scan_failed_count: int
+    due_lifecycle_count: int
+    lifecycle_advanced_count: int
+    lifecycle_failed_count: int
     due_retry_count: int
     retried_count: int
     retry_failed_count: int
@@ -86,6 +102,7 @@ class TaskDefinitionDriver:
         interval_seconds: float,
         scan_limit: int,
         retry_limit: int,
+        lifecycle_limit: int | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         if interval_seconds <= 0:
@@ -94,10 +111,13 @@ class TaskDefinitionDriver:
             raise ValueError("scan_limit 必须大于 0")
         if retry_limit <= 0:
             raise ValueError("retry_limit 必须大于 0")
+        if lifecycle_limit is not None and lifecycle_limit <= 0:
+            raise ValueError("lifecycle_limit 必须大于 0")
         self._service = service
         self._interval_seconds = interval_seconds
         self._scan_limit = scan_limit
         self._retry_limit = retry_limit
+        self._lifecycle_limit = lifecycle_limit or retry_limit
         self._logger = logger or logging.getLogger("packbreaker.task_definition_driver")
         self._tick_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
@@ -200,6 +220,32 @@ class TaskDefinitionDriver:
                 elif result.outcome in {"OVERLAP_SKIPPED", "OVERLAP_QUEUED"}:
                     overlap += 1
 
+            due_lifecycle = await asyncio.to_thread(
+                self._service.list_due_lifecycle_advances,
+                limit=self._lifecycle_limit,
+            )
+            lifecycle_advanced = 0
+            lifecycle_failed = 0
+            for lifecycle in due_lifecycle:
+                try:
+                    await self._service.advance_execution(
+                        lifecycle.task_definition_id,
+                        lifecycle.execution_id,
+                        actor=TaskActionActor("SYSTEM", "task-definition-driver"),
+                        idempotency_key=f"driver-lifecycle-{lifecycle.execution_id}",
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    lifecycle_failed += 1
+                    self._logger.exception(
+                        "统一任务生命周期自动推进失败 task_definition_id=%s execution_id=%s",
+                        lifecycle.task_definition_id,
+                        lifecycle.execution_id,
+                    )
+                    continue
+                lifecycle_advanced += 1
+
             due_retries = await asyncio.to_thread(
                 self._service.list_due_auto_retries,
                 now=datetime.now(UTC),
@@ -231,6 +277,9 @@ class TaskDefinitionDriver:
                 debounce_wait_count=debounce_wait,
                 overlap_count=overlap,
                 scan_failed_count=scan_failed,
+                due_lifecycle_count=len(due_lifecycle),
+                lifecycle_advanced_count=lifecycle_advanced,
+                lifecycle_failed_count=lifecycle_failed,
                 due_retry_count=len(due_retries),
                 retried_count=retried,
                 retry_failed_count=retry_failed,

@@ -29,6 +29,7 @@ class AITelegramBindingView:
     id: str
     notification_channel_id: str | None
     enabled: bool
+    approval_enabled: bool
     allowed_chat_ids: tuple[str, ...]
     allowed_user_ids: tuple[str, ...]
     idle_timeout_minutes: int
@@ -43,6 +44,7 @@ class AITelegramBindingView:
 class AITelegramBindingUpdate:
     notification_channel_id: str | None
     enabled: bool
+    approval_enabled: bool
     allowed_chat_ids: tuple[str, ...]
     allowed_user_ids: tuple[str, ...]
     idle_timeout_minutes: int
@@ -103,14 +105,24 @@ class AITelegramService:
         )
         if channel_id == "":
             channel_id = None
-        if channel_id is not None:
+        runtime = (
             self._notification_service.telegram_ai_runtime(channel_id)
+            if channel_id is not None
+            else None
+        )
         if change.enabled:
             if channel_id is None:
                 raise self._invalid("启用 Telegram AI 前必须绑定 Telegram 通知渠道")
             if not chat_ids and not user_ids:
                 raise self._invalid("启用 Telegram AI 前至少配置一个 Chat ID 或 User ID")
             self._ai_agent_service.runtime_config()
+        if change.approval_enabled:
+            if channel_id is None or runtime is None:
+                raise self._invalid("启用 Telegram 审批前必须绑定 Telegram 通知渠道")
+            if not chat_ids and not user_ids:
+                raise self._invalid("启用 Telegram 审批前至少配置一个 Chat ID 或 User ID")
+            if chat_ids and runtime.credential.chat_id not in chat_ids:
+                raise self._invalid("Telegram 通知渠道的 Chat ID 必须包含在审批允许的 Chat ID 中")
 
         with self._session_factory() as session:
             repository = AIChannelBindingRepository(session)
@@ -119,6 +131,7 @@ class AITelegramService:
                 expected_version=expected_version,
                 notification_channel_id=channel_id,
                 enabled=change.enabled,
+                approval_enabled=change.approval_enabled,
                 allowed_chat_ids=list(chat_ids),
                 allowed_user_ids=list(user_ids),
                 idle_timeout_minutes=change.idle_timeout_minutes,
@@ -309,6 +322,7 @@ class AITelegramService:
             id=record.id,
             notification_channel_id=record.notification_channel_id,
             enabled=record.enabled,
+            approval_enabled=record.approval_enabled,
             allowed_chat_ids=tuple(str(value) for value in record.allowed_chat_ids),
             allowed_user_ids=tuple(str(value) for value in record.allowed_user_ids),
             idle_timeout_minutes=record.idle_timeout_minutes,

@@ -324,3 +324,60 @@ def test_ai_telegram_enable_requires_enabled_tested_ai_agent(tmp_path: Path) -> 
         )
         assert blocked.status_code == 409
         assert blocked.json()["code"] == "AI_AGENT_UNAVAILABLE"
+
+
+def test_telegram_approval_can_enable_without_ai_and_requires_channel_chat_allowlist(
+    tmp_path: Path,
+) -> None:
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        telegram = client.post(
+            "/api/v1/notification-channels",
+            headers=headers,
+            json={
+                "name": "Approval Telegram",
+                "type": "TELEGRAM",
+                "telegram": {"bot_token": "123456:synthetic-approval", "chat_id": "123"},
+            },
+        )
+        assert telegram.status_code == 201
+        binding = client.get("/api/v1/ai-agent/telegram")
+
+        saved = client.put(
+            "/api/v1/ai-agent/telegram",
+            headers={**headers, "If-Match": binding.headers["etag"]},
+            json={
+                "notification_channel_id": telegram.json()["id"],
+                "enabled": False,
+                "approval_enabled": True,
+                "allowed_chat_ids": ["123"],
+                "allowed_user_ids": ["88"],
+                "idle_timeout_minutes": 60,
+                "max_context_messages": 20,
+            },
+        )
+        assert saved.status_code == 200
+        assert saved.json()["enabled"] is False
+        assert saved.json()["approval_enabled"] is True
+        status = client.get("/api/v1/ai-agent/status")
+        assert status.status_code == 200
+        assert status.json()["telegram_enabled"] is False
+        assert status.json()["telegram_approval_enabled"] is True
+
+        rejected = client.put(
+            "/api/v1/ai-agent/telegram",
+            headers={**headers, "If-Match": saved.headers["etag"]},
+            json={
+                "notification_channel_id": telegram.json()["id"],
+                "enabled": False,
+                "approval_enabled": True,
+                "allowed_chat_ids": ["999"],
+                "allowed_user_ids": ["88"],
+                "idle_timeout_minutes": 60,
+                "max_context_messages": 20,
+            },
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["code"] == "AI_TELEGRAM_CONFIG_INVALID"
+        assert "Chat ID" in rejected.json()["detail"]

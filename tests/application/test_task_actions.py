@@ -24,6 +24,7 @@ from backend.app.application.task_cancellation import (
     TaskResourceReleaseResult,
 )
 from backend.app.application.task_linking import TaskLinkingResult
+from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_state import TaskStatus
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.database import (
@@ -375,6 +376,25 @@ async def test_rerun_action_creates_fresh_child_and_replays_receipt(
     action_fixture: ActionFixture,
 ) -> None:
     factory, parent_id = action_fixture
+    with factory() as session:
+        operations = OperationJournalRepository(session)
+        journal, created = operations.record_intent(
+            OperationIntent(
+                task_id=parent_id,
+                idempotency_key="parent-applied-dangerous-side-effect",
+                operation_type="QBITTORRENT_ADD",
+                target={"torrent_hash": "a" * 40},
+                intent={"save_path": "/downloads"},
+            )
+        )
+        assert created is True
+        operations.transition_status(
+            journal_id=journal.id,
+            expected_status=OperationStatus.INTENT_RECORDED,
+            to_status=OperationStatus.APPLIED,
+            after_snapshot={"torrent_present": True},
+        )
+        session.commit()
     _set_task_status(factory, parent_id, TaskStatus.CANCELLED)
     service = TaskActionService(factory, _LinkingMustNotRun(), _Cancellation())
     actor = TaskActionActor("api_token", "rerun-actor")
@@ -407,6 +427,11 @@ async def test_rerun_action_creates_fresh_child_and_replays_receipt(
         assert session.query(TaskReviewRevisionRecord).filter_by(task_id=child.id).count() == 0
         assert session.query(TaskExecutionGateRecord).filter_by(task_id=child.id).count() == 0
         assert session.query(TaskExecutionPlanRecord).filter_by(task_id=child.id).count() == 0
+        parent_operations = OperationJournalRepository(session).list_for_task(parent_id)
+        child_operations = OperationJournalRepository(session).list_for_task(child.id)
+        assert len(parent_operations) == 1
+        assert parent_operations[0].status == OperationStatus.APPLIED.value
+        assert child_operations == []
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,7 @@ from backend.app.domain.site_config import (
     PERSISTED_SITE_CREDENTIAL_KINDS,
     PERSISTED_SITE_KINDS,
 )
+from backend.app.domain.task_approval import TaskApprovalDecisionSource, TaskApprovalState
 from backend.app.domain.task_definition import (
     TaskConflictPolicy,
     TaskDefinitionKind,
@@ -76,6 +77,8 @@ _TASK_OVERLAP_POLICY_SQL = ", ".join(f"'{value.value}'" for value in TaskOverlap
 _TASK_EXECUTION_TRIGGER_SQL = ", ".join(f"'{value.value}'" for value in TaskExecutionTrigger)
 _TASK_EXECUTION_STATUS_SQL = ", ".join(f"'{value.value}'" for value in TaskExecutionStatus)
 _TASK_EXECUTION_PHASE_SQL = ", ".join(f"'{value.value}'" for value in TaskExecutionPhase)
+_TASK_APPROVAL_STATE_SQL = ", ".join(f"'{value.value}'" for value in TaskApprovalState)
+_TASK_APPROVAL_SOURCE_SQL = ", ".join(f"'{value.value}'" for value in TaskApprovalDecisionSource)
 
 
 class BackupPolicy(Base):
@@ -253,6 +256,7 @@ class AIChannelBinding(Base):
         String(36), ForeignKey("notification_channel.id", ondelete="SET NULL"), nullable=True
     )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    approval_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     allowed_chat_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     allowed_user_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     idle_timeout_minutes: Mapped[int] = mapped_column(nullable=False, default=60)
@@ -514,6 +518,12 @@ class TaskExecutionPolicy(Base):
     auto_retry_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     max_auto_retries: Mapped[int] = mapped_column(nullable=False, default=3)
     retry_intervals_seconds: Mapped[list[int]] = mapped_column(JSON, nullable=False)
+    high_risk_preauthorization_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    high_risk_allowed_action_kinds: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
@@ -937,6 +947,76 @@ class TaskExecutionPlanRecord(Base):
     plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskRiskSummaryRecord(Base):
+    __tablename__ = "task_risk_summary"
+    __table_args__ = (
+        UniqueConstraint("execution_plan_id", name="uq_task_risk_summary_execution_plan"),
+        UniqueConstraint("risk_digest", name="uq_task_risk_summary_risk_digest"),
+        Index("ix_task_risk_summary_task_created", "task_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=False
+    )
+    task_unit_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_unit.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_plan_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_execution_plan.id", ondelete="CASCADE"), nullable=False
+    )
+    plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason_codes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    action_kinds: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    hardlink_count: Mapped[int] = mapped_column(nullable=False)
+    client_fetch_count: Mapped[int] = mapped_column(nullable=False)
+    create_directory_count: Mapped[int] = mapped_column(nullable=False)
+    estimated_download_bytes_upper_bound: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    risk_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TaskApprovalRecord(Base):
+    __tablename__ = "task_approval"
+    __table_args__ = (
+        CheckConstraint(f"state IN ({_TASK_APPROVAL_STATE_SQL})", name="state"),
+        CheckConstraint(
+            f"decision_source IS NULL OR decision_source IN ({_TASK_APPROVAL_SOURCE_SQL})",
+            name="decision_source",
+        ),
+        UniqueConstraint("execution_plan_id", name="uq_task_approval_execution_plan"),
+        Index("ix_task_approval_task_state", "task_id", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=False
+    )
+    task_unit_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_unit.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_plan_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_execution_plan.id", ondelete="CASCADE"), nullable=False
+    )
+    risk_summary_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_risk_summary.id", ondelete="CASCADE"), nullable=False
+    )
+    plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    decision_source: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    actor_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    actor_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    telegram_notified_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    telegram_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
 class OperationJournal(Base):

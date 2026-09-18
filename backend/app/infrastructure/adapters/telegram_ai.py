@@ -13,6 +13,14 @@ class TelegramInboundUpdate:
     chat_id: str | None
     user_id: str | None
     text: str | None
+    callback_query_id: str | None = None
+    callback_data: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramSentMessage:
+    chat_id: str
+    message_id: str | None
 
 
 class TelegramAIError(RuntimeError):
@@ -66,7 +74,7 @@ class TelegramAIClient:
                 "offset": offset,
                 "timeout": timeout_seconds,
                 "limit": limit,
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "callback_query"],
             },
         )
         payload = self._telegram_payload(response)
@@ -81,21 +89,88 @@ class TelegramAIClient:
         updates.sort(key=lambda item: item.update_id)
         return tuple(updates)
 
-    async def send_message(self, *, chat_id: str, text: str) -> None:
+    async def send_message(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        reply_markup: dict[str, object] | None = None,
+    ) -> TelegramSentMessage:
         normalized_chat = chat_id.strip()
         normalized_text = text.strip()
         if not normalized_chat or len(normalized_chat) > 64:
             raise ValueError("Telegram Chat ID 格式无效")
         if not normalized_text:
             raise ValueError("Telegram 回复不能为空")
+        body: dict[str, object] = {
+            "chat_id": normalized_chat,
+            "text": normalized_text[:4096],
+            "disable_web_page_preview": True,
+        }
+        if reply_markup is not None:
+            body["reply_markup"] = reply_markup
         response = await self._request(
             "POST",
             "/sendMessage",
             timeout=15.0,
+            json=body,
+        )
+        payload = self._telegram_payload(response)
+        result = payload.get("result")
+        message_id: str | None = None
+        resolved_chat = normalized_chat
+        if isinstance(result, dict):
+            raw_message_id = result.get("message_id")
+            if isinstance(raw_message_id, int) and not isinstance(raw_message_id, bool):
+                message_id = str(raw_message_id)
+            raw_chat = result.get("chat")
+            parsed_chat = self._numeric_identifier(
+                raw_chat.get("id") if isinstance(raw_chat, dict) else None
+            )
+            if parsed_chat is not None:
+                resolved_chat = parsed_chat
+        return TelegramSentMessage(chat_id=resolved_chat, message_id=message_id)
+
+    async def answer_callback_query(
+        self,
+        *,
+        callback_query_id: str,
+        text: str,
+        show_alert: bool = False,
+    ) -> None:
+        query_id = callback_query_id.strip()
+        normalized_text = text.strip()
+        if not query_id or len(query_id) > 128:
+            raise ValueError("Telegram callback_query_id 格式无效")
+        if not normalized_text:
+            raise ValueError("Telegram callback 回复不能为空")
+        response = await self._request(
+            "POST",
+            "/answerCallbackQuery",
+            timeout=15.0,
+            json={
+                "callback_query_id": query_id,
+                "text": normalized_text[:200],
+                "show_alert": show_alert,
+            },
+        )
+        self._telegram_payload(response)
+
+    async def clear_inline_keyboard(self, *, chat_id: str, message_id: str) -> None:
+        normalized_chat = chat_id.strip()
+        normalized_message = message_id.strip()
+        if not normalized_chat or len(normalized_chat) > 64:
+            raise ValueError("Telegram Chat ID 格式无效")
+        if not normalized_message.isdigit():
+            raise ValueError("Telegram message_id 格式无效")
+        response = await self._request(
+            "POST",
+            "/editMessageReplyMarkup",
+            timeout=15.0,
             json={
                 "chat_id": normalized_chat,
-                "text": normalized_text[:4096],
-                "disable_web_page_preview": True,
+                "message_id": int(normalized_message),
+                "reply_markup": {"inline_keyboard": []},
             },
         )
         self._telegram_payload(response)
@@ -156,7 +231,38 @@ class TelegramAIClient:
             return None
         message = value.get("message")
         if not isinstance(message, dict):
-            return TelegramInboundUpdate(update_id, None, None, None, None)
+            callback = value.get("callback_query")
+            if not isinstance(callback, dict):
+                return TelegramInboundUpdate(update_id, None, None, None, None)
+            callback_query_id = callback.get("id")
+            sender = callback.get("from")
+            callback_message = callback.get("message")
+            raw_data = callback.get("data")
+            chat = callback_message.get("chat") if isinstance(callback_message, dict) else None
+            raw_message_id = (
+                callback_message.get("message_id") if isinstance(callback_message, dict) else None
+            )
+            return TelegramInboundUpdate(
+                update_id=update_id,
+                message_id=(
+                    str(raw_message_id)
+                    if isinstance(raw_message_id, int) and not isinstance(raw_message_id, bool)
+                    else None
+                ),
+                chat_id=TelegramAIClient._numeric_identifier(
+                    chat.get("id") if isinstance(chat, dict) else None
+                ),
+                user_id=TelegramAIClient._numeric_identifier(
+                    sender.get("id") if isinstance(sender, dict) else None
+                ),
+                text=None,
+                callback_query_id=(
+                    callback_query_id
+                    if isinstance(callback_query_id, str) and callback_query_id
+                    else None
+                ),
+                callback_data=raw_data if isinstance(raw_data, str) else None,
+            )
         message_id = message.get("message_id")
         chat = message.get("chat")
         sender = message.get("from")

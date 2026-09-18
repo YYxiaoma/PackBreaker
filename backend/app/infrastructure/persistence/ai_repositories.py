@@ -101,6 +101,7 @@ class AIChannelBindingRepository:
             kind="TELEGRAM",
             notification_channel_id=None,
             enabled=False,
+            approval_enabled=False,
             allowed_chat_ids=[],
             allowed_user_ids=[],
             idle_timeout_minutes=60,
@@ -120,6 +121,7 @@ class AIChannelBindingRepository:
         expected_version: int,
         notification_channel_id: str | None,
         enabled: bool,
+        approval_enabled: bool,
         allowed_chat_ids: list[str],
         allowed_user_ids: list[str],
         idle_timeout_minutes: int,
@@ -134,6 +136,7 @@ class AIChannelBindingRepository:
             .values(
                 notification_channel_id=notification_channel_id,
                 enabled=enabled,
+                approval_enabled=approval_enabled,
                 allowed_chat_ids=allowed_chat_ids,
                 allowed_user_ids=allowed_user_ids,
                 idle_timeout_minutes=idle_timeout_minutes,

@@ -8,7 +8,6 @@ import {
   createTask,
   executeTaskUnitRepair,
   executeTask,
-  getOperationMaintenanceReport,
   getOperationRetentionPlan,
   getTaskPreflight,
   getTaskPreflightCurrent,
@@ -193,32 +192,6 @@ describe('任务分析 API', () => {
       { action: 'reconcile' },
       { headers: { 'Idempotency-Key': 'reconcile-key' } },
     );
-  });
-
-  it('全局清理对账报告使用只读 endpoint 并携带显式 limit', async () => {
-    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
-      data: {
-        generated_at: '2026-09-12T00:00:00Z',
-        summary: {
-          total_journals: 4,
-          attention_required: 3,
-          reconcile_supported: 1,
-          manual_only: 2,
-          retention_candidates: 1,
-          truncated: false,
-        },
-        repair_items: [],
-        cleanup_candidates: [],
-      },
-    });
-
-    const report = await getOperationMaintenanceReport(25);
-
-    expect(get).toHaveBeenCalledWith('/operations/maintenance-report', {
-      params: { limit: 25 },
-    });
-    expect(report.summary.manual_only).toBe(2);
-    await expect(getOperationMaintenanceReport(0)).rejects.toThrow('limit 必须位于 1..500');
   });
 
   it('保留期计划只读预览并对单 journal purge 使用显式幂等键', async () => {

@@ -76,6 +76,7 @@ async def test_telegram_service_rejects_unauthorized_before_agent(tmp_path: Path
             id="telegram",
             notification_channel_id=None,
             enabled=True,
+            approval_enabled=False,
             allowed_chat_ids=("123",),
             allowed_user_ids=(),
             idle_timeout_minutes=60,

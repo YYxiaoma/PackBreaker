@@ -5,6 +5,7 @@ import pytest
 from backend.app.application.task_definition_driver import TaskDefinitionDriver
 from backend.app.application.task_definition_executions import (
     AutoRetryRequest,
+    DueLifecycleAdvance,
     DueMonitorScan,
     TaskMonitorScanView,
 )
@@ -15,6 +16,7 @@ class _FakeAutomation:
     def __init__(self) -> None:
         self.scanned: list[str] = []
         self.retried: list[str] = []
+        self.lifecycle_advanced: list[str] = []
 
     def list_due_monitor_scans(
         self,
@@ -63,6 +65,23 @@ class _FakeAutomation:
         self.retried.append(request.execution_id)
         return object()
 
+    def list_due_lifecycle_advances(self, *, limit: int) -> tuple[DueLifecycleAdvance, ...]:
+        assert limit == 7
+        return (DueLifecycleAdvance("definition-1", "execution-lifecycle-1"),)
+
+    async def advance_execution(
+        self,
+        definition_id: str,
+        execution_id: str,
+        *,
+        actor: object,
+        idempotency_key: str | None,
+    ) -> object:
+        assert definition_id == "definition-1"
+        assert idempotency_key == "driver-lifecycle-execution-lifecycle-1"
+        self.lifecycle_advanced.append(execution_id)
+        return object()
+
 
 class _DebounceAutomation(_FakeAutomation):
     async def scan_monitor(
@@ -102,6 +121,7 @@ async def test_task_definition_driver_counts_debounce_wait_as_normal_scan() -> N
     assert report.debounce_wait_count == 1
     assert report.scan_failed_count == 0
     assert report.materialized_scan_count == 0
+    assert report.lifecycle_advanced_count == 1
 
 
 @pytest.mark.asyncio
@@ -120,9 +140,13 @@ async def test_task_definition_driver_advances_due_scan_and_retry_in_one_tick() 
     assert report.due_scan_count == 1
     assert report.materialized_scan_count == 1
     assert report.scan_failed_count == 0
+    assert report.due_lifecycle_count == 1
+    assert report.lifecycle_advanced_count == 1
+    assert report.lifecycle_failed_count == 0
     assert report.due_retry_count == 1
     assert report.retried_count == 1
     assert report.retry_failed_count == 0
     assert automation.scanned == ["definition-1"]
+    assert automation.lifecycle_advanced == ["execution-lifecycle-1"]
     assert automation.retried == ["execution-1"]
     assert driver.state.ticks_completed == 1

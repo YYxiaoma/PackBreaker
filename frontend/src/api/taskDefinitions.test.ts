@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { apiClient } from './client';
 import {
+  advanceTaskDefinitionExecution,
   browseTaskDirectories,
   createTaskDefinition,
-  createTaskDefinitionExecutionPlan,
+  decideTaskDefinitionExecutionApproval,
   executeManualTaskDefinition,
   getTaskDefinitionExecution,
   listTaskDefinitionExecutions,
@@ -65,6 +66,8 @@ describe('v0.1.5 任务定义 API', () => {
         auto_retry_enabled: true,
         max_auto_retries: 3,
         retry_intervals_seconds: [60, 300, 900],
+        high_risk_preauthorization_enabled: false,
+        high_risk_allowed_action_kinds: [],
       },
     };
     const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { id: 'definition-1' } });
@@ -159,6 +162,8 @@ describe('v0.1.5 任务定义 API', () => {
         auto_retry_enabled: true,
         max_auto_retries: 3,
         retry_intervals_seconds: [60, 300, 900],
+        high_risk_preauthorization_enabled: false,
+        high_risk_allowed_action_kinds: [],
       },
     };
     const post = vi.spyOn(apiClient, 'post').mockResolvedValue({
@@ -168,16 +173,6 @@ describe('v0.1.5 任务定义 API', () => {
     await precheckTaskDefinition(payload);
 
     expect(post).toHaveBeenCalledWith('/task-definitions/precheck', payload);
-  });
-
-  it('任务定义执行计划使用对象级安全桥接端点', async () => {
-    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { id: 'plan-1' } });
-
-    await createTaskDefinitionExecutionPlan('definition-1', 'execution-1', 'item-1');
-
-    expect(post).toHaveBeenCalledWith(
-      '/task-definitions/definition-1/executions/execution-1/items/item-1/execution-plan',
-    );
   });
 
   it('手动执行和失败对象重试使用任务定义执行端点与幂等键', async () => {
@@ -192,6 +187,36 @@ describe('v0.1.5 任务定义 API', () => {
       '/task-definitions/definition-1/executions/execution-1/retry-failed',
       undefined,
       { headers: { 'Idempotency-Key': 'retry-key-1' } },
+    );
+  });
+
+  it('统一生命周期推进使用显式幂等键且不复用读取端点', async () => {
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { id: 'execution-1' } });
+
+    await advanceTaskDefinitionExecution('definition-1', 'execution-1', 'lifecycle-key-1');
+
+    expect(post).toHaveBeenCalledWith(
+      '/task-definitions/definition-1/executions/execution-1/advance',
+      undefined,
+      { headers: { 'Idempotency-Key': 'lifecycle-key-1' } },
+    );
+  });
+
+  it('Web 高风险审批绑定对象、Plan 与幂等键', async () => {
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: { id: 'execution-1' } });
+
+    await decideTaskDefinitionExecutionApproval(
+      'definition-1',
+      'execution-1',
+      'item-1',
+      { execution_plan_id: 'plan-1', decision: 'APPROVE' },
+      'approval-key-1',
+    );
+
+    expect(post).toHaveBeenCalledWith(
+      '/task-definitions/definition-1/executions/execution-1/items/item-1/approval',
+      { execution_plan_id: 'plan-1', decision: 'APPROVE' },
+      { headers: { 'Idempotency-Key': 'approval-key-1' } },
     );
   });
 

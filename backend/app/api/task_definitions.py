@@ -122,6 +122,8 @@ class TaskExecutionPolicyInput(BaseModel):
     retry_intervals_seconds: list[int] = Field(
         default_factory=lambda: list(DEFAULT_RETRY_INTERVALS_SECONDS), max_length=20
     )
+    high_risk_preauthorization_enabled: bool = False
+    high_risk_allowed_action_kinds: list[str] = Field(default_factory=list, max_length=32)
 
 
 class TaskDirectoryEntryResponse(BaseModel):
@@ -236,6 +238,8 @@ class TaskDefinitionResponse(BaseModel):
     auto_retry_enabled: bool
     max_auto_retries: int
     retry_intervals_seconds: list[int]
+    high_risk_preauthorization_enabled: bool
+    high_risk_allowed_action_kinds: list[str]
     latest_execution: TaskExecutionSummaryResponse | None
     version: int
     created_at: datetime
@@ -264,6 +268,59 @@ class TaskDefinitionActionRequest(BaseModel):
     action: Literal["pause", "resume"]
 
 
+class TaskRiskSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    execution_plan_id: str
+    plan_digest: str
+    risk_level: str
+    reason_codes: list[str]
+    action_kinds: list[str]
+    hardlink_count: int
+    client_fetch_count: int
+    create_directory_count: int
+    estimated_download_bytes_upper_bound: int
+    risk_digest: str
+    created_at: datetime
+
+
+class TaskApprovalResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    execution_plan_id: str
+    plan_digest: str
+    state: str
+    decision_source: str | None
+    actor_kind: str | None
+    actor_id: str | None
+    decision_note: str | None
+    decided_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskApprovalDecisionRequest(BaseModel):
+    execution_plan_id: str = Field(min_length=1, max_length=36)
+    decision: Literal["APPROVE", "REJECT"]
+    note: str | None = Field(default=None, max_length=500)
+
+
+class TaskExecutionClosureResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    status: str
+    filesystem_status: str
+    downloader_status: str
+    operation_attention_count: int
+    reconcile_required_count: int
+    rollback_blocked_count: int
+    retention_candidate_count: int
+    manual_attention_required: bool
+    issue_codes: list[str]
+
+
 class TaskExecutionItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -281,6 +338,16 @@ class TaskExecutionItemResponse(BaseModel):
     technical_detail: str | None
     retryable: bool
     retry_count: int
+    lifecycle_stage: str
+    risk_level: str
+    authorization_status: str
+    execution_plan_id: str | None
+    execution_plan_ready: bool | None
+    side_effects_started: bool
+    lifecycle_blocked_reasons: list[str]
+    risk_summary: TaskRiskSummaryResponse | None
+    approval: TaskApprovalResponse | None
+    closure: TaskExecutionClosureResponse
 
 
 class TaskExecutionPlanResponse(BaseModel):
@@ -411,6 +478,12 @@ def _create_request(payload: TaskDefinitionCreateRequest) -> TaskDefinitionCreat
             auto_retry_enabled=payload.execution_policy.auto_retry_enabled,
             max_auto_retries=payload.execution_policy.max_auto_retries,
             retry_intervals_seconds=tuple(payload.execution_policy.retry_intervals_seconds),
+            high_risk_preauthorization_enabled=(
+                payload.execution_policy.high_risk_preauthorization_enabled
+            ),
+            high_risk_allowed_action_kinds=tuple(
+                payload.execution_policy.high_risk_allowed_action_kinds
+            ),
         ),
     )
 
@@ -697,6 +770,52 @@ async def get_task_definition_execution(
             title="执行记录不存在",
             detail="未找到该任务定义下的指定执行记录",
         )
+    return _execution_response(execution)
+
+
+@router.post(
+    "/task-definitions/{definition_id}/executions/{execution_id}/advance",
+    response_model=TaskExecutionResponse,
+)
+async def advance_task_definition_execution(
+    definition_id: str,
+    execution_id: str,
+    request: Request,
+    principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> TaskExecutionResponse:
+    execution = await task_definition_execution_service(request).advance_execution(
+        definition_id,
+        execution_id,
+        actor=TaskActionActor(principal.kind, principal.subject_id),
+        idempotency_key=idempotency_key,
+    )
+    return _execution_response(execution)
+
+
+@router.post(
+    "/task-definitions/{definition_id}/executions/{execution_id}/items/{item_id}/approval",
+    response_model=TaskExecutionResponse,
+)
+async def decide_task_definition_execution_approval(
+    definition_id: str,
+    execution_id: str,
+    item_id: str,
+    payload: TaskApprovalDecisionRequest,
+    request: Request,
+    principal: Annotated[AccessPrincipal, Depends(TASKS_WRITE_ACCESS)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> TaskExecutionResponse:
+    execution = await task_definition_execution_service(request).decide_execution_approval(
+        definition_id,
+        execution_id,
+        item_id,
+        execution_plan_id=payload.execution_plan_id,
+        approve=payload.decision == "APPROVE",
+        note=payload.note,
+        actor=TaskActionActor(principal.kind, principal.subject_id),
+        idempotency_key=idempotency_key,
+    )
     return _execution_response(execution)
 
 

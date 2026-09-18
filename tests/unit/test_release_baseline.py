@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.validate_release_baseline import load_release_baseline
+from scripts.validate_release_baseline import load_release_baseline, project_version
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,8 +42,10 @@ def test_release_baseline_rejects_mutable_or_mismatched_identity(tmp_path: Path)
 
 def test_release_baseline_cannot_be_newer_than_project_version(tmp_path: Path) -> None:
     payload = json.loads((ROOT / "release-baseline.json").read_text(encoding="utf-8"))
-    payload["version"] = "0.1.8"
-    payload["tag"] = "v0.1.8"
+    major, minor, patch = (int(part) for part in project_version().split("."))
+    future_version = f"{major}.{minor}.{patch + 1}"
+    payload["version"] = future_version
+    payload["tag"] = f"v{future_version}"
     baseline = tmp_path / "baseline.json"
     baseline.write_text(json.dumps(payload), encoding="utf-8")
 

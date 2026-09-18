@@ -62,6 +62,7 @@ from backend.app.application.task_repairs import (
     TaskRepairPlanService,
 )
 from backend.app.application.task_seeding import TaskSeedingCoordinator
+from backend.app.application.task_telegram_approvals import TaskTelegramApprovalService
 from backend.app.application.tasks import TaskAnalysisService
 from backend.app.application.transmission_operations import (
     TransmissionAddOperationService,
@@ -299,6 +300,11 @@ def create_app(
             directory_scan_batch_size=resolved_settings.task_definition_directory_scan_batch_size,
         )
         app.state.task_definition_execution_service = task_definition_execution_service
+        task_telegram_approval_service = TaskTelegramApprovalService(
+            resolved_runtime.session_factory,
+            task_definition_execution_service,
+        )
+        app.state.task_telegram_approval_service = task_telegram_approval_service
         task_recovery_coordinator = TaskRecoveryCoordinator(
             resolved_runtime.session_factory,
             task_linking_coordinator,
@@ -395,6 +401,7 @@ def create_app(
             interval_seconds=resolved_settings.ai_telegram_driver_interval_seconds,
             poll_timeout_seconds=resolved_settings.ai_telegram_poll_timeout_seconds,
             poll_limit=resolved_settings.ai_telegram_poll_limit,
+            approval_service=task_telegram_approval_service,
         )
         app.state.ai_telegram_driver = ai_telegram_driver
         backup_driver.start()

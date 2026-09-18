@@ -36,6 +36,57 @@ export interface TaskExecutionItem {
   technical_detail: string | null;
   retryable: boolean;
   retry_count: number;
+  lifecycle_stage: string;
+  risk_level: string;
+  authorization_status: string;
+  execution_plan_id: string | null;
+  execution_plan_ready: boolean | null;
+  side_effects_started: boolean;
+  lifecycle_blocked_reasons: string[];
+  risk_summary: TaskRiskSummary | null;
+  approval: TaskApproval | null;
+  closure: TaskExecutionClosure;
+}
+
+export interface TaskExecutionClosure {
+  status: string;
+  filesystem_status: string;
+  downloader_status: string;
+  operation_attention_count: number;
+  reconcile_required_count: number;
+  rollback_blocked_count: number;
+  retention_candidate_count: number;
+  manual_attention_required: boolean;
+  issue_codes: string[];
+}
+
+export interface TaskRiskSummary {
+  id: string;
+  execution_plan_id: string;
+  plan_digest: string;
+  risk_level: string;
+  reason_codes: string[];
+  action_kinds: string[];
+  hardlink_count: number;
+  client_fetch_count: number;
+  create_directory_count: number;
+  estimated_download_bytes_upper_bound: number;
+  risk_digest: string;
+  created_at: string;
+}
+
+export interface TaskApproval {
+  id: string;
+  execution_plan_id: string;
+  plan_digest: string;
+  state: string;
+  decision_source: string | null;
+  actor_kind: string | null;
+  actor_id: string | null;
+  decision_note: string | null;
+  decided_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface TaskExecutionEvent {
@@ -45,22 +96,6 @@ export interface TaskExecutionEvent {
   trace_id: string;
   context: Record<string, unknown>;
   created_at: string;
-}
-
-export interface TaskExecutionPlan {
-  id: string;
-  ready: boolean;
-  current: boolean;
-  target_root: string;
-  target_downloader_id: string | null;
-  verification_level: string;
-  hardlink_count: number;
-  client_fetch_count: number;
-  create_directory_count: number;
-  estimated_download_bytes_upper_bound: number;
-  blocked_reasons: string[];
-  execution_allowed: boolean;
-  side_effects_started: boolean;
 }
 
 export interface TaskExecution extends TaskExecutionSummary {
@@ -152,6 +187,8 @@ export interface TaskDefinition {
   auto_retry_enabled: boolean;
   max_auto_retries: number;
   retry_intervals_seconds: number[];
+  high_risk_preauthorization_enabled: boolean;
+  high_risk_allowed_action_kinds: string[];
   latest_execution: TaskExecutionSummary | null;
   version: number;
   created_at: string;
@@ -246,6 +283,8 @@ export interface TaskDefinitionCreateInput {
     auto_retry_enabled: boolean;
     max_auto_retries: number;
     retry_intervals_seconds: number[];
+    high_risk_preauthorization_enabled: boolean;
+    high_risk_allowed_action_kinds: string[];
   };
 }
 
@@ -346,6 +385,38 @@ export async function getTaskDefinitionExecution(
   return response.data;
 }
 
+export async function advanceTaskDefinitionExecution(
+  definitionId: string,
+  executionId: string,
+  idempotencyKey: string,
+): Promise<TaskExecution> {
+  const response = await apiClient.post<TaskExecution>(
+    `/task-definitions/${definitionId}/executions/${executionId}/advance`,
+    undefined,
+    { headers: { 'Idempotency-Key': idempotencyKey } },
+  );
+  return response.data;
+}
+
+export async function decideTaskDefinitionExecutionApproval(
+  definitionId: string,
+  executionId: string,
+  itemId: string,
+  payload: {
+    execution_plan_id: string;
+    decision: 'APPROVE' | 'REJECT';
+    note?: string;
+  },
+  idempotencyKey: string,
+): Promise<TaskExecution> {
+  const response = await apiClient.post<TaskExecution>(
+    `/task-definitions/${definitionId}/executions/${executionId}/items/${itemId}/approval`,
+    payload,
+    { headers: { 'Idempotency-Key': idempotencyKey } },
+  );
+  return response.data;
+}
+
 export async function listTaskDefinitionExecutions(
   definitionId: string,
   query: TaskExecutionQuery = {},
@@ -353,17 +424,6 @@ export async function listTaskDefinitionExecutions(
   const response = await apiClient.get<TaskExecutionPage>(
     `/task-definitions/${definitionId}/executions`,
     { params: query },
-  );
-  return response.data;
-}
-
-export async function createTaskDefinitionExecutionPlan(
-  definitionId: string,
-  executionId: string,
-  itemId: string,
-): Promise<TaskExecutionPlan> {
-  const response = await apiClient.post<TaskExecutionPlan>(
-    `/task-definitions/${definitionId}/executions/${executionId}/items/${itemId}/execution-plan`,
   );
   return response.data;
 }

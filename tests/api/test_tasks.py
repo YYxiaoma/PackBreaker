@@ -711,7 +711,6 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         assert eligible_gate.json()["side_effects_started"] is False
 
         target_root = settings.data_dir / "seeding-target"
-        target_root.mkdir()
         target_downloader_id = _create_ready_qb_target(app, settings)
         invalid_target = client.post(
             f"/api/v1/task-units/{current_unit['id']}/execution-plan",
@@ -748,12 +747,14 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
         assert plan_body["current_reasons"] == []
         assert plan_body["hardlink_count"] == 1
         assert plan_body["client_fetch_count"] == 0
+        assert plan_body["create_directory_count"] == 1
         assert plan_body["estimated_download_bytes_upper_bound"] == 0
         assert plan_body["execution_allowed"] is False
         assert plan_body["side_effects_started"] is False
         assert plan_body["target_downloader_id"] == target_downloader_id
         assert plan_body["target_downloader_version"] == 1
         assert plan_body["target_remote_save_path"] == "/downloads/seeding-target"
+        assert target_root.exists() is False
         assert plan_body["actions"] == [
             {
                 "torrent_path": "Movie.2026.mkv",
@@ -792,6 +793,7 @@ def test_manual_review_mapping_only_accepts_current_ambiguous_candidates(tmp_pat
             downloader.capabilities = {**downloader.capabilities, "supports_skip_checking": True}
             session.commit()
 
+        target_root.mkdir()
         (target_root / "Movie.2026.mkv").write_bytes(b"conflict")
         stale_plan = client.get(f"/api/v1/task-units/{current_unit['id']}/execution-plan")
         assert stale_plan.status_code == 200

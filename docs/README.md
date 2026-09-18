@@ -33,6 +33,7 @@
 | [v1.0 已知限制](./known-limitations.md) | 明确尚未闭环的发布证据与安全边界 | M6 |
 | [v0.1.6 真实环境验收记录](./v0.1.6-real-environment-acceptance.md) | 记录 v0.1.5→v0.1.6 真实配置副本迁移、下载器/站点只读现场证据与待外部条件项 | v0.1.6 |
 | [v0.1.7 开发与发布记录](./v0.1.7-development.md) | 记录 Compose Web 升级能力、Candidate Docker E2E、正式 Release 身份与供应链证据 | v0.1.7 |
+| [v0.1.8 研发文档](./v0.1.8-development.md) | 定义任务生命周期收口、风险授权、Telegram 高风险审批、自动校验与 Stage A 现状梳理 | v0.1.8 |
 | [部署、运维与安全](./deployment.md) | 约定容器、卷、备份、升级和密钥管理 | M1/M6 |
 | [本地开发指南](./local-development.md) | 统一工具链、命令、配置和日常工作流 | M1 |
 | [研发路线图](./development-roadmap.md) | 将 M0-M6 拆成可交付工作包与退出条件 | 全阶段 |

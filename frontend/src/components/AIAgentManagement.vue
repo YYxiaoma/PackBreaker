@@ -40,6 +40,7 @@ interface AIDraft {
 
 interface TelegramDraft {
   enabled: boolean;
+  approvalEnabled: boolean;
   notificationChannelId: string;
   allowedChatIds: string;
   allowedUserIds: string;
@@ -79,6 +80,7 @@ const draft = reactive<AIDraft>({
 });
 const telegramDraft = reactive<TelegramDraft>({
   enabled: false,
+  approvalEnabled: false,
   notificationChannelId: '',
   allowedChatIds: '',
   allowedUserIds: '',
@@ -103,17 +105,27 @@ const statusText = computed(() => {
 });
 const telegramStatusType = computed(() => {
   if (status.value?.telegram_consecutive_errors) return 'danger';
-  if (status.value?.telegram_enabled && status.value?.telegram_driver_running) return 'success';
+  if (
+    (status.value?.telegram_enabled || status.value?.telegram_approval_enabled) &&
+    status.value?.telegram_driver_running
+  ) {
+    return 'success';
+  }
   return 'info';
 });
 const telegramStatusText = computed(() => {
   if (status.value?.telegram_consecutive_errors) {
     return `运行异常 · ${status.value.telegram_last_error_code ?? 'UNKNOWN'}`;
   }
-  if (status.value?.telegram_enabled && status.value?.telegram_driver_running) {
+  if (
+    (status.value?.telegram_enabled || status.value?.telegram_approval_enabled) &&
+    status.value?.telegram_driver_running
+  ) {
     return 'Long Polling 运行中';
   }
-  if (telegramBinding.value?.enabled) return '已启用，Driver 尚未运行';
+  if (telegramBinding.value?.enabled || telegramBinding.value?.approval_enabled) {
+    return '已启用，Driver 尚未运行';
+  }
   return '未启用';
 });
 
@@ -136,6 +148,7 @@ function applyTelegram(value: AITelegramBinding): void {
   telegramBinding.value = value;
   Object.assign(telegramDraft, {
     enabled: value.enabled,
+    approvalEnabled: value.approval_enabled,
     notificationChannelId: value.notification_channel_id ?? '',
     allowedChatIds: value.allowed_chat_ids.join('\n'),
     allowedUserIds: value.allowed_user_ids.join('\n'),
@@ -178,12 +191,13 @@ function parseIds(value: string): string[] {
 function validateTelegram(): boolean {
   const chatIds = parseIds(telegramDraft.allowedChatIds);
   const userIds = parseIds(telegramDraft.allowedUserIds);
-  if (telegramDraft.enabled && !telegramDraft.notificationChannelId) {
-    ElMessage.warning('启用 Telegram AI 前请选择 Telegram 通知渠道');
+  const enabled = telegramDraft.enabled || telegramDraft.approvalEnabled;
+  if (enabled && !telegramDraft.notificationChannelId) {
+    ElMessage.warning('启用 Telegram AI / 审批前请选择 Telegram 通知渠道');
     return false;
   }
-  if (telegramDraft.enabled && !chatIds.length && !userIds.length) {
-    ElMessage.warning('启用 Telegram AI 前至少填写一个允许的 Chat ID 或 User ID');
+  if (enabled && !chatIds.length && !userIds.length) {
+    ElMessage.warning('启用 Telegram AI / 审批前至少填写一个允许的 Chat ID 或 User ID');
     return false;
   }
   if (chatIds.some((item) => !/^-?\d{1,20}$/.test(item))) {
@@ -249,6 +263,7 @@ async function saveTelegram(): Promise<void> {
     const updated = await updateAITelegramBinding(telegramBinding.value, {
       notification_channel_id: telegramDraft.notificationChannelId || null,
       enabled: telegramDraft.enabled,
+      approval_enabled: telegramDraft.approvalEnabled,
       allowed_chat_ids: parseIds(telegramDraft.allowedChatIds),
       allowed_user_ids: parseIds(telegramDraft.allowedUserIds),
       idle_timeout_minutes: telegramDraft.idleTimeoutMinutes,
@@ -256,9 +271,9 @@ async function saveTelegram(): Promise<void> {
     });
     applyTelegram(updated);
     status.value = await getAIAgentStatus();
-    ElMessage.success('Telegram AI 配置已保存');
+    ElMessage.success('Telegram 配置已保存');
   } catch (caught) {
-    ElMessage.error(caught instanceof ApiProblem ? caught.message : 'Telegram AI 配置保存失败');
+    ElMessage.error(caught instanceof ApiProblem ? caught.message : 'Telegram 配置保存失败');
   } finally {
     telegramSaving.value = false;
   }
@@ -425,16 +440,17 @@ onMounted(() => void refresh());
     <section class="panel section-space">
       <div class="telegram-heading">
         <div>
-          <h3>Telegram AI 对话</h3>
+          <h3>Telegram AI / 高风险审批</h3>
           <p class="muted">
-            复用“通知”中的 Telegram Bot Token 与代理；这里只配置双向对话权限和会话策略。
+            复用“通知”中的 Telegram Bot Token 与代理；AI
+            对话与高风险审批可独立启用，共用身份白名单和 Long Polling Cursor。
           </p>
         </div>
         <el-tag :type="telegramStatusType">{{ telegramStatusText }}</el-tag>
       </div>
       <el-alert
-        title="Telegram AI 默认拒绝所有未授权来源"
-        description="只有命中 Chat ID / User ID allowlist 的文本消息才会进入 AI；未授权消息不会调用 Provider 或只读 Tool。"
+        title="Telegram 默认拒绝所有未授权来源"
+        description="AI 文本消息和审批按钮都必须命中 Chat ID / User ID allowlist；审批只改变 Approval 状态，不会绕过统一安全执行链。"
         type="info"
         :closable="false"
         show-icon
@@ -503,6 +519,11 @@ onMounted(() => void refresh());
             v-model="telegramDraft.enabled"
             active-text="启用 Telegram AI"
             inactive-text="停用"
+          />
+          <el-switch
+            v-model="telegramDraft.approvalEnabled"
+            active-text="启用高风险审批"
+            inactive-text="审批停用"
           />
           <el-button type="primary" :loading="telegramSaving" @click="saveTelegram">
             <MessageCircle :size="15" />保存 Telegram 配置

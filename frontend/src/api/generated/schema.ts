@@ -1026,6 +1026,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/task-definitions/{definition_id}/executions/{execution_id}/advance': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Advance Task Definition Execution */
+    post: operations['advance_task_definition_execution_api_v1_task_definitions__definition_id__executions__execution_id__advance_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/task-definitions/{definition_id}/executions/{execution_id}/items/{item_id}/approval': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Decide Task Definition Execution Approval */
+    post: operations['decide_task_definition_execution_approval_api_v1_task_definitions__definition_id__executions__execution_id__items__item_id__approval_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/task-definitions/{definition_id}/executions/{execution_id}/items/{item_id}/execution-plan': {
     parameters: {
       query?: never;
@@ -1533,6 +1567,8 @@ export interface components {
       /** Model */
       model: string;
       provider_kind: components['schemas']['AIProviderKind'];
+      /** Telegram Approval Enabled */
+      telegram_approval_enabled: boolean;
       /** Telegram Consecutive Errors */
       telegram_consecutive_errors: number;
       /** Telegram Driver Running */
@@ -1572,6 +1608,8 @@ export interface components {
       allowed_chat_ids: string[];
       /** Allowed User Ids */
       allowed_user_ids: string[];
+      /** Approval Enabled */
+      approval_enabled: boolean;
       /**
        * Created At
        * Format: date-time
@@ -1601,6 +1639,11 @@ export interface components {
       allowed_chat_ids?: string[];
       /** Allowed User Ids */
       allowed_user_ids?: string[];
+      /**
+       * Approval Enabled
+       * @default false
+       */
+      approval_enabled: boolean;
       /**
        * Enabled
        * @default false
@@ -2998,6 +3041,49 @@ export interface components {
       /** Update Available */
       update_available: boolean;
     };
+    /** TaskApprovalDecisionRequest */
+    TaskApprovalDecisionRequest: {
+      /**
+       * Decision
+       * @enum {string}
+       */
+      decision: 'APPROVE' | 'REJECT';
+      /** Execution Plan Id */
+      execution_plan_id: string;
+      /** Note */
+      note?: string | null;
+    };
+    /** TaskApprovalResponse */
+    TaskApprovalResponse: {
+      /** Actor Id */
+      actor_id: string | null;
+      /** Actor Kind */
+      actor_kind: string | null;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Decided At */
+      decided_at: string | null;
+      /** Decision Note */
+      decision_note: string | null;
+      /** Decision Source */
+      decision_source: string | null;
+      /** Execution Plan Id */
+      execution_plan_id: string;
+      /** Id */
+      id: string;
+      /** Plan Digest */
+      plan_digest: string;
+      /** State */
+      state: string;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
     /** TaskCandidateListResponse */
     TaskCandidateListResponse: {
       /** Items */
@@ -3148,6 +3234,10 @@ export interface components {
       exclude_names: string[];
       /** File Types */
       file_types: string[];
+      /** High Risk Allowed Action Kinds */
+      high_risk_allowed_action_kinds: string[];
+      /** High Risk Preauthorization Enabled */
+      high_risk_preauthorization_enabled: boolean;
       /** Id */
       id: string;
       /** Ignore Temp Files */
@@ -3296,6 +3386,27 @@ export interface components {
       task_id: string;
       to_status: components['schemas']['TaskStatus'];
     };
+    /** TaskExecutionClosureResponse */
+    TaskExecutionClosureResponse: {
+      /** Downloader Status */
+      downloader_status: string;
+      /** Filesystem Status */
+      filesystem_status: string;
+      /** Issue Codes */
+      issue_codes: string[];
+      /** Manual Attention Required */
+      manual_attention_required: boolean;
+      /** Operation Attention Count */
+      operation_attention_count: number;
+      /** Reconcile Required Count */
+      reconcile_required_count: number;
+      /** Retention Candidate Count */
+      retention_candidate_count: number;
+      /** Rollback Blocked Count */
+      rollback_blocked_count: number;
+      /** Status */
+      status: string;
+    };
     /** TaskExecutionEventResponse */
     TaskExecutionEventResponse: {
       /** Context */
@@ -3318,12 +3429,24 @@ export interface components {
     };
     /** TaskExecutionItemResponse */
     TaskExecutionItemResponse: {
+      approval: components['schemas']['TaskApprovalResponse'] | null;
+      /** Authorization Status */
+      authorization_status: string;
+      closure: components['schemas']['TaskExecutionClosureResponse'];
       /** Error Code */
       error_code: string | null;
       /** Error Summary Zh */
       error_summary_zh: string | null;
+      /** Execution Plan Id */
+      execution_plan_id: string | null;
+      /** Execution Plan Ready */
+      execution_plan_ready: boolean | null;
       /** Id */
       id: string;
+      /** Lifecycle Blocked Reasons */
+      lifecycle_blocked_reasons: string[];
+      /** Lifecycle Stage */
+      lifecycle_stage: string;
       /** Name */
       name: string;
       /** Phase */
@@ -3336,6 +3459,11 @@ export interface components {
       retry_count: number;
       /** Retryable */
       retryable: boolean;
+      /** Risk Level */
+      risk_level: string;
+      risk_summary: components['schemas']['TaskRiskSummaryResponse'] | null;
+      /** Side Effects Started */
+      side_effects_started: boolean;
       /** Size Bytes */
       size_bytes: number | null;
       /** Source */
@@ -3435,6 +3563,13 @@ export interface components {
        * @default 30
        */
       debounce_seconds: number;
+      /** High Risk Allowed Action Kinds */
+      high_risk_allowed_action_kinds?: string[];
+      /**
+       * High Risk Preauthorization Enabled
+       * @default false
+       */
+      high_risk_preauthorization_enabled: boolean;
       /** @default NEW_ONLY */
       initial_scope: components['schemas']['TaskInitialScope'];
       /**
@@ -3802,6 +3937,36 @@ export interface components {
       task_unit_id: string;
       /** Version */
       version: number;
+    };
+    /** TaskRiskSummaryResponse */
+    TaskRiskSummaryResponse: {
+      /** Action Kinds */
+      action_kinds: string[];
+      /** Client Fetch Count */
+      client_fetch_count: number;
+      /** Create Directory Count */
+      create_directory_count: number;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Estimated Download Bytes Upper Bound */
+      estimated_download_bytes_upper_bound: number;
+      /** Execution Plan Id */
+      execution_plan_id: string;
+      /** Hardlink Count */
+      hardlink_count: number;
+      /** Id */
+      id: string;
+      /** Plan Digest */
+      plan_digest: string;
+      /** Reason Codes */
+      reason_codes: string[];
+      /** Risk Digest */
+      risk_digest: string;
+      /** Risk Level */
+      risk_level: string;
     };
     /** TaskSourceInput */
     TaskSourceInput: {
@@ -6545,6 +6710,87 @@ export interface operations {
       };
     };
     requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskExecutionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  advance_task_definition_execution_api_v1_task_definitions__definition_id__executions__execution_id__advance_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'Idempotency-Key'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+        execution_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['TaskExecutionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  decide_task_definition_execution_approval_api_v1_task_definitions__definition_id__executions__execution_id__items__item_id__approval_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'Idempotency-Key'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+        execution_id: string;
+        item_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TaskApprovalDecisionRequest'];
+      };
+    };
     responses: {
       /** @description Successful Response */
       200: {

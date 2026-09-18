@@ -22,6 +22,14 @@ def _historical_revisions() -> tuple[str, ...]:
     return tuple(revision.revision for revision in revisions[:-1])
 
 
+def _head_revision() -> str:
+    revision = ScriptDirectory.from_config(
+        make_migration_config("sqlite+pysqlite:///:memory:")
+    ).get_current_head()
+    assert revision is not None
+    return revision
+
+
 @pytest.mark.parametrize("source_revision", _historical_revisions())
 def test_every_historical_revision_upgrades_to_head_without_losing_probe(
     tmp_path: Path,
@@ -48,7 +56,7 @@ def test_every_historical_revision_upgrades_to_head_without_losing_probe(
 
     assert result.upgraded is True
     assert result.source_revision == source_revision
-    assert result.target_revision == "0026_ai_agent_v016"
+    assert result.target_revision == _head_revision()
     assert result.safety_backup is not None
     assert (
         verify_backup(
@@ -62,7 +70,7 @@ def test_every_historical_revision_upgrades_to_head_without_losing_probe(
             source_revision,
         )
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0026_ai_agent_v016",
+            _head_revision(),
         )
 
 
@@ -214,7 +222,8 @@ def test_runtime_start_uses_safe_upgrade_and_keeps_pre_upgrade_snapshot(tmp_path
     runtime.start()
     try:
         assert runtime.readiness().ready is True
-        assert runtime.readiness().current_revision == "0026_ai_agent_v016"
+        report = runtime.readiness()
+        assert report.current_revision == report.expected_revision == _head_revision()
     finally:
         runtime.stop()
 

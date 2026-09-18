@@ -581,9 +581,9 @@ onUnmounted(() => {
               <span class="quick-icon blue"><ListChecks :size="20" /></span><b>任务中心</b
               ><small>登记、分析与跟踪任务</small>
             </button>
-            <button @click="go('预演与确认')">
+            <button @click="go('任务中心')">
               <span class="quick-icon orange"><GitBranch :size="20" /></span><b>审核中心</b
-              ><small>检查证据与人工确认</small>
+              ><small>在任务详情检查 Plan、风险与审批</small>
             </button>
             <button @click="go('站点管理')">
               <span class="quick-icon cyan"><Globe :size="20" /></span><b>站点管理</b
@@ -613,11 +613,11 @@ onUnmounted(() => {
             </div>
             <ArrowRight :size="16" />
           </button>
-          <button class="summary-mini" @click="go('清理与对账')">
+          <button class="summary-mini" @click="go('任务中心')">
             <span class="summary-icon orange"><ShieldCheck :size="22" /></span>
             <div>
-              <small>清理与对账</small><strong>{{ operationAttention }}</strong
-              ><span>当前需要关注的 Operation 记录</span>
+              <small>任务闭环</small><strong>{{ operationAttention }}</strong
+              ><span>在任务详情处理 Verify / Reconcile 异常</span>
             </div>
             <ArrowRight :size="16" />
           </button>
