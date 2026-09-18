@@ -11,9 +11,9 @@
 ## 2. 发布与容器证据
 
 - 正式发布目标当前只有 `linux/amd64`。
-- 当前开发 Runner 无 Docker daemon；GitHub Actions 持续承担容器、备份/恢复和 updater 的真实 Docker 门禁。Release workflow run `35297829243` 已为 `v0.1.6` 提供真实 Docker 构建、相邻版本升级/回滚与 updater helper E2E 证据。
-- 当前最新正式 Release 为 `v0.1.6`，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:b250b4dd945648fca884989d4c6ce14692dea839d4364f462d6080806357f13d`。
-- 已发布版本继续由跨版本 Docker 升级/恢复门禁与 updater helper E2E 提供正式证据；当前 `release-baseline.json` 已推进到正式 `v0.1.6`，作为下一候选版本的相邻兼容输入。
+- 当前开发 Runner 无 Docker daemon；GitHub Actions 持续承担容器、备份/恢复和 updater 的真实 Docker 门禁。Release workflow run `35302608582` 已为 `v0.1.7` 提供真实 Docker 构建、`v0.1.6 → v0.1.7 → v0.1.6` 升级/回滚与 updater helper E2E 证据，并覆盖 Compose labels 与 docker.sock 保留。
+- 当前最新正式 Release 为 `v0.1.7`，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:d60027f8f72bf3001c1a18b935ab82f6a793ea435d1a3e6482efe6fc5b0ea68a`。
+- 已发布版本继续由跨版本 Docker 升级/恢复门禁与 updater helper E2E 提供正式证据；当前 `release-baseline.json` 已推进到正式 `v0.1.7`，作为下一候选版本的相邻兼容输入。
 
 ## 3. 升级与 Docker 权限
 

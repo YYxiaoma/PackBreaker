@@ -31,7 +31,7 @@ PackBreaker 启动取得 `/config` 单实例锁并完成主密钥自检后，数
 
 ## 4. 正式镜像升级基线与跨镜像门禁
 
-`release-baseline.json` 当前固定最新正式 `v0.1.6`：tag、发布 commit `a148aef5c2062829246c8a9f85e76c846da213ed`、Alembic revision `0026_ai_agent_v016`、Release workflow run `35297829243` 与公开 GHCR digest `sha256:b250b4dd945648fca884989d4c6ce14692dea839d4364f462d6080806357f13d`。`scripts/validate_release_baseline.py` 已进入静态门禁，禁止把基线退化成可移动 tag、错误 digest、未来版本或与 tag 不一致的身份。正式 tag workflow 还会通过 GitHub Releases API 要求 baseline tag 必须等于当前最新正式 Release。
+`release-baseline.json` 当前固定最新正式 `v0.1.7`：tag、发布 commit `38f05b4aa91e49ade3ccd7bc033a62bfa8f0df26`、Alembic revision `0026_ai_agent_v016`、Release workflow run `35302608582` 与公开 GHCR digest `sha256:d60027f8f72bf3001c1a18b935ab82f6a793ea435d1a3e6482efe6fc5b0ea68a`。`scripts/validate_release_baseline.py` 已进入静态门禁，禁止把基线退化成可移动 tag、错误 digest、未来版本或与 tag 不一致的身份。正式 tag workflow 还会通过 GitHub Releases API 要求 baseline tag 必须等于当前最新正式 Release。
 
 CI/container 与未来 tag release 都执行 `scripts/check-release-upgrade.sh`：先按基线 digest 启动上一正式镜像，在隔离 `/config` 写入合成兼容探针并创建一致性升级前备份；随后让当前候选镜像直接接管同一 config 并通过 readiness/探针校验；最后停止候选镜像，用**上一正式镜像自己的维护工具**恢复升级前备份，再启动同一基线 digest 并重新证明 readiness、Alembic revision 与探针数据。门禁明确禁止以 `alembic downgrade` 代替生产回滚。
 
@@ -40,3 +40,5 @@ CI/container 与未来 tag release 都执行 `scripts/check-release-upgrade.sh`�
 `v0.1.2` 已正式提供运行时一键升级 helper：主服务只负责校验正式 Release、完整 preflight、在线一致性备份和受认证的 helper 请求；独立 helper 负责拉取目标 digest、停止/重建容器、切换瞬间静止数据库备份、Docker healthcheck 和失败回滚。该运行时链路不会替代 release workflow 的跨版本门禁，二者分别验证“发布前兼容性”和“用户现场执行路径”。
 
 `v0.1.4` 起引入的“单常驻 PackBreaker + 一次性 helper”路径已在后续版本持续演进；`v0.1.6` Release workflow run `35297829243` 已在真实 GitHub Actions Docker runner 上完成该 transient helper 的容器替换、docker.sock 保留、数据库探针、终态持久化和 helper 自动清理。首次 v0.1.6 发布尝试还通过门禁暴露了“新容器已 healthy，但 transient helper 尚未完成最后终态写入”的 E2E 竞态；脚本改为有界等待 `succeeded` 终态并对 `rolled_back/failed/manual_recovery_required` 继续失败关闭后，正式 Release 全链路通过。
+
+`v0.1.7` Release workflow run `35302608582` 进一步以正式 `v0.1.6` baseline 完成 `v0.1.6 → v0.1.7 → v0.1.6` 相邻版本门禁，并在真实 Docker updater E2E 中验证 Compose labels 与 docker.sock 在 transient replacement 后保留。该能力因此从 candidate 证据升级为正式发布证据。

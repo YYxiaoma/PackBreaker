@@ -10,8 +10,8 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11"></a>
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64"></a>
-  <img src="https://img.shields.io/badge/latest_release-v0.1.6-2563EB" alt="latest release v0.1.6">
-  <img src="https://img.shields.io/badge/main-v0.1.7_candidate-F59E0B" alt="main v0.1.7 candidate">
+  <img src="https://img.shields.io/badge/latest_release-v0.1.7-2563EB" alt="latest release v0.1.7">
+  <img src="https://img.shields.io/badge/main-v0.1.7_released-16A34A" alt="main v0.1.7 released">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 
@@ -432,26 +432,24 @@ uv run python scripts/test.py
 
 ## 📊 当前状态
 
-**最新正式版本是 v0.1.6；当前 `main` 已进入 v0.1.7 candidate。** v0.1.7 的第一项已落地能力是 Compose 容器在显式挂载 `docker.sock` 时支持 Web 一键升级，并继续保留 Compose labels 与原容器关键配置。正式部署身份仍以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中的 release manifest 与不可变 image digest 为准。
+**最新正式版本是 v0.1.7；当前 `main` 保持 v0.1.7 版本线。** Compose 容器在显式挂载 `docker.sock` 时的 Web 一键升级能力已经进入正式版，并继续保留 Compose labels 与原容器关键配置。正式部署身份以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中的 release manifest 与不可变 image digest 为准。
 
-v0.1.6 的自动化、现场与正式发布证据包括：
+v0.1.7 的自动化与正式发布证据包括：
 
 - 后端 722 tests passed
 - 前端 15 个测试文件 / 76 tests passed
 - production build 通过
-- browser warm E2E 通过
-- qBittorrent / Transmission 真实只读连接与路径映射通过
-- M-TEAM / HHClub 真实用户详情读取通过
-- v0.1.5 数据库副本升级到 v0.1.6 migration head 通过
-- AI Secret canary 证明原始敏感值不会进入 Provider Tool 上下文
-- Release workflow run `35297829243` 已完成真实 Docker 升级/回滚、updater helper E2E、SBOM、release manifest 与 GitHub Release 发布
-- 正式不可变镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:b250b4dd945648fca884989d4c6ce14692dea839d4364f462d6080806357f13d`
+- Candidate Docker E2E run `35301612491` 已验证真实 helper 成功升级、故障候选自动回滚、transient helper、docker.sock 与 Compose labels 保留
+- Release workflow run `35302608582` 已完成 `v0.1.6 → v0.1.7 → v0.1.6` 真实 Docker 升级/回滚、updater helper E2E、SBOM、release manifest 与 GitHub Release 发布
+- 正式不可变镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:d60027f8f72bf3001c1a18b935ab82f6a793ea435d1a3e6482efe6fc5b0ea68a`
+- qBittorrent / Transmission 与 PT 站点的最新现场只读证据仍沿用 v0.1.6 验收记录；v0.1.7 本次发布未伪记为重新完成这些外部现场验收
 
 完整支持边界和已知限制请看：
 
 - [支持矩阵](./docs/support-matrix.md)
 - [已知限制](./docs/known-limitations.md)
 - [v0.1.6 真实环境验收](./docs/v0.1.6-real-environment-acceptance.md)
+- [v0.1.7 开发与发布记录](./docs/v0.1.7-development.md)
 - [部署与运维](./docs/deployment.md)
 - [研发文档索引](./docs/README.md)
 
