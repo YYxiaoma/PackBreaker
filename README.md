@@ -303,12 +303,10 @@ v0.1.6 管理端覆盖：
 
 ### Docker Compose
 
-如果直接部署正式 v0.1.6，可以创建一个 `compose.yaml`：
-
 ```yaml
 services:
   packbreaker:
-    image: ghcr.io/yyxiaoma/packbreaker@sha256:b250b4dd945648fca884989d4c6ce14692dea839d4364f462d6080806357f13d
+    image: ghcr.io/yyxiaoma/packbreaker:latest
     container_name: packbreaker
     restart: unless-stopped
     user: "0:0"
@@ -362,7 +360,6 @@ http://<服务器IP>:8000
 >
 > `docker.sock` 等价于 Docker 主机级管理权限，只应在受信宿主机上启用。
 >
-> **版本说明：正式 v0.1.6 镜像仍包含旧的 Compose Web 升级阻断；上述 Compose Web 升级能力已经进入当前 v0.1.7 candidate。**
 
 ### 独立 Docker 容器
 
