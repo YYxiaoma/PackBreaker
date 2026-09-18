@@ -44,7 +44,7 @@ docker compose up --build -d
 
 生产运维记录应保存正式 Release manifest 给出的完整 `@sha256:` digest，而不是只记录可移动 tag。Compose 管理的主容器继续采用宿主机显式更新 digest；独立 `docker run --name packbreaker` 的单容器一键升级需要把 `/var/run/docker.sock` 挂载到主容器，完整安全边界和部署命令见 `docs/deployment.md`。若不愿向主容器授予 Docker 管理权限，仍可使用独立 `packbreaker-updater` 兼容模式。
 
-完整需求请参阅[需求基线 v0.3](./自动拆包辅种系统-需求基线-v0.3.html)。历史版本保留在[需求基线 v0.2](./自动拆包辅种系统-需求基线-v0.2.html)。研发设计、接口规范、测试计划和实施路线请参阅[研发文档索引](./docs/README.md)。
+研发设计、接口规范、测试计划、支持边界和实施路线请参阅[研发文档索引](./docs/README.md)。已移除的历史需求基线与早期原型素材可通过 Git 历史追溯。
 
 ## 许可证
 
