@@ -20,7 +20,11 @@ from backend.app.application.downloaders import (
     PathDiagnosticResult,
 )
 from backend.app.application.errors import ApplicationError
-from backend.app.domain.downloader import DownloaderCredential, PathMappingRule
+from backend.app.domain.downloader import (
+    DownloaderCredential,
+    DownloaderRuntimeMetrics,
+    PathMappingRule,
+)
 from backend.app.domain.verification import DownloaderKind
 
 router = APIRouter(tags=["downloaders"])
@@ -46,6 +50,12 @@ class DownloaderCreateRequest(BaseModel):
     credential: DownloaderCredentialInput | None = None
     monitor_rules: dict[str, Any] = Field(default_factory=dict)
     path_mappings: list[PathMappingInput] = Field(default_factory=list, max_length=64)
+
+
+class DownloaderProbeRequest(BaseModel):
+    type: DownloaderKind
+    base_url: str = Field(min_length=1, max_length=2048)
+    credential: DownloaderCredentialInput | None = None
 
 
 class DownloaderPatchRequest(BaseModel):
@@ -119,6 +129,18 @@ def _view(record: DownloaderView) -> dict[str, object]:
         "last_path_diagnostic_at": _timestamp(record.last_path_diagnostic_at),
         "created_at": _timestamp(record.created_at),
         "updated_at": _timestamp(record.updated_at),
+    }
+
+
+def _metrics(value: DownloaderRuntimeMetrics) -> dict[str, object]:
+    return {
+        "upload_speed_bytes_per_second": value.upload_speed_bytes_per_second,
+        "download_speed_bytes_per_second": value.download_speed_bytes_per_second,
+        "total_content_size_bytes": value.total_content_size_bytes,
+        "free_space_bytes": value.free_space_bytes,
+        "active_torrent_count": value.active_torrent_count,
+        "total_torrent_count": value.total_torrent_count,
+        "sampled_at": _timestamp(value.sampled_at),
     }
 
 
@@ -211,6 +233,19 @@ async def create_downloader(
     response = _json_with_etag(created)
     response.status_code = status.HTTP_201_CREATED
     return response
+
+
+@router.post("/downloaders/probe")
+async def probe_downloader(
+    request: Request,
+    payload: DownloaderProbeRequest,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
+) -> dict[str, object]:
+    return await downloader_service(request).probe_connection(
+        kind=payload.type,
+        base_url=payload.base_url,
+        credential=_credential(payload.credential),
+    )
 
 
 @router.get("/downloaders/{downloader_id}")
@@ -357,6 +392,15 @@ async def list_downloader_torrents(
         "page_size": result.page_size,
         "total": result.total,
     }
+
+
+@router.get("/downloaders/{downloader_id}/metrics")
+async def get_downloader_metrics(
+    downloader_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> dict[str, object]:
+    return _metrics(await downloader_service(request).runtime_metrics(downloader_id))
 
 
 @router.post("/downloaders/{downloader_id}/actions")

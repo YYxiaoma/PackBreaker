@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from backend.app.api.dependencies import CSRF_COOKIE
 from backend.app.application.errors import ApplicationError
@@ -13,6 +14,7 @@ from backend.app.application.system_upgrades import (
     SystemUpgradeStatus,
 )
 from backend.app.config import AppSettings
+from backend.app.infrastructure.persistence.models import AdminNotification
 from backend.app.infrastructure.updater_protocol import UPDATER_PROTOCOL_VERSION, UpdaterStatus
 from backend.app.main import create_app
 
@@ -94,7 +96,11 @@ def _client(tmp_path: Path) -> tuple[TestClient, FastAPI, FakeUpgradeService]:
     client = TestClient(app, base_url="https://testserver")
     client.__enter__()
     assert client.post("/api/v1/auth/setup", json={"password": _PASSWORD}).status_code == 201
-    assert client.post("/api/v1/auth/login", json={"password": _PASSWORD}).status_code == 200
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": _PASSWORD},
+    )
+    assert login.status_code == 200
     service = FakeUpgradeService()
     app.state.system_upgrade_service = service
     return client, app, service
@@ -107,7 +113,7 @@ def _csrf(client: TestClient) -> dict[str, str]:
 
 
 def test_upgrade_status_is_no_store_and_exposes_immutable_target(tmp_path: Path) -> None:
-    client, _app, _service = _client(tmp_path)
+    client, app, _service = _client(tmp_path)
     try:
         response = client.get("/api/v1/system/upgrade")
         assert response.status_code == 200
@@ -119,6 +125,25 @@ def test_upgrade_status_is_no_store_and_exposes_immutable_target(tmp_path: Path)
         assert payload["immutable_image"] == _IMAGE
         assert payload["helper_status"]["phase"] == "idle"
         assert payload["can_upgrade"] is True
+
+        repeated = client.get("/api/v1/system/upgrade")
+        assert repeated.status_code == 200
+        with app.state.runtime.session_factory() as session:
+            version_notices = session.scalar(
+                select(func.count())
+                .select_from(AdminNotification)
+                .where(AdminNotification.event_type == "VERSION_UPDATE_AVAILABLE")
+            )
+            assert version_notices == 1
+            notice = session.scalar(
+                select(AdminNotification).where(
+                    AdminNotification.event_type == "VERSION_UPDATE_AVAILABLE"
+                )
+            )
+            assert notice is not None
+            assert notice.dedup_key == "version-update:0.1.5"
+            assert "v0.1.4" in notice.message
+            assert "v0.1.5" in notice.message
     finally:
         client.__exit__(None, None, None)
 

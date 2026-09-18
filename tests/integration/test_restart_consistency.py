@@ -28,8 +28,18 @@ def test_restart_preserves_config_revocation_and_empty_task_queue(tmp_path: Path
 
     first_app = create_app(settings=settings)
     with TestClient(first_app, base_url="https://testserver") as client:
-        assert client.post("/api/v1/auth/setup", json={"password": _PASSWORD}).status_code == 201
-        assert client.post("/api/v1/auth/login", json={"password": _PASSWORD}).status_code == 200
+        assert (
+            client.post(
+                "/api/v1/auth/setup", json={"username": "admin", "password": _PASSWORD}
+            ).status_code
+            == 201
+        )
+        assert (
+            client.post(
+                "/api/v1/auth/login", json={"username": "admin", "password": _PASSWORD}
+            ).status_code
+            == 200
+        )
         csrf = client.cookies.get(CSRF_COOKIE)
         revoked_session = client.cookies.get(SESSION_COOKIE)
         assert csrf is not None and revoked_session is not None
@@ -60,7 +70,12 @@ def test_restart_preserves_config_revocation_and_empty_task_queue(tmp_path: Path
         assert client.get("/api/v1/auth/me").json()["authenticated"] is False
         client.cookies.clear()
 
-        assert client.post("/api/v1/auth/login", json={"password": _PASSWORD}).status_code == 200
+        assert (
+            client.post(
+                "/api/v1/auth/login", json={"username": "admin", "password": _PASSWORD}
+            ).status_code
+            == 200
+        )
         listed = client.get("/api/v1/downloaders")
         assert listed.status_code == 200
         items = listed.json()["items"]

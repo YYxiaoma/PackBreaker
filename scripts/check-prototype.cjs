@@ -32,6 +32,12 @@ const path = require('node:path');
       body:JSON.stringify({configured:true,authenticated:true,permissions:['admin'],expires_at:'2099-01-01T00:00:00Z'}),
     }));
     const now=()=>new Date().toISOString();
+    await page.route('**/api/v1/notifications/inbox/unread-count',route=>fulfillJson(route,{count:0}));
+    await page.route('**/api/v1/notifications/inbox**',route=>{
+      const request=route.request();
+      if(request.method()==='GET')return fulfillJson(route,{items:[]});
+      return fulfillJson(route,{code:'METHOD_NOT_ALLOWED',detail:'E2E inbox method'},405);
+    });
     const realTasks={
       'task-e2e-execute':{id:'task-e2e-execute',type:'MOVIE',source_downloader_id:'source-qb',source_hash:'source-execute',normalized_unit_key:'movie:execute',status:'AWAITING_CONFIRMATION',version:1,error_code:null,created_at:now(),updated_at:now()},
       'task-e2e-cancel':{id:'task-e2e-cancel',type:'MOVIE',source_downloader_id:'source-qb',source_hash:'source-cancel',normalized_unit_key:'movie:cancel',status:'LINKING',version:2,error_code:null,created_at:now(),updated_at:now()},
@@ -289,11 +295,27 @@ const path = require('node:path');
       enabled:true,version:7,last_test_at:now(),last_path_diagnostic_at:now(),created_at:now(),updated_at:now(),
     };
     await page.route('**/api/v1/downloaders',route=>fulfillJson(route,{items:[e2eDownloader]}));
+    await page.route('**/api/v1/downloaders/qb-e2e/metrics',route=>fulfillJson(route,{
+      upload_speed_bytes_per_second:1024,
+      download_speed_bytes_per_second:2048,
+      total_content_size_bytes:3221225472,
+      free_space_bytes:107374182400,
+      active_torrent_count:1,
+      total_torrent_count:2,
+      sampled_at:now(),
+    }));
     const siteCanary='PACKBREAKER-SITE-E2E-CREDENTIAL-CANARY';
     const e2eSite={
       id:'site-e2e-mteam',name:'M-Team E2E',type:'MTEAM',base_url:'https://api.m-team.cc',credential_kind:'API_KEY',credential_configured:true,
+      request_timeout_seconds:15,search_interval_seconds:2,user_agent:null,browser_emulation_enabled:false,
+      proxy_enabled:false,proxy_host:null,proxy_port:null,proxy_username:null,proxy_credential_configured:false,
       capabilities:{supports_imdb_id:true,min_request_interval_seconds:2},connection_status:'OK',enabled:false,version:1,last_test_at:now(),created_at:now(),updated_at:now(),
     };
+    const e2eSiteProfiles=[{
+      kind:'MTEAM',display_name:'M-TEAM',base_url:'https://api.m-team.cc',credential_kind:'API_KEY',
+      request_timeout_seconds:15,search_interval_seconds:2,supports_user_agent:false,
+      supports_browser_emulation:false,supports_proxy:true,support_status:'SUPPORTED',
+    }];
     let e2eSiteHealth={
       config_version:1,circuit_state:'OPEN',failure_count:3,retry_after_seconds:15,half_open_probe_in_flight:false,rate_limit_wait_seconds:0,
       cache_entries:2,cache_hits:3,cache_misses:1,cache_evictions:0,requests_started:4,requests_succeeded:1,requests_failed:3,retries_scheduled:2,last_error_code:'SITE_TEMPORARY_FAILURE',
@@ -302,6 +324,7 @@ const path = require('node:path');
       const request=route.request();
       const url=new URL(request.url());
       if(url.pathname==='/api/v1/sites'&&request.method()==='GET')return fulfillJson(route,{items:[e2eSite]});
+      if(url.pathname==='/api/v1/sites/profiles'&&request.method()==='GET')return fulfillJson(route,{items:e2eSiteProfiles});
       const match=url.pathname.match(/\/api\/v1\/sites\/site-e2e-mteam(?:\/(health|test|actions))?$/);
       if(!match)return route.fallback();
       const tail=match[1]||'';
@@ -581,7 +604,11 @@ const path = require('node:path');
     assert.equal(await versionPanel.getByText('已是最新版本',{exact:true}).count(),0,'Release 网络失败时不得误报已是最新版本');
     upgradeReleaseFailure=false;
     await page.keyboard.press('Escape');
-    await page.getByRole('button',{name:'切换深色主题',exact:true}).click();
+    const userMenuTrigger=page.getByRole('button',{name:'打开管理员菜单',exact:true});
+    await userMenuTrigger.click();
+    const userDrawer=page.locator('.user-menu-drawer');
+    await userDrawer.getByText('深色',{exact:true}).click();
+    await page.keyboard.press('Escape');
     const darkServiceStyle=await page.locator('.service-tile').first().evaluate(element=>({
       backgroundImage:getComputedStyle(element).backgroundImage,
       visualOpacity:Number(getComputedStyle(element.querySelector('.service-visual')).opacity),
@@ -589,7 +616,9 @@ const path = require('node:path');
     assert.notEqual(darkServiceStyle.backgroundImage,'none','深色主题系统服务卡需要明确渐变背景');
     assert.ok(darkServiceStyle.visualOpacity<=0.2,'深色主题装饰图形需要保持低干扰');
     await page.screenshot({path:path.join(output,'overview-dark-1440.png'),fullPage:true});
-    await page.getByRole('button',{name:'切换浅色主题',exact:true}).click();
+    await userMenuTrigger.click();
+    await userDrawer.getByText('浅色',{exact:true}).click();
+    await page.keyboard.press('Escape');
     console.log(`总览首屏 ${overviewFirstPaintMs}ms；已检查 1920/1440/1280/390 四档布局与深色系统服务卡`);
     const showLegacyRuns=async()=>{
       await page.getByText('现有执行引擎任务（兼容区）',{exact:true}).click();
@@ -705,7 +734,7 @@ const path = require('node:path');
     await siteCard.getByText('熔断 已打开',{exact:true}).waitFor();
     assert.equal(await page.getByText(siteCanary,{exact:true}).count(),0,'站点页不得回显已保存凭证明文');
     assert.equal(await page.getByRole('button',{name:/HHClub/}).count(),0,'HHClub 未确认前不得出现可执行创建动作');
-    await page.getByRole('button',{name:'重置熔断器',exact:true}).click();
+    await page.getByRole('button',{name:'重置熔断',exact:true}).click();
     await page.locator('.el-message-box').getByRole('button',{name:'仅重置熔断器',exact:true}).click();
     await page.getByText('熔断器已重置；站点是否恢复以之后的请求或连接测试为准',{exact:true}).waitFor();
     assert.equal(siteResetCalls,1,'reset-circuit 应只调用一次');
@@ -721,7 +750,7 @@ const path = require('node:path');
     assert.equal(siteTestCalls,1,'站点连接测试应只调用一次');
     assert.equal(await page.getByText(/连接恢复/).count(),0,'reset-circuit 不得伪造远端连接恢复文案');
 
-    for(const name of ['总览','预演与确认','站点管理','下载器','清理与对账','日志','系统设置']){
+    for(const name of ['总览','预演与确认','站点管理','下载器','清理与对账','日志','系统设置','关于']){
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
       assert.equal(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`${name} 桌面溢出`);
@@ -765,9 +794,11 @@ const path = require('node:path');
     await page.locator('nav').getByRole('button',{name:'站点管理',exact:true}).click();
     await page.getByRole('heading',{name:'站点管理',exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'移动配置页横向溢出');
-    await page.getByRole('button',{name:'切换深色主题',exact:true}).click();
+    await userMenuTrigger.click();
+    await userDrawer.getByText('深色',{exact:true}).click();
+    await page.keyboard.press('Escape');
     await page.screenshot({path:path.join(output,'mobile-dark.png'),fullPage:true});
-    for(const name of ['总览','任务中心','预演与确认','下载器','清理与对账','日志','系统设置']){
+    for(const name of ['总览','任务中心','预演与确认','下载器','清理与对账','日志','系统设置','关于']){
       await page.getByRole('button',{name:'展开导航',exact:true}).click();
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.getByRole('heading',{name,exact:true,level:1}).waitFor();

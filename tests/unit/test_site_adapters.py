@@ -8,6 +8,7 @@ import pytest
 
 from backend.app.domain.site_adapter import (
     SiteConnectionResult,
+    SiteUserProfile,
     TorrentDetails,
     TorrentPayload,
 )
@@ -33,6 +34,9 @@ class FakeSiteAdapter:
 
     async def test_connection(self) -> SiteConnectionResult:
         return SiteConnectionResult("fake")
+
+    async def fetch_user_profile(self) -> SiteUserProfile:
+        return SiteUserProfile("fake", uid="1", username="synthetic")
 
     async def search(self, query: SearchQuery) -> SearchPage:
         candidate = normalize_candidate_meta(
@@ -135,6 +139,85 @@ async def test_mteam_configured_site_origin_is_not_used_as_api_origin() -> None:
     request = requests[0]
     assert request.url.host == "api.m-team.cc"
     assert request.headers["origin"] == "https://kp.m-team.cc"
+
+
+@pytest.mark.asyncio
+async def test_mteam_user_profile_normalizes_nested_stats_and_preserves_missing_values() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200,
+            json={
+                "code": "0",
+                "data": {
+                    "id": "42",
+                    "username": "SyntheticUser",
+                    "userClass": "Elite",
+                    "stats": {
+                        "uploaded": "1099511627776",
+                        "downloaded": "549755813888",
+                        "realUploaded": "1073741824",
+                        "torrentCount": "12",
+                        "seedingCount": "34",
+                        "bonus": "56.75",
+                    },
+                },
+            },
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+
+    assert profile.site_id == "mteam"
+    assert profile.uid == "42"
+    assert profile.username == "SyntheticUser"
+    assert profile.user_level == "Elite"
+    assert profile.uploaded_bytes == 1099511627776
+    assert profile.downloaded_bytes == 549755813888
+    assert profile.real_uploaded_bytes == 1073741824
+    assert profile.real_downloaded_bytes is None
+    assert profile.ratio == 2.0
+    assert profile.torrents_posted == 12
+    assert profile.seeding_count == 34
+    assert profile.bonus == 56.75
+    assert profile.bonus_per_hour is None
+
+
+@pytest.mark.asyncio
+async def test_mteam_user_profile_supports_current_member_count_shape() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200,
+            json={
+                "code": "0",
+                "data": {
+                    "id": "42",
+                    "username": "SyntheticUser",
+                    "role": "USER",
+                    "memberCount": {
+                        "uploaded": "1099511627776",
+                        "downloaded": "549755813888",
+                        "shareRate": "2.0",
+                        "bonus": "56.75",
+                    },
+                },
+            },
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+
+    assert profile.site_id == "mteam"
+    assert profile.uid == "42"
+    assert profile.username == "SyntheticUser"
+    assert profile.user_level == "USER"
+    assert profile.uploaded_bytes == 1099511627776
+    assert profile.downloaded_bytes == 549755813888
+    assert profile.ratio == 2.0
+    assert profile.bonus == 56.75
 
 
 @pytest.mark.asyncio

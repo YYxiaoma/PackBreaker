@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     ForeignKey,
@@ -14,13 +15,17 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from backend.app.domain.ai_agent import AIConnectionStatus, AIProviderKind
 from backend.app.domain.notification import (
     NotificationChannelKind,
     NotificationDeliveryState,
     NotificationSeverity,
 )
 from backend.app.domain.operation import OperationStatus
-from backend.app.domain.site_config import SiteCredentialKind, SiteKind
+from backend.app.domain.site_config import (
+    PERSISTED_SITE_CREDENTIAL_KINDS,
+    PERSISTED_SITE_KINDS,
+)
 from backend.app.domain.task_definition import (
     TaskConflictPolicy,
     TaskDefinitionKind,
@@ -50,13 +55,17 @@ def new_uuid() -> str:
 _TASK_STATUS_SQL = ", ".join(f"'{status.value}'" for status in TaskStatus)
 _OPERATION_STATUS_SQL = ", ".join(f"'{status.value}'" for status in OperationStatus)
 _DOWNLOADER_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in DownloaderKind)
-_SITE_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in SiteKind)
-_SITE_CREDENTIAL_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in SiteCredentialKind)
+_SITE_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in sorted(PERSISTED_SITE_KINDS))
+_SITE_CREDENTIAL_KIND_SQL = ", ".join(
+    f"'{kind.value}'" for kind in sorted(PERSISTED_SITE_CREDENTIAL_KINDS)
+)
 _NOTIFICATION_CHANNEL_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in NotificationChannelKind)
 _NOTIFICATION_DELIVERY_STATE_SQL = ", ".join(
     f"'{state.value}'" for state in NotificationDeliveryState
 )
 _NOTIFICATION_SEVERITY_SQL = ", ".join(f"'{severity.value}'" for severity in NotificationSeverity)
+_AI_PROVIDER_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in AIProviderKind)
+_AI_CONNECTION_STATUS_SQL = ", ".join(f"'{status.value}'" for status in AIConnectionStatus)
 _TASK_DEFINITION_KIND_SQL = ", ".join(f"'{value.value}'" for value in TaskDefinitionKind)
 _TASK_DEFINITION_STATUS_SQL = ", ".join(f"'{value.value}'" for value in TaskDefinitionStatus)
 _TASK_SOURCE_KIND_SQL = ", ".join(f"'{value.value}'" for value in TaskSourceKind)
@@ -94,10 +103,17 @@ class BackupPolicy(Base):
 
 class Administrator(Base):
     __tablename__ = "administrator"
-    __table_args__ = (CheckConstraint("id = 'admin'", name="singleton"),)
+    __table_args__ = (
+        CheckConstraint("id = 'admin'", name="singleton"),
+        Index("ux_administrator_username", "username", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(16), primary_key=True, default="admin")
+    username: Mapped[str] = mapped_column(String(80), nullable=False, default="admin")
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    password_changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
@@ -154,12 +170,136 @@ class NotificationChannel(Base):
     )
     task_link_base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     aggregation_window_seconds: Mapped[int] = mapped_column(nullable=False, default=300)
+    event_types: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    proxy_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    proxy_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    proxy_port: Mapped[int | None] = mapped_column(nullable=True)
+    proxy_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    proxy_secret_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     connection_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class AdminNotification(Base):
+    __tablename__ = "admin_notification"
+    __table_args__ = (
+        CheckConstraint(f"severity IN ({_NOTIFICATION_SEVERITY_SQL})", name="severity"),
+        Index("ix_admin_notification_read_created", "read_at", "created_at"),
+        UniqueConstraint("dedup_key", name="uq_admin_notification_dedup_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="INFO")
+    dedup_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class AIAgentSetting(Base):
+    __tablename__ = "ai_agent_setting"
+    __table_args__ = (
+        CheckConstraint("id = 'default'", name="singleton"),
+        CheckConstraint(f"provider_kind IN ({_AI_PROVIDER_KIND_SQL})", name="provider_kind"),
+        CheckConstraint(
+            f"connection_status IN ({_AI_CONNECTION_STATUS_SQL})", name="connection_status"
+        ),
+        CheckConstraint("request_timeout_seconds BETWEEN 1 AND 120", name="request_timeout"),
+        CheckConstraint("max_context_messages BETWEEN 2 AND 100", name="max_context_messages"),
+        CheckConstraint("version >= 1", name="version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default="default")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    provider_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="OPENAI")
+    base_url: Mapped[str] = mapped_column(Text, nullable=False, default="https://api.openai.com/v1")
+    api_key_secret_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("secret.id", ondelete="SET NULL"), nullable=True
+    )
+    model: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    request_timeout_seconds: Mapped[int] = mapped_column(nullable=False, default=30)
+    max_context_messages: Mapped[int] = mapped_column(nullable=False, default=20)
+    data_scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    connection_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
+    last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class AIChannelBinding(Base):
+    __tablename__ = "ai_channel_binding"
+    __table_args__ = (
+        CheckConstraint("kind = 'TELEGRAM'", name="kind"),
+        CheckConstraint("idle_timeout_minutes BETWEEN 5 AND 10080", name="idle_timeout"),
+        CheckConstraint("max_context_messages BETWEEN 2 AND 100", name="max_context_messages"),
+        CheckConstraint("last_update_id >= 0", name="last_update_id"),
+        CheckConstraint("version >= 1", name="version"),
+        UniqueConstraint(
+            "notification_channel_id", name="uq_ai_channel_binding_notification_channel_id"
+        ),
+        Index("ix_ai_channel_binding_enabled", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="TELEGRAM")
+    notification_channel_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("notification_channel.id", ondelete="SET NULL"), nullable=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    allowed_chat_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    allowed_user_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    idle_timeout_minutes: Mapped[int] = mapped_column(nullable=False, default=60)
+    max_context_messages: Mapped[int] = mapped_column(nullable=False, default=20)
+    last_update_id: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class AIConversation(Base):
+    __tablename__ = "ai_conversation"
+    __table_args__ = (
+        Index("ix_ai_conversation_binding_last_message", "binding_id", "last_message_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    binding_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("ai_channel_binding.id", ondelete="CASCADE"), nullable=False
+    )
+    chat_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    last_message_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=utc_now
+    )
+    context_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class AIMessage(Base):
+    __tablename__ = "ai_message"
+    __table_args__ = (
+        CheckConstraint("role IN ('USER', 'ASSISTANT')", name="role"),
+        Index("ix_ai_message_conversation_created", "conversation_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("ai_conversation.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    telegram_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tool_summary: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
 class Downloader(Base):
@@ -207,6 +347,15 @@ class Site(Base):
     secret_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("secret.id", ondelete="SET NULL"), nullable=True
     )
+    request_timeout_seconds: Mapped[int] = mapped_column(nullable=False, default=15)
+    search_interval_seconds: Mapped[int] = mapped_column(nullable=False, default=0)
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    browser_emulation_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    proxy_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    proxy_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    proxy_port: Mapped[int | None] = mapped_column(nullable=True)
+    proxy_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    proxy_secret_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     connection_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

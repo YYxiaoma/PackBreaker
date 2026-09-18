@@ -126,6 +126,36 @@ async def test_qbittorrent_api_key_probe_never_calls_auth_endpoint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_qbittorrent_runtime_metrics_use_global_rates_and_all_torrent_sizes() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path.endswith("/auth/login"):
+            return httpx2.Response(200, text="Ok.", headers={"Set-Cookie": "SID=fake; path=/"})
+        if request.url.path.endswith("/transfer/info"):
+            return httpx2.Response(200, json={"up_info_speed": 1024, "dl_info_speed": 2048})
+        if request.url.path.endswith("/torrents/info"):
+            return httpx2.Response(200, json=[{"size": 100}, {"size": 250}])
+        if request.url.path.endswith("/sync/maindata"):
+            assert request.url.params["rid"] == "0"
+            return httpx2.Response(200, json={"server_state": {"free_space_on_disk": 4096}})
+        return httpx2.Response(404)
+
+    adapter = QbittorrentAdapter(
+        "http://qb.invalid:8080",
+        DownloaderCredential(username="admin", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    metrics = await adapter.runtime_metrics()
+
+    assert metrics.upload_speed_bytes_per_second == 1024
+    assert metrics.download_speed_bytes_per_second == 2048
+    assert metrics.total_content_size_bytes == 350
+    assert metrics.free_space_bytes == 4096
+    assert metrics.active_torrent_count is None
+    assert metrics.total_torrent_count == 2
+
+
+@pytest.mark.asyncio
 async def test_transmission_probe_performs_session_id_handshake() -> None:
     requests: list[httpx2.Request] = []
 
@@ -171,6 +201,102 @@ async def test_transmission_probe_performs_session_id_handshake() -> None:
     assert result.capabilities.supports_skip_checking is False
     assert result.capabilities.supports_force_recheck is True
     assert result.capabilities.supports_verify_progress is True
+
+
+@pytest.mark.asyncio
+async def test_transmission_runtime_metrics_use_41_json_rpc_fields() -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.headers.get("X-Transmission-Session-Id") != "synthetic-session":
+            return httpx2.Response(409, headers={"X-Transmission-Session-Id": "synthetic-session"})
+        body = json.loads(request.content.decode())
+        method = body["method"]
+        methods.append(method)
+        result: dict[str, object]
+        if method == "session_stats":
+            result = {
+                "upload_speed": 300,
+                "download_speed": 400,
+                "active_torrent_count": 2,
+                "torrent_count": 3,
+            }
+        elif method == "session_get":
+            assert body["params"] == {"fields": ["download_dir", "download_dir_free_space"]}
+            result = {"download_dir": "/downloads", "download_dir_free_space": 4500}
+        elif method == "torrent_get":
+            assert body["params"] == {"fields": ["total_size"]}
+            result = {"torrents": [{"total_size": 1000}, {"total_size": 2000}]}
+        elif method == "free_space":
+            assert body["params"] == {"path": "/downloads"}
+            result = {"path": "/downloads", "size_bytes": 5000, "total_size": 9000}
+        else:
+            raise AssertionError(f"unexpected method {method}")
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "result": result, "id": 1})
+
+    adapter = TransmissionAdapter(
+        "http://tr.invalid:9091/transmission/rpc",
+        DownloaderCredential(username="rpc", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    metrics = await adapter.runtime_metrics()
+
+    assert methods == ["session_stats", "session_get", "torrent_get", "free_space"]
+    assert metrics.upload_speed_bytes_per_second == 300
+    assert metrics.download_speed_bytes_per_second == 400
+    assert metrics.total_content_size_bytes == 3000
+    assert metrics.free_space_bytes == 5000
+    assert metrics.active_torrent_count == 2
+    assert metrics.total_torrent_count == 3
+
+
+@pytest.mark.asyncio
+async def test_transmission_runtime_metrics_degrade_only_free_space_when_rpc_rejects_it() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.headers.get("X-Transmission-Session-Id") != "synthetic-session":
+            return httpx2.Response(409, headers={"X-Transmission-Session-Id": "synthetic-session"})
+        body = json.loads(request.content.decode())
+        method = body["method"]
+        result: dict[str, object]
+        if method == "session_stats":
+            result = {
+                "upload_speed": 300,
+                "download_speed": 400,
+                "active_torrent_count": 2,
+                "torrent_count": 3,
+            }
+        elif method == "session_get":
+            result = {"download_dir": "/downloads", "download_dir_free_space": -1}
+        elif method == "torrent_get":
+            result = {"torrents": [{"total_size": 1000}, {"total_size": 2000}]}
+        elif method == "free_space":
+            return httpx2.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32000, "message": "free space unavailable"},
+                    "id": 1,
+                },
+            )
+        else:
+            raise AssertionError(f"unexpected method {method}")
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "result": result, "id": 1})
+
+    adapter = TransmissionAdapter(
+        "http://tr.invalid:9091/transmission/rpc",
+        DownloaderCredential(username="rpc", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    metrics = await adapter.runtime_metrics()
+
+    assert metrics.upload_speed_bytes_per_second == 300
+    assert metrics.download_speed_bytes_per_second == 400
+    assert metrics.total_content_size_bytes == 3000
+    assert metrics.free_space_bytes is None
+    assert metrics.active_torrent_count == 2
+    assert metrics.total_torrent_count == 3
 
 
 @pytest.mark.asyncio

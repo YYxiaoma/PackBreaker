@@ -2,15 +2,22 @@ import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { ApiProblem, toApiProblem } from '../api/client';
 import {
+  changeAdministratorPassword,
   getAuthStatus,
   loginAdministrator,
   logoutAdministrator,
-  setupAdministrator,
   type AuthStatus,
 } from '../api/auth';
 
 function anonymousStatus(configured: boolean): AuthStatus {
-  return { configured, authenticated: false, permissions: [], expires_at: null };
+  return {
+    configured,
+    authenticated: false,
+    permissions: [],
+    expires_at: null,
+    username: null,
+    must_change_password: false,
+  };
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -22,6 +29,8 @@ export const useAuthStore = defineStore('auth', () => {
   const configured = computed(() => status.value?.configured ?? false);
   const authenticated = computed(() => status.value?.authenticated ?? false);
   const expiresAt = computed(() => status.value?.expires_at ?? null);
+  const username = computed(() => status.value?.username ?? null);
+  const mustChangePassword = computed(() => status.value?.must_change_password ?? false);
 
   async function bootstrap(): Promise<void> {
     loading.value = true;
@@ -35,15 +44,17 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function login(password: string): Promise<void> {
+  async function login(username: string, password: string): Promise<void> {
     submitting.value = true;
     try {
-      const result = await loginAdministrator(password);
+      const result = await loginAdministrator(username, password);
       status.value = {
         configured: true,
         authenticated: true,
-        permissions: ['admin'],
+        permissions: result.must_change_password ? ['password:change'] : ['admin'],
         expires_at: result.expires_at,
+        username: result.username,
+        must_change_password: result.must_change_password,
       };
       error.value = null;
     } catch (caught) {
@@ -56,22 +67,22 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function setup(password: string): Promise<void> {
+  async function changePassword(
+    currentPassword: string,
+    newPassword: string,
+    confirmation: string,
+  ): Promise<void> {
     submitting.value = true;
     try {
-      await setupAdministrator(password);
+      await changeAdministratorPassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+        confirm_password: confirmation,
+      });
       status.value = anonymousStatus(true);
-      const result = await loginAdministrator(password);
-      status.value = {
-        configured: true,
-        authenticated: true,
-        permissions: ['admin'],
-        expires_at: result.expires_at,
-      };
       error.value = null;
     } catch (caught) {
       const problem = toApiProblem(caught);
-      if (problem.code === 'AUTH_SETUP_COMPLETE') status.value = anonymousStatus(true);
       error.value = problem;
       throw problem;
     } finally {
@@ -102,9 +113,11 @@ export const useAuthStore = defineStore('auth', () => {
     configured,
     authenticated,
     expiresAt,
+    username,
+    mustChangePassword,
     bootstrap,
     login,
-    setup,
+    changePassword,
     logout,
     markUnauthenticated,
   };

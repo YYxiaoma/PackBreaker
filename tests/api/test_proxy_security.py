@@ -24,11 +24,11 @@ def test_trusted_proxy_https_sets_secure_cookie_and_hsts(tmp_path: Path) -> None
         base_url="http://testserver",
         client=("10.0.0.5", 50000),
     ) as client:
-        client.post("/api/v1/auth/setup", json={"password": _PASSWORD})
+        client.post("/api/v1/auth/setup", json={"username": "admin", "password": _PASSWORD})
         response = client.post(
             "/api/v1/auth/login",
             headers={"X-Forwarded-Proto": "https"},
-            json={"password": _PASSWORD},
+            json={"username": "admin", "password": _PASSWORD},
         )
 
     assert response.status_code == 200
@@ -46,11 +46,11 @@ def test_untrusted_peer_cannot_force_secure_proxy_context(tmp_path: Path) -> Non
         base_url="http://testserver",
         client=("203.0.113.5", 50000),
     ) as client:
-        client.post("/api/v1/auth/setup", json={"password": _PASSWORD})
+        client.post("/api/v1/auth/setup", json={"username": "admin", "password": _PASSWORD})
         response = client.post(
             "/api/v1/auth/login",
             headers={"X-Forwarded-Proto": "https"},
-            json={"password": _PASSWORD},
+            json={"username": "admin", "password": _PASSWORD},
         )
 
     assert response.status_code == 200

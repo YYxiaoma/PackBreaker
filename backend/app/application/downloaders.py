@@ -16,6 +16,7 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretStore
 from backend.app.domain.downloader import (
     DownloaderCredential,
+    DownloaderRuntimeMetrics,
     PathMappingRule,
     ProbeStatus,
     downloader_execution_binding_digest,
@@ -657,6 +658,53 @@ class DownloaderService:
             tested_at=tested_at,
         )
         return {"status": "ok", "capabilities": capabilities}
+
+    async def probe_connection(
+        self,
+        *,
+        kind: DownloaderKind,
+        base_url: str,
+        credential: DownloaderCredential | None,
+    ) -> dict[str, object]:
+        normalized_url = self._normalize_url(kind, base_url)
+        self._validate_credential(kind, credential)
+        adapter = self._adapter_factory.create(
+            kind=kind,
+            base_url=normalized_url,
+            credential=credential,
+        )
+        try:
+            result = await adapter.test_connection()
+        except DownloaderAdapterError as exc:
+            raise ApplicationError(
+                code=exc.code,
+                status=502,
+                title="下载器连接测试失败",
+                detail=str(exc),
+            ) from exc
+        return {"status": "ok", "capabilities": result.capabilities.as_dict()}
+
+    async def runtime_metrics(self, downloader_id: str) -> DownloaderRuntimeMetrics:
+        snapshot = self._connection_snapshot(downloader_id)
+        credential = (
+            self._decode_credential(self._secret_store.get(snapshot.secret_id))
+            if snapshot.secret_id is not None
+            else None
+        )
+        adapter = self._adapter_factory.create(
+            kind=snapshot.kind,
+            base_url=snapshot.base_url,
+            credential=credential,
+        )
+        try:
+            return await adapter.runtime_metrics()
+        except DownloaderAdapterError as exc:
+            raise ApplicationError(
+                code=exc.code,
+                status=502,
+                title="下载器运行指标获取失败",
+                detail=str(exc),
+            ) from exc
 
     async def path_diagnostics(
         self,

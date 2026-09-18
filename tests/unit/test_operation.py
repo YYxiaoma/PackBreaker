@@ -89,7 +89,7 @@ def test_operation_event_summary_uses_fixed_public_identity(
 
 
 def test_operation_event_summary_never_echoes_unknown_operation_type() -> None:
-    secret_bearing_type = "CUSTOM_/private/path_PASSKEY-should-not-leak"
+    secret_bearing_type = "CUSTOM_/private/path_TOKEN-should-not-leak"
 
     summary = operation_event_summary(secret_bearing_type, OperationStatus.INTENT_RECORDED)
 

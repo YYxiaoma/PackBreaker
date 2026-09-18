@@ -10,12 +10,9 @@ import {
   ShieldCheck,
   ScrollText,
   Settings,
+  Info,
   ChevronRight,
-  Bell,
-  Sun,
-  Moon,
   Menu,
-  LogOut,
   Sparkles,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -24,12 +21,36 @@ import PreflightReviewCenter from './components/PreflightReviewCenter.vue';
 import OperationalOverview from './components/OperationalOverview.vue';
 import Management from './components/Management.vue';
 import AuthGate from './components/AuthGate.vue';
+import PasswordChangeGate from './components/PasswordChangeGate.vue';
+import UserMenuDrawer from './components/UserMenuDrawer.vue';
 import VersionPopover from './components/VersionPopover.vue';
+import AboutPage from './components/AboutPage.vue';
 import { AUTH_REQUIRED_EVENT } from './api/client';
+import { getAdminInboxUnreadCount } from './api/notifications';
 import { useAuthStore } from './stores/auth';
+
+type ThemeMode = 'light' | 'dark' | 'system';
 
 const auth = useAuthStore();
 const versionPopover = ref<InstanceType<typeof VersionPopover> | null>(null);
+const userDrawerVisible = ref(false);
+const unreadCount = ref(0);
+const systemDark = ref(window.matchMedia('(prefers-color-scheme: dark)').matches);
+const storedTheme = localStorage.getItem('pb-theme-mode');
+const legacyTheme = localStorage.getItem('pb-theme');
+const themeMode = ref<ThemeMode>(
+  storedTheme === 'light' || storedTheme === 'dark' || storedTheme === 'system'
+    ? storedTheme
+    : legacyTheme === 'dark' || legacyTheme === 'light'
+      ? legacyTheme
+      : 'system',
+);
+const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+const dark = computed(
+  () => themeMode.value === 'dark' || (themeMode.value === 'system' && systemDark.value),
+);
+const avatarInitial = computed(() => auth.username?.trim().charAt(0).toUpperCase() || 'A');
+let unreadTimer: ReturnType<typeof setInterval> | undefined;
 
 function handleAuthRequired(): void {
   auth.markUnauthenticated();
@@ -37,9 +58,18 @@ function handleAuthRequired(): void {
 
 onMounted(() => {
   window.addEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
+  mediaQuery.addEventListener('change', handleSystemThemeChange);
   void auth.bootstrap();
 });
-onUnmounted(() => window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired));
+onUnmounted(() => {
+  window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
+  mediaQuery.removeEventListener('change', handleSystemThemeChange);
+  if (unreadTimer) clearInterval(unreadTimer);
+});
+
+function handleSystemThemeChange(event: MediaQueryListEvent): void {
+  systemDark.value = event.matches;
+}
 
 const nav = [
   { name: '总览', icon: LayoutDashboard },
@@ -50,6 +80,7 @@ const nav = [
   { name: '清理与对账', icon: ShieldCheck },
   { name: '日志', icon: ScrollText },
   { name: '系统设置', icon: Settings },
+  { name: '关于', icon: Info },
 ];
 const pageCopy: Record<string, { eyebrow: string; description: string }> = {
   总览: {
@@ -82,7 +113,11 @@ const pageCopy: Record<string, { eyebrow: string; description: string }> = {
   },
   系统设置: {
     eyebrow: '系统配置',
-    description: '管理通知与数据库备份恢复策略。',
+    description: '管理通知、AI 助手与数据库备份恢复策略。',
+  },
+  关于: {
+    eyebrow: '项目信息',
+    description: '查看版本、项目定位、安全原则、许可证与更新入口。',
   },
 };
 const initialRoute = location.hash.slice(1) ? decodeURIComponent(location.hash.slice(1)) : '总览';
@@ -90,7 +125,6 @@ const route = ref(nav.some((item) => item.name === initialRoute) ? initialRoute 
 const currentPageCopy = computed(
   () => pageCopy[route.value] ?? { eyebrow: '工作空间', description: '' },
 );
-const dark = ref(localStorage.getItem('pb-theme') === 'dark');
 const mobile = ref(false);
 watch(route, (v) => {
   location.hash = encodeURIComponent(v);
@@ -105,10 +139,42 @@ watch(
   dark,
   (v) => {
     document.documentElement.classList.toggle('dark', v);
-    localStorage.setItem('pb-theme', v ? 'dark' : 'light');
   },
   { immediate: true },
 );
+watch(
+  themeMode,
+  (value) => {
+    localStorage.setItem('pb-theme-mode', value);
+    localStorage.removeItem('pb-theme');
+  },
+  { immediate: true },
+);
+watch(
+  () => auth.authenticated && !auth.mustChangePassword,
+  (ready) => {
+    if (unreadTimer) {
+      clearInterval(unreadTimer);
+      unreadTimer = undefined;
+    }
+    if (!ready) {
+      unreadCount.value = 0;
+      userDrawerVisible.value = false;
+      return;
+    }
+    void refreshUnreadCount();
+    unreadTimer = setInterval(() => void refreshUnreadCount(), 30_000);
+  },
+  { immediate: true },
+);
+
+async function refreshUnreadCount(): Promise<void> {
+  try {
+    unreadCount.value = await getAdminInboxUnreadCount();
+  } catch {
+    // 顶栏未读红点读取失败不能阻断主界面。
+  }
+}
 async function logout(): Promise<void> {
   try {
     await ElMessageBox.confirm('退出当前管理员会话？未保存的页面输入将丢失。', '退出登录', {
@@ -128,6 +194,7 @@ function openVersionPopover(): void {
 
 <template>
   <AuthGate v-if="auth.loading || !auth.authenticated" />
+  <PasswordChangeGate v-else-if="auth.mustChangePassword" />
   <div v-else class="app-shell">
     <div v-if="mobile" class="sidebar-mask" @click="mobile = false"></div>
     <aside class="sidebar" :class="{ visible: mobile }">
@@ -160,26 +227,18 @@ function openVersionPopover(): void {
         </div>
         <div class="top-actions">
           <button
-            class="icon-button"
-            :aria-label="dark ? '切换浅色主题' : '切换深色主题'"
-            @click="dark = !dark"
+            class="top-user user-menu-trigger"
+            aria-label="打开管理员菜单"
+            @click="userDrawerVisible = true"
           >
-            <Sun v-if="dark" :size="18" /><Moon v-else :size="18" />
+            <el-badge :is-dot="unreadCount > 0" class="user-avatar-badge">
+              <span class="avatar">{{ avatarInitial }}</span>
+            </el-badge>
+            <div class="top-user-copy">
+              <strong>{{ auth.username || 'admin' }}</strong>
+              <small>{{ unreadCount ? `${unreadCount} 条未读` : '本地安全会话' }}</small>
+            </div>
           </button>
-          <button
-            class="icon-button notification"
-            aria-label="待确认通知"
-            @click="route = '预演与确认'"
-          >
-            <Bell :size="18" />
-          </button>
-          <div class="top-user">
-            <span class="avatar">A</span>
-            <div class="top-user-copy"><strong>管理员</strong><small>本地安全会话</small></div>
-            <button class="icon-button" aria-label="退出登录" title="退出登录" @click="logout">
-              <LogOut :size="17" />
-            </button>
-          </div>
         </div>
       </header>
       <main>
@@ -201,13 +260,22 @@ function openVersionPopover(): void {
           @navigate="route = $event"
           @open-version="openVersionPopover"
         />
+        <AboutPage v-else-if="route === '关于'" @open-version="openVersionPopover" />
         <Management
-          v-show="!['任务中心', '预演与确认', '总览'].includes(route)"
+          v-show="!['任务中心', '预演与确认', '总览', '关于'].includes(route)"
           :page="route"
           @navigate="route = $event"
         />
         <footer><span>PackBreaker</span></footer>
       </main>
     </div>
+    <UserMenuDrawer
+      v-model="userDrawerVisible"
+      :username="auth.username || 'admin'"
+      :theme-mode="themeMode"
+      @update:theme-mode="themeMode = $event"
+      @unread-change="unreadCount = $event"
+      @logout="logout"
+    />
   </div>
 </template>

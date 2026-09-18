@@ -261,6 +261,26 @@ body {
   border-left: 1px solid var(--line);
 }
 
+#app .user-menu-trigger {
+  padding-right: 6px;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#app .user-menu-trigger:hover .avatar {
+  transform: translateY(-1px);
+}
+
+#app .user-avatar-badge .el-badge__content.is-dot {
+  top: 4px;
+  right: 4px;
+}
+
 #app .top-user .avatar {
   width: 34px;
   height: 34px;
@@ -268,6 +288,7 @@ body {
   color: #ffffff;
   background: linear-gradient(145deg, #4383ff, #6c5ce7);
   box-shadow: 0 7px 16px rgba(47, 109, 246, 0.2);
+  transition: transform 0.16s ease;
 }
 
 #app .top-user-copy {

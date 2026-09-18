@@ -23,6 +23,7 @@ import { createTaskActionIdempotencyKey } from '../taskActionSafety';
 import DownloaderManagement from './DownloaderManagement.vue';
 import SiteManagement from './SiteManagement.vue';
 import NotificationManagement from './NotificationManagement.vue';
+import AIAgentManagement from './AIAgentManagement.vue';
 import OperationalLogs from './OperationalLogs.vue';
 import BackupManagement from './BackupManagement.vue';
 const props = defineProps<{ page: string }>();
@@ -342,10 +343,13 @@ const settingTab = ref('通知');
   </div>
   <div v-else-if="page === '系统设置'" class="panel">
     <el-tabs v-model="settingTab"
-      ><el-tab-pane v-for="s in ['通知', '备份恢复']" :key="s" :name="s" :label="s"
+      ><el-tab-pane v-for="s in ['通知', 'AI 助手', '备份恢复']" :key="s" :name="s" :label="s"
     /></el-tabs>
     <div v-if="settingTab === '通知'" class="settings-content">
       <NotificationManagement />
+    </div>
+    <div v-else-if="settingTab === 'AI 助手'" class="settings-content">
+      <AIAgentManagement />
     </div>
     <div v-else class="settings-content">
       <h3>备份与恢复</h3>

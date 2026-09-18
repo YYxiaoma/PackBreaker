@@ -2,10 +2,9 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Activity, Globe, Plus, RefreshCw, Settings2 } from '@lucide/vue';
+import { Activity, Globe, Info, Plus, RefreshCw, Settings2 } from '@lucide/vue';
 
 import { ApiProblem, toApiProblem } from '../api/client';
-import { credentialKindForSite } from '../api/sites';
 import type {
   Site,
   SiteCreateInput,
@@ -13,6 +12,9 @@ import type {
   SiteHealth,
   SiteKind,
   SitePatchInput,
+  SiteProfile,
+  SiteTemporaryProbeInput,
+  SiteUserProfile,
 } from '../api/sites';
 import { useSiteStore } from '../stores/sites';
 
@@ -21,41 +23,88 @@ interface SiteDraft {
   originalType: SiteKind | null;
   name: string;
   type: SiteKind;
-  baseUrl: string;
   credential: string;
   clearCredential: boolean;
   credentialConfigured: boolean;
+  requestTimeoutSeconds: number;
+  searchIntervalSeconds: number;
+  userAgent: string;
+  browserEmulationEnabled: boolean;
+  proxyEnabled: boolean;
+  proxyHost: string;
+  proxyPort: number | null;
+  proxyUsername: string;
+  proxyPassword: string;
+  clearProxyPassword: boolean;
+  proxyCredentialConfigured: boolean;
+  enableAfterSave: boolean;
 }
 
 const store = useSiteStore();
-const { items, health, loading, error, busy } = storeToRefs(store);
+const { items, profiles, health, userProfiles, userProfileErrors, loading, error, busy } =
+  storeToRefs(store);
 const dialog = ref(false);
+const detailDialog = ref(false);
+const detailSiteId = ref<string | null>(null);
 const saving = ref(false);
+const probingDraft = ref(false);
 const draft = reactive<SiteDraft>({
   id: null,
   originalType: null,
   name: '',
   type: 'MTEAM',
-  baseUrl: '',
   credential: '',
   clearCredential: false,
   credentialConfigured: false,
+  requestTimeoutSeconds: 15,
+  searchIntervalSeconds: 0,
+  userAgent: '',
+  browserEmulationEnabled: false,
+  proxyEnabled: false,
+  proxyHost: '',
+  proxyPort: null,
+  proxyUsername: '',
+  proxyPassword: '',
+  clearProxyPassword: false,
+  proxyCredentialConfigured: false,
+  enableAfterSave: false,
 });
 
 const editing = computed(() => draft.id !== null);
+const selectedProfile = computed<SiteProfile | undefined>(() => profileFor(draft.type));
+const detailSite = computed<Site | undefined>(() =>
+  detailSiteId.value ? items.value.find((item) => item.id === detailSiteId.value) : undefined,
+);
+const detailProfile = computed<SiteUserProfile | undefined>(() =>
+  detailSiteId.value ? userProfiles.value[detailSiteId.value] : undefined,
+);
+const detailError = computed<ApiProblem | undefined>(() =>
+  detailSiteId.value ? userProfileErrors.value[detailSiteId.value] : undefined,
+);
 
 onMounted(() => {
   void refresh(false);
 });
 
+function profileFor(kind: SiteKind): SiteProfile | undefined {
+  return profiles.value.find((profile) => profile.kind === kind);
+}
+
 function kindLabel(kind: SiteKind): string {
-  if (kind === 'MTEAM') return 'M-Team';
-  if (kind === 'HDTIME') return 'HDTime';
-  return 'HHClub';
+  return profileFor(kind)?.display_name ?? kind;
 }
 
 function credentialLabel(kind: SiteKind): string {
-  return kind === 'MTEAM' ? 'API Key' : 'Cookie';
+  const credentialKind = profileFor(kind)?.credential_kind;
+  if (credentialKind === 'API_KEY') return 'API Key';
+  return 'Cookie';
+}
+
+function supportLabel(profile: SiteProfile | undefined): string {
+  if (!profile) return '配置未加载';
+  if (profile.support_status === 'SUPPORTED') return '已完成适配';
+  if (profile.support_status === 'PENDING_REAL_VALIDATION') return '待真实验收';
+  return '待适配';
 }
 
 function connectionLabel(status: Site['connection_status']): string {
@@ -68,6 +117,29 @@ function statusTag(status: Site['connection_status']): 'success' | 'danger' | 'i
   if (status === 'OK') return 'success';
   if (status === 'FAILED') return 'danger';
   return 'info';
+}
+
+function statusState(item: Site): 'ok' | 'degraded' | 'failed' | 'idle' {
+  if (!item.enabled || item.connection_status === 'UNTESTED') return 'idle';
+  const siteHealth = health.value[item.id];
+  if (item.connection_status === 'FAILED' || siteHealth?.circuit_state === 'OPEN') return 'failed';
+  if (
+    siteHealth?.circuit_state === 'HALF_OPEN' ||
+    (siteHealth?.rate_limit_wait_seconds ?? 0) > 0 ||
+    siteHealth?.last_error_code === 'SITE_RATE_LIMITED' ||
+    siteHealth?.last_error_code === 'SITE_UNAVAILABLE'
+  ) {
+    return 'degraded';
+  }
+  return 'ok';
+}
+
+function statusText(item: Site): string {
+  if (!item.enabled) return '已停用';
+  if (item.connection_status === 'UNTESTED') return '未测试';
+  if (statusState(item) === 'failed') return '连接失败或熔断';
+  if (statusState(item) === 'degraded') return '暂时降级';
+  return '连接正常';
 }
 
 function circuitLabel(value: SiteHealth['circuit_state'] | undefined): string {
@@ -86,25 +158,34 @@ function circuitTag(
   return 'info';
 }
 
-function cacheHitRate(item: SiteHealth | undefined): string {
-  if (!item) return '—';
-  const total = item.cache_hits + item.cache_misses;
-  if (!total) return '0%';
-  return `${Math.round((item.cache_hits / total) * 100)}%`;
-}
-
-function capabilityBoolean(item: Site, key: string): string {
-  const value = item.capabilities[key];
-  if (typeof value !== 'boolean') return '—';
-  return value ? '支持' : '不支持';
-}
-
 function isBusy(item: Site, operation: string): boolean {
   return busy.value[`${operation}:${item.id}`] === true;
 }
 
 function problemText(problem: ApiProblem): string {
   return problem.traceId ? `${problem.message} · trace_id ${problem.traceId}` : problem.message;
+}
+
+function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '--';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${units[unit]}`;
+}
+
+function formatNumber(value: number | null | undefined): string {
+  return value === null || value === undefined ? '--' : value.toLocaleString();
+}
+
+function formatDecimal(value: number | null | undefined): string {
+  return value === null || value === undefined
+    ? '--'
+    : value.toLocaleString(undefined, { maximumFractionDigits: 3 });
 }
 
 async function refresh(notify = true) {
@@ -122,15 +203,37 @@ function resetDraft() {
     originalType: null,
     name: '',
     type: 'MTEAM' as SiteKind,
-    baseUrl: '',
     credential: '',
     clearCredential: false,
     credentialConfigured: false,
+    requestTimeoutSeconds: 15,
+    searchIntervalSeconds: 0,
+    userAgent: '',
+    browserEmulationEnabled: false,
+    proxyEnabled: false,
+    proxyHost: '',
+    proxyPort: null,
+    proxyUsername: '',
+    proxyPassword: '',
+    clearProxyPassword: false,
+    proxyCredentialConfigured: false,
+    enableAfterSave: false,
   });
+}
+
+function applyProfileDefaults() {
+  const profile = selectedProfile.value;
+  if (!profile) return;
+  draft.requestTimeoutSeconds = profile.request_timeout_seconds;
+  draft.searchIntervalSeconds = Math.round(profile.search_interval_seconds);
+  draft.userAgent = '';
+  draft.browserEmulationEnabled = false;
+  if (!profile.supports_proxy) draft.proxyEnabled = false;
 }
 
 function openCreate() {
   resetDraft();
+  applyProfileDefaults();
   dialog.value = true;
 }
 
@@ -141,34 +244,103 @@ function openEdit(item: Site) {
     originalType: item.type,
     name: item.name,
     type: item.type,
-    baseUrl: item.base_url,
     credentialConfigured: item.credential_configured,
+    requestTimeoutSeconds: item.request_timeout_seconds,
+    searchIntervalSeconds: item.search_interval_seconds,
+    userAgent: item.user_agent ?? '',
+    browserEmulationEnabled: item.browser_emulation_enabled,
+    proxyEnabled: item.proxy_enabled,
+    proxyHost: item.proxy_host ?? '',
+    proxyPort: item.proxy_port,
+    proxyUsername: item.proxy_username ?? '',
+    proxyCredentialConfigured: item.proxy_credential_configured,
   });
   dialog.value = true;
 }
 
 function credentialPayload(): SiteCredentialInput | undefined {
   if (draft.clearCredential || !draft.credential) return undefined;
+  const profile = selectedProfile.value;
+  if (!profile) return undefined;
   return {
-    kind: credentialKindForSite(draft.type),
+    kind: profile.credential_kind,
     value: draft.credential,
   };
 }
 
-function validateDraft(): boolean {
+function validateDraft(requireCredential = false): boolean {
+  if (selectedProfile.value?.support_status !== 'SUPPORTED') {
+    ElMessage.warning('该站点已进入 Registry，但适配器尚未开放，当前版本不能保存或测试');
+    return false;
+  }
   if (!draft.name.trim()) {
     ElMessage.warning('请输入站点名称');
     return false;
   }
-  if (!/^https:\/\/[^/?#]+\/?$/i.test(draft.baseUrl.trim())) {
-    ElMessage.warning('站点地址必须是无凭证、无路径、无查询参数的 HTTPS origin');
+  if (!Number.isInteger(draft.requestTimeoutSeconds) || draft.requestTimeoutSeconds < 1) {
+    ElMessage.warning('请求超时必须是大于 0 的整数秒');
     return false;
   }
-  if (/\r|\n|\0/.test(draft.credential)) {
-    ElMessage.warning('站点凭证不能包含换行或 NUL');
+  if (!Number.isInteger(draft.searchIntervalSeconds) || draft.searchIntervalSeconds < 0) {
+    ElMessage.warning('搜索间隔必须是非负整数秒');
+    return false;
+  }
+  if (/\r|\n|\0/.test(draft.credential) || /\r|\n|\0/.test(draft.userAgent)) {
+    ElMessage.warning('凭证和 User-Agent 不能包含换行或 NUL');
+    return false;
+  }
+  if (requireCredential && !credentialPayload()) {
+    ElMessage.warning('测试未保存配置前需要填写站点凭证');
+    return false;
+  }
+  if (draft.proxyEnabled && (!draft.proxyHost.trim() || draft.proxyPort === null)) {
+    ElMessage.warning('启用代理时必须填写代理地址和端口');
+    return false;
+  }
+  if (draft.proxyPassword && !draft.proxyUsername.trim()) {
+    ElMessage.warning('配置代理密码时必须填写代理账号');
     return false;
   }
   return true;
+}
+
+function proxyCreatePayload() {
+  return {
+    enabled: draft.proxyEnabled,
+    ...(draft.proxyHost.trim() ? { host: draft.proxyHost.trim() } : {}),
+    ...(draft.proxyPort !== null ? { port: draft.proxyPort } : {}),
+    ...(draft.proxyUsername.trim() ? { username: draft.proxyUsername.trim() } : {}),
+    ...(draft.proxyPassword ? { password: draft.proxyPassword } : {}),
+  };
+}
+
+function temporaryProbePayload(): SiteTemporaryProbeInput | null {
+  const credential = credentialPayload();
+  if (!credential) return null;
+  return {
+    type: draft.type,
+    credential,
+    request_timeout_seconds: draft.requestTimeoutSeconds,
+    search_interval_seconds: draft.searchIntervalSeconds,
+    user_agent: draft.userAgent.trim() || null,
+    browser_emulation_enabled: draft.browserEmulationEnabled,
+    proxy: proxyCreatePayload(),
+  };
+}
+
+async function testDraftConnection() {
+  if (!validateDraft(true)) return;
+  const payload = temporaryProbePayload();
+  if (!payload) return;
+  probingDraft.value = true;
+  try {
+    await store.probeTemporary(payload);
+    ElMessage.success('当前表单只读连接测试通过；配置尚未保存');
+  } catch (caught) {
+    await handleWriteProblem(caught);
+  } finally {
+    probingDraft.value = false;
+  }
 }
 
 async function handleWriteProblem(caught: unknown) {
@@ -183,6 +355,19 @@ async function handleWriteProblem(caught: unknown) {
     return;
   }
   ElMessage.error(problemText(problem));
+}
+
+function runtimeChanged(current: Site): boolean {
+  return (
+    current.request_timeout_seconds !== draft.requestTimeoutSeconds ||
+    current.search_interval_seconds !== draft.searchIntervalSeconds ||
+    (current.user_agent ?? '') !== draft.userAgent.trim() ||
+    current.browser_emulation_enabled !== draft.browserEmulationEnabled ||
+    current.proxy_enabled !== draft.proxyEnabled ||
+    (current.proxy_host ?? '') !== draft.proxyHost.trim() ||
+    current.proxy_port !== draft.proxyPort ||
+    (current.proxy_username ?? '') !== draft.proxyUsername.trim()
+  );
 }
 
 async function save() {
@@ -204,29 +389,39 @@ async function save() {
   try {
     if (current) {
       const patch: SitePatchInput = { clear_credential: false };
-      let changed = false;
-      const name = draft.name.trim();
-      const baseUrl = draft.baseUrl.trim();
-      if (name !== current.name) {
-        patch.name = name;
-        changed = true;
-      }
+      if (draft.name.trim() !== current.name) patch.name = draft.name.trim();
       if (draft.type !== current.type) {
         patch.type = draft.type;
-        patch.base_url = baseUrl;
-        changed = true;
-      } else if (baseUrl !== current.base_url) {
-        patch.base_url = baseUrl;
-        changed = true;
       }
       if (draft.clearCredential) {
         patch.clear_credential = true;
-        changed = true;
       } else if (credential) {
         patch.credential = credential;
-        changed = true;
       }
-      if (!changed) {
+      if (runtimeChanged(current) || draft.type !== current.type) {
+        patch.request_timeout_seconds = draft.requestTimeoutSeconds;
+        patch.search_interval_seconds = draft.searchIntervalSeconds;
+        patch.user_agent = draft.userAgent.trim() || null;
+        patch.browser_emulation_enabled = draft.browserEmulationEnabled;
+        patch.proxy = {
+          clear_password: draft.clearProxyPassword,
+          enabled: draft.proxyEnabled,
+          host: draft.proxyHost.trim() || null,
+          port: draft.proxyPort,
+          username: draft.proxyUsername.trim() || null,
+          ...(!draft.clearProxyPassword && draft.proxyPassword
+            ? { password: draft.proxyPassword }
+            : {}),
+        };
+      } else if (draft.proxyPassword || draft.clearProxyPassword) {
+        patch.proxy = {
+          clear_password: draft.clearProxyPassword,
+          ...(!draft.clearProxyPassword && draft.proxyPassword
+            ? { password: draft.proxyPassword }
+            : {}),
+        };
+      }
+      if (!Object.keys(patch).length) {
         dialog.value = false;
         ElMessage.info('配置没有变化');
         return;
@@ -237,11 +432,31 @@ async function save() {
       const payload: SiteCreateInput = {
         name: draft.name.trim(),
         type: draft.type,
-        base_url: draft.baseUrl.trim(),
         ...(credential ? { credential } : {}),
+        request_timeout_seconds: draft.requestTimeoutSeconds,
+        search_interval_seconds: draft.searchIntervalSeconds,
+        user_agent: draft.userAgent.trim() || null,
+        browser_emulation_enabled: draft.browserEmulationEnabled,
+        proxy: proxyCreatePayload(),
       };
-      await store.create(payload);
-      ElMessage.success('站点配置已创建，默认保持停用');
+      const created = await store.create(payload);
+      if (draft.enableAfterSave) {
+        try {
+          await store.testConnection(created);
+          const latest = items.value.find((item) => item.id === created.id);
+          if (latest) await store.setEnabled(latest, true);
+          ElMessage.success('站点已保存、连接测试通过并启用');
+        } catch (caught) {
+          dialog.value = false;
+          await refresh(false);
+          ElMessage.warning(
+            `站点已保存，但自动测试/启用失败：${problemText(toApiProblem(caught))}`,
+          );
+          return;
+        }
+      } else {
+        ElMessage.success('站点配置已创建，默认保持停用');
+      }
     }
     dialog.value = false;
   } catch (caught) {
@@ -258,6 +473,25 @@ async function testConnection(item: Site) {
   } catch (caught) {
     await handleWriteProblem(caught);
   }
+}
+
+async function loadDetails(item: Site, notifyError = true) {
+  try {
+    await store.loadUserProfile(item);
+  } catch (caught) {
+    if (notifyError) ElMessage.error(problemText(toApiProblem(caught)));
+  }
+}
+
+function openDetails(item: Site) {
+  detailSiteId.value = item.id;
+  detailDialog.value = true;
+  void loadDetails(item, false);
+}
+
+async function refreshDetails() {
+  if (!detailSite.value) return;
+  await loadDetails(detailSite.value);
 }
 
 async function toggleEnabled(item: Site, enabled: boolean) {
@@ -309,12 +543,9 @@ async function remove(item: Site) {
 
 <template>
   <div>
-    <div class="section-heading">
-      <h2>站点配置</h2>
-      <div class="downloader-heading-actions">
-        <el-button :loading="loading" @click="refresh()"><RefreshCw :size="15" />刷新</el-button>
-        <el-button type="primary" @click="openCreate"><Plus :size="15" />添加站点</el-button>
-      </div>
+    <div class="site-toolbar">
+      <el-button :loading="loading" @click="refresh()"><RefreshCw :size="15" />刷新</el-button>
+      <el-button type="primary" @click="openCreate"><Plus :size="15" />添加站点</el-button>
     </div>
 
     <el-alert
@@ -332,7 +563,14 @@ async function remove(item: Site) {
         <div class="card-title">
           <span class="connection-icon"><Globe :size="25" /></span>
           <div>
-            <h3>{{ item.name }}</h3>
+            <h3 class="site-name-line">
+              <span
+                class="site-status-dot"
+                :class="`site-status-dot--${statusState(item)}`"
+                :title="statusText(item)"
+              />
+              {{ item.name }}
+            </h3>
             <small>{{ kindLabel(item.type) }} · 配置 v{{ item.version }}</small>
           </div>
           <el-switch
@@ -353,16 +591,17 @@ async function remove(item: Site) {
           <el-tag :type="circuitTag(health[item.id]?.circuit_state)">
             熔断 {{ circuitLabel(health[item.id]?.circuit_state) }}
           </el-tag>
+          <el-tag type="info">{{ supportLabel(profileFor(item.type)) }}</el-tag>
         </div>
         <dl class="config-summary">
-          <dt>IMDb ID 搜索</dt>
-          <dd>{{ capabilityBoolean(item, 'supports_imdb_id') }}</dd>
-          <dt>最小请求间隔</dt>
+          <dt>请求超时</dt>
+          <dd>{{ item.request_timeout_seconds }} 秒</dd>
+          <dt>搜索间隔</dt>
+          <dd>{{ item.search_interval_seconds }} 秒</dd>
+          <dt>代理</dt>
           <dd>
             {{
-              typeof item.capabilities.min_request_interval_seconds === 'number'
-                ? `${item.capabilities.min_request_interval_seconds} 秒`
-                : '尚未探测'
+              item.proxy_enabled ? `${item.proxy_host ?? '—'}:${item.proxy_port ?? '—'}` : '未启用'
             }}
           </dd>
           <dt>最近测试</dt>
@@ -373,10 +612,21 @@ async function remove(item: Site) {
           <dd>{{ health[item.id]?.last_error_code ?? '—' }}</dd>
         </dl>
         <div class="card-actions">
+          <el-button size="small" :loading="isBusy(item, 'profile')" @click="openDetails(item)">
+            <Info :size="14" />详情
+          </el-button>
           <el-button size="small" :loading="isBusy(item, 'test')" @click="testConnection(item)">
             <Activity :size="14" />测试连接
           </el-button>
           <el-button size="small" @click="openEdit(item)"> <Settings2 :size="14" />配置 </el-button>
+          <el-button
+            v-if="health[item.id]"
+            link
+            type="warning"
+            :loading="isBusy(item, 'reset')"
+            @click="resetCircuit(item)"
+            >重置熔断</el-button
+          >
           <el-button link type="danger" :loading="isBusy(item, 'delete')" @click="remove(item)">
             删除
           </el-button>
@@ -387,45 +637,6 @@ async function remove(item: Site) {
     <el-empty v-if="!loading && !items.length && !error" description="暂无站点配置">
       <el-button type="primary" @click="openCreate">添加第一个站点</el-button>
     </el-empty>
-
-    <section class="panel section-space">
-      <h3>站点健康与可靠性</h3>
-      <el-table :data="items" empty-text="暂无站点">
-        <el-table-column prop="name" label="站点" min-width="150" />
-        <el-table-column label="熔断状态" min-width="120">
-          <template #default="{ row }">
-            <el-tag :type="circuitTag(health[row.id]?.circuit_state)">
-              {{ circuitLabel(health[row.id]?.circuit_state) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="失败计数" min-width="95">
-          <template #default="{ row }">{{ health[row.id]?.failure_count ?? '—' }}</template>
-        </el-table-column>
-        <el-table-column label="缓存命中" min-width="95">
-          <template #default="{ row }">{{ cacheHitRate(health[row.id]) }}</template>
-        </el-table-column>
-        <el-table-column label="请求 / 重试" min-width="120">
-          <template #default="{ row }">
-            {{ health[row.id]?.requests_started ?? '—' }} /
-            {{ health[row.id]?.retries_scheduled ?? '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" min-width="140">
-          <template #default="{ row }">
-            <el-button
-              link
-              type="warning"
-              :loading="isBusy(row, 'reset')"
-              :disabled="!health[row.id]"
-              @click="resetCircuit(row)"
-            >
-              重置熔断器
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </section>
 
     <el-dialog
       v-model="dialog"
@@ -439,25 +650,20 @@ async function remove(item: Site) {
             <el-input v-model="draft.name" maxlength="80" />
           </el-form-item>
           <el-form-item label="站点类型" required>
-            <el-select v-model="draft.type">
-              <el-option label="M-Team" value="MTEAM" />
-              <el-option label="HDTime" value="HDTIME" />
-              <el-option label="HHClub" value="HHCLUB" />
+            <el-select v-model="draft.type" @change="applyProfileDefaults">
+              <el-option
+                v-for="profile in profiles"
+                :key="profile.kind"
+                :label="`${profile.display_name} · ${supportLabel(profile)}`"
+                :value="profile.kind"
+                :disabled="profile.support_status !== 'SUPPORTED'"
+              />
             </el-select>
           </el-form-item>
         </div>
 
-        <el-form-item label="HTTPS Origin" required>
-          <el-input
-            v-model="draft.baseUrl"
-            :placeholder="
-              draft.type === 'HDTIME'
-                ? 'https://hdtime.org'
-                : draft.type === 'HHCLUB'
-                  ? 'https://hhanclub.net'
-                  : 'https://kp.m-team.cc'
-            "
-          />
+        <el-form-item label="站点地址（由 Profile 固定）">
+          <el-input :model-value="selectedProfile?.base_url ?? ''" disabled />
         </el-form-item>
 
         <el-alert
@@ -481,29 +687,194 @@ async function remove(item: Site) {
           />
         </el-form-item>
 
-        <el-alert
-          v-if="draft.type === 'HDTIME'"
-          title="HDTime 使用 Cookie 凭证，站点地址为 https://hdtime.org。"
-          type="info"
-          :closable="false"
-        />
-        <el-alert
-          v-else-if="draft.type === 'HHCLUB'"
-          title="HHClub 使用 Cookie 凭证，站点地址为 https://hhanclub.net。"
-          type="info"
-          :closable="false"
-        />
-        <el-alert
-          v-else
-          title="M-Team 使用 API Key；站点地址示例：https://kp.m-team.cc。"
-          type="info"
-          :closable="false"
-        />
+        <div class="form-grid">
+          <el-form-item label="请求超时（秒）">
+            <el-input-number v-model="draft.requestTimeoutSeconds" :min="1" :max="120" />
+          </el-form-item>
+          <el-form-item label="搜索间隔（秒）">
+            <el-input-number v-model="draft.searchIntervalSeconds" :min="0" :max="3600" />
+          </el-form-item>
+        </div>
+
+        <template v-if="selectedProfile?.supports_user_agent">
+          <el-form-item label="User-Agent">
+            <el-input
+              v-model="draft.userAgent"
+              maxlength="512"
+              placeholder="留空使用系统默认浏览器 User-Agent"
+            />
+          </el-form-item>
+          <el-form-item v-if="selectedProfile.supports_browser_emulation">
+            <el-checkbox v-model="draft.browserEmulationEnabled">启用浏览器请求头仿真</el-checkbox>
+          </el-form-item>
+        </template>
+
+        <template v-if="selectedProfile?.supports_proxy">
+          <el-divider content-position="left">独立代理</el-divider>
+          <el-form-item>
+            <el-switch v-model="draft.proxyEnabled" active-text="启用该站点独立代理" />
+          </el-form-item>
+          <div v-if="draft.proxyEnabled" class="form-grid">
+            <el-form-item label="代理地址" required>
+              <el-input v-model="draft.proxyHost" placeholder="127.0.0.1" />
+            </el-form-item>
+            <el-form-item label="代理端口" required>
+              <el-input-number v-model="draft.proxyPort" :min="1" :max="65535" />
+            </el-form-item>
+            <el-form-item label="代理账号">
+              <el-input v-model="draft.proxyUsername" autocomplete="username" />
+            </el-form-item>
+            <el-form-item label="代理密码">
+              <el-input
+                v-model="draft.proxyPassword"
+                :disabled="draft.clearProxyPassword"
+                type="password"
+                show-password
+                autocomplete="new-password"
+                :placeholder="draft.proxyCredentialConfigured ? '留空保持现有代理密码' : '可选'"
+              />
+            </el-form-item>
+          </div>
+          <el-checkbox
+            v-if="editing && draft.proxyCredentialConfigured"
+            v-model="draft.clearProxyPassword"
+            >清除已保存的代理密码</el-checkbox
+          >
+        </template>
+
+        <el-form-item v-if="!editing">
+          <el-checkbox v-model="draft.enableAfterSave">保存后自动测试连接并启用</el-checkbox>
+        </el-form-item>
       </el-form>
       <template #footer>
+        <el-button
+          v-if="!editing || draft.credential"
+          :loading="probingDraft"
+          :disabled="selectedProfile?.support_status !== 'SUPPORTED'"
+          @click="testDraftConnection"
+          >测试当前表单</el-button
+        >
         <el-button @click="dialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
+        <el-button
+          type="primary"
+          :loading="saving"
+          :disabled="selectedProfile?.support_status !== 'SUPPORTED'"
+          @click="save"
+          >保存配置</el-button
+        >
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="detailDialog"
+      :title="detailSite ? `${detailSite.name} · 用户详情` : '站点用户详情'"
+      width="min(820px, 94vw)"
+      @closed="detailSiteId = null"
+    >
+      <el-alert
+        v-if="detailError"
+        title="站点用户详情暂不可用"
+        :description="problemText(detailError)"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="form-alert"
+      />
+      <el-skeleton
+        v-if="detailSite && isBusy(detailSite, 'profile') && !detailProfile"
+        :rows="6"
+        animated
+      />
+      <el-descriptions v-else-if="detailProfile" :column="2" border>
+        <el-descriptions-item label="UID">{{ detailProfile.uid ?? '--' }}</el-descriptions-item>
+        <el-descriptions-item label="用户名">{{
+          detailProfile.username ?? '--'
+        }}</el-descriptions-item>
+        <el-descriptions-item label="用户等级">{{
+          detailProfile.user_level ?? '--'
+        }}</el-descriptions-item>
+        <el-descriptions-item label="分享率">{{
+          formatDecimal(detailProfile.ratio)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="真实上传量">{{
+          formatBytes(detailProfile.real_uploaded_bytes)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="真实下载量">{{
+          formatBytes(detailProfile.real_downloaded_bytes)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="上传量">{{
+          formatBytes(detailProfile.uploaded_bytes)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="下载量">{{
+          formatBytes(detailProfile.downloaded_bytes)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="发种数">{{
+          formatNumber(detailProfile.torrents_posted)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="做种数">{{
+          formatNumber(detailProfile.seeding_count)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="做种量">{{
+          formatBytes(detailProfile.seeding_size_bytes)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="魔力值">{{
+          formatDecimal(detailProfile.bonus)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="做种积分">{{
+          formatDecimal(detailProfile.seeding_points)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="每小时魔力值">{{
+          formatDecimal(detailProfile.bonus_per_hour)
+        }}</el-descriptions-item>
+        <el-descriptions-item label="数据更新时间" :span="2">
+          {{ new Date(detailProfile.fetched_at).toLocaleString() }}
+        </el-descriptions-item>
+      </el-descriptions>
+      <el-empty v-else-if="!detailError" description="暂无用户详情" />
+      <template #footer>
+        <el-button
+          v-if="detailSite"
+          :loading="isBusy(detailSite, 'profile')"
+          @click="refreshDetails"
+          ><RefreshCw :size="14" />刷新详情</el-button
+        >
+        <el-button @click="detailDialog = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.site-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.site-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.site-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 9px;
+  background: #909399;
+}
+
+.site-status-dot--ok {
+  background: #67c23a;
+}
+
+.site-status-dot--degraded {
+  background: #e6a23c;
+}
+
+.site-status-dot--failed {
+  background: #f56c6c;
+}
+</style>

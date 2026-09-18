@@ -42,7 +42,7 @@ def test_secret_cipher_detects_database_context_tampering(tmp_path: Path) -> Non
     runtime.start()
     try:
         store = SecretStore(runtime.session_factory, runtime.secret_cipher)
-        secret_id = store.put(kind="SITE_PASSKEY", value=b"synthetic-passkey")
+        secret_id = store.put(kind="SITE_TOKEN", value=b"synthetic-token")
         with runtime.session_factory() as session:
             record = session.get(SecretRecord, secret_id)
             assert record is not None

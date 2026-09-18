@@ -56,7 +56,12 @@ from backend.app.domain.execution_plan import (
     ExecutionPlanSnapshot,
 )
 from backend.app.domain.operation import OperationStatus
-from backend.app.domain.site_adapter import SiteConnectionResult, TorrentDetails, TorrentPayload
+from backend.app.domain.site_adapter import (
+    SiteConnectionResult,
+    SiteUserProfile,
+    TorrentDetails,
+    TorrentPayload,
+)
 from backend.app.domain.site_search import (
     SearchPage,
     SearchQuery,
@@ -115,6 +120,9 @@ class _FakeSiteAdapter:
 
     async def test_connection(self) -> SiteConnectionResult:
         return SiteConnectionResult("fake")
+
+    async def fetch_user_profile(self) -> SiteUserProfile:
+        return SiteUserProfile("fake", uid="1", username="synthetic")
 
     async def search(self, query: SearchQuery) -> SearchPage:
         return SearchPage("fake", query.page, (), False, 0)

@@ -31,6 +31,7 @@
 | [v1.0 验收证据索引](./v1-acceptance-evidence.json) | 逐项绑定 25 条 v1.0 验收要求与自动化/现场/外部证据 | M6 |
 | [v1.0 支持矩阵](./support-matrix.md) | 发布平台、下载器、站点、文件系统与升级支持边界 | M6 |
 | [v1.0 已知限制](./known-limitations.md) | 明确尚未闭环的发布证据与安全边界 | M6 |
+| [v0.1.6 真实环境验收记录](./v0.1.6-real-environment-acceptance.md) | 记录 v0.1.5→v0.1.6 真实配置副本迁移、下载器/站点只读现场证据与待外部条件项 | v0.1.6 |
 | [部署、运维与安全](./deployment.md) | 约定容器、卷、备份、升级和密钥管理 | M1/M6 |
 | [本地开发指南](./local-development.md) | 统一工具链、命令、配置和日常工作流 | M1 |
 | [研发路线图](./development-roadmap.md) | 将 M0-M6 拆成可交付工作包与退出条件 | 全阶段 |

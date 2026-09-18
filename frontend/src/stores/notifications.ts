@@ -5,12 +5,14 @@ import {
   createNotificationChannel,
   deleteNotificationChannel,
   listNotificationChannels,
+  probeNotificationChannel,
   setNotificationChannelEnabled,
   testNotificationChannel,
   updateNotificationChannel,
   type NotificationChannel,
   type NotificationChannelCreateInput,
   type NotificationChannelUpdateInput,
+  type NotificationTemporaryProbeInput,
 } from '../api/notifications';
 import { ApiProblem, toApiProblem } from '../api/client';
 
@@ -67,6 +69,10 @@ export const useNotificationStore = defineStore('notifications', () => {
     });
   }
 
+  async function probeTemporary(payload: NotificationTemporaryProbeInput) {
+    return guarded('probe', () => probeNotificationChannel(payload));
+  }
+
   async function update(
     channel: NotificationChannel,
     payload: NotificationChannelUpdateInput,
@@ -105,6 +111,7 @@ export const useNotificationStore = defineStore('notifications', () => {
     error,
     refresh,
     create,
+    probeTemporary,
     update,
     remove,
     testConnection,

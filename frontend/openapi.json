@@ -1,6 +1,506 @@
 {
   "components": {
     "schemas": {
+      "AIAgentProbeRequest": {
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 8192,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "provider_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AIProviderKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request_timeout_seconds": {
+            "anyOf": [
+              {
+                "maximum": 120.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Timeout Seconds"
+          },
+          "use_saved": {
+            "default": false,
+            "title": "Use Saved",
+            "type": "boolean"
+          }
+        },
+        "title": "AIAgentProbeRequest",
+        "type": "object"
+      },
+      "AIAgentProbeResponse": {
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider_kind": {
+            "$ref": "#/components/schemas/AIProviderKind"
+          },
+          "status": {
+            "const": "ok",
+            "title": "Status",
+            "type": "string"
+          },
+          "tested_at": {
+            "format": "date-time",
+            "title": "Tested At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "provider_kind",
+          "model",
+          "tested_at"
+        ],
+        "title": "AIAgentProbeResponse",
+        "type": "object"
+      },
+      "AIAgentSettingResponse": {
+        "properties": {
+          "api_key_configured": {
+            "title": "Api Key Configured",
+            "type": "boolean"
+          },
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "connection_status": {
+            "$ref": "#/components/schemas/AIConnectionStatus"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "data_scopes": {
+            "items": {
+              "$ref": "#/components/schemas/AIDataScope"
+            },
+            "title": "Data Scopes",
+            "type": "array"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "last_test_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Test At"
+          },
+          "max_context_messages": {
+            "title": "Max Context Messages",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider_kind": {
+            "$ref": "#/components/schemas/AIProviderKind"
+          },
+          "request_timeout_seconds": {
+            "title": "Request Timeout Seconds",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "provider_kind",
+          "base_url",
+          "api_key_configured",
+          "model",
+          "request_timeout_seconds",
+          "max_context_messages",
+          "data_scopes",
+          "connection_status",
+          "last_test_at",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AIAgentSettingResponse",
+        "type": "object"
+      },
+      "AIAgentSettingUpdateRequest": {
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 8192,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "api_key_action": {
+            "default": "KEEP",
+            "enum": [
+              "KEEP",
+              "SET",
+              "CLEAR"
+            ],
+            "title": "Api Key Action",
+            "type": "string"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "data_scopes": {
+            "items": {
+              "$ref": "#/components/schemas/AIDataScope"
+            },
+            "minItems": 1,
+            "title": "Data Scopes",
+            "type": "array"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_context_messages": {
+            "default": 20,
+            "maximum": 100.0,
+            "minimum": 2.0,
+            "title": "Max Context Messages",
+            "type": "integer"
+          },
+          "model": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "provider_kind": {
+            "$ref": "#/components/schemas/AIProviderKind"
+          },
+          "request_timeout_seconds": {
+            "default": 30,
+            "maximum": 120.0,
+            "minimum": 1.0,
+            "title": "Request Timeout Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "provider_kind",
+          "model",
+          "data_scopes"
+        ],
+        "title": "AIAgentSettingUpdateRequest",
+        "type": "object"
+      },
+      "AIAgentStatusResponse": {
+        "properties": {
+          "api_key_configured": {
+            "title": "Api Key Configured",
+            "type": "boolean"
+          },
+          "connection_status": {
+            "$ref": "#/components/schemas/AIConnectionStatus"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "last_test_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Test At"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider_kind": {
+            "$ref": "#/components/schemas/AIProviderKind"
+          },
+          "telegram_consecutive_errors": {
+            "title": "Telegram Consecutive Errors",
+            "type": "integer"
+          },
+          "telegram_driver_running": {
+            "title": "Telegram Driver Running",
+            "type": "boolean"
+          },
+          "telegram_enabled": {
+            "title": "Telegram Enabled",
+            "type": "boolean"
+          },
+          "telegram_last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telegram Last Error Code"
+          },
+          "telegram_last_update_id": {
+            "title": "Telegram Last Update Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "provider_kind",
+          "connection_status",
+          "api_key_configured",
+          "model",
+          "last_test_at",
+          "telegram_enabled",
+          "telegram_driver_running",
+          "telegram_last_update_id",
+          "telegram_consecutive_errors",
+          "telegram_last_error_code"
+        ],
+        "title": "AIAgentStatusResponse",
+        "type": "object"
+      },
+      "AIConnectionStatus": {
+        "enum": [
+          "UNTESTED",
+          "OK",
+          "FAILED"
+        ],
+        "title": "AIConnectionStatus",
+        "type": "string"
+      },
+      "AIDataScope": {
+        "enum": [
+          "SYSTEM_HEALTH",
+          "TASK_EXECUTIONS",
+          "REDACTED_LOGS",
+          "SITE_STATUS",
+          "DOWNLOADER_STATUS",
+          "VERSION_STATUS",
+          "HELP_DOCS"
+        ],
+        "title": "AIDataScope",
+        "type": "string"
+      },
+      "AIProviderKind": {
+        "enum": [
+          "OPENAI",
+          "OPENAI_COMPATIBLE"
+        ],
+        "title": "AIProviderKind",
+        "type": "string"
+      },
+      "AITelegramBindingResponse": {
+        "properties": {
+          "allowed_chat_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Chat Ids",
+            "type": "array"
+          },
+          "allowed_user_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed User Ids",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "idle_timeout_minutes": {
+            "title": "Idle Timeout Minutes",
+            "type": "integer"
+          },
+          "last_update_id": {
+            "title": "Last Update Id",
+            "type": "integer"
+          },
+          "max_context_messages": {
+            "title": "Max Context Messages",
+            "type": "integer"
+          },
+          "notification_channel_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Channel Id"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "notification_channel_id",
+          "enabled",
+          "allowed_chat_ids",
+          "allowed_user_ids",
+          "idle_timeout_minutes",
+          "max_context_messages",
+          "last_update_id",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AITelegramBindingResponse",
+        "type": "object"
+      },
+      "AITelegramBindingUpdateRequest": {
+        "properties": {
+          "allowed_chat_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Allowed Chat Ids",
+            "type": "array"
+          },
+          "allowed_user_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Allowed User Ids",
+            "type": "array"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "idle_timeout_minutes": {
+            "default": 60,
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Idle Timeout Minutes",
+            "type": "integer"
+          },
+          "max_context_messages": {
+            "default": 20,
+            "maximum": 100.0,
+            "minimum": 2.0,
+            "title": "Max Context Messages",
+            "type": "integer"
+          },
+          "notification_channel_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Channel Id"
+          }
+        },
+        "title": "AITelegramBindingUpdateRequest",
+        "type": "object"
+      },
       "AnalyzeTaskActionRequest": {
         "properties": {
           "action": {
@@ -44,12 +544,28 @@
             ],
             "title": "Expires At"
           },
+          "must_change_password": {
+            "default": false,
+            "title": "Must Change Password",
+            "type": "boolean"
+          },
           "permissions": {
             "items": {
               "type": "string"
             },
             "title": "Permissions",
             "type": "array"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
           }
         },
         "required": [
@@ -301,6 +817,41 @@
         "title": "CancelTaskActionRequest",
         "type": "object"
       },
+      "ChangePasswordRequest": {
+        "properties": {
+          "confirm_password": {
+            "format": "password",
+            "maxLength": 256,
+            "minLength": 12,
+            "title": "Confirm Password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "current_password": {
+            "format": "password",
+            "maxLength": 256,
+            "minLength": 12,
+            "title": "Current Password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "new_password": {
+            "format": "password",
+            "maxLength": 256,
+            "minLength": 12,
+            "title": "New Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "current_password",
+          "new_password",
+          "confirm_password"
+        ],
+        "title": "ChangePasswordRequest",
+        "type": "object"
+      },
       "DownloaderActionRequest": {
         "properties": {
           "action": {
@@ -507,6 +1058,35 @@
           }
         },
         "title": "DownloaderPatchRequest",
+        "type": "object"
+      },
+      "DownloaderProbeRequest": {
+        "properties": {
+          "base_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Base Url",
+            "type": "string"
+          },
+          "credential": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DownloaderCredentialInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/DownloaderKind"
+          }
+        },
+        "required": [
+          "type",
+          "base_url"
+        ],
+        "title": "DownloaderProbeRequest",
         "type": "object"
       },
       "ExecuteTaskActionRequest": {
@@ -873,6 +1453,58 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "InboxBulkActionRequest": {
+        "properties": {
+          "action": {
+            "const": "mark_all_read",
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "InboxBulkActionRequest",
+        "type": "object"
+      },
+      "InboxNotificationActionRequest": {
+        "properties": {
+          "action": {
+            "const": "mark_read",
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "InboxNotificationActionRequest",
+        "type": "object"
+      },
+      "LoginRequest": {
+        "properties": {
+          "password": {
+            "format": "password",
+            "maxLength": 256,
+            "minLength": 12,
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "username": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginRequest",
+        "type": "object"
+      },
       "LoginResponse": {
         "properties": {
           "authenticated": {
@@ -883,11 +1515,21 @@
             "format": "date-time",
             "title": "Expires At",
             "type": "string"
+          },
+          "must_change_password": {
+            "title": "Must Change Password",
+            "type": "boolean"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
           }
         },
         "required": [
           "authenticated",
-          "expires_at"
+          "expires_at",
+          "username",
+          "must_change_password"
         ],
         "title": "LoginResponse",
         "type": "object"
@@ -951,18 +1593,22 @@
       },
       "NotificationChannelCreateRequest": {
         "properties": {
-          "aggregation_window_seconds": {
-            "default": 300,
-            "maximum": 86400.0,
-            "minimum": 1.0,
-            "title": "Aggregation Window Seconds",
-            "type": "integer"
+          "event_types": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationEventType"
+            },
+            "minItems": 1,
+            "title": "Event Types",
+            "type": "array"
           },
           "name": {
             "maxLength": 80,
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "proxy": {
+            "$ref": "#/components/schemas/NotificationProxyCreateInput"
           },
           "serverchan": {
             "anyOf": [
@@ -973,18 +1619,6 @@
                 "type": "null"
               }
             ]
-          },
-          "task_link_base_url": {
-            "anyOf": [
-              {
-                "maxLength": 1024,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Link Base Url"
           },
           "telegram": {
             "anyOf": [
@@ -1014,13 +1648,6 @@
       },
       "NotificationChannelUpdateRequest": {
         "properties": {
-          "aggregation_window_seconds": {
-            "default": 300,
-            "maximum": 86400.0,
-            "minimum": 1.0,
-            "title": "Aggregation Window Seconds",
-            "type": "integer"
-          },
           "credential_action": {
             "default": "KEEP",
             "enum": [
@@ -1031,11 +1658,22 @@
             "title": "Credential Action",
             "type": "string"
           },
+          "event_types": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationEventType"
+            },
+            "minItems": 1,
+            "title": "Event Types",
+            "type": "array"
+          },
           "name": {
             "maxLength": 80,
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "proxy": {
+            "$ref": "#/components/schemas/NotificationProxyPatchInput"
           },
           "serverchan": {
             "anyOf": [
@@ -1046,18 +1684,6 @@
                 "type": "null"
               }
             ]
-          },
-          "task_link_base_url": {
-            "anyOf": [
-              {
-                "maxLength": 1024,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Link Base Url"
           },
           "telegram": {
             "anyOf": [
@@ -1071,9 +1697,192 @@
           }
         },
         "required": [
-          "name"
+          "name",
+          "event_types"
         ],
         "title": "NotificationChannelUpdateRequest",
+        "type": "object"
+      },
+      "NotificationEventType": {
+        "enum": [
+          "AUTH_LOGIN_SUCCESS",
+          "AUTH_PASSWORD_CHANGED",
+          "TASK_EXECUTION_RESULT",
+          "DOWNLOADER_CREATED",
+          "SITE_CREATED",
+          "VERSION_UPDATE_AVAILABLE",
+          "SITE_RELIABILITY"
+        ],
+        "title": "NotificationEventType",
+        "type": "string"
+      },
+      "NotificationProxyCreateInput": {
+        "properties": {
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 512,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "maximum": 65535.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "title": "NotificationProxyCreateInput",
+        "type": "object"
+      },
+      "NotificationProxyPatchInput": {
+        "properties": {
+          "clear_password": {
+            "default": false,
+            "title": "Clear Password",
+            "type": "boolean"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 512,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "maximum": 65535.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "title": "NotificationProxyPatchInput",
+        "type": "object"
+      },
+      "NotificationTemporaryProbeRequest": {
+        "properties": {
+          "proxy": {
+            "$ref": "#/components/schemas/NotificationProxyCreateInput"
+          },
+          "serverchan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServerChanCredentialInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "telegram": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TelegramCredentialInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "enum": [
+              "TELEGRAM",
+              "SERVERCHAN"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "NotificationTemporaryProbeRequest",
         "type": "object"
       },
       "OperationCleanupCandidateResponse": {
@@ -2292,11 +3101,10 @@
       },
       "SiteCreateRequest": {
         "properties": {
-          "base_url": {
-            "maxLength": 2048,
-            "minLength": 1,
-            "title": "Base Url",
-            "type": "string"
+          "browser_emulation_enabled": {
+            "default": false,
+            "title": "Browser Emulation Enabled",
+            "type": "boolean"
           },
           "credential": {
             "anyOf": [
@@ -2314,19 +3122,48 @@
             "title": "Name",
             "type": "string"
           },
+          "proxy": {
+            "$ref": "#/components/schemas/SiteProxyCreateInput"
+          },
+          "request_timeout_seconds": {
+            "default": 15,
+            "maximum": 120.0,
+            "minimum": 1.0,
+            "title": "Request Timeout Seconds",
+            "type": "integer"
+          },
+          "search_interval_seconds": {
+            "default": 0,
+            "maximum": 3600.0,
+            "minimum": 0.0,
+            "title": "Search Interval Seconds",
+            "type": "integer"
+          },
           "type": {
             "$ref": "#/components/schemas/SiteKind"
+          },
+          "user_agent": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Agent"
           }
         },
         "required": [
           "name",
-          "type",
-          "base_url"
+          "type"
         ],
         "title": "SiteCreateRequest",
         "type": "object"
       },
       "SiteCredentialInput": {
+        "additionalProperties": false,
         "properties": {
           "kind": {
             "$ref": "#/components/schemas/SiteCredentialKind"
@@ -2461,7 +3298,14 @@
         "enum": [
           "MTEAM",
           "HDTIME",
-          "HHCLUB"
+          "HHCLUB",
+          "KEEPFRDS",
+          "HDHOME",
+          "UBITS",
+          "HDFANS",
+          "BTSCHOOL",
+          "PTTIME",
+          "ROUSI_PRO"
         ],
         "title": "SiteKind",
         "type": "string"
@@ -2484,18 +3328,16 @@
       },
       "SitePatchRequest": {
         "properties": {
-          "base_url": {
+          "browser_emulation_enabled": {
             "anyOf": [
               {
-                "maxLength": 2048,
-                "minLength": 1,
-                "type": "string"
+                "type": "boolean"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Base Url"
+            "title": "Browser Emulation Enabled"
           },
           "clear_credential": {
             "default": false,
@@ -2525,6 +3367,42 @@
             ],
             "title": "Name"
           },
+          "proxy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SiteProxyPatchInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request_timeout_seconds": {
+            "anyOf": [
+              {
+                "maximum": 120.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Timeout Seconds"
+          },
+          "search_interval_seconds": {
+            "anyOf": [
+              {
+                "maximum": 3600.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Interval Seconds"
+          },
           "type": {
             "anyOf": [
               {
@@ -2534,6 +3412,18 @@
                 "type": "null"
               }
             ]
+          },
+          "user_agent": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Agent"
           }
         },
         "title": "SitePatchRequest",
@@ -2568,11 +3458,475 @@
         "title": "SiteProbeStatus",
         "type": "string"
       },
+      "SiteProfileListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SiteProfileResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "SiteProfileListResponse",
+        "type": "object"
+      },
+      "SiteProfileResponse": {
+        "properties": {
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "credential_kind": {
+            "$ref": "#/components/schemas/SiteCredentialKind"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SiteKind"
+          },
+          "request_timeout_seconds": {
+            "title": "Request Timeout Seconds",
+            "type": "integer"
+          },
+          "search_interval_seconds": {
+            "title": "Search Interval Seconds",
+            "type": "number"
+          },
+          "support_status": {
+            "$ref": "#/components/schemas/SiteSupportStatus"
+          },
+          "supports_browser_emulation": {
+            "title": "Supports Browser Emulation",
+            "type": "boolean"
+          },
+          "supports_proxy": {
+            "title": "Supports Proxy",
+            "type": "boolean"
+          },
+          "supports_user_agent": {
+            "title": "Supports User Agent",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "display_name",
+          "base_url",
+          "credential_kind",
+          "request_timeout_seconds",
+          "search_interval_seconds",
+          "supports_user_agent",
+          "supports_browser_emulation",
+          "supports_proxy",
+          "support_status"
+        ],
+        "title": "SiteProfileResponse",
+        "type": "object"
+      },
+      "SiteProxyCreateInput": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "maximum": 65535.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "title": "SiteProxyCreateInput",
+        "type": "object"
+      },
+      "SiteProxyPatchInput": {
+        "additionalProperties": false,
+        "properties": {
+          "clear_password": {
+            "default": false,
+            "title": "Clear Password",
+            "type": "boolean"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "maximum": 65535.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "title": "SiteProxyPatchInput",
+        "type": "object"
+      },
+      "SiteSupportStatus": {
+        "enum": [
+          "SUPPORTED",
+          "PENDING_ADAPTER",
+          "PENDING_REAL_VALIDATION"
+        ],
+        "title": "SiteSupportStatus",
+        "type": "string"
+      },
+      "SiteTemporaryProbeRequest": {
+        "properties": {
+          "browser_emulation_enabled": {
+            "default": false,
+            "title": "Browser Emulation Enabled",
+            "type": "boolean"
+          },
+          "credential": {
+            "$ref": "#/components/schemas/SiteCredentialInput"
+          },
+          "proxy": {
+            "$ref": "#/components/schemas/SiteProxyCreateInput"
+          },
+          "request_timeout_seconds": {
+            "default": 15,
+            "maximum": 120.0,
+            "minimum": 1.0,
+            "title": "Request Timeout Seconds",
+            "type": "integer"
+          },
+          "search_interval_seconds": {
+            "default": 0,
+            "maximum": 3600.0,
+            "minimum": 0.0,
+            "title": "Search Interval Seconds",
+            "type": "integer"
+          },
+          "type": {
+            "$ref": "#/components/schemas/SiteKind"
+          },
+          "user_agent": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Agent"
+          }
+        },
+        "required": [
+          "type",
+          "credential"
+        ],
+        "title": "SiteTemporaryProbeRequest",
+        "type": "object"
+      },
+      "SiteUserProfileResponse": {
+        "properties": {
+          "bonus": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bonus"
+          },
+          "bonus_per_hour": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bonus Per Hour"
+          },
+          "downloaded_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloaded Bytes"
+          },
+          "fetched_at": {
+            "format": "date-time",
+            "title": "Fetched At",
+            "type": "string"
+          },
+          "ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ratio"
+          },
+          "real_downloaded_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Real Downloaded Bytes"
+          },
+          "real_uploaded_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Real Uploaded Bytes"
+          },
+          "seeding_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeding Count"
+          },
+          "seeding_points": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeding Points"
+          },
+          "seeding_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeding Size Bytes"
+          },
+          "site_id": {
+            "title": "Site Id",
+            "type": "string"
+          },
+          "torrents_posted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrents Posted"
+          },
+          "uid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uid"
+          },
+          "uploaded_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded Bytes"
+          },
+          "user_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Level"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "site_id",
+          "uid",
+          "username",
+          "user_level",
+          "real_uploaded_bytes",
+          "real_downloaded_bytes",
+          "uploaded_bytes",
+          "downloaded_bytes",
+          "ratio",
+          "torrents_posted",
+          "seeding_count",
+          "seeding_size_bytes",
+          "bonus",
+          "seeding_points",
+          "bonus_per_hour",
+          "fetched_at"
+        ],
+        "title": "SiteUserProfileResponse",
+        "type": "object"
+      },
       "SiteViewResponse": {
         "properties": {
           "base_url": {
             "title": "Base Url",
             "type": "string"
+          },
+          "browser_emulation_enabled": {
+            "title": "Browser Emulation Enabled",
+            "type": "boolean"
           },
           "capabilities": {
             "additionalProperties": true,
@@ -2618,6 +3972,55 @@
             "title": "Name",
             "type": "string"
           },
+          "proxy_credential_configured": {
+            "title": "Proxy Credential Configured",
+            "type": "boolean"
+          },
+          "proxy_enabled": {
+            "title": "Proxy Enabled",
+            "type": "boolean"
+          },
+          "proxy_host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proxy Host"
+          },
+          "proxy_port": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proxy Port"
+          },
+          "proxy_username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proxy Username"
+          },
+          "request_timeout_seconds": {
+            "title": "Request Timeout Seconds",
+            "type": "integer"
+          },
+          "search_interval_seconds": {
+            "title": "Search Interval Seconds",
+            "type": "integer"
+          },
           "type": {
             "$ref": "#/components/schemas/SiteKind"
           },
@@ -2625,6 +4028,17 @@
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
+          },
+          "user_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Agent"
           },
           "version": {
             "title": "Version",
@@ -2638,6 +4052,15 @@
           "base_url",
           "credential_kind",
           "credential_configured",
+          "request_timeout_seconds",
+          "search_interval_seconds",
+          "user_agent",
+          "browser_emulation_enabled",
+          "proxy_enabled",
+          "proxy_host",
+          "proxy_port",
+          "proxy_username",
+          "proxy_credential_configured",
           "capabilities",
           "connection_status",
           "enabled",
@@ -5615,10 +7038,458 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "0.1.5"
+    "version": "0.1.6"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/ai-agent/settings": {
+      "get": {
+        "operationId": "get_ai_agent_settings_api_v1_ai_agent_settings_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIAgentSettingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ai Agent Settings",
+        "tags": [
+          "ai-agent"
+        ]
+      },
+      "put": {
+        "operationId": "update_ai_agent_settings_api_v1_ai_agent_settings_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AIAgentSettingUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIAgentSettingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Ai Agent Settings",
+        "tags": [
+          "ai-agent"
+        ]
+      }
+    },
+    "/api/v1/ai-agent/status": {
+      "get": {
+        "operationId": "get_ai_agent_status_api_v1_ai_agent_status_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIAgentStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ai Agent Status",
+        "tags": [
+          "ai-agent"
+        ]
+      }
+    },
+    "/api/v1/ai-agent/telegram": {
+      "get": {
+        "operationId": "get_ai_telegram_binding_api_v1_ai_agent_telegram_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AITelegramBindingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Ai Telegram Binding",
+        "tags": [
+          "ai-agent"
+        ]
+      },
+      "put": {
+        "operationId": "update_ai_telegram_binding_api_v1_ai_agent_telegram_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AITelegramBindingUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AITelegramBindingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Ai Telegram Binding",
+        "tags": [
+          "ai-agent"
+        ]
+      }
+    },
+    "/api/v1/ai-agent/test": {
+      "post": {
+        "operationId": "test_ai_agent_provider_api_v1_ai_agent_test_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AIAgentProbeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIAgentProbeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Ai Agent Provider",
+        "tags": [
+          "ai-agent"
+        ]
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "operationId": "login_api_v1_auth_login_post",
@@ -5626,7 +7497,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PasswordRequest"
+                "$ref": "#/components/schemas/LoginRequest"
               }
             }
           },
@@ -5778,6 +7649,90 @@
           }
         },
         "summary": "Me",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/password": {
+      "post": {
+        "operationId": "change_password_api_v1_auth_password_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Password",
         "tags": [
           "auth"
         ]
@@ -5957,6 +7912,99 @@
           }
         },
         "summary": "Create Downloader",
+        "tags": [
+          "downloaders"
+        ]
+      }
+    },
+    "/api/v1/downloaders/probe": {
+      "post": {
+        "operationId": "probe_downloader_api_v1_downloaders_probe_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloaderProbeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Probe Downloader Api V1 Downloaders Probe Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Probe Downloader",
         "tags": [
           "downloaders"
         ]
@@ -6336,6 +8384,66 @@
           }
         },
         "summary": "Downloader Action",
+        "tags": [
+          "downloaders"
+        ]
+      }
+    },
+    "/api/v1/downloaders/{downloader_id}/metrics": {
+      "get": {
+        "operationId": "get_downloader_metrics_api_v1_downloaders__downloader_id__metrics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "downloader_id",
+            "required": true,
+            "schema": {
+              "title": "Downloader Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Downloader Metrics Api V1 Downloaders  Downloader Id  Metrics Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Downloader Metrics",
         "tags": [
           "downloaders"
         ]
@@ -6958,6 +9066,99 @@
         ]
       }
     },
+    "/api/v1/notification-channels/probe": {
+      "post": {
+        "operationId": "probe_notification_channel_api_v1_notification_channels_probe_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationTemporaryProbeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Probe Notification Channel Api V1 Notification Channels Probe Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Probe Notification Channel",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
     "/api/v1/notification-channels/{channel_id}": {
       "delete": {
         "operationId": "delete_notification_channel_api_v1_notification_channels__channel_id__delete",
@@ -7375,6 +9576,329 @@
         ]
       }
     },
+    "/api/v1/notifications/inbox": {
+      "get": {
+        "operationId": "list_inbox_notifications_api_v1_notifications_inbox_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "unread_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unread Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Inbox Notifications Api V1 Notifications Inbox Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Inbox Notifications",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/notifications/inbox/actions": {
+      "post": {
+        "operationId": "inbox_bulk_action_api_v1_notifications_inbox_actions_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboxBulkActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Inbox Bulk Action Api V1 Notifications Inbox Actions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inbox Bulk Action",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/notifications/inbox/unread-count": {
+      "get": {
+        "operationId": "inbox_unread_count_api_v1_notifications_inbox_unread_count_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Inbox Unread Count Api V1 Notifications Inbox Unread Count Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inbox Unread Count",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/api/v1/notifications/inbox/{notification_id}/actions": {
+      "post": {
+        "operationId": "inbox_notification_action_api_v1_notifications_inbox__notification_id__actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notification_id",
+            "required": true,
+            "schema": {
+              "title": "Notification Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboxNotificationActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Inbox Notification Action Api V1 Notifications Inbox  Notification Id  Actions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inbox Notification Action",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
     "/api/v1/operations/maintenance-report": {
       "get": {
         "operationId": "operation_maintenance_report_api_v1_operations_maintenance_report_get",
@@ -7642,6 +10166,146 @@
           }
         },
         "summary": "Create Site",
+        "tags": [
+          "sites"
+        ]
+      }
+    },
+    "/api/v1/sites/probe": {
+      "post": {
+        "operationId": "probe_site_api_v1_sites_probe_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SiteTemporaryProbeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteProbeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Probe Site",
+        "tags": [
+          "sites"
+        ]
+      }
+    },
+    "/api/v1/sites/profiles": {
+      "get": {
+        "operationId": "list_site_profiles_api_v1_sites_profiles_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteProfileListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Site Profiles",
         "tags": [
           "sites"
         ]
@@ -8083,6 +10747,64 @@
           }
         },
         "summary": "Get Site Health",
+        "tags": [
+          "sites"
+        ]
+      }
+    },
+    "/api/v1/sites/{site_id}/profile": {
+      "get": {
+        "operationId": "get_site_user_profile_api_v1_sites__site_id__profile_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "site_id",
+            "required": true,
+            "schema": {
+              "title": "Site Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteUserProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Site User Profile",
         "tags": [
           "sites"
         ]

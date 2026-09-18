@@ -3,7 +3,9 @@ import { apiClient } from './client';
 import {
   deleteDownloader,
   diagnoseDownloaderPaths,
+  getDownloaderMetrics,
   listDownloaderTorrents,
+  probeDownloader,
   setDownloaderEnabled,
   updateDownloader,
   type Downloader,
@@ -92,5 +94,40 @@ describe('真实种子选择器契约', () => {
     expect(get).toHaveBeenCalledWith(`/downloaders/${downloader.id}/torrents`, {
       params: query,
     });
+  });
+});
+
+describe('v0.1.6 下载器管理契约', () => {
+  it('未保存配置使用临时 probe，不创建下载器', async () => {
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      data: { status: 'ok', capabilities: { version: 'v5.2.3' } },
+    });
+    const payload = {
+      type: 'QBITTORRENT' as const,
+      base_url: 'http://qb.invalid:8080',
+      credential: { username: 'admin', password: 'synthetic-password' },
+    };
+
+    await probeDownloader(payload);
+
+    expect(post).toHaveBeenCalledWith('/downloaders/probe', payload);
+  });
+
+  it('运行指标从实例级只读 endpoint 获取', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
+      data: {
+        upload_speed_bytes_per_second: 1,
+        download_speed_bytes_per_second: 2,
+        total_content_size_bytes: 3,
+        free_space_bytes: 4,
+        active_torrent_count: null,
+        total_torrent_count: 5,
+        sampled_at: '2026-09-17T00:00:00Z',
+      },
+    });
+
+    await getDownloaderMetrics(downloader.id);
+
+    expect(get).toHaveBeenCalledWith(`/downloaders/${downloader.id}/metrics`);
   });
 });

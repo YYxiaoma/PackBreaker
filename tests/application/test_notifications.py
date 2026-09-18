@@ -21,6 +21,7 @@ from backend.app.domain.notification import (
     NotificationChannelKind,
     NotificationCredential,
     NotificationDeliveryError,
+    NotificationEventType,
     NotificationMessage,
     NotificationProvider,
     NotificationTestResult,
@@ -63,15 +64,18 @@ class _FakeProvider:
 class _FakeFactory:
     provider: _FakeProvider
     credentials: list[NotificationCredential] = field(default_factory=list)
+    proxy_urls: list[str | None] = field(default_factory=list)
 
     def create(
         self,
         *,
         kind: NotificationChannelKind,
         credential: NotificationCredential,
+        proxy_url: str | None = None,
     ) -> NotificationProvider:
         assert kind is self.provider.kind
         self.credentials.append(credential)
+        self.proxy_urls.append(proxy_url)
         return self.provider
 
 
@@ -81,6 +85,7 @@ class _Fixture:
     factory: sessionmaker[Session]
     service: NotificationService
     provider: _FakeProvider
+    provider_factory: _FakeFactory
     task_id: str
 
 
@@ -91,7 +96,8 @@ def notification_fixture(tmp_path: Path) -> Iterator[_Fixture]:
     factory = create_session_factory(engine)
     secret_store = SecretStore(factory, SecretCipher(os.urandom(32)))
     provider = _FakeProvider(NotificationChannelKind.TELEGRAM)
-    service = NotificationService(factory, secret_store, provider_factory=_FakeFactory(provider))
+    provider_factory = _FakeFactory(provider)
+    service = NotificationService(factory, secret_store, provider_factory=provider_factory)
     with factory() as session:
         task, _ = TaskRepository(session).create_or_get(
             TaskCreate("PACKAGE_UNPACK", "source", "hash", "movie:key", "trace")
@@ -99,19 +105,22 @@ def notification_fixture(tmp_path: Path) -> Iterator[_Fixture]:
         session.commit()
         task_id = task.id
     try:
-        yield _Fixture(engine, factory, service, provider, task_id)
+        yield _Fixture(engine, factory, service, provider, provider_factory, task_id)
     finally:
         engine.dispose()
 
 
-async def _enable_channel(fixture: _Fixture, *, window: int = 300) -> str:
+async def _enable_channel(
+    fixture: _Fixture,
+    *,
+    event_types: tuple[NotificationEventType, ...] = (NotificationEventType.TASK_EXECUTION_RESULT,),
+) -> str:
     view = fixture.service.create(
         NotificationChannelCreate(
             name="主 Telegram",
             kind=NotificationChannelKind.TELEGRAM,
             credential=TelegramCredential("123:synthetic", "456"),
-            task_link_base_url="https://packbreaker.invalid",
-            aggregation_window_seconds=window,
+            event_types=event_types,
         )
     )
     tested = await fixture.service.test_connection(view.id)
@@ -165,7 +174,7 @@ async def test_task_event_and_outbox_share_transaction_and_aggregate(
 async def test_duplicate_after_delivery_waits_for_window_then_sends_summary(
     notification_fixture: _Fixture,
 ) -> None:
-    await _enable_channel(notification_fixture, window=60)
+    await _enable_channel(notification_fixture)
     with notification_fixture.factory() as session:
         TaskRepository(session).append_event(
             task_id=notification_fixture.task_id,
@@ -230,7 +239,10 @@ async def test_retry_failure_does_not_change_task_or_leak_secret(
 async def test_site_reliability_events_use_shared_aggregation_without_task_or_secret_data(
     notification_fixture: _Fixture,
 ) -> None:
-    await _enable_channel(notification_fixture, window=60)
+    await _enable_channel(
+        notification_fixture,
+        event_types=(NotificationEventType.SITE_RELIABILITY,),
+    )
     site_id = "site-synthetic-123"
     for _ in range(2):
         notification_fixture.service.record_site_reliability_event(
@@ -282,3 +294,46 @@ def test_non_high_value_event_creates_no_outbox(notification_fixture: _Fixture) 
         event_count = session.scalar(select(func.count()).select_from(TaskEvent))
         assert event_count is not None and event_count >= 2
         assert session.scalar(select(func.count()).select_from(NotificationOutbox)) == 0
+
+
+@pytest.mark.asyncio
+async def test_channel_event_subscription_filters_unselected_event_family(
+    notification_fixture: _Fixture,
+) -> None:
+    await _enable_channel(
+        notification_fixture,
+        event_types=(NotificationEventType.SITE_RELIABILITY,),
+    )
+    with notification_fixture.factory() as session:
+        TaskRepository(session).append_event(
+            task_id=notification_fixture.task_id,
+            event_type="QBITTORRENT_ADD_RECONCILE_REQUIRED",
+            reason="synthetic",
+        )
+        session.commit()
+        assert session.scalar(select(func.count()).select_from(NotificationOutbox)) == 0
+
+
+@pytest.mark.asyncio
+async def test_temporary_notification_probe_passes_independent_proxy_without_persistence(
+    notification_fixture: _Fixture,
+) -> None:
+    before = notification_fixture.provider_factory.proxy_urls.copy()
+
+    result = await notification_fixture.service.test_temporary(
+        kind=NotificationChannelKind.TELEGRAM,
+        credential=TelegramCredential("123:temporary", "456"),
+        proxy_enabled=True,
+        proxy_host="proxy.example",
+        proxy_port=8080,
+        proxy_username="user name",
+        proxy_password="p@ss word",
+    )
+
+    assert result["status"] == "ok"
+    assert notification_fixture.provider_factory.proxy_urls == [
+        *before,
+        "http://user%20name:p%40ss%20word@proxy.example:8080",
+    ]
+    with notification_fixture.factory() as session:
+        assert session.scalar(select(func.count()).select_from(SecretRecord)) == 0

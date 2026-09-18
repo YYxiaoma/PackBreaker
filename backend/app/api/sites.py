@@ -3,7 +3,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from backend.app.api.dependencies import (
     AccessPrincipal,
@@ -13,7 +13,13 @@ from backend.app.api.dependencies import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import SiteUpdate, SiteView
-from backend.app.domain.site_config import SiteCredentialKind, SiteKind, SiteProbeStatus
+from backend.app.domain.site_config import (
+    SiteCredentialKind,
+    SiteKind,
+    SiteProbeStatus,
+    SiteSupportStatus,
+    site_profiles,
+)
 from backend.app.infrastructure.site_reliability import SiteReliabilityHealth
 
 router = APIRouter(tags=["sites"])
@@ -28,6 +34,15 @@ class SiteViewResponse(BaseModel):
     base_url: str
     credential_kind: SiteCredentialKind
     credential_configured: bool
+    request_timeout_seconds: int
+    search_interval_seconds: int
+    user_agent: str | None
+    browser_emulation_enabled: bool
+    proxy_enabled: bool
+    proxy_host: str | None
+    proxy_port: int | None
+    proxy_username: str | None
+    proxy_credential_configured: bool
     capabilities: dict[str, Any]
     connection_status: SiteProbeStatus
     enabled: bool
@@ -42,23 +57,89 @@ class SiteListResponse(BaseModel):
 
 
 class SiteCredentialInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     kind: SiteCredentialKind
     value: SecretStr = Field(min_length=1, max_length=8192)
 
 
+class SiteProxyCreateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    host: str | None = Field(default=None, min_length=1, max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = Field(default=None, min_length=1, max_length=255)
+    password: SecretStr | None = Field(default=None, min_length=1, max_length=512)
+
+
+class SiteProxyPatchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    host: str | None = Field(default=None, min_length=1, max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = Field(default=None, min_length=1, max_length=255)
+    password: SecretStr | None = Field(default=None, min_length=1, max_length=512)
+    clear_password: bool = False
+
+
 class SiteCreateRequest(BaseModel):
+    # v0.1.5 客户端仍可能提交 base_url。v0.1.6 不再暴露该字段，并忽略旧值，
+    # 实际目标地址始终来自受信任 SiteProfileRegistry。
+    model_config = ConfigDict(extra="ignore")
+
     name: str = Field(min_length=1, max_length=80)
     type: SiteKind
-    base_url: str = Field(min_length=1, max_length=2048)
     credential: SiteCredentialInput | None = None
+    request_timeout_seconds: int = Field(default=15, ge=1, le=120)
+    search_interval_seconds: int = Field(default=0, ge=0, le=3600)
+    user_agent: str | None = Field(default=None, max_length=512)
+    browser_emulation_enabled: bool = False
+    proxy: SiteProxyCreateInput = Field(default_factory=SiteProxyCreateInput)
 
 
 class SitePatchRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     name: str | None = Field(default=None, min_length=1, max_length=80)
     type: SiteKind | None = None
-    base_url: str | None = Field(default=None, min_length=1, max_length=2048)
     credential: SiteCredentialInput | None = None
     clear_credential: bool = False
+    request_timeout_seconds: int | None = Field(default=None, ge=1, le=120)
+    search_interval_seconds: int | None = Field(default=None, ge=0, le=3600)
+    user_agent: str | None = Field(default=None, max_length=512)
+    browser_emulation_enabled: bool | None = None
+    proxy: SiteProxyPatchInput | None = None
+
+
+class SiteTemporaryProbeRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    type: SiteKind
+    credential: SiteCredentialInput
+    request_timeout_seconds: int = Field(default=15, ge=1, le=120)
+    search_interval_seconds: int = Field(default=0, ge=0, le=3600)
+    user_agent: str | None = Field(default=None, max_length=512)
+    browser_emulation_enabled: bool = False
+    proxy: SiteProxyCreateInput = Field(default_factory=SiteProxyCreateInput)
+
+
+class SiteProfileResponse(BaseModel):
+    kind: SiteKind
+    display_name: str
+    base_url: str
+    credential_kind: SiteCredentialKind
+    request_timeout_seconds: int
+    search_interval_seconds: float
+    supports_user_agent: bool
+    supports_browser_emulation: bool
+    supports_proxy: bool
+    support_status: SiteSupportStatus
+
+
+class SiteProfileListResponse(BaseModel):
+    items: list[SiteProfileResponse]
 
 
 class SiteActionRequest(BaseModel):
@@ -68,6 +149,25 @@ class SiteActionRequest(BaseModel):
 class SiteProbeResponse(BaseModel):
     status: Literal["ok"]
     capabilities: dict[str, Any]
+
+
+class SiteUserProfileResponse(BaseModel):
+    site_id: str
+    uid: str | None
+    username: str | None
+    user_level: str | None
+    real_uploaded_bytes: int | None
+    real_downloaded_bytes: int | None
+    uploaded_bytes: int | None
+    downloaded_bytes: int | None
+    ratio: float | None
+    torrents_posted: int | None
+    seeding_count: int | None
+    seeding_size_bytes: int | None
+    bonus: float | None
+    seeding_points: float | None
+    bonus_per_hour: float | None
+    fetched_at: datetime
 
 
 class SiteHealthResponse(BaseModel):
@@ -96,6 +196,15 @@ def _view(record: SiteView) -> SiteViewResponse:
         base_url=record.base_url,
         credential_kind=record.credential_kind,
         credential_configured=record.credential_configured,
+        request_timeout_seconds=record.request_timeout_seconds,
+        search_interval_seconds=record.search_interval_seconds,
+        user_agent=record.user_agent,
+        browser_emulation_enabled=record.browser_emulation_enabled,
+        proxy_enabled=record.proxy_enabled,
+        proxy_host=record.proxy_host,
+        proxy_port=record.proxy_port,
+        proxy_username=record.proxy_username,
+        proxy_credential_configured=record.proxy_credential_configured,
         capabilities=record.capabilities,
         connection_status=record.connection_status,
         enabled=record.enabled,
@@ -104,6 +213,42 @@ def _view(record: SiteView) -> SiteViewResponse:
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
+
+
+def _runtime_patch(payload: SitePatchRequest) -> dict[str, Any] | None:
+    result: dict[str, Any] = {}
+    for field_name in (
+        "request_timeout_seconds",
+        "search_interval_seconds",
+        "user_agent",
+        "browser_emulation_enabled",
+    ):
+        if field_name in payload.model_fields_set:
+            result[field_name] = getattr(payload, field_name)
+    if payload.proxy is not None:
+        for field_name in ("enabled", "host", "port", "username"):
+            if field_name in payload.proxy.model_fields_set:
+                result[f"proxy_{field_name}"] = getattr(payload.proxy, field_name)
+    return result or None
+
+
+def _proxy_password_action(
+    proxy: SiteProxyPatchInput | None,
+) -> tuple[Literal["KEEP", "SET", "CLEAR"], str | None]:
+    if proxy is None:
+        return "KEEP", None
+    if proxy.clear_password and proxy.password is not None:
+        raise ApplicationError(
+            code="SITE_PROXY_INVALID",
+            status=422,
+            title="站点代理配置无效",
+            detail="proxy.password 与 proxy.clear_password 不能同时使用",
+        )
+    if proxy.clear_password:
+        return "CLEAR", None
+    if "password" in proxy.model_fields_set and proxy.password is not None:
+        return "SET", proxy.password.get_secret_value()
+    return "KEEP", None
 
 
 def _health(record: SiteReliabilityHealth) -> SiteHealthResponse:
@@ -176,6 +321,52 @@ async def list_sites(
     return SiteListResponse(items=[_view(item) for item in site_service(request).list_sites()])
 
 
+@router.get("/sites/profiles", response_model=SiteProfileListResponse)
+async def list_site_profiles(
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> SiteProfileListResponse:
+    return SiteProfileListResponse(
+        items=[
+            SiteProfileResponse(
+                kind=profile.kind,
+                display_name=profile.display_name,
+                base_url=profile.base_url,
+                credential_kind=profile.credential_kind,
+                request_timeout_seconds=profile.request_timeout_seconds,
+                search_interval_seconds=profile.search_interval_seconds,
+                supports_user_agent=profile.supports_user_agent,
+                supports_browser_emulation=profile.supports_browser_emulation,
+                supports_proxy=profile.supports_proxy,
+                support_status=profile.support_status,
+            )
+            for profile in site_profiles()
+        ]
+    )
+
+
+@router.post("/sites/probe", response_model=SiteProbeResponse)
+async def probe_site(
+    request: Request,
+    payload: SiteTemporaryProbeRequest,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
+) -> dict[str, object]:
+    proxy = payload.proxy
+    return await site_service(request).probe(
+        kind=payload.type,
+        credential_kind=payload.credential.kind,
+        credential=payload.credential.value.get_secret_value(),
+        request_timeout_seconds=payload.request_timeout_seconds,
+        search_interval_seconds=payload.search_interval_seconds,
+        user_agent=payload.user_agent,
+        browser_emulation_enabled=payload.browser_emulation_enabled,
+        proxy_enabled=proxy.enabled,
+        proxy_host=proxy.host,
+        proxy_port=proxy.port,
+        proxy_username=proxy.username,
+        proxy_password=(proxy.password.get_secret_value() if proxy.password is not None else None),
+    )
+
+
 @router.post("/sites", response_model=SiteViewResponse, status_code=status.HTTP_201_CREATED)
 async def create_site(
     request: Request,
@@ -185,10 +376,22 @@ async def create_site(
     created = site_service(request).create(
         name=payload.name,
         kind=payload.type,
-        base_url=payload.base_url,
         credential_kind=payload.credential.kind if payload.credential is not None else None,
         credential=(
             payload.credential.value.get_secret_value() if payload.credential is not None else None
+        ),
+        request_timeout_seconds=payload.request_timeout_seconds,
+        search_interval_seconds=payload.search_interval_seconds,
+        user_agent=payload.user_agent,
+        browser_emulation_enabled=payload.browser_emulation_enabled,
+        proxy_enabled=payload.proxy.enabled,
+        proxy_host=payload.proxy.host,
+        proxy_port=payload.proxy.port,
+        proxy_username=payload.proxy.username,
+        proxy_password=(
+            payload.proxy.password.get_secret_value()
+            if payload.proxy.password is not None
+            else None
         ),
     )
     return _json_with_etag(created, status_code=status.HTTP_201_CREATED)
@@ -201,6 +404,33 @@ async def get_site(
     _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
 ) -> JSONResponse:
     return _json_with_etag(site_service(request).get(site_id))
+
+
+@router.get("/sites/{site_id}/profile", response_model=SiteUserProfileResponse)
+async def get_site_user_profile(
+    site_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> SiteUserProfileResponse:
+    profile = await site_service(request).user_profile(site_id)
+    return SiteUserProfileResponse(
+        site_id=profile.site_id,
+        uid=profile.uid,
+        username=profile.username,
+        user_level=profile.user_level,
+        real_uploaded_bytes=profile.real_uploaded_bytes,
+        real_downloaded_bytes=profile.real_downloaded_bytes,
+        uploaded_bytes=profile.uploaded_bytes,
+        downloaded_bytes=profile.downloaded_bytes,
+        ratio=profile.ratio,
+        torrents_posted=profile.torrents_posted,
+        seeding_count=profile.seeding_count,
+        seeding_size_bytes=profile.seeding_size_bytes,
+        bonus=profile.bonus,
+        seeding_points=profile.seeding_points,
+        bonus_per_hour=profile.bonus_per_hour,
+        fetched_at=profile.fetched_at,
+    )
 
 
 @router.patch("/sites/{site_id}", response_model=SiteViewResponse)
@@ -223,13 +453,13 @@ async def patch_site(
         action = "CLEAR"
     elif "credential" in payload.model_fields_set and payload.credential is not None:
         action = "SET"
+    proxy_password_action, proxy_password = _proxy_password_action(payload.proxy)
     updated = site_service(request).update(
         site_id,
         expected_version=_expected_version(if_match),
         update_request=SiteUpdate(
             name=payload.name,
             type=payload.type,
-            base_url=payload.base_url,
             credential_action=action,
             credential_kind=payload.credential.kind if payload.credential is not None else None,
             credential=(
@@ -237,6 +467,9 @@ async def patch_site(
                 if payload.credential is not None
                 else None
             ),
+            runtime_config=_runtime_patch(payload),
+            proxy_password_action=proxy_password_action,
+            proxy_password=proxy_password,
         ),
     )
     return _json_with_etag(updated)

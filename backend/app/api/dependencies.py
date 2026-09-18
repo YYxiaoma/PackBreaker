@@ -3,6 +3,9 @@ from typing import Literal, cast
 
 from fastapi import Cookie, Header, Request
 
+from backend.app.application.admin_notifications import AdminNotificationService
+from backend.app.application.ai_agent import AIAgentService
+from backend.app.application.ai_telegram import AITelegramService
 from backend.app.application.auth import AuthIdentity, AuthService
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.notifications import NotificationService
@@ -36,6 +39,18 @@ def downloader_service(request: Request) -> DownloaderService:
 
 def notification_service(request: Request) -> NotificationService:
     return cast(NotificationService, request.app.state.notification_service)
+
+
+def admin_notification_service(request: Request) -> AdminNotificationService:
+    return cast(AdminNotificationService, request.app.state.admin_notification_service)
+
+
+def ai_agent_service(request: Request) -> AIAgentService:
+    return cast(AIAgentService, request.app.state.ai_agent_service)
+
+
+def ai_telegram_service(request: Request) -> AITelegramService:
+    return cast(AITelegramService, request.app.state.ai_telegram_service)
 
 
 def site_service(request: Request) -> SiteService:

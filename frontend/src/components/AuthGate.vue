@@ -1,28 +1,25 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { ref } from 'vue';
 import { Box, LockKeyhole } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
 
 const auth = useAuthStore();
+const username = ref('');
 const password = ref('');
-const confirmation = ref('');
-const setupMode = computed(() => !auth.configured);
 
 async function submit(): Promise<void> {
+  if (!username.value.trim()) {
+    ElMessage.warning('请输入管理员用户名');
+    return;
+  }
   if (password.value.length < 12) {
     ElMessage.warning('管理员口令至少需要 12 个字符');
     return;
   }
-  if (setupMode.value && password.value !== confirmation.value) {
-    ElMessage.warning('两次输入的管理员口令不一致');
-    return;
-  }
   try {
-    if (setupMode.value) await auth.setup(password.value);
-    else await auth.login(password.value);
+    await auth.login(username.value.trim(), password.value);
     password.value = '';
-    confirmation.value = '';
   } catch {
     // 具体错误由 auth store 的 problem+json 脱敏结果展示。
   }
@@ -50,12 +47,23 @@ async function submit(): Promise<void> {
         />
         <el-button type="primary" class="auth-submit" @click="auth.bootstrap">重新连接</el-button>
       </template>
+      <template v-else-if="!auth.configured">
+        <div class="auth-icon"><LockKeyhole :size="23" /></div>
+        <h1>管理员尚未初始化</h1>
+        <p>请从容器启动日志获取一次性临时密码，再刷新此页面登录。</p>
+        <el-alert
+          title="可通过 docker logs packbreaker 查看首次启动时生成的管理员凭证。"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="auth-error"
+        />
+        <el-button type="primary" class="auth-submit" @click="auth.bootstrap">重新检查</el-button>
+      </template>
       <template v-else>
         <div class="auth-icon"><LockKeyhole :size="23" /></div>
-        <h1>{{ setupMode ? '初始化管理员' : '管理员登录' }}</h1>
-        <p>
-          {{ setupMode ? '首次启动，请设置管理员口令。' : '请输入管理员口令。' }}
-        </p>
+        <h1>管理员登录</h1>
+        <p>请输入管理员用户名和密码。</p>
         <el-alert
           v-if="auth.error"
           :title="auth.error.message"
@@ -65,29 +73,27 @@ async function submit(): Promise<void> {
           class="auth-error"
         />
         <el-form label-position="top" @submit.prevent="submit">
-          <el-form-item :label="setupMode ? '设置管理员口令' : '管理员口令'" required>
+          <el-form-item label="管理员用户名" required>
+            <el-input
+              v-model="username"
+              autocomplete="username"
+              maxlength="80"
+              @keyup.enter="submit"
+            />
+          </el-form-item>
+          <el-form-item label="管理员口令" required>
             <el-input
               v-model="password"
               type="password"
               show-password
-              :autocomplete="setupMode ? 'new-password' : 'current-password'"
+              autocomplete="current-password"
               minlength="12"
               maxlength="256"
               @keyup.enter="submit"
             />
           </el-form-item>
-          <el-form-item v-if="setupMode" label="确认管理员口令" required>
-            <el-input
-              v-model="confirmation"
-              type="password"
-              show-password
-              autocomplete="new-password"
-              maxlength="256"
-              @keyup.enter="submit"
-            />
-          </el-form-item>
           <el-button type="primary" class="auth-submit" :loading="auth.submitting" @click="submit">
-            {{ setupMode ? '初始化并登录' : '登录' }}
+            登录
           </el-button>
         </el-form>
       </template>

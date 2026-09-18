@@ -2,7 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
 import { ApiProblem } from '../api/client';
-import { getSiteHealth, listSites, setSiteEnabled, type Site } from '../api/sites';
+import {
+  getSiteHealth,
+  getSiteUserProfile,
+  listSiteProfiles,
+  listSites,
+  setSiteEnabled,
+  type Site,
+  type SiteUserProfile,
+} from '../api/sites';
 import { useSiteStore } from './sites';
 
 vi.mock('../api/sites', async () => {
@@ -13,6 +21,8 @@ vi.mock('../api/sites', async () => {
     deleteSite: vi.fn(),
     getSite: vi.fn(),
     getSiteHealth: vi.fn(),
+    getSiteUserProfile: vi.fn(),
+    listSiteProfiles: vi.fn(),
     listSites: vi.fn(),
     resetSiteCircuit: vi.fn(),
     setSiteEnabled: vi.fn(),
@@ -28,6 +38,15 @@ const site: Site = {
   base_url: 'https://api.m-team.cc',
   credential_kind: 'API_KEY',
   credential_configured: true,
+  request_timeout_seconds: 15,
+  search_interval_seconds: 0,
+  user_agent: null,
+  browser_emulation_enabled: false,
+  proxy_enabled: false,
+  proxy_host: null,
+  proxy_port: null,
+  proxy_username: null,
+  proxy_credential_configured: false,
   capabilities: {},
   connection_status: 'OK',
   enabled: false,
@@ -55,9 +74,29 @@ const health = {
   last_error_code: null,
 };
 
+const userProfile: SiteUserProfile = {
+  site_id: 'mteam',
+  uid: '42',
+  username: 'SyntheticUser',
+  user_level: null,
+  real_uploaded_bytes: null,
+  real_downloaded_bytes: null,
+  uploaded_bytes: 200,
+  downloaded_bytes: 100,
+  ratio: 2,
+  torrents_posted: null,
+  seeding_count: 8,
+  seeding_size_bytes: null,
+  bonus: null,
+  seeding_points: null,
+  bonus_per_hour: null,
+  fetched_at: '2026-09-17T12:00:00Z',
+};
+
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
+  vi.mocked(listSiteProfiles).mockResolvedValue([]);
   vi.mocked(getSiteHealth).mockResolvedValue(health);
 });
 
@@ -88,6 +127,19 @@ describe('站点 store', () => {
 
     expect(store.items).toHaveLength(1);
     expect(store.health[site.id]).toBeUndefined();
+  });
+
+  it('列表刷新不抓用户详情，只有显式打开详情时才请求 profile', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    vi.mocked(getSiteUserProfile).mockResolvedValue(userProfile);
+    const store = useSiteStore();
+
+    await store.refresh();
+    expect(getSiteUserProfile).not.toHaveBeenCalled();
+
+    await store.loadUserProfile(store.items[0]!);
+    expect(getSiteUserProfile).toHaveBeenCalledWith(site.id);
+    expect(store.userProfiles[site.id]).toEqual(userProfile);
   });
 
   it('会话失效时清空先前加载的站点和健康状态', async () => {

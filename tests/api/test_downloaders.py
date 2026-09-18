@@ -33,8 +33,18 @@ def _authenticated_client(tmp_path: Path) -> tuple[TestClient, FastAPI]:
     app = create_app(settings=settings)
     client = TestClient(app, base_url="https://testserver")
     client.__enter__()
-    assert client.post("/api/v1/auth/setup", json={"password": _PASSWORD}).status_code == 201
-    assert client.post("/api/v1/auth/login", json={"password": _PASSWORD}).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/auth/setup", json={"username": "admin", "password": _PASSWORD}
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": _PASSWORD}
+        ).status_code
+        == 200
+    )
     return client, app
 
 
@@ -135,6 +145,65 @@ def _install_transmission_probe(app: FastAPI) -> None:
     app.state.downloader_service._adapter_factory = DownloaderAdapterFactory(  # noqa: SLF001
         transport=httpx2.MockTransport(handler)
     )
+
+
+def test_unsaved_downloader_probe_does_not_persist_config_or_secret(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    canary = "PACKBREAKER-UNSAVED-PROBE-CANARY-91f3"
+    try:
+        _install_qb_probe(app)
+        response = client.post(
+            "/api/v1/downloaders/probe",
+            headers=_csrf(client),
+            json={
+                "type": "QBITTORRENT",
+                "base_url": "http://qb.invalid:8080/",
+                "credential": {"username": "admin", "password": canary},
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["capabilities"]["version"] == "v5.2.1"
+        assert canary not in response.text
+        with app.state.runtime.session_factory() as session:
+            assert list(session.scalars(select(Downloader))) == []
+            assert list(session.scalars(select(SecretRecord))) == []
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_qbittorrent_runtime_metrics_endpoint_uses_all_torrent_sizes(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        created = _create_qb(client, data_root=app.state.settings.data_dir)
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path.endswith("/auth/login"):
+                return httpx2.Response(200, text="Ok.", headers={"Set-Cookie": "SID=fake; path=/"})
+            if request.url.path.endswith("/transfer/info"):
+                return httpx2.Response(200, json={"up_info_speed": 1024, "dl_info_speed": 2048})
+            if request.url.path.endswith("/torrents/info"):
+                return httpx2.Response(200, json=[{"size": 100}, {"size": 250}])
+            if request.url.path.endswith("/sync/maindata"):
+                return httpx2.Response(200, json={"server_state": {"free_space_on_disk": 4096}})
+            return httpx2.Response(404)
+
+        app.state.downloader_service._adapter_factory = DownloaderAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(handler)
+        )
+
+        response = client.get(f"/api/v1/downloaders/{created['id']}/metrics")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["upload_speed_bytes_per_second"] == 1024
+        assert body["download_speed_bytes_per_second"] == 2048
+        assert body["total_content_size_bytes"] == 350
+        assert body["free_space_bytes"] == 4096
+        assert body["active_torrent_count"] is None
+        assert body["total_torrent_count"] == 2
+        assert body["sampled_at"].endswith("Z")
+    finally:
+        client.__exit__(None, None, None)
 
 
 def test_downloader_credential_is_encrypted_and_never_returned(tmp_path: Path) -> None:

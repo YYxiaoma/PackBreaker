@@ -3,16 +3,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Header, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr
 
 from backend.app.api.dependencies import (
     AccessPrincipal,
+    admin_notification_service,
     notification_service,
     require_admin_csrf_principal,
     require_admin_principal,
 )
+from backend.app.application.admin_notifications import AdminNotificationView
 from backend.app.application.errors import ApplicationError
 from backend.app.application.notifications import (
     CredentialAction,
@@ -21,7 +23,9 @@ from backend.app.application.notifications import (
     NotificationChannelView,
 )
 from backend.app.domain.notification import (
+    PRODUCT_NOTIFICATION_EVENT_TYPES,
     NotificationChannelKind,
+    NotificationEventType,
     ServerChanCredential,
     TelegramCredential,
 )
@@ -40,26 +44,60 @@ class ServerChanCredentialInput(BaseModel):
     send_key: SecretStr
 
 
+class NotificationProxyCreateInput(BaseModel):
+    enabled: bool = False
+    host: str | None = Field(default=None, max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = Field(default=None, max_length=255)
+    password: SecretStr | None = Field(default=None, max_length=512)
+
+
+class NotificationProxyPatchInput(BaseModel):
+    enabled: bool = False
+    host: str | None = Field(default=None, max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = Field(default=None, max_length=255)
+    password: SecretStr | None = Field(default=None, max_length=512)
+    clear_password: bool = False
+
+
 class NotificationChannelCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     type: Literal["TELEGRAM", "SERVERCHAN"]
     telegram: TelegramCredentialInput | None = None
     serverchan: ServerChanCredentialInput | None = None
-    task_link_base_url: str | None = Field(default=None, max_length=1024)
-    aggregation_window_seconds: int = Field(default=300, ge=1, le=86400)
+    event_types: list[NotificationEventType] = Field(
+        default_factory=lambda: list(PRODUCT_NOTIFICATION_EVENT_TYPES), min_length=1
+    )
+    proxy: NotificationProxyCreateInput = Field(default_factory=NotificationProxyCreateInput)
 
 
 class NotificationChannelUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    task_link_base_url: str | None = Field(default=None, max_length=1024)
-    aggregation_window_seconds: int = Field(default=300, ge=1, le=86400)
+    event_types: list[NotificationEventType] = Field(min_length=1)
     credential_action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
     telegram: TelegramCredentialInput | None = None
     serverchan: ServerChanCredentialInput | None = None
+    proxy: NotificationProxyPatchInput = Field(default_factory=NotificationProxyPatchInput)
+
+
+class NotificationTemporaryProbeRequest(BaseModel):
+    type: Literal["TELEGRAM", "SERVERCHAN"]
+    telegram: TelegramCredentialInput | None = None
+    serverchan: ServerChanCredentialInput | None = None
+    proxy: NotificationProxyCreateInput = Field(default_factory=NotificationProxyCreateInput)
 
 
 class NotificationChannelActionRequest(BaseModel):
     action: Literal["enable", "disable"]
+
+
+class InboxNotificationActionRequest(BaseModel):
+    action: Literal["mark_read"]
+
+
+class InboxBulkActionRequest(BaseModel):
+    action: Literal["mark_all_read"]
 
 
 def _credential(
@@ -92,14 +130,30 @@ def _view(record: NotificationChannelView) -> dict[str, object]:
         "name": record.name,
         "type": record.type.value,
         "credential_configured": record.credential_configured,
-        "task_link_base_url": record.task_link_base_url,
-        "aggregation_window_seconds": record.aggregation_window_seconds,
+        "event_types": [item.value for item in record.event_types],
+        "proxy_enabled": record.proxy_enabled,
+        "proxy_host": record.proxy_host,
+        "proxy_port": record.proxy_port,
+        "proxy_username": record.proxy_username,
+        "proxy_credential_configured": record.proxy_credential_configured,
         "connection_status": record.connection_status,
         "enabled": record.enabled,
         "version": record.version,
         "last_test_at": _timestamp(record.last_test_at),
         "created_at": _timestamp(record.created_at),
         "updated_at": _timestamp(record.updated_at),
+    }
+
+
+def _inbox_view(record: AdminNotificationView) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "event_type": record.event_type,
+        "title": record.title,
+        "message": record.message,
+        "severity": record.severity,
+        "read_at": _timestamp(record.read_at),
+        "created_at": _timestamp(record.created_at),
     }
 
 
@@ -149,6 +203,47 @@ def _json_with_etag(
     )
 
 
+@router.get("/notifications/inbox")
+async def list_inbox_notifications(
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+    unread_only: bool = False,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> dict[str, object]:
+    items = admin_notification_service(request).list_recent(
+        unread_only=unread_only,
+        limit=limit,
+    )
+    return {"items": [_inbox_view(item) for item in items]}
+
+
+@router.get("/notifications/inbox/unread-count")
+async def inbox_unread_count(
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> dict[str, int]:
+    return {"count": admin_notification_service(request).unread_count()}
+
+
+@router.post("/notifications/inbox/{notification_id}/actions")
+async def inbox_notification_action(
+    notification_id: str,
+    request: Request,
+    payload: InboxNotificationActionRequest,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
+) -> dict[str, object]:
+    return _inbox_view(admin_notification_service(request).mark_read(notification_id))
+
+
+@router.post("/notifications/inbox/actions")
+async def inbox_bulk_action(
+    request: Request,
+    payload: InboxBulkActionRequest,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
+) -> dict[str, int]:
+    return {"updated": admin_notification_service(request).mark_all_read()}
+
+
 @router.get("/notification-channels")
 async def list_notification_channels(
     request: Request,
@@ -169,8 +264,16 @@ async def create_notification_channel(
             name=payload.name,
             kind=kind,
             credential=_credential(kind, payload.telegram, payload.serverchan),
-            task_link_base_url=payload.task_link_base_url,
-            aggregation_window_seconds=payload.aggregation_window_seconds,
+            event_types=tuple(payload.event_types),
+            proxy_enabled=payload.proxy.enabled,
+            proxy_host=payload.proxy.host,
+            proxy_port=payload.proxy.port,
+            proxy_username=payload.proxy.username,
+            proxy_password=(
+                payload.proxy.password.get_secret_value()
+                if payload.proxy.password is not None
+                else None
+            ),
         )
     )
     return _json_with_etag(record, status_code=status.HTTP_201_CREATED)
@@ -195,18 +298,61 @@ async def update_notification_channel(
             title="通知凭证更新方式无效",
             detail="只有 credential_action=SET 时才能提交凭证明文",
         )
+    if payload.proxy.clear_password and payload.proxy.password is not None:
+        raise ApplicationError(
+            code="NOTIFICATION_PROXY_INVALID",
+            status=422,
+            title="通知代理配置无效",
+            detail="proxy.password 与 proxy.clear_password 不能同时使用",
+        )
+    proxy_password_action = CredentialAction.KEEP
+    if payload.proxy.clear_password:
+        proxy_password_action = CredentialAction.CLEAR
+    elif payload.proxy.password is not None:
+        proxy_password_action = CredentialAction.SET
     updated = notification_service(request).update(
         channel_id,
         expected_version=_expected_version(if_match),
         request=NotificationChannelUpdate(
             name=payload.name,
-            task_link_base_url=payload.task_link_base_url,
-            aggregation_window_seconds=payload.aggregation_window_seconds,
+            event_types=tuple(payload.event_types),
+            proxy_enabled=payload.proxy.enabled,
+            proxy_host=payload.proxy.host,
+            proxy_port=payload.proxy.port,
+            proxy_username=payload.proxy.username,
             credential_action=CredentialAction(payload.credential_action),
             credential=credential,
+            proxy_password_action=proxy_password_action,
+            proxy_password=(
+                payload.proxy.password.get_secret_value()
+                if payload.proxy.password is not None
+                else None
+            ),
         ),
     )
     return _json_with_etag(updated)
+
+
+@router.post("/notification-channels/probe")
+async def probe_notification_channel(
+    request: Request,
+    payload: NotificationTemporaryProbeRequest,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
+) -> dict[str, object]:
+    kind = NotificationChannelKind(payload.type)
+    return await notification_service(request).test_temporary(
+        kind=kind,
+        credential=_credential(kind, payload.telegram, payload.serverchan),
+        proxy_enabled=payload.proxy.enabled,
+        proxy_host=payload.proxy.host,
+        proxy_port=payload.proxy.port,
+        proxy_username=payload.proxy.username,
+        proxy_password=(
+            payload.proxy.password.get_secret_value()
+            if payload.proxy.password is not None
+            else None
+        ),
+    )
 
 
 @router.delete("/notification-channels/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)

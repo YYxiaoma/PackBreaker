@@ -1,5 +1,6 @@
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -47,6 +48,32 @@ class DownloaderCapabilities:
 @dataclass(frozen=True, slots=True)
 class ConnectionTestResult:
     capabilities: DownloaderCapabilities
+
+
+@dataclass(frozen=True, slots=True)
+class DownloaderRuntimeMetrics:
+    upload_speed_bytes_per_second: int | None
+    download_speed_bytes_per_second: int | None
+    total_content_size_bytes: int | None
+    free_space_bytes: int | None
+    active_torrent_count: int | None
+    total_torrent_count: int | None
+    sampled_at: datetime
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "upload_speed_bytes_per_second",
+            "download_speed_bytes_per_second",
+            "total_content_size_bytes",
+            "free_space_bytes",
+            "active_torrent_count",
+            "total_torrent_count",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{field_name} 必须是非负整数或 null")
 
 
 @dataclass(frozen=True, slots=True)

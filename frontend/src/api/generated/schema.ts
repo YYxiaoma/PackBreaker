@@ -4,6 +4,76 @@
  */
 
 export interface paths {
+  '/api/v1/ai-agent/settings': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Ai Agent Settings */
+    get: operations['get_ai_agent_settings_api_v1_ai_agent_settings_get'];
+    /** Update Ai Agent Settings */
+    put: operations['update_ai_agent_settings_api_v1_ai_agent_settings_put'];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/ai-agent/status': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Ai Agent Status */
+    get: operations['get_ai_agent_status_api_v1_ai_agent_status_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/ai-agent/telegram': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Ai Telegram Binding */
+    get: operations['get_ai_telegram_binding_api_v1_ai_agent_telegram_get'];
+    /** Update Ai Telegram Binding */
+    put: operations['update_ai_telegram_binding_api_v1_ai_agent_telegram_put'];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/ai-agent/test': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Test Ai Agent Provider */
+    post: operations['test_ai_agent_provider_api_v1_ai_agent_test_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/auth/login': {
     parameters: {
       query?: never;
@@ -55,6 +125,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/auth/password': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Change Password */
+    post: operations['change_password_api_v1_auth_password_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/auth/setup': {
     parameters: {
       query?: never;
@@ -84,6 +171,23 @@ export interface paths {
     put?: never;
     /** Create Downloader */
     post: operations['create_downloader_api_v1_downloaders_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/downloaders/probe': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Probe Downloader */
+    post: operations['probe_downloader_api_v1_downloaders_probe_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -120,6 +224,23 @@ export interface paths {
     put?: never;
     /** Downloader Action */
     post: operations['downloader_action_api_v1_downloaders__downloader_id__actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/downloaders/{downloader_id}/metrics': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Downloader Metrics */
+    get: operations['get_downloader_metrics_api_v1_downloaders__downloader_id__metrics_get'];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -252,6 +373,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/notification-channels/probe': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Probe Notification Channel */
+    post: operations['probe_notification_channel_api_v1_notification_channels_probe_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/notification-channels/{channel_id}': {
     parameters: {
       query?: never;
@@ -298,6 +436,74 @@ export interface paths {
     put?: never;
     /** Test Notification Channel */
     post: operations['test_notification_channel_api_v1_notification_channels__channel_id__test_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/inbox': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Inbox Notifications */
+    get: operations['list_inbox_notifications_api_v1_notifications_inbox_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/inbox/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Inbox Bulk Action */
+    post: operations['inbox_bulk_action_api_v1_notifications_inbox_actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/inbox/unread-count': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Inbox Unread Count */
+    get: operations['inbox_unread_count_api_v1_notifications_inbox_unread_count_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/inbox/{notification_id}/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Inbox Notification Action */
+    post: operations['inbox_notification_action_api_v1_notifications_inbox__notification_id__actions_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -356,6 +562,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/sites/probe': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Probe Site */
+    post: operations['probe_site_api_v1_sites_probe_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/sites/profiles': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Site Profiles */
+    get: operations['list_site_profiles_api_v1_sites_profiles_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/sites/{site_id}': {
     parameters: {
       query?: never;
@@ -401,6 +641,23 @@ export interface paths {
     };
     /** Get Site Health */
     get: operations['get_site_health_api_v1_sites__site_id__health_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/sites/{site_id}/profile': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Site User Profile */
+    get: operations['get_site_user_profile_api_v1_sites__site_id__profile_get'];
     put?: never;
     post?: never;
     delete?: never;
@@ -1168,6 +1425,200 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /** AIAgentProbeRequest */
+    AIAgentProbeRequest: {
+      /** Api Key */
+      api_key?: string | null;
+      /** Base Url */
+      base_url?: string | null;
+      /** Model */
+      model?: string | null;
+      provider_kind?: components['schemas']['AIProviderKind'] | null;
+      /** Request Timeout Seconds */
+      request_timeout_seconds?: number | null;
+      /**
+       * Use Saved
+       * @default false
+       */
+      use_saved: boolean;
+    };
+    /** AIAgentProbeResponse */
+    AIAgentProbeResponse: {
+      /** Model */
+      model: string;
+      provider_kind: components['schemas']['AIProviderKind'];
+      /**
+       * Status
+       * @constant
+       */
+      status: 'ok';
+      /**
+       * Tested At
+       * Format: date-time
+       */
+      tested_at: string;
+    };
+    /** AIAgentSettingResponse */
+    AIAgentSettingResponse: {
+      /** Api Key Configured */
+      api_key_configured: boolean;
+      /** Base Url */
+      base_url: string;
+      connection_status: components['schemas']['AIConnectionStatus'];
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Data Scopes */
+      data_scopes: components['schemas']['AIDataScope'][];
+      /** Enabled */
+      enabled: boolean;
+      /** Last Test At */
+      last_test_at: string | null;
+      /** Max Context Messages */
+      max_context_messages: number;
+      /** Model */
+      model: string;
+      provider_kind: components['schemas']['AIProviderKind'];
+      /** Request Timeout Seconds */
+      request_timeout_seconds: number;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+      /** Version */
+      version: number;
+    };
+    /** AIAgentSettingUpdateRequest */
+    AIAgentSettingUpdateRequest: {
+      /** Api Key */
+      api_key?: string | null;
+      /**
+       * Api Key Action
+       * @default KEEP
+       * @enum {string}
+       */
+      api_key_action: 'KEEP' | 'SET' | 'CLEAR';
+      /** Base Url */
+      base_url?: string | null;
+      /** Data Scopes */
+      data_scopes: components['schemas']['AIDataScope'][];
+      /** Enabled */
+      enabled: boolean;
+      /**
+       * Max Context Messages
+       * @default 20
+       */
+      max_context_messages: number;
+      /** Model */
+      model: string;
+      provider_kind: components['schemas']['AIProviderKind'];
+      /**
+       * Request Timeout Seconds
+       * @default 30
+       */
+      request_timeout_seconds: number;
+    };
+    /** AIAgentStatusResponse */
+    AIAgentStatusResponse: {
+      /** Api Key Configured */
+      api_key_configured: boolean;
+      connection_status: components['schemas']['AIConnectionStatus'];
+      /** Enabled */
+      enabled: boolean;
+      /** Last Test At */
+      last_test_at: string | null;
+      /** Model */
+      model: string;
+      provider_kind: components['schemas']['AIProviderKind'];
+      /** Telegram Consecutive Errors */
+      telegram_consecutive_errors: number;
+      /** Telegram Driver Running */
+      telegram_driver_running: boolean;
+      /** Telegram Enabled */
+      telegram_enabled: boolean;
+      /** Telegram Last Error Code */
+      telegram_last_error_code: string | null;
+      /** Telegram Last Update Id */
+      telegram_last_update_id: number;
+    };
+    /**
+     * AIConnectionStatus
+     * @enum {string}
+     */
+    AIConnectionStatus: 'UNTESTED' | 'OK' | 'FAILED';
+    /**
+     * AIDataScope
+     * @enum {string}
+     */
+    AIDataScope:
+      | 'SYSTEM_HEALTH'
+      | 'TASK_EXECUTIONS'
+      | 'REDACTED_LOGS'
+      | 'SITE_STATUS'
+      | 'DOWNLOADER_STATUS'
+      | 'VERSION_STATUS'
+      | 'HELP_DOCS';
+    /**
+     * AIProviderKind
+     * @enum {string}
+     */
+    AIProviderKind: 'OPENAI' | 'OPENAI_COMPATIBLE';
+    /** AITelegramBindingResponse */
+    AITelegramBindingResponse: {
+      /** Allowed Chat Ids */
+      allowed_chat_ids: string[];
+      /** Allowed User Ids */
+      allowed_user_ids: string[];
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Enabled */
+      enabled: boolean;
+      /** Idle Timeout Minutes */
+      idle_timeout_minutes: number;
+      /** Last Update Id */
+      last_update_id: number;
+      /** Max Context Messages */
+      max_context_messages: number;
+      /** Notification Channel Id */
+      notification_channel_id: string | null;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+      /** Version */
+      version: number;
+    };
+    /** AITelegramBindingUpdateRequest */
+    AITelegramBindingUpdateRequest: {
+      /** Allowed Chat Ids */
+      allowed_chat_ids?: string[];
+      /** Allowed User Ids */
+      allowed_user_ids?: string[];
+      /**
+       * Enabled
+       * @default false
+       */
+      enabled: boolean;
+      /**
+       * Idle Timeout Minutes
+       * @default 60
+       */
+      idle_timeout_minutes: number;
+      /**
+       * Max Context Messages
+       * @default 20
+       */
+      max_context_messages: number;
+      /** Notification Channel Id */
+      notification_channel_id?: string | null;
+    };
     /** AnalyzeTaskActionRequest */
     AnalyzeTaskActionRequest: {
       /**
@@ -1186,8 +1637,15 @@ export interface components {
       configured: boolean;
       /** Expires At */
       expires_at?: string | null;
+      /**
+       * Must Change Password
+       * @default false
+       */
+      must_change_password: boolean;
       /** Permissions */
       permissions: string[];
+      /** Username */
+      username?: string | null;
     };
     /** BackupActionRequest */
     BackupActionRequest: {
@@ -1262,6 +1720,24 @@ export interface components {
       /** Rollback Created Resources */
       rollback_created_resources: boolean;
     };
+    /** ChangePasswordRequest */
+    ChangePasswordRequest: {
+      /**
+       * Confirm Password
+       * Format: password
+       */
+      confirm_password: string;
+      /**
+       * Current Password
+       * Format: password
+       */
+      current_password: string;
+      /**
+       * New Password
+       * Format: password
+       */
+      new_password: string;
+    };
     /** DownloaderActionRequest */
     DownloaderActionRequest: {
       /**
@@ -1318,6 +1794,13 @@ export interface components {
       /** Path Mappings */
       path_mappings?: components['schemas']['PathMappingInput'][] | null;
       type?: components['schemas']['DownloaderKind'] | null;
+    };
+    /** DownloaderProbeRequest */
+    DownloaderProbeRequest: {
+      /** Base Url */
+      base_url: string;
+      credential?: components['schemas']['DownloaderCredentialInput'] | null;
+      type: components['schemas']['DownloaderKind'];
     };
     /** ExecuteTaskActionRequest */
     ExecuteTaskActionRequest: {
@@ -1441,6 +1924,32 @@ export interface components {
       /** Detail */
       detail?: components['schemas']['ValidationError'][];
     };
+    /** InboxBulkActionRequest */
+    InboxBulkActionRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'mark_all_read';
+    };
+    /** InboxNotificationActionRequest */
+    InboxNotificationActionRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'mark_read';
+    };
+    /** LoginRequest */
+    LoginRequest: {
+      /**
+       * Password
+       * Format: password
+       */
+      password: string;
+      /** Username */
+      username: string;
+    };
     /** LoginResponse */
     LoginResponse: {
       /** Authenticated */
@@ -1450,6 +1959,10 @@ export interface components {
        * Format: date-time
        */
       expires_at: string;
+      /** Must Change Password */
+      must_change_password: boolean;
+      /** Username */
+      username: string;
     };
     /** ManualReviewMappingRequest */
     ManualReviewMappingRequest: {
@@ -1475,16 +1988,12 @@ export interface components {
     };
     /** NotificationChannelCreateRequest */
     NotificationChannelCreateRequest: {
-      /**
-       * Aggregation Window Seconds
-       * @default 300
-       */
-      aggregation_window_seconds: number;
+      /** Event Types */
+      event_types?: components['schemas']['NotificationEventType'][];
       /** Name */
       name: string;
+      proxy?: components['schemas']['NotificationProxyCreateInput'];
       serverchan?: components['schemas']['ServerChanCredentialInput'] | null;
-      /** Task Link Base Url */
-      task_link_base_url?: string | null;
       telegram?: components['schemas']['TelegramCredentialInput'] | null;
       /**
        * Type
@@ -1495,22 +2004,78 @@ export interface components {
     /** NotificationChannelUpdateRequest */
     NotificationChannelUpdateRequest: {
       /**
-       * Aggregation Window Seconds
-       * @default 300
-       */
-      aggregation_window_seconds: number;
-      /**
        * Credential Action
        * @default KEEP
        * @enum {string}
        */
       credential_action: 'KEEP' | 'SET' | 'CLEAR';
+      /** Event Types */
+      event_types: components['schemas']['NotificationEventType'][];
       /** Name */
       name: string;
+      proxy?: components['schemas']['NotificationProxyPatchInput'];
       serverchan?: components['schemas']['ServerChanCredentialInput'] | null;
-      /** Task Link Base Url */
-      task_link_base_url?: string | null;
       telegram?: components['schemas']['TelegramCredentialInput'] | null;
+    };
+    /**
+     * NotificationEventType
+     * @enum {string}
+     */
+    NotificationEventType:
+      | 'AUTH_LOGIN_SUCCESS'
+      | 'AUTH_PASSWORD_CHANGED'
+      | 'TASK_EXECUTION_RESULT'
+      | 'DOWNLOADER_CREATED'
+      | 'SITE_CREATED'
+      | 'VERSION_UPDATE_AVAILABLE'
+      | 'SITE_RELIABILITY';
+    /** NotificationProxyCreateInput */
+    NotificationProxyCreateInput: {
+      /**
+       * Enabled
+       * @default false
+       */
+      enabled: boolean;
+      /** Host */
+      host?: string | null;
+      /** Password */
+      password?: string | null;
+      /** Port */
+      port?: number | null;
+      /** Username */
+      username?: string | null;
+    };
+    /** NotificationProxyPatchInput */
+    NotificationProxyPatchInput: {
+      /**
+       * Clear Password
+       * @default false
+       */
+      clear_password: boolean;
+      /**
+       * Enabled
+       * @default false
+       */
+      enabled: boolean;
+      /** Host */
+      host?: string | null;
+      /** Password */
+      password?: string | null;
+      /** Port */
+      port?: number | null;
+      /** Username */
+      username?: string | null;
+    };
+    /** NotificationTemporaryProbeRequest */
+    NotificationTemporaryProbeRequest: {
+      proxy?: components['schemas']['NotificationProxyCreateInput'];
+      serverchan?: components['schemas']['ServerChanCredentialInput'] | null;
+      telegram?: components['schemas']['TelegramCredentialInput'] | null;
+      /**
+       * Type
+       * @enum {string}
+       */
+      type: 'TELEGRAM' | 'SERVERCHAN';
     };
     /** OperationCleanupCandidateResponse */
     OperationCleanupCandidateResponse: {
@@ -2036,12 +2601,28 @@ export interface components {
     };
     /** SiteCreateRequest */
     SiteCreateRequest: {
-      /** Base Url */
-      base_url: string;
+      /**
+       * Browser Emulation Enabled
+       * @default false
+       */
+      browser_emulation_enabled: boolean;
       credential?: components['schemas']['SiteCredentialInput'] | null;
       /** Name */
       name: string;
+      proxy?: components['schemas']['SiteProxyCreateInput'];
+      /**
+       * Request Timeout Seconds
+       * @default 15
+       */
+      request_timeout_seconds: number;
+      /**
+       * Search Interval Seconds
+       * @default 0
+       */
+      search_interval_seconds: number;
       type: components['schemas']['SiteKind'];
+      /** User Agent */
+      user_agent?: string | null;
     };
     /** SiteCredentialInput */
     SiteCredentialInput: {
@@ -2097,7 +2678,17 @@ export interface components {
      * SiteKind
      * @enum {string}
      */
-    SiteKind: 'MTEAM' | 'HDTIME' | 'HHCLUB';
+    SiteKind:
+      | 'MTEAM'
+      | 'HDTIME'
+      | 'HHCLUB'
+      | 'KEEPFRDS'
+      | 'HDHOME'
+      | 'UBITS'
+      | 'HDFANS'
+      | 'BTSCHOOL'
+      | 'PTTIME'
+      | 'ROUSI_PRO';
     /** SiteListResponse */
     SiteListResponse: {
       /** Items */
@@ -2105,8 +2696,8 @@ export interface components {
     };
     /** SitePatchRequest */
     SitePatchRequest: {
-      /** Base Url */
-      base_url?: string | null;
+      /** Browser Emulation Enabled */
+      browser_emulation_enabled?: boolean | null;
       /**
        * Clear Credential
        * @default false
@@ -2115,7 +2706,14 @@ export interface components {
       credential?: components['schemas']['SiteCredentialInput'] | null;
       /** Name */
       name?: string | null;
+      proxy?: components['schemas']['SiteProxyPatchInput'] | null;
+      /** Request Timeout Seconds */
+      request_timeout_seconds?: number | null;
+      /** Search Interval Seconds */
+      search_interval_seconds?: number | null;
       type?: components['schemas']['SiteKind'] | null;
+      /** User Agent */
+      user_agent?: string | null;
     };
     /** SiteProbeResponse */
     SiteProbeResponse: {
@@ -2134,10 +2732,137 @@ export interface components {
      * @enum {string}
      */
     SiteProbeStatus: 'UNTESTED' | 'OK' | 'FAILED';
+    /** SiteProfileListResponse */
+    SiteProfileListResponse: {
+      /** Items */
+      items: components['schemas']['SiteProfileResponse'][];
+    };
+    /** SiteProfileResponse */
+    SiteProfileResponse: {
+      /** Base Url */
+      base_url: string;
+      credential_kind: components['schemas']['SiteCredentialKind'];
+      /** Display Name */
+      display_name: string;
+      kind: components['schemas']['SiteKind'];
+      /** Request Timeout Seconds */
+      request_timeout_seconds: number;
+      /** Search Interval Seconds */
+      search_interval_seconds: number;
+      support_status: components['schemas']['SiteSupportStatus'];
+      /** Supports Browser Emulation */
+      supports_browser_emulation: boolean;
+      /** Supports Proxy */
+      supports_proxy: boolean;
+      /** Supports User Agent */
+      supports_user_agent: boolean;
+    };
+    /** SiteProxyCreateInput */
+    SiteProxyCreateInput: {
+      /**
+       * Enabled
+       * @default false
+       */
+      enabled: boolean;
+      /** Host */
+      host?: string | null;
+      /** Password */
+      password?: string | null;
+      /** Port */
+      port?: number | null;
+      /** Username */
+      username?: string | null;
+    };
+    /** SiteProxyPatchInput */
+    SiteProxyPatchInput: {
+      /**
+       * Clear Password
+       * @default false
+       */
+      clear_password: boolean;
+      /** Enabled */
+      enabled?: boolean | null;
+      /** Host */
+      host?: string | null;
+      /** Password */
+      password?: string | null;
+      /** Port */
+      port?: number | null;
+      /** Username */
+      username?: string | null;
+    };
+    /**
+     * SiteSupportStatus
+     * @enum {string}
+     */
+    SiteSupportStatus: 'SUPPORTED' | 'PENDING_ADAPTER' | 'PENDING_REAL_VALIDATION';
+    /** SiteTemporaryProbeRequest */
+    SiteTemporaryProbeRequest: {
+      /**
+       * Browser Emulation Enabled
+       * @default false
+       */
+      browser_emulation_enabled: boolean;
+      credential: components['schemas']['SiteCredentialInput'];
+      proxy?: components['schemas']['SiteProxyCreateInput'];
+      /**
+       * Request Timeout Seconds
+       * @default 15
+       */
+      request_timeout_seconds: number;
+      /**
+       * Search Interval Seconds
+       * @default 0
+       */
+      search_interval_seconds: number;
+      type: components['schemas']['SiteKind'];
+      /** User Agent */
+      user_agent?: string | null;
+    };
+    /** SiteUserProfileResponse */
+    SiteUserProfileResponse: {
+      /** Bonus */
+      bonus: number | null;
+      /** Bonus Per Hour */
+      bonus_per_hour: number | null;
+      /** Downloaded Bytes */
+      downloaded_bytes: number | null;
+      /**
+       * Fetched At
+       * Format: date-time
+       */
+      fetched_at: string;
+      /** Ratio */
+      ratio: number | null;
+      /** Real Downloaded Bytes */
+      real_downloaded_bytes: number | null;
+      /** Real Uploaded Bytes */
+      real_uploaded_bytes: number | null;
+      /** Seeding Count */
+      seeding_count: number | null;
+      /** Seeding Points */
+      seeding_points: number | null;
+      /** Seeding Size Bytes */
+      seeding_size_bytes: number | null;
+      /** Site Id */
+      site_id: string;
+      /** Torrents Posted */
+      torrents_posted: number | null;
+      /** Uid */
+      uid: string | null;
+      /** Uploaded Bytes */
+      uploaded_bytes: number | null;
+      /** User Level */
+      user_level: string | null;
+      /** Username */
+      username: string | null;
+    };
     /** SiteViewResponse */
     SiteViewResponse: {
       /** Base Url */
       base_url: string;
+      /** Browser Emulation Enabled */
+      browser_emulation_enabled: boolean;
       /** Capabilities */
       capabilities: {
         [key: string]: unknown;
@@ -2159,12 +2884,28 @@ export interface components {
       last_test_at: string | null;
       /** Name */
       name: string;
+      /** Proxy Credential Configured */
+      proxy_credential_configured: boolean;
+      /** Proxy Enabled */
+      proxy_enabled: boolean;
+      /** Proxy Host */
+      proxy_host: string | null;
+      /** Proxy Port */
+      proxy_port: number | null;
+      /** Proxy Username */
+      proxy_username: string | null;
+      /** Request Timeout Seconds */
+      request_timeout_seconds: number;
+      /** Search Interval Seconds */
+      search_interval_seconds: number;
       type: components['schemas']['SiteKind'];
       /**
        * Updated At
        * Format: date-time
        */
       updated_at: string;
+      /** User Agent */
+      user_agent: string | null;
       /** Version */
       version: number;
     };
@@ -3221,6 +3962,215 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+  get_ai_agent_settings_api_v1_ai_agent_settings_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AIAgentSettingResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  update_ai_agent_settings_api_v1_ai_agent_settings_put: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AIAgentSettingUpdateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AIAgentSettingResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_ai_agent_status_api_v1_ai_agent_status_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AIAgentStatusResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_ai_telegram_binding_api_v1_ai_agent_telegram_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AITelegramBindingResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  update_ai_telegram_binding_api_v1_ai_agent_telegram_put: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AITelegramBindingUpdateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AITelegramBindingResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  test_ai_agent_provider_api_v1_ai_agent_test_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AIAgentProbeRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['AIAgentProbeResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   login_api_v1_auth_login_post: {
     parameters: {
       query?: never;
@@ -3230,7 +4180,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['PasswordRequest'];
+        'application/json': components['schemas']['LoginRequest'];
       };
     };
     responses: {
@@ -3305,6 +4255,42 @@ export interface operations {
         content: {
           'application/json': components['schemas']['AuthStatusResponse'];
         };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  change_password_api_v1_auth_password_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ChangePasswordRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Validation Error */
       422: {
@@ -3408,6 +4394,46 @@ export interface operations {
         };
         content: {
           'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  probe_downloader_api_v1_downloaders_probe_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['DownloaderProbeRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: unknown;
+          };
         };
       };
       /** @description Validation Error */
@@ -3558,6 +4584,41 @@ export interface operations {
         };
         content: {
           'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_downloader_metrics_api_v1_downloaders__downloader_id__metrics_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        downloader_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: unknown;
+          };
         };
       };
       /** @description Validation Error */
@@ -3843,6 +4904,46 @@ export interface operations {
       };
     };
   };
+  probe_notification_channel_api_v1_notification_channels_probe_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['NotificationTemporaryProbeRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   update_notification_channel_api_v1_notification_channels__channel_id__put: {
     parameters: {
       query?: never;
@@ -3998,6 +5099,157 @@ export interface operations {
       };
     };
   };
+  list_inbox_notifications_api_v1_notifications_inbox_get: {
+    parameters: {
+      query?: {
+        unread_only?: boolean;
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  inbox_bulk_action_api_v1_notifications_inbox_actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['InboxBulkActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: number;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  inbox_unread_count_api_v1_notifications_inbox_unread_count_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: number;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  inbox_notification_action_api_v1_notifications_inbox__notification_id__actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        notification_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['InboxNotificationActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   operation_maintenance_report_api_v1_operations_maintenance_report_get: {
     parameters: {
       query?: {
@@ -4121,6 +5373,75 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['SiteViewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  probe_site_api_v1_sites_probe_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SiteTemporaryProbeRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteProbeResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_site_profiles_api_v1_sites_profiles_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteProfileListResponse'];
         };
       };
       /** @description Validation Error */
@@ -4304,6 +5625,39 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['SiteHealthResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_site_user_profile_api_v1_sites__site_id__profile_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteUserProfileResponse'];
         };
       };
       /** @description Validation Error */

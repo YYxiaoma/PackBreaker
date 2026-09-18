@@ -2,6 +2,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
@@ -9,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
+from backend.app.api.ai_agent import router as ai_agent_router
 from backend.app.api.auth import router as auth_router
 from backend.app.api.downloaders import router as downloader_router
 from backend.app.api.health import router as health_router
@@ -17,6 +19,12 @@ from backend.app.api.sites import router as site_router
 from backend.app.api.system import router as system_router
 from backend.app.api.task_definitions import router as task_definition_router
 from backend.app.api.tasks import router as task_router
+from backend.app.application.admin_notifications import AdminNotificationService
+from backend.app.application.ai_agent import AIAgentService
+from backend.app.application.ai_runtime import AIReadOnlyAgent
+from backend.app.application.ai_telegram import AITelegramService
+from backend.app.application.ai_telegram_driver import AITelegramDriver
+from backend.app.application.ai_tools import AIToolService
 from backend.app.application.auth import AuthService
 from backend.app.application.backup_schedule import BackupDriver, BackupScheduleService
 from backend.app.application.downloader_operations import (
@@ -120,11 +128,17 @@ def create_app(
         resolved_runtime.start()
         app.state.runtime = resolved_runtime
         app.state.auth_service = AuthService(resolved_runtime.session_factory)
+        app.state.admin_notification_service = AdminNotificationService(
+            resolved_runtime.session_factory
+        )
         secret_store = SecretStore(
             resolved_runtime.session_factory,
             resolved_runtime.secret_cipher,
         )
         app.state.secret_store = secret_store
+        ai_agent_service = AIAgentService(resolved_runtime.session_factory, secret_store)
+        ai_agent_service.ensure_default()
+        app.state.ai_agent_service = ai_agent_service
         notification_service = NotificationService(resolved_runtime.session_factory, secret_store)
         app.state.notification_service = notification_service
         downloader_service = DownloaderService(
@@ -349,11 +363,46 @@ def create_app(
             interval_seconds=resolved_settings.backup_driver_interval_seconds,
         )
         app.state.backup_driver = backup_driver
-        app.state.system_upgrade_service = SystemUpgradeService(resolved_settings)
+        system_upgrade_service = SystemUpgradeService(resolved_settings)
+        app.state.system_upgrade_service = system_upgrade_service
+        ai_tool_service = AIToolService(
+            resolved_runtime.session_factory,
+            settings=resolved_settings,
+            runtime=resolved_runtime,
+            site_reliability_registry=site_reliability_registry,
+            task_definition_service=app.state.task_definition_service,
+            downloader_service=downloader_service,
+            site_service=site_service,
+            system_upgrade_service=system_upgrade_service,
+            task_driver=task_driver,
+            notification_driver=notification_driver,
+            backup_driver=backup_driver,
+            help_root=Path(__file__).resolve().parents[2],
+        )
+        app.state.ai_tool_service = ai_tool_service
+        app.state.ai_read_only_agent = AIReadOnlyAgent(ai_agent_service, ai_tool_service)
+        ai_telegram_service = AITelegramService(
+            resolved_runtime.session_factory,
+            notification_service=notification_service,
+            ai_agent_service=ai_agent_service,
+            agent=app.state.ai_read_only_agent,
+        )
+        ai_telegram_service.ensure_default()
+        app.state.ai_telegram_service = ai_telegram_service
+        ai_telegram_driver = AITelegramDriver(
+            ai_telegram_service,
+            notification_service,
+            interval_seconds=resolved_settings.ai_telegram_driver_interval_seconds,
+            poll_timeout_seconds=resolved_settings.ai_telegram_poll_timeout_seconds,
+            poll_limit=resolved_settings.ai_telegram_poll_limit,
+        )
+        app.state.ai_telegram_driver = ai_telegram_driver
         backup_driver.start()
+        ai_telegram_driver.start()
         try:
             yield
         finally:
+            await ai_telegram_driver.stop()
             await backup_driver.stop()
             await notification_driver.stop()
             await task_definition_driver.stop()
@@ -442,6 +491,7 @@ def create_app(
         )
         return response
 
+    app.include_router(ai_agent_router, prefix="/api/v1")
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(downloader_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")

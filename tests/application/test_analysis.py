@@ -11,7 +11,12 @@ from sqlalchemy import func, select
 from backend.app.application.analysis import AnalysisPolicy, AnalysisService
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
-from backend.app.domain.site_adapter import SiteConnectionResult, TorrentDetails, TorrentPayload
+from backend.app.domain.site_adapter import (
+    SiteConnectionResult,
+    SiteUserProfile,
+    TorrentDetails,
+    TorrentPayload,
+)
 from backend.app.domain.site_search import (
     SearchPage,
     SearchQuery,
@@ -58,6 +63,9 @@ class _FakeAdapter:
 
     async def test_connection(self) -> SiteConnectionResult:
         return SiteConnectionResult(self.site_id)
+
+    async def fetch_user_profile(self) -> SiteUserProfile:
+        return SiteUserProfile(self.site_id, uid="1", username="synthetic")
 
     async def search(self, query: SearchQuery) -> SearchPage:
         self.search_calls.append(query)

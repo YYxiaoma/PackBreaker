@@ -7,7 +7,10 @@ import {
   deleteSite,
   getSite,
   getSiteHealth,
+  getSiteUserProfile,
+  listSiteProfiles,
   listSites,
+  probeSite,
   resetSiteCircuit,
   setSiteEnabled,
   testSite,
@@ -16,11 +19,17 @@ import {
   type SiteCreateInput,
   type SiteHealth,
   type SitePatchInput,
+  type SiteProfile,
+  type SiteTemporaryProbeInput,
+  type SiteUserProfile,
 } from '../api/sites';
 
 export const useSiteStore = defineStore('sites', () => {
   const items = ref<Site[]>([]);
+  const profiles = ref<SiteProfile[]>([]);
   const health = ref<Record<string, SiteHealth>>({});
+  const userProfiles = ref<Record<string, SiteUserProfile>>({});
+  const userProfileErrors = ref<Record<string, ApiProblem>>({});
   const loading = ref(false);
   const error = ref<ApiProblem | null>(null);
   const busy = ref<Record<string, boolean>>({});
@@ -31,10 +40,20 @@ export const useSiteStore = defineStore('sites', () => {
     else items.value.unshift(item);
   }
 
-  function clearSiteState(id: string) {
+  function clearHealthState(id: string) {
     const next = { ...health.value };
     delete next[id];
     health.value = next;
+  }
+
+  function clearSiteState(id: string) {
+    clearHealthState(id);
+    const nextProfiles = { ...userProfiles.value };
+    delete nextProfiles[id];
+    userProfiles.value = nextProfiles;
+    const nextProfileErrors = { ...userProfileErrors.value };
+    delete nextProfileErrors[id];
+    userProfileErrors.value = nextProfileErrors;
   }
 
   async function guarded<T>(key: string, action: () => Promise<T>): Promise<T> {
@@ -48,7 +67,10 @@ export const useSiteStore = defineStore('sites', () => {
       error.value = problem;
       if (problem.status === 401) {
         items.value = [];
+        profiles.value = [];
         health.value = {};
+        userProfiles.value = {};
+        userProfileErrors.value = {};
       }
       throw problem;
     } finally {
@@ -66,7 +88,7 @@ export const useSiteStore = defineStore('sites', () => {
     } catch (caught) {
       const problem = toApiProblem(caught);
       if (problem.status === 401) throw problem;
-      clearSiteState(item.id);
+      clearHealthState(item.id);
       return null;
     }
   }
@@ -74,11 +96,19 @@ export const useSiteStore = defineStore('sites', () => {
   async function refresh() {
     loading.value = true;
     try {
-      items.value = await listSites();
+      const [siteItems, siteProfiles] = await Promise.all([listSites(), listSiteProfiles()]);
+      items.value = siteItems;
+      profiles.value = siteProfiles;
       error.value = null;
       const knownIds = new Set(items.value.map((item) => item.id));
       health.value = Object.fromEntries(
         Object.entries(health.value).filter(([siteId]) => knownIds.has(siteId)),
+      );
+      userProfiles.value = Object.fromEntries(
+        Object.entries(userProfiles.value).filter(([siteId]) => knownIds.has(siteId)),
+      );
+      userProfileErrors.value = Object.fromEntries(
+        Object.entries(userProfileErrors.value).filter(([siteId]) => knownIds.has(siteId)),
       );
       await Promise.all(items.value.map((item) => refreshHealth(item)));
     } catch (caught) {
@@ -86,7 +116,10 @@ export const useSiteStore = defineStore('sites', () => {
       error.value = problem;
       if (problem.status === 401) {
         items.value = [];
+        profiles.value = [];
         health.value = {};
+        userProfiles.value = {};
+        userProfileErrors.value = {};
       }
       throw problem;
     } finally {
@@ -135,6 +168,38 @@ export const useSiteStore = defineStore('sites', () => {
     });
   }
 
+  async function probeTemporary(payload: SiteTemporaryProbeInput) {
+    return guarded('probe', () => probeSite(payload));
+  }
+
+  async function loadUserProfile(item: Site): Promise<SiteUserProfile> {
+    const key = `profile:${item.id}`;
+    busy.value = { ...busy.value, [key]: true };
+    try {
+      const result = await getSiteUserProfile(item.id);
+      userProfiles.value = { ...userProfiles.value, [item.id]: result };
+      const next = { ...userProfileErrors.value };
+      delete next[item.id];
+      userProfileErrors.value = next;
+      return result;
+    } catch (caught) {
+      const problem = toApiProblem(caught);
+      userProfileErrors.value = { ...userProfileErrors.value, [item.id]: problem };
+      if (problem.status === 401) {
+        items.value = [];
+        profiles.value = [];
+        health.value = {};
+        userProfiles.value = {};
+        userProfileErrors.value = {};
+      }
+      throw problem;
+    } finally {
+      const next = { ...busy.value };
+      delete next[key];
+      busy.value = next;
+    }
+  }
+
   async function setEnabled(item: Site, enabled: boolean) {
     return guarded(`enable:${item.id}`, async () => {
       const updated = await setSiteEnabled(item.id, item.version, enabled);
@@ -154,7 +219,10 @@ export const useSiteStore = defineStore('sites', () => {
 
   return {
     items,
+    profiles,
     health,
+    userProfiles,
+    userProfileErrors,
     loading,
     error,
     busy,
@@ -163,6 +231,8 @@ export const useSiteStore = defineStore('sites', () => {
     update,
     remove,
     testConnection,
+    probeTemporary,
+    loadUserProfile,
     setEnabled,
     resetCircuit,
   };

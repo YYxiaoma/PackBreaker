@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
-from urllib.parse import urlsplit
+from urllib.parse import quote
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -14,15 +14,19 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretNotFound, SecretStore
 from backend.app.domain.notification import (
+    DEFAULT_NOTIFICATION_AGGREGATION_SECONDS,
+    PRODUCT_NOTIFICATION_EVENT_TYPES,
     NotificationChannelKind,
     NotificationCredential,
     NotificationDeliveryError,
+    NotificationEventType,
     NotificationMessage,
     NotificationProvider,
     NotificationSeverity,
     ServerChanCredential,
     TelegramCredential,
 )
+from backend.app.domain.proxy import ProxyConfig
 from backend.app.infrastructure.adapters.notifications import NotificationProviderFactory
 from backend.app.infrastructure.persistence.models import NotificationChannel
 from backend.app.infrastructure.persistence.notification_repositories import (
@@ -32,6 +36,7 @@ from backend.app.infrastructure.persistence.notification_repositories import (
 from backend.app.infrastructure.site_reliability import SiteReliabilityEvent
 
 _SECRET_KIND = "notification-credential"
+_PROXY_SECRET_KIND = "notification-proxy-password"
 _SERVERCHAN_SC3_PATTERN = re.compile(r"^sctp\d+t")
 
 
@@ -47,8 +52,12 @@ class NotificationChannelView:
     name: str
     type: NotificationChannelKind
     credential_configured: bool
-    task_link_base_url: str | None
-    aggregation_window_seconds: int
+    event_types: tuple[NotificationEventType, ...]
+    proxy_enabled: bool
+    proxy_host: str | None
+    proxy_port: int | None
+    proxy_username: str | None
+    proxy_credential_configured: bool
     connection_status: str
     enabled: bool
     version: int
@@ -62,17 +71,26 @@ class NotificationChannelCreate:
     name: str
     kind: NotificationChannelKind
     credential: NotificationCredential
-    task_link_base_url: str | None = None
-    aggregation_window_seconds: int = 300
+    event_types: tuple[NotificationEventType, ...] = PRODUCT_NOTIFICATION_EVENT_TYPES
+    proxy_enabled: bool = False
+    proxy_host: str | None = None
+    proxy_port: int | None = None
+    proxy_username: str | None = None
+    proxy_password: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class NotificationChannelUpdate:
     name: str
-    task_link_base_url: str | None
-    aggregation_window_seconds: int
+    event_types: tuple[NotificationEventType, ...]
+    proxy_enabled: bool
+    proxy_host: str | None
+    proxy_port: int | None
+    proxy_username: str | None
     credential_action: CredentialAction = CredentialAction.KEEP
     credential: NotificationCredential | None = None
+    proxy_password_action: CredentialAction = CredentialAction.KEEP
+    proxy_password: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,12 +101,19 @@ class NotificationDeliveryReport:
     dead_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class TelegramAIRuntime:
+    credential: TelegramCredential
+    proxy_url: str | None
+
+
 class NotificationProviderFactoryPort(Protocol):
     def create(
         self,
         *,
         kind: NotificationChannelKind,
         credential: NotificationCredential,
+        proxy_url: str | None = None,
     ) -> NotificationProvider: ...
 
 
@@ -110,6 +135,48 @@ class NotificationService:
                 self._view(record) for record in NotificationChannelRepository(session).list_all()
             ]
 
+    def telegram_ai_runtime(self, channel_id: str) -> TelegramAIRuntime:
+        """供 Telegram AI Driver 复用通知渠道凭证；不通过 API 回显秘密。"""
+
+        with self._session_factory() as session:
+            record = NotificationChannelRepository(session).get(channel_id)
+            if record is None:
+                raise _channel_not_found()
+            if NotificationChannelKind(record.type) is not NotificationChannelKind.TELEGRAM:
+                raise ApplicationError(
+                    code="AI_TELEGRAM_CHANNEL_INVALID",
+                    status=422,
+                    title="AI 对话渠道必须是 Telegram",
+                    detail="Server酱等单向通知渠道不能承载 AI 对话",
+                )
+            secret_id = record.secret_id
+            proxy_enabled = record.proxy_enabled
+            proxy_host = record.proxy_host
+            proxy_port = record.proxy_port
+            proxy_username = record.proxy_username
+            proxy_secret_id = record.proxy_secret_id
+        if secret_id is None:
+            raise _credential_invalid("Telegram AI 对话需要已配置 Bot Token")
+        try:
+            credential = self._load_credential(secret_id, NotificationChannelKind.TELEGRAM)
+            if not isinstance(credential, TelegramCredential):
+                raise NotificationDeliveryError("NOTIFICATION_CREDENTIAL_INVALID", retryable=False)
+            proxy_url = self._proxy_url(
+                enabled=proxy_enabled,
+                host=proxy_host,
+                port=proxy_port,
+                username=proxy_username,
+                secret_id=proxy_secret_id,
+            )
+        except NotificationDeliveryError as exc:
+            raise ApplicationError(
+                code=exc.code,
+                status=422,
+                title="Telegram AI 渠道凭证不可用",
+                detail="绑定的 Telegram 渠道凭证或代理配置无法读取",
+            ) from exc
+        return TelegramAIRuntime(credential=credential, proxy_url=proxy_url)
+
     def get(self, channel_id: str) -> NotificationChannelView:
         with self._session_factory() as session:
             record = NotificationChannelRepository(session).get(channel_id)
@@ -120,21 +187,40 @@ class NotificationService:
     def create(self, request: NotificationChannelCreate) -> NotificationChannelView:
         name = _name(request.name)
         credential = _validate_credential(request.kind, request.credential)
-        link = _link_base(request.task_link_base_url)
-        window = _aggregation_window(request.aggregation_window_seconds)
+        event_types = _event_types(request.event_types)
+        proxy = _proxy_config(
+            enabled=request.proxy_enabled,
+            host=request.proxy_host,
+            port=request.proxy_port,
+            username=request.proxy_username,
+        )
+        proxy_password = _proxy_password(request.proxy_password, proxy)
         with self._session_factory() as session:
             secret_id = self._secret_store.put_in_session(
                 session,
                 kind=_SECRET_KIND,
                 value=_encode_credential(request.kind, credential),
             )
+            proxy_secret_id = (
+                self._secret_store.put_in_session(
+                    session,
+                    kind=_PROXY_SECRET_KIND,
+                    value=proxy_password.encode("utf-8"),
+                )
+                if proxy_password is not None
+                else None
+            )
             try:
                 record = NotificationChannelRepository(session).create(
                     name=name,
                     kind=request.kind.value,
                     secret_id=secret_id,
-                    task_link_base_url=link,
-                    aggregation_window_seconds=window,
+                    event_types=[item.value for item in event_types],
+                    proxy_enabled=proxy.enabled,
+                    proxy_host=proxy.host,
+                    proxy_port=proxy.port,
+                    proxy_username=proxy.username,
+                    proxy_secret_id=proxy_secret_id,
                 )
                 session.commit()
             except IntegrityError as exc:
@@ -150,8 +236,13 @@ class NotificationService:
         request: NotificationChannelUpdate,
     ) -> NotificationChannelView:
         name = _name(request.name)
-        link = _link_base(request.task_link_base_url)
-        window = _aggregation_window(request.aggregation_window_seconds)
+        event_types = _event_types(request.event_types)
+        proxy = _proxy_config(
+            enabled=request.proxy_enabled,
+            host=request.proxy_host,
+            port=request.proxy_port,
+            username=request.proxy_username,
+        )
         with self._session_factory() as session:
             repository = NotificationChannelRepository(session)
             current = repository.get(channel_id)
@@ -161,10 +252,22 @@ class NotificationService:
                 raise _version_conflict()
             values: dict[str, object] = {
                 "name": name,
-                "task_link_base_url": link,
-                "aggregation_window_seconds": window,
+                "task_link_base_url": None,
+                "aggregation_window_seconds": DEFAULT_NOTIFICATION_AGGREGATION_SECONDS,
+                "event_types": [item.value for item in event_types],
+                "proxy_enabled": proxy.enabled,
+                "proxy_host": proxy.host,
+                "proxy_port": proxy.port,
+                "proxy_username": proxy.username,
             }
             old_secret_id = current.secret_id
+            old_proxy_secret_id = current.proxy_secret_id
+            connection_changed = (
+                current.proxy_enabled != proxy.enabled
+                or current.proxy_host != proxy.host
+                or current.proxy_port != proxy.port
+                or current.proxy_username != proxy.username
+            )
             if request.credential_action is CredentialAction.SET:
                 if request.credential is None:
                     raise _credential_invalid("SET 必须提供新凭证")
@@ -175,14 +278,34 @@ class NotificationService:
                     kind=_SECRET_KIND,
                     value=_encode_credential(kind, credential),
                 )
-                values["connection_status"] = "UNTESTED"
-                values["enabled"] = False
+                connection_changed = True
             elif request.credential_action is CredentialAction.CLEAR:
                 values["secret_id"] = None
-                values["connection_status"] = "UNTESTED"
-                values["enabled"] = False
+                connection_changed = True
             elif request.credential is not None:
                 raise _credential_invalid("KEEP 不能同时提交凭证明文")
+
+            if request.proxy_password_action is CredentialAction.SET:
+                proxy_password = _proxy_password(request.proxy_password, proxy)
+                if proxy_password is None:
+                    raise _proxy_invalid("SET 必须提供新代理密码")
+                values["proxy_secret_id"] = self._secret_store.put_in_session(
+                    session,
+                    kind=_PROXY_SECRET_KIND,
+                    value=proxy_password.encode("utf-8"),
+                )
+                connection_changed = True
+            elif request.proxy_password_action is CredentialAction.CLEAR:
+                values["proxy_secret_id"] = None
+                connection_changed = True
+            elif request.proxy_password is not None:
+                raise _proxy_invalid("KEEP 不能同时提交代理密码明文")
+            elif old_proxy_secret_id is not None and proxy.username is None:
+                raise _proxy_invalid("已保存代理密码时必须保留代理账号或清除代理密码")
+
+            if connection_changed:
+                values["connection_status"] = "UNTESTED"
+                values["enabled"] = False
 
             try:
                 if not repository.update_config(
@@ -196,6 +319,11 @@ class NotificationService:
                     CredentialAction.CLEAR,
                 }:
                     self._secret_store.delete_in_session(session, old_secret_id)
+                if old_proxy_secret_id is not None and request.proxy_password_action in {
+                    CredentialAction.SET,
+                    CredentialAction.CLEAR,
+                }:
+                    self._secret_store.delete_in_session(session, old_proxy_secret_id)
                 session.commit()
             except IntegrityError as exc:
                 session.rollback()
@@ -214,10 +342,13 @@ class NotificationService:
             if current.version != expected_version:
                 raise _version_conflict()
             old_secret_id = current.secret_id
+            old_proxy_secret_id = current.proxy_secret_id
             if repository.delete(channel_id, expected_version=expected_version) is None:
                 raise _version_conflict()
             if old_secret_id is not None:
                 self._secret_store.delete_in_session(session, old_secret_id)
+            if old_proxy_secret_id is not None:
+                self._secret_store.delete_in_session(session, old_proxy_secret_id)
             session.commit()
 
     def set_enabled(
@@ -262,14 +393,26 @@ class NotificationService:
             snapshot_version = record.version
             kind = NotificationChannelKind(record.type)
             secret_id = record.secret_id
+            proxy_enabled = record.proxy_enabled
+            proxy_host = record.proxy_host
+            proxy_port = record.proxy_port
+            proxy_username = record.proxy_username
+            proxy_secret_id = record.proxy_secret_id
         if secret_id is None:
             raise _credential_invalid("连接测试需要已配置通知凭证")
-        provider = self._provider_factory.create(
-            kind=kind,
-            credential=self._load_credential(secret_id, kind),
-        )
         tested_at = datetime.now(UTC)
         try:
+            provider = self._provider_factory.create(
+                kind=kind,
+                credential=self._load_credential(secret_id, kind),
+                proxy_url=self._proxy_url(
+                    enabled=proxy_enabled,
+                    host=proxy_host,
+                    port=proxy_port,
+                    username=proxy_username,
+                    secret_id=proxy_secret_id,
+                ),
+            )
             result = await provider.test_connection()
         except NotificationDeliveryError as exc:
             self._save_probe(snapshot_id, snapshot_version, "FAILED", tested_at)
@@ -280,6 +423,42 @@ class NotificationService:
                 detail="通知服务拒绝、超时或返回无效响应；未记录远端响应正文",
             ) from exc
         self._save_probe(snapshot_id, snapshot_version, "OK", tested_at)
+        return {"status": "ok", "type": result.provider.value, "tested_at": tested_at.isoformat()}
+
+    async def test_temporary(
+        self,
+        *,
+        kind: NotificationChannelKind,
+        credential: NotificationCredential,
+        proxy_enabled: bool = False,
+        proxy_host: str | None = None,
+        proxy_port: int | None = None,
+        proxy_username: str | None = None,
+        proxy_password: str | None = None,
+    ) -> dict[str, object]:
+        validated_credential = _validate_credential(kind, credential)
+        proxy = _proxy_config(
+            enabled=proxy_enabled,
+            host=proxy_host,
+            port=proxy_port,
+            username=proxy_username,
+        )
+        password = _proxy_password(proxy_password, proxy)
+        provider = self._provider_factory.create(
+            kind=kind,
+            credential=validated_credential,
+            proxy_url=_proxy_http_url(proxy, password=password),
+        )
+        tested_at = datetime.now(UTC)
+        try:
+            result = await provider.test_connection()
+        except NotificationDeliveryError as exc:
+            raise ApplicationError(
+                code=exc.code,
+                status=502,
+                title="通知渠道测试失败",
+                detail="通知服务拒绝、超时或返回无效响应；临时凭证不会持久化",
+            ) from exc
         return {"status": "ok", "type": result.provider.value, "tested_at": tested_at.isoformat()}
 
     def record_site_reliability_event(self, event: SiteReliabilityEvent) -> None:
@@ -329,8 +508,12 @@ class NotificationService:
                 )
             kind = NotificationChannelKind(channel.type)
             channel_version = channel.version
-            aggregation_window = channel.aggregation_window_seconds
             secret_id = channel.secret_id
+            proxy_enabled = channel.proxy_enabled
+            proxy_host = channel.proxy_host
+            proxy_port = channel.proxy_port
+            proxy_username = channel.proxy_username
+            proxy_secret_id = channel.proxy_secret_id
             sent_count = outbox.pending_count
             message = NotificationMessage(
                 title=outbox.title,
@@ -344,6 +527,13 @@ class NotificationService:
             provider = self._provider_factory.create(
                 kind=kind,
                 credential=self._load_credential(secret_id, kind),
+                proxy_url=self._proxy_url(
+                    enabled=proxy_enabled,
+                    host=proxy_host,
+                    port=proxy_port,
+                    username=proxy_username,
+                    secret_id=proxy_secret_id,
+                ),
             )
             await provider.send(message)
         except NotificationDeliveryError as exc:
@@ -361,7 +551,7 @@ class NotificationService:
                 outbox_id,
                 delivered_at=delivered_at,
                 sent_count=sent_count,
-                aggregation_window_seconds=aggregation_window,
+                aggregation_window_seconds=DEFAULT_NOTIFICATION_AGGREGATION_SECONDS,
                 channel_version=channel_version,
             )
             session.commit()
@@ -439,6 +629,26 @@ class NotificationService:
                 "NOTIFICATION_CREDENTIAL_INVALID", retryable=False
             ) from exc
 
+    def _proxy_url(
+        self,
+        *,
+        enabled: bool,
+        host: str | None,
+        port: int | None,
+        username: str | None,
+        secret_id: str | None,
+    ) -> str | None:
+        proxy = _proxy_config(enabled=enabled, host=host, port=port, username=username)
+        password: str | None = None
+        if secret_id is not None:
+            try:
+                password = self._secret_store.get(secret_id).decode("utf-8")
+            except (SecretNotFound, UnicodeDecodeError) as exc:
+                raise NotificationDeliveryError(
+                    "NOTIFICATION_PROXY_CREDENTIAL_INVALID", retryable=False
+                ) from exc
+        return _proxy_http_url(proxy, password=password)
+
     @staticmethod
     def _view(record: NotificationChannel) -> NotificationChannelView:
         return NotificationChannelView(
@@ -446,8 +656,12 @@ class NotificationService:
             name=record.name,
             type=NotificationChannelKind(record.type),
             credential_configured=record.secret_id is not None,
-            task_link_base_url=record.task_link_base_url,
-            aggregation_window_seconds=record.aggregation_window_seconds,
+            event_types=_stored_event_types(record.event_types),
+            proxy_enabled=record.proxy_enabled,
+            proxy_host=record.proxy_host,
+            proxy_port=record.proxy_port,
+            proxy_username=record.proxy_username,
+            proxy_credential_configured=record.proxy_secret_id is not None,
             connection_status=record.connection_status,
             enabled=record.enabled,
             version=record.version,
@@ -512,37 +726,68 @@ def _name(value: str) -> str:
     return normalized
 
 
-def _link_base(value: str | None) -> str | None:
-    if value is None or not value.strip():
+def _event_types(values: tuple[NotificationEventType, ...]) -> tuple[NotificationEventType, ...]:
+    unique = tuple(dict.fromkeys(values))
+    if not unique:
+        raise ApplicationError(
+            code="NOTIFICATION_EVENT_TYPES_REQUIRED",
+            status=422,
+            title="至少选择一种通知事件",
+            detail="通知渠道必须至少订阅一种事件类型",
+        )
+    return unique
+
+
+def _stored_event_types(values: list[str]) -> tuple[NotificationEventType, ...]:
+    if not values:
+        return PRODUCT_NOTIFICATION_EVENT_TYPES
+    result: list[NotificationEventType] = []
+    for value in values:
+        try:
+            event_type = NotificationEventType(value)
+        except ValueError:
+            continue
+        if event_type not in result:
+            result.append(event_type)
+    return tuple(result) or PRODUCT_NOTIFICATION_EVENT_TYPES
+
+
+def _proxy_config(
+    *,
+    enabled: bool,
+    host: str | None,
+    port: int | None,
+    username: str | None,
+) -> ProxyConfig:
+    try:
+        return ProxyConfig(enabled=enabled, host=host, port=port, username=username)
+    except ValueError as exc:
+        raise _proxy_invalid(str(exc)) from exc
+
+
+def _proxy_password(value: str | None, proxy: ProxyConfig) -> str | None:
+    if value is None:
         return None
-    normalized = value.strip().rstrip("/")
-    parsed = urlsplit(normalized)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ApplicationError(
-            code="NOTIFICATION_LINK_INVALID",
-            status=422,
-            title="任务链接基础地址无效",
-            detail="只允许不含用户信息、查询参数或 fragment 的 http/https 地址",
-        )
-    return normalized
-
-
-def _aggregation_window(value: int) -> int:
-    if isinstance(value, bool) or not 1 <= value <= 86400:
-        raise ApplicationError(
-            code="NOTIFICATION_AGGREGATION_WINDOW_INVALID",
-            status=422,
-            title="通知聚合窗口无效",
-            detail="聚合窗口必须在 1 到 86400 秒之间",
-        )
+    if not value or len(value) > 512 or any(char in value for char in ("\r", "\n", "\x00")):
+        raise _proxy_invalid("代理密码格式无效")
+    if proxy.host is None or proxy.username is None:
+        raise _proxy_invalid("配置代理密码时必须提供代理地址与代理账号")
     return value
+
+
+def _proxy_http_url(proxy: ProxyConfig, *, password: str | None = None) -> str | None:
+    if not proxy.enabled:
+        return None
+    host = proxy.host or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    auth = ""
+    if proxy.username is not None:
+        auth = quote(proxy.username, safe="")
+        if password is not None:
+            auth = f"{auth}:{quote(password, safe='')}"
+        auth = f"{auth}@"
+    return f"http://{auth}{host}:{proxy.port}"
 
 
 def _credential_invalid(detail: str) -> ApplicationError:
@@ -550,6 +795,15 @@ def _credential_invalid(detail: str) -> ApplicationError:
         code="NOTIFICATION_CREDENTIAL_INVALID",
         status=422,
         title="通知凭证无效",
+        detail=detail,
+    )
+
+
+def _proxy_invalid(detail: str) -> ApplicationError:
+    return ApplicationError(
+        code="NOTIFICATION_PROXY_INVALID",
+        status=422,
+        title="通知代理配置无效",
         detail=detail,
     )
 

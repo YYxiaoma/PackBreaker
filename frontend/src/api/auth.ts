@@ -4,6 +4,8 @@ import type { components } from './generated/schema';
 export type AuthStatus = components['schemas']['AuthStatusResponse'];
 export type LoginResponse = components['schemas']['LoginResponse'];
 type PasswordRequest = components['schemas']['PasswordRequest'];
+type LoginRequest = components['schemas']['LoginRequest'];
+export type ChangePasswordRequest = components['schemas']['ChangePasswordRequest'];
 
 export async function getAuthStatus(): Promise<AuthStatus> {
   try {
@@ -23,11 +25,22 @@ export async function setupAdministrator(password: string): Promise<void> {
   }
 }
 
-export async function loginAdministrator(password: string): Promise<LoginResponse> {
-  const payload: PasswordRequest = { password };
+export async function loginAdministrator(
+  username: string,
+  password: string,
+): Promise<LoginResponse> {
+  const payload: LoginRequest = { username, password };
   try {
     const response = await apiClient.post<LoginResponse>('/auth/login', payload);
     return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function changeAdministratorPassword(payload: ChangePasswordRequest): Promise<void> {
+  try {
+    await apiClient.post('/auth/password', payload);
   } catch (error) {
     throw toApiProblem(error);
   }

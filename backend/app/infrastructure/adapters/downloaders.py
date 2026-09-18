@@ -4,6 +4,7 @@ from base64 import b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Protocol, cast
 from urllib.parse import urlsplit
@@ -14,6 +15,7 @@ from backend.app.domain.downloader import (
     ConnectionTestResult,
     DownloaderCapabilities,
     DownloaderCredential,
+    DownloaderRuntimeMetrics,
     normalize_remote_path,
 )
 from backend.app.domain.verification import DownloaderKind, VerificationLevel
@@ -39,6 +41,8 @@ class DownloaderAdapterError(RuntimeError):
 
 class DownloaderProbeAdapter(Protocol):
     async def test_connection(self) -> ConnectionTestResult: ...
+
+    async def runtime_metrics(self) -> DownloaderRuntimeMetrics: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +316,65 @@ class QbittorrentAdapter:
                 supports_force_recheck=True,
                 supports_verify_progress=True,
             )
+        )
+
+    async def runtime_metrics(self) -> DownloaderRuntimeMetrics:
+        async with self._authenticated_client() as client:
+            transfer_response = await client.get(f"{self._base_url}/api/v2/transfer/info")
+            self._raise_for_probe_status(transfer_response)
+            torrents_response = await client.get(f"{self._base_url}/api/v2/torrents/info")
+            self._raise_for_probe_status(torrents_response)
+            sync_response = await client.get(
+                f"{self._base_url}/api/v2/sync/maindata", params={"rid": 0}
+            )
+            self._raise_for_probe_status(sync_response)
+            try:
+                transfer = transfer_response.json()
+                torrents = torrents_response.json()
+                sync_data = sync_response.json()
+            except ValueError as exc:
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "qBittorrent 运行指标响应无法解析"
+                ) from exc
+        if (
+            not isinstance(transfer, dict)
+            or not isinstance(torrents, list)
+            or not isinstance(sync_data, dict)
+        ):
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "qBittorrent 运行指标响应格式无效"
+            )
+        upload_speed = _required_nonnegative_int(
+            transfer.get("up_info_speed"), "qBittorrent 上传速度"
+        )
+        download_speed = _required_nonnegative_int(
+            transfer.get("dl_info_speed"), "qBittorrent 下载速度"
+        )
+        total_size = 0
+        for raw in torrents:
+            if not isinstance(raw, dict):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "qBittorrent torrent 指标项格式无效"
+                )
+            total_size += _required_nonnegative_int(raw.get("size"), "qBittorrent torrent 大小")
+        free_space: int | None = None
+        server_state = sync_data.get("server_state")
+        if isinstance(server_state, dict):
+            raw_free_space = server_state.get("free_space_on_disk")
+            if isinstance(raw_free_space, int) and not isinstance(raw_free_space, bool):
+                free_space = raw_free_space if raw_free_space >= 0 else None
+            elif raw_free_space is not None:
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "qBittorrent 剩余空间字段无效"
+                )
+        return DownloaderRuntimeMetrics(
+            upload_speed_bytes_per_second=upload_speed,
+            download_speed_bytes_per_second=download_speed,
+            total_content_size_bytes=total_size,
+            free_space_bytes=free_space,
+            active_torrent_count=None,
+            total_torrent_count=len(torrents),
+            sampled_at=datetime.now(UTC),
         )
 
     async def add_torrent(self, request: QbittorrentAddRequest) -> QbittorrentAddResult:
@@ -674,6 +737,29 @@ def _parse_api_version(value: str) -> tuple[int, int, int]:
     return (numbers[0], numbers[1], numbers[2] if len(numbers) == 3 else 0)
 
 
+def _optional_nonnegative_int(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise DownloaderAdapterError("DOWNLOADER_INVALID_RESPONSE", f"{label}字段无效")
+    return value
+
+
+def _required_nonnegative_int(value: object, label: str) -> int:
+    parsed = _optional_nonnegative_int(value, label)
+    if parsed is None:
+        raise DownloaderAdapterError("DOWNLOADER_INVALID_RESPONSE", f"{label}字段缺失")
+    return parsed
+
+
+def _optional_unknown_nonnegative_int(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise DownloaderAdapterError("DOWNLOADER_INVALID_RESPONSE", f"{label}字段无效")
+    return value if value >= 0 else None
+
+
 class TransmissionAdapter:
     def __init__(
         self,
@@ -708,6 +794,64 @@ class TransmissionAdapter:
                 supports_force_recheck=True,
                 supports_verify_progress=True,
             )
+        )
+
+    async def runtime_metrics(self) -> DownloaderRuntimeMetrics:
+        stats, _ = await self._rpc("session_stats", {})
+        session, _ = await self._rpc(
+            "session_get",
+            {"fields": ["download_dir", "download_dir_free_space"]},
+        )
+        torrents, _ = await self._rpc("torrent_get", {"fields": ["total_size"]})
+        download_dir = session.get("download_dir")
+        if not isinstance(download_dir, str) or not download_dir.strip():
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission 下载目录响应无效"
+            )
+        free_space = _optional_unknown_nonnegative_int(
+            session.get("download_dir_free_space"),
+            "Transmission 兼容剩余空间",
+        )
+        try:
+            free_space_result, _ = await self._rpc("free_space", {"path": download_dir})
+        except DownloaderAdapterError as exc:
+            if exc.code != "DOWNLOADER_WRITE_FAILED":
+                raise
+        else:
+            free_space = _optional_unknown_nonnegative_int(
+                free_space_result.get("size_bytes"),
+                "Transmission 剩余空间",
+            )
+        raw_torrents = torrents.get("torrents")
+        if not isinstance(raw_torrents, list):
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 指标响应格式无效"
+            )
+        total_size = 0
+        for raw in raw_torrents:
+            if not isinstance(raw, dict):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 指标项格式无效"
+                )
+            total_size += _required_nonnegative_int(
+                raw.get("total_size"), "Transmission torrent 大小"
+            )
+        return DownloaderRuntimeMetrics(
+            upload_speed_bytes_per_second=_required_nonnegative_int(
+                stats.get("upload_speed"), "Transmission 上传速度"
+            ),
+            download_speed_bytes_per_second=_required_nonnegative_int(
+                stats.get("download_speed"), "Transmission 下载速度"
+            ),
+            total_content_size_bytes=total_size,
+            free_space_bytes=free_space,
+            active_torrent_count=_required_nonnegative_int(
+                stats.get("active_torrent_count"), "Transmission 活动任务数"
+            ),
+            total_torrent_count=_required_nonnegative_int(
+                stats.get("torrent_count"), "Transmission 任务总数"
+            ),
+            sampled_at=datetime.now(UTC),
         )
 
     async def add_torrent(self, request: TransmissionAddRequest) -> TransmissionAddResult:

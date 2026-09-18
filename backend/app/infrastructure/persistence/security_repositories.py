@@ -20,14 +20,27 @@ class AdministratorRepository:
     def get(self) -> Administrator | None:
         return self._session.get(Administrator, "admin")
 
-    def create(self, password_hash: str) -> tuple[Administrator, bool]:
+    def get_by_username(self, username: str) -> Administrator | None:
+        return self._session.scalar(select(Administrator).where(Administrator.username == username))
+
+    def create(
+        self,
+        password_hash: str,
+        *,
+        username: str = "admin",
+        must_change_password: bool = False,
+    ) -> tuple[Administrator, bool]:
         existing = self.get()
         if existing is not None:
             return existing, False
         now = utc_now()
         administrator = Administrator(
             id="admin",
+            username=username,
             password_hash=password_hash,
+            must_change_password=must_change_password,
+            password_changed_at=None,
+            last_login_at=None,
             created_at=now,
             updated_at=now,
         )
@@ -47,6 +60,25 @@ class AdministratorRepository:
             update(Administrator)
             .where(Administrator.id == "admin")
             .values(password_hash=password_hash, updated_at=utc_now())
+        )
+
+    def change_password(self, password_hash: str, *, changed_at: datetime) -> None:
+        self._session.execute(
+            update(Administrator)
+            .where(Administrator.id == "admin")
+            .values(
+                password_hash=password_hash,
+                must_change_password=False,
+                password_changed_at=changed_at,
+                updated_at=changed_at,
+            )
+        )
+
+    def mark_login(self, *, logged_in_at: datetime) -> None:
+        self._session.execute(
+            update(Administrator)
+            .where(Administrator.id == "admin")
+            .values(last_login_at=logged_in_at, updated_at=utc_now())
         )
 
 
@@ -87,6 +119,16 @@ class AdminSessionRepository:
         self._session.execute(
             update(AdminSession)
             .where(AdminSession.id == session_id, AdminSession.revoked_at.is_(None))
+            .values(revoked_at=now)
+        )
+
+    def revoke_all(self, now: datetime) -> None:
+        self._session.execute(
+            update(AdminSession)
+            .where(
+                AdminSession.administrator_id == "admin",
+                AdminSession.revoked_at.is_(None),
+            )
             .values(revoked_at=now)
         )
 

@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 from backend.app.api.dependencies import (
     AccessPrincipal,
+    admin_notification_service,
     require_admin_csrf_principal,
     require_admin_principal,
 )
@@ -676,6 +677,11 @@ async def system_upgrade_status(
     _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
 ) -> JSONResponse:
     status = await _system_upgrade_service(request).status()
+    if status.update_available and status.latest_version is not None:
+        admin_notification_service(request).record_version_update(
+            current_version=status.current_version,
+            latest_version=status.latest_version,
+        )
     response = _system_upgrade_status_response(status)
     return JSONResponse(response.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 

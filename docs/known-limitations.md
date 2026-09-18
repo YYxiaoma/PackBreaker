@@ -11,9 +11,9 @@
 ## 2. 发布与容器证据
 
 - 正式发布目标当前只有 `linux/amd64`。
-- 当前开发 Runner 无 Docker daemon；GitHub Actions 持续承担容器、备份/恢复和 updater 的真实 Docker 门禁。单容器一次性 helper 是 `v0.1.4` candidate 能力，已经补进 `scripts/check-updater-e2e.sh`，但在 push 并由 GitHub Actions 实跑成功前仍不宣称取得真实 Docker E2E 证据。
-- 当前最新正式 Release 为 `v0.1.3`，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:1dbbe55cc7b9b1ec6e35afe62ab7ecf32db092350dfeec4cf5966a06d165f48d`；Release workflow run `35046214232` 已成功完成正式发布。
-- 已发布版本仍由跨版本 Docker 升级/恢复门禁与独立 updater helper E2E 提供正式证据；当前 `release-baseline.json` 已固定正式 `v0.1.3` 作为 `v0.1.4` candidate 的相邻兼容输入，单容器 transient 路径尚未宣称具有正式 Docker E2E 证据。
+- 当前开发 Runner 无 Docker daemon；GitHub Actions 持续承担容器、备份/恢复和 updater 的真实 Docker 门禁。`v0.1.6` 的本地与浏览器验收不能替代下一次 Release workflow 的真实 Docker 升级/回滚证据。
+- 当前最新正式 Release 为 `v0.1.5`，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:da340a835290a60b977a6a5ab8aedf9c5225f794d623a43d7a579de1d7a4919e`；Release workflow run `35201356258` 已成功完成正式发布。
+- 已发布版本仍由跨版本 Docker 升级/恢复门禁与 updater helper E2E 提供正式证据；当前 `release-baseline.json` 已固定正式 `v0.1.5` 作为 `v0.1.6` candidate 的相邻兼容输入。
 
 ## 3. 升级与 Docker 权限
 
@@ -28,6 +28,9 @@
 - 已真实验证的下载器基线是 qBittorrent 5.2.3 / WebAPI 2.15.1 与 Transmission 4.1.3。未来版本必须重新做能力和真实链路验收。
 - qBittorrent WebAPI 2.16.0 已移除 `skip_checking`；当前 2.15.1 的 FULL_VERIFIED skip-check 优化不能直接外推到 2.16+。
 - HHClub 当前只接受 `https://hhanclub.net`。旧域名、镜像域名或未验证 origin 不自动信任。
+
+- 2026-09-18 的 v0.1.6 现场只读验收中，HDTime 主站经 Cloudflare 返回 HTTP 500；现有 Cookie 与浏览器仿真均得到 SITE_UNAVAILABLE 而非鉴权失败。站点恢复前保留已有适配器支持声明，但不把本轮现场状态记为通过，也不自动改用镜像域名。
+- v0.1.6 AI Provider、Telegram AI 与新增 PT 站点仍缺本轮真实外部凭证/目标证据；自动化与 MockTransport 通过不能替代真实 Provider/Chat/站点验收。详见 [v0.1.6 真实环境验收记录](./v0.1.6-real-environment-acceptance.md)。
 
 ## 5. 运维功能边界
 

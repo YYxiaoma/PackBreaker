@@ -9,7 +9,12 @@ from urllib.parse import SplitResult, parse_qs, urlencode, urljoin, urlsplit
 import httpx2
 
 from backend.app.domain.media_matching import ExternalMediaId
-from backend.app.domain.site_adapter import SiteConnectionResult, TorrentDetails, TorrentPayload
+from backend.app.domain.site_adapter import (
+    SiteConnectionResult,
+    SiteUserProfile,
+    TorrentDetails,
+    TorrentPayload,
+)
 from backend.app.domain.site_search import (
     CandidateMeta,
     SearchPage,
@@ -122,6 +127,7 @@ class _NexusHtmlParser(HTMLParser):
         self._heading_text: list[str] = []
         self._title_depth = 0
         self._title_text: list[str] = []
+        self.text_parts: list[str] = []
         self.all_links: list[tuple[str, str | None, str]] = []
 
     @property
@@ -201,6 +207,9 @@ class _NexusHtmlParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if not data:
             return
+        cleaned = _clean_text(data)
+        if cleaned:
+            self.text_parts.append(cleaned)
         for row in self._row_stack:
             if row.active_cell is not None:
                 row.cells[row.active_cell] += data
@@ -228,6 +237,9 @@ class NexusPhpWebAdapter:
         base_url: str | None = None,
         transport: httpx2.AsyncBaseTransport | None = None,
         timeout_seconds: float = 10.0,
+        user_agent: str | None = None,
+        browser_emulation_enabled: bool = False,
+        proxy_url: str | None = None,
         max_html_bytes: int = _DEFAULT_HTML_LIMIT_BYTES,
         max_torrent_bytes: int = _DEFAULT_TORRENT_LIMIT_BYTES,
     ) -> None:
@@ -240,6 +252,9 @@ class NexusPhpWebAdapter:
         self._base_url, self._origin = _normalize_origin(base_url or profile.default_base_url)
         self._transport = transport
         self._timeout_seconds = timeout_seconds
+        self._user_agent = user_agent.strip() if user_agent else None
+        self._browser_emulation_enabled = browser_emulation_enabled
+        self._proxy_url = proxy_url
         self._max_html_bytes = max_html_bytes
         self._max_torrent_bytes = max_torrent_bytes
 
@@ -262,6 +277,31 @@ class NexusPhpWebAdapter:
         ):
             raise SiteAdapterError("SITE_AUTH_FAILED", "NexusPHP Cookie 无效或会话已失效")
         return SiteConnectionResult(self._profile.site_id)
+
+    async def fetch_user_profile(self) -> SiteUserProfile:
+        index = _parse_html(await self._get_html(self._profile.index_path))
+        self._reject_login_page(index)
+        authenticated = any(
+            _href_path(href).endswith(self._profile.authenticated_href)
+            for href, _, _ in index.all_links
+        )
+        if not authenticated:
+            raise SiteAdapterError("SITE_AUTH_FAILED", "NexusPHP Cookie 无效或会话已失效")
+        profile_link = _user_profile_link(index.all_links)
+        if profile_link is None:
+            parser = _parse_html(await self._get_html(f"/{self._profile.authenticated_href}"))
+            uid = None
+            username = None
+        else:
+            href, uid, username = profile_link
+            parser = _parse_html(await self._get_html_url(self._same_origin_url(href)))
+        self._reject_login_page(parser)
+        return _parse_nexus_user_profile(
+            parser,
+            site_id=self._profile.site_id,
+            uid=uid,
+            username=username,
+        )
 
     async def search(self, query: SearchQuery) -> SearchPage:
         params = {
@@ -333,6 +373,13 @@ class NexusPhpWebAdapter:
         except UnicodeDecodeError as exc:
             raise SiteAdapterError("SITE_INVALID_RESPONSE", "NexusPHP HTML 不是有效 UTF-8") from exc
 
+    async def _get_html_url(self, url: str) -> str:
+        raw = await self._get_bytes(url, limit=self._max_html_bytes, accept="text/html")
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SiteAdapterError("SITE_INVALID_RESPONSE", "NexusPHP HTML 不是有效 UTF-8") from exc
+
     async def _get_bytes(
         self, url: str, *, limit: int, accept: str = "application/x-bittorrent"
     ) -> bytes:
@@ -340,12 +387,25 @@ class NexusPhpWebAdapter:
         chunks: list[bytes] = []
         total = 0
         try:
+            headers = {"Accept": accept, "Cookie": self._cookie}
+            if self._user_agent:
+                headers["User-Agent"] = self._user_agent
+            if self._browser_emulation_enabled:
+                headers.update(
+                    {
+                        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                        "Cache-Control": "no-cache",
+                        "Pragma": "no-cache",
+                        "Referer": f"{self._base_url}/",
+                    }
+                )
             async with (
                 httpx2.AsyncClient(
-                    headers={"Accept": accept, "Cookie": self._cookie},
+                    headers=headers,
                     timeout=self._timeout_seconds,
                     follow_redirects=False,
                     transport=self._transport,
+                    proxy=self._proxy_url,
                 ) as client,
                 client.stream("GET", url) as response,
             ):
@@ -430,6 +490,9 @@ class HDTimeAdapter(NexusPhpWebAdapter):
         base_url: str = HDTIME_PROFILE.default_base_url,
         transport: httpx2.AsyncBaseTransport | None = None,
         timeout_seconds: float = 10.0,
+        user_agent: str | None = None,
+        browser_emulation_enabled: bool = False,
+        proxy_url: str | None = None,
         max_html_bytes: int = _DEFAULT_HTML_LIMIT_BYTES,
         max_torrent_bytes: int = _DEFAULT_TORRENT_LIMIT_BYTES,
     ) -> None:
@@ -439,6 +502,9 @@ class HDTimeAdapter(NexusPhpWebAdapter):
             base_url=base_url,
             transport=transport,
             timeout_seconds=timeout_seconds,
+            user_agent=user_agent,
+            browser_emulation_enabled=browser_emulation_enabled,
+            proxy_url=proxy_url,
             max_html_bytes=max_html_bytes,
             max_torrent_bytes=max_torrent_bytes,
         )
@@ -452,6 +518,9 @@ class HHClubAdapter(NexusPhpWebAdapter):
         base_url: str = HHCLUB_PROFILE.default_base_url,
         transport: httpx2.AsyncBaseTransport | None = None,
         timeout_seconds: float = 10.0,
+        user_agent: str | None = None,
+        browser_emulation_enabled: bool = False,
+        proxy_url: str | None = None,
         max_html_bytes: int = _DEFAULT_HTML_LIMIT_BYTES,
         max_torrent_bytes: int = _DEFAULT_TORRENT_LIMIT_BYTES,
     ) -> None:
@@ -464,6 +533,9 @@ class HHClubAdapter(NexusPhpWebAdapter):
             base_url=normalized_base_url,
             transport=transport,
             timeout_seconds=timeout_seconds,
+            user_agent=user_agent,
+            browser_emulation_enabled=browser_emulation_enabled,
+            proxy_url=proxy_url,
             max_html_bytes=max_html_bytes,
             max_torrent_bytes=max_torrent_bytes,
         )
@@ -560,6 +632,93 @@ def _details_link(links: list[tuple[str, str | None, str]]) -> tuple[str, str] |
         if display:
             return values[0], display
     return None
+
+
+def _user_profile_link(
+    links: list[tuple[str, str | None, str]],
+) -> tuple[str, str, str | None] | None:
+    for href, _, text in links:
+        parsed = urlsplit(href)
+        if _script_name(parsed.path) != "userdetails.php":
+            continue
+        values = parse_qs(parsed.query).get("id")
+        if not values or not values[0].isdigit():
+            continue
+        username = _clean_text(text) or None
+        return href, values[0], username
+    return None
+
+
+def _parse_nexus_user_profile(
+    parser: _NexusHtmlParser,
+    *,
+    site_id: str,
+    uid: str | None,
+    username: str | None,
+) -> SiteUserProfile:
+    text = "|".join(parser.text_parts)
+    uploaded = _profile_size(text, "上传量", "Uploaded")
+    downloaded = _profile_size(text, "下载量", "Downloaded")
+    ratio = _profile_float(text, "分享率", "Ratio")
+    if ratio is None and uploaded is not None and downloaded not in {None, 0}:
+        ratio = uploaded / downloaded
+    return SiteUserProfile(
+        site_id=site_id,
+        uid=uid,
+        username=username or _profile_text(text, "用户名", "Username", max_length=256),
+        user_level=_profile_text(text, "用户等级", "等级", "Class", max_length=256),
+        real_uploaded_bytes=_profile_size(text, "真实上传量", "Real Uploaded"),
+        real_downloaded_bytes=_profile_size(text, "真实下载量", "Real Downloaded"),
+        uploaded_bytes=uploaded,
+        downloaded_bytes=downloaded,
+        ratio=ratio,
+        torrents_posted=_profile_int(text, "发种数", "发布种子", "Torrents Posted"),
+        seeding_count=_profile_int(text, "做种数", "当前做种", "Seeding"),
+        seeding_size_bytes=_profile_size(text, "做种量", "Seeding Size"),
+        bonus=_profile_float(text, "魔力值", "Bonus"),
+        seeding_points=_profile_float(text, "做种积分", "Seeding Points"),
+        bonus_per_hour=_profile_float(text, "每小时魔力值", "Bonus per hour"),
+    )
+
+
+def _profile_value(text: str, labels: tuple[str, ...], value_pattern: str) -> str | None:
+    for label in labels:
+        match = re.search(
+            rf"(?:^|\|)\s*{re.escape(label)}\s*[:：]?\s*(?:\|\s*)?({value_pattern})(?=\s*(?:\||$))",
+            text,
+            re.IGNORECASE,
+        )
+        if match is not None:
+            return _clean_text(match.group(1))
+    return None
+
+
+def _profile_text(text: str, *labels: str, max_length: int) -> str | None:
+    value = _profile_value(text, labels, r"[^|]{1,512}")
+    if value is None or len(value) > max_length:
+        return None
+    return value
+
+
+def _profile_size(text: str, *labels: str) -> int | None:
+    value = _profile_value(text, labels, r"[0-9]+(?:\.[0-9]+)?\s*[KMGTPE]?i?B")
+    return _parse_size(value or "")
+
+
+def _profile_int(text: str, *labels: str) -> int | None:
+    value = _profile_value(text, labels, r"[0-9][0-9,]*")
+    return _parse_nonnegative_int(value or "")
+
+
+def _profile_float(text: str, *labels: str) -> float | None:
+    value = _profile_value(text, labels, r"[0-9]+(?:\.[0-9]+)?")
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None
+    return parsed if 0 <= parsed < float("inf") else None
 
 
 def _download_href(links: list[tuple[str, str | None, str]], torrent_id: str) -> str | None:

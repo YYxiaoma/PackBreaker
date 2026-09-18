@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
@@ -32,7 +32,6 @@ interface DownloaderDraft {
   name: string;
   type: DownloaderKind;
   baseUrl: string;
-  category: string;
   mappings: PathMapping[];
   credentialMode: CredentialMode;
   username: string;
@@ -49,7 +48,7 @@ interface DiagnosticDraft {
 }
 
 const store = useDownloaderStore();
-const { items, loading, error, busy, diagnostics } = storeToRefs(store);
+const { items, loading, error, busy, diagnostics, metrics, metricErrors } = storeToRefs(store);
 const dialog = ref(false);
 const saving = ref(false);
 const diagnosticDialog = ref(false);
@@ -62,7 +61,6 @@ const draft = reactive<DownloaderDraft>({
   name: '',
   type: 'QBITTORRENT',
   baseUrl: '',
-  category: '',
   mappings: [],
   credentialMode: 'password',
   username: '',
@@ -81,8 +79,15 @@ const diagnosticReport = computed<PathDiagnosticReport | null>(() => {
   return diagnostics.value[diagnosticTargetId.value] ?? null;
 });
 
+let metricsTimer: ReturnType<typeof setInterval> | undefined;
+
 onMounted(() => {
   void refresh(false);
+  metricsTimer = setInterval(() => void store.refreshMetrics(), 15_000);
+});
+
+onUnmounted(() => {
+  if (metricsTimer) clearInterval(metricsTimer);
 });
 
 function kindLabel(kind: DownloaderKind): string {
@@ -106,11 +111,6 @@ function capability(item: Downloader, key: string): string | null {
   return typeof value === 'string' && value ? value : null;
 }
 
-function category(item: Downloader): string {
-  const value = item.monitor_rules.category;
-  return typeof value === 'string' && value ? value : '未设置';
-}
-
 function isBusy(item: Downloader, operation: string): boolean {
   return busy.value[`${operation}:${item.id}`] === true;
 }
@@ -122,7 +122,8 @@ function problemText(problem: ApiProblem): string {
 async function refresh(notify = true) {
   try {
     await store.refresh();
-    if (notify) ElMessage.success('下载器配置已刷新');
+    await store.refreshMetrics();
+    if (notify) ElMessage.success('下载器配置与运行指标已刷新');
   } catch (caught) {
     if (notify) ElMessage.error(problemText(toApiProblem(caught)));
   }
@@ -135,7 +136,6 @@ function resetDraft() {
     name: '',
     type: 'QBITTORRENT' as DownloaderKind,
     baseUrl: '',
-    category: '',
     mappings: [] as PathMapping[],
     credentialMode: 'password' as CredentialMode,
     username: '',
@@ -160,7 +160,6 @@ function openEdit(item: Downloader) {
     name: item.name,
     type: item.type,
     baseUrl: item.base_url,
-    category: category(item) === '未设置' ? '' : category(item),
     mappings: item.path_mappings.map((mapping) => ({ ...mapping })),
     credentialConfigured: item.credential_configured,
   });
@@ -258,12 +257,10 @@ async function save() {
   saving.value = true;
   try {
     const nextMappings = normalizedMappings();
-    const nextRules = draft.category.trim() ? { category: draft.category.trim() } : {};
     const common = {
       name: draft.name.trim(),
       type: draft.type,
       base_url: draft.baseUrl.trim(),
-      monitor_rules: nextRules,
       path_mappings: nextMappings,
     };
     if (current) {
@@ -271,9 +268,6 @@ async function save() {
       if (common.name !== current.name) patch.name = common.name;
       if (common.type !== current.type) patch.type = common.type;
       if (common.base_url !== current.base_url) patch.base_url = common.base_url;
-      if (JSON.stringify(common.monitor_rules) !== JSON.stringify(current.monitor_rules)) {
-        patch.monitor_rules = common.monitor_rules;
-      }
       if (!mappingsEqual(common.path_mappings, current.path_mappings)) {
         patch.path_mappings = common.path_mappings;
       }
@@ -287,7 +281,7 @@ async function save() {
       await store.update(current, patch);
       ElMessage.success('下载器配置已保存；安全相关变更会自动重新要求探测');
     } else {
-      await store.create({ ...common, ...(credential ? { credential } : {}) });
+      await store.create({ ...common, monitor_rules: {}, ...(credential ? { credential } : {}) });
       ElMessage.success('下载器配置已创建，默认保持停用');
     }
     dialog.value = false;
@@ -296,6 +290,77 @@ async function save() {
   } finally {
     saving.value = false;
   }
+}
+
+async function probeDraft() {
+  if (!/^https?:\/\//i.test(draft.baseUrl.trim())) {
+    ElMessage.warning('请输入合法的 HTTP / HTTPS 管理地址');
+    return;
+  }
+  const credential = credentialPayload();
+  if (credential === null) return;
+  try {
+    const result = await store.probe({
+      type: draft.type,
+      base_url: draft.baseUrl.trim(),
+      ...(credential ? { credential } : {}),
+    });
+    const version = result.capabilities.version;
+    ElMessage.success(
+      `只读连接测试通过${typeof version === 'string' ? ` · ${version}` : ''}；尚未保存配置`,
+    );
+  } catch (caught) {
+    await handleWriteProblem(caught);
+  }
+}
+
+function metricValue(
+  item: Downloader,
+  key:
+    | 'upload_speed_bytes_per_second'
+    | 'download_speed_bytes_per_second'
+    | 'total_content_size_bytes'
+    | 'free_space_bytes',
+): number | null | undefined {
+  if (metricErrors.value[item.id]) return undefined;
+  return metrics.value[item.id]?.[key];
+}
+
+function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 ? 0 : size >= 100 ? 0 : size >= 10 ? 1 : 2;
+  return `${size.toFixed(digits)} ${units[unit]}`;
+}
+
+function formatRate(value: number | null | undefined): string {
+  const rendered = formatBytes(value);
+  return rendered === '—' ? rendered : `${rendered}/s`;
+}
+
+function torrentCount(item: Downloader): string {
+  if (metricErrors.value[item.id]) return '—';
+  const metric = metrics.value[item.id];
+  if (!metric || metric.total_torrent_count === null) return '—';
+  return metric.active_torrent_count === null
+    ? String(metric.total_torrent_count)
+    : `${metric.active_torrent_count} / ${metric.total_torrent_count}`;
+}
+
+function metricStatus(item: Downloader): string {
+  const metric = metrics.value[item.id];
+  if (metricErrors.value[item.id]) {
+    return metric
+      ? `实时指标不可用 · 上次成功 ${new Date(metric.sampled_at).toLocaleString()}`
+      : '实时指标不可用';
+  }
+  return metric ? `采样于 ${new Date(metric.sampled_at).toLocaleString()}` : '正在读取实时指标';
 }
 
 async function testConnection(item: Downloader) {
@@ -379,8 +444,7 @@ async function remove(item: Downloader) {
 
 <template>
   <div>
-    <div class="section-heading">
-      <h2>下载器实例</h2>
+    <div class="section-heading downloader-heading-only-actions">
       <div class="downloader-heading-actions">
         <el-button :loading="loading" @click="refresh()"><RefreshCw :size="15" />刷新</el-button>
         <el-button type="primary" @click="openCreate"><Plus :size="15" />添加下载器</el-button>
@@ -424,13 +488,36 @@ async function remove(item: Downloader) {
             {{ item.credential_configured ? '凭证已配置' : '未配置凭证' }}
           </el-tag>
         </div>
+        <div class="runtime-metrics">
+          <div>
+            <span>上传速度</span>
+            <b>{{ formatRate(metricValue(item, 'upload_speed_bytes_per_second')) }}</b>
+          </div>
+          <div>
+            <span>下载速度</span>
+            <b>{{ formatRate(metricValue(item, 'download_speed_bytes_per_second')) }}</b>
+          </div>
+          <div>
+            <span>当前文件总大小</span>
+            <b>{{ formatBytes(metricValue(item, 'total_content_size_bytes')) }}</b>
+          </div>
+          <div>
+            <span>剩余空间</span>
+            <b>{{ formatBytes(metricValue(item, 'free_space_bytes')) }}</b>
+          </div>
+          <div>
+            <span>活动 / 总任务</span>
+            <b>{{ torrentCount(item) }}</b>
+          </div>
+        </div>
+        <small class="metric-status" :class="{ unavailable: metricErrors[item.id] }">
+          {{ metricStatus(item) }}
+        </small>
         <dl class="config-summary">
           <dt>客户端版本</dt>
           <dd>{{ capability(item, 'version') ?? '尚未探测' }}</dd>
           <dt>API / RPC 版本</dt>
           <dd>{{ capability(item, 'api_version') ?? '—' }}</dd>
-          <dt>监控分类 / 标签</dt>
-          <dd>{{ category(item) }}</dd>
           <dt>路径映射</dt>
           <dd>{{ item.path_mappings.length }} 条</dd>
         </dl>
@@ -525,10 +612,6 @@ async function remove(item: Downloader) {
           </div>
         </template>
 
-        <el-form-item label="监控分类 / 标签">
-          <el-input v-model="draft.category" placeholder="例如：大包" />
-        </el-form-item>
-
         <div class="mapping-editor-heading">
           <b>路径映射</b>
           <el-button size="small" @click="addMapping"><Plus :size="14" />添加规则</el-button>
@@ -547,6 +630,9 @@ async function remove(item: Downloader) {
       </el-form>
       <template #footer>
         <el-button @click="dialog = false">取消</el-button>
+        <el-button v-if="!editing" :loading="busy.probe === true" @click="probeDraft">
+          <Activity :size="14" />测试连接
+        </el-button>
         <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
       </template>
     </el-dialog>
@@ -629,6 +715,43 @@ async function remove(item: Downloader) {
   margin: 12px 0;
 }
 
+.downloader-heading-only-actions {
+  justify-content: flex-end;
+}
+
+.runtime-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.runtime-metrics > div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+
+.runtime-metrics span,
+.runtime-metrics b {
+  display: block;
+}
+
+.runtime-metrics span,
+.metric-status {
+  color: var(--el-text-color-secondary);
+}
+
+.runtime-metrics b {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.metric-status.unavailable {
+  color: var(--el-color-danger);
+}
+
 .mapping-list {
   display: grid;
   gap: 6px;
@@ -679,6 +802,10 @@ async function remove(item: Downloader) {
   .downloader-heading-actions {
     width: 100%;
     justify-content: flex-end;
+  }
+
+  .runtime-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .mapping-editor-row {

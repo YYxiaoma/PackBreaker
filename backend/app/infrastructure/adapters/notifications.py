@@ -35,15 +35,20 @@ class NotificationProviderFactory:
         *,
         kind: NotificationChannelKind,
         credential: NotificationCredential,
+        proxy_url: str | None = None,
     ) -> NotificationProvider:
         if kind is NotificationChannelKind.TELEGRAM:
             if not isinstance(credential, TelegramCredential):
                 raise ValueError("Telegram 通知凭证类型不匹配")
-            return TelegramNotificationProvider(credential, transport=self._transport)
+            return TelegramNotificationProvider(
+                credential, transport=self._transport, proxy_url=proxy_url
+            )
         if kind is NotificationChannelKind.SERVERCHAN:
             if not isinstance(credential, ServerChanCredential):
                 raise ValueError("Server酱通知凭证类型不匹配")
-            return ServerChanNotificationProvider(credential, transport=self._transport)
+            return ServerChanNotificationProvider(
+                credential, transport=self._transport, proxy_url=proxy_url
+            )
         raise AssertionError(f"未处理的通知渠道类型: {kind.value}")
 
 
@@ -53,10 +58,12 @@ class TelegramNotificationProvider:
         credential: TelegramCredential,
         *,
         transport: httpx2.AsyncBaseTransport | None = None,
+        proxy_url: str | None = None,
     ) -> None:
         self._token = credential.bot_token
         self._chat_id = credential.chat_id
         self._transport = transport
+        self._proxy_url = proxy_url
 
     async def test_connection(self) -> NotificationTestResult:
         await self.send(_TEST_MESSAGE)
@@ -70,6 +77,7 @@ class TelegramNotificationProvider:
                 timeout=10.0,
                 follow_redirects=False,
                 transport=self._transport,
+                proxy=self._proxy_url,
             ) as client:
                 response = await client.post(
                     url,
@@ -107,9 +115,11 @@ class ServerChanNotificationProvider:
         credential: ServerChanCredential,
         *,
         transport: httpx2.AsyncBaseTransport | None = None,
+        proxy_url: str | None = None,
     ) -> None:
         self._send_key = credential.send_key
         self._transport = transport
+        self._proxy_url = proxy_url
 
     async def test_connection(self) -> NotificationTestResult:
         await self.send(_TEST_MESSAGE)
@@ -122,6 +132,7 @@ class ServerChanNotificationProvider:
                 timeout=10.0,
                 follow_redirects=False,
                 transport=self._transport,
+                proxy=self._proxy_url,
             ) as client:
                 response = await client.post(
                     url,

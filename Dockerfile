@@ -21,7 +21,7 @@ COPY backend ./backend
 RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.11.16-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84 AS runtime
-ARG VERSION=0.1.5
+ARG VERSION=0.1.6
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 LABEL org.opencontainers.image.title="PackBreaker" \
@@ -53,6 +53,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=python-builder /opt/venv /opt/venv
 COPY --chown=packbreaker:packbreaker backend ./backend
+COPY --chown=packbreaker:packbreaker docs ./docs
 COPY --from=frontend-builder --chown=packbreaker:packbreaker /build/frontend/dist ./frontend/dist
 COPY --chown=packbreaker:packbreaker LICENSE README.md ./
 

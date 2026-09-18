@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from urllib.parse import urlsplit
 
@@ -8,6 +9,13 @@ class SiteKind(StrEnum):
     MTEAM = "MTEAM"
     HDTIME = "HDTIME"
     HHCLUB = "HHCLUB"
+    KEEPFRDS = "KEEPFRDS"
+    HDHOME = "HDHOME"
+    UBITS = "UBITS"
+    HDFANS = "HDFANS"
+    BTSCHOOL = "BTSCHOOL"
+    PTTIME = "PTTIME"
+    ROUSI_PRO = "ROUSI_PRO"
 
 
 class SiteCredentialKind(StrEnum):
@@ -19,6 +27,162 @@ class SiteProbeStatus(StrEnum):
     UNTESTED = "UNTESTED"
     OK = "OK"
     FAILED = "FAILED"
+
+
+class SiteSupportStatus(StrEnum):
+    SUPPORTED = "SUPPORTED"
+    PENDING_ADAPTER = "PENDING_ADAPTER"
+    PENDING_REAL_VALIDATION = "PENDING_REAL_VALIDATION"
+
+
+@dataclass(frozen=True, slots=True)
+class SiteProfile:
+    kind: SiteKind
+    display_name: str
+    base_url: str
+    credential_kind: SiteCredentialKind
+    request_timeout_seconds: int = 15
+    search_interval_seconds: float = 0.0
+    supports_user_agent: bool = False
+    supports_browser_emulation: bool = False
+    supports_proxy: bool = True
+    support_status: SiteSupportStatus = SiteSupportStatus.SUPPORTED
+
+    def __post_init__(self) -> None:
+        if not self.display_name.strip():
+            raise ValueError("站点 Profile 展示名称不能为空")
+        if not 1 <= self.request_timeout_seconds <= 120:
+            raise ValueError("站点 Profile 请求超时必须在 1～120 秒之间")
+        if not 0 <= self.search_interval_seconds <= 3600:
+            raise ValueError("站点 Profile 搜索间隔必须在 0～3600 秒之间")
+
+
+SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
+    SiteKind.MTEAM: SiteProfile(
+        kind=SiteKind.MTEAM,
+        display_name="M-TEAM",
+        base_url="https://kp.m-team.cc",
+        credential_kind=SiteCredentialKind.API_KEY,
+    ),
+    SiteKind.HDTIME: SiteProfile(
+        kind=SiteKind.HDTIME,
+        display_name="HDTime",
+        base_url="https://hdtime.org",
+        credential_kind=SiteCredentialKind.COOKIE,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+    ),
+    SiteKind.HHCLUB: SiteProfile(
+        kind=SiteKind.HHCLUB,
+        display_name="HHClub",
+        base_url="https://hhanclub.net",
+        credential_kind=SiteCredentialKind.COOKIE,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+    ),
+    SiteKind.KEEPFRDS: SiteProfile(
+        kind=SiteKind.KEEPFRDS,
+        display_name="KeepFrds",
+        base_url="https://pt.keepfrds.com",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_ADAPTER,
+    ),
+    SiteKind.HDHOME: SiteProfile(
+        kind=SiteKind.HDHOME,
+        display_name="HDHome",
+        base_url="https://hdhome.org",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_ADAPTER,
+    ),
+    SiteKind.UBITS: SiteProfile(
+        kind=SiteKind.UBITS,
+        display_name="UBits",
+        base_url="https://ubits.club",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_ADAPTER,
+    ),
+    SiteKind.HDFANS: SiteProfile(
+        kind=SiteKind.HDFANS,
+        display_name="HDFans",
+        base_url="https://hdfans.org",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_ADAPTER,
+    ),
+    SiteKind.BTSCHOOL: SiteProfile(
+        kind=SiteKind.BTSCHOOL,
+        display_name="BTSCHOOL",
+        base_url="https://pt.btschool.club",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_ADAPTER,
+    ),
+    SiteKind.PTTIME: SiteProfile(
+        kind=SiteKind.PTTIME,
+        display_name="PTTime",
+        base_url="https://www.pttime.org",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_ADAPTER,
+    ),
+    SiteKind.ROUSI_PRO: SiteProfile(
+        kind=SiteKind.ROUSI_PRO,
+        display_name="Rousi Pro",
+        base_url="https://rousi.pro",
+        credential_kind=SiteCredentialKind.API_KEY,
+        support_status=SiteSupportStatus.PENDING_ADAPTER,
+    ),
+}
+
+
+# Registry kinds may be visible before an adapter is allowed to persist configuration.
+# Keep database checks pinned to the actually supported set until each adapter passes
+# its contract + real read-only validation, avoiding a SQLite parent-table rebuild.
+PERSISTED_SITE_KINDS = frozenset({SiteKind.MTEAM, SiteKind.HDTIME, SiteKind.HHCLUB})
+PERSISTED_SITE_CREDENTIAL_KINDS = frozenset({SiteCredentialKind.API_KEY, SiteCredentialKind.COOKIE})
+
+
+DEFAULT_COOKIE_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
+
+def site_profiles() -> tuple[SiteProfile, ...]:
+    return tuple(SITE_PROFILE_REGISTRY[kind] for kind in SiteKind if kind in SITE_PROFILE_REGISTRY)
+
+
+def site_profile(kind: SiteKind) -> SiteProfile:
+    try:
+        return SITE_PROFILE_REGISTRY[kind]
+    except KeyError as exc:
+        raise ValueError("站点类型尚未注册 Profile") from exc
+
+
+def trusted_site_base_url(kind: SiteKind) -> str:
+    return site_profile(kind).base_url
+
+
+def site_kind_is_persistable(kind: SiteKind) -> bool:
+    return (
+        kind in PERSISTED_SITE_KINDS
+        and site_profile(kind).support_status is SiteSupportStatus.SUPPORTED
+    )
 
 
 def normalize_site_base_url(kind: SiteKind, value: str) -> str:
@@ -44,22 +208,15 @@ def normalize_site_base_url(kind: SiteKind, value: str) -> str:
         port not in {None, 443} or not (host == "m-team.cc" or host.endswith(".m-team.cc"))
     ):
         raise ValueError("M-Team 站点地址必须位于 https://*.m-team.cc")
-    if kind is SiteKind.HDTIME and (host != "hdtime.org" or port not in {None, 443}):
-        raise ValueError("HDTime 站点地址必须是 https://hdtime.org")
-    if kind is SiteKind.HHCLUB and (host != "hhanclub.net" or port not in {None, 443}):
-        raise ValueError("HHClub 站点地址必须是 https://hhanclub.net")
     netloc = host if port in {None, 443} else f"{host}:{port}"
-    return f"https://{netloc}"
+    normalized = f"https://{netloc}"
+    if kind is not SiteKind.MTEAM and normalized != trusted_site_base_url(kind):
+        raise ValueError(f"{site_profile(kind).display_name} 站点地址必须是受信任 Profile 固定地址")
+    return normalized
 
 
 def required_site_credential_kind(kind: SiteKind) -> SiteCredentialKind:
-    if kind is SiteKind.MTEAM:
-        return SiteCredentialKind.API_KEY
-    if kind is SiteKind.HDTIME:
-        return SiteCredentialKind.COOKIE
-    if kind is SiteKind.HHCLUB:
-        return SiteCredentialKind.COOKIE
-    raise ValueError("暂不支持该站点类型")
+    return site_profile(kind).credential_kind
 
 
 def normalize_site_credential(kind: SiteCredentialKind, value: str) -> str:

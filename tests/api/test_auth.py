@@ -6,7 +6,11 @@ from sqlalchemy import select
 
 from backend.app.api.dependencies import CSRF_COOKIE, SESSION_COOKIE
 from backend.app.config import AppSettings
-from backend.app.infrastructure.persistence.models import AdminSession
+from backend.app.infrastructure.persistence.models import (
+    Administrator,
+    AdminNotification,
+    AdminSession,
+)
 from backend.app.infrastructure.security import token_digest
 from backend.app.main import create_app
 
@@ -21,7 +25,7 @@ def _settings(tmp_path: Path) -> AppSettings:
 
 
 def _setup(client: TestClient) -> None:
-    response = client.post("/api/v1/auth/setup", json={"password": _PASSWORD})
+    response = client.post("/api/v1/auth/setup", json={"username": "admin", "password": _PASSWORD})
     assert response.status_code == 201
 
 
@@ -36,6 +40,8 @@ def test_auth_status_distinguishes_setup_from_logged_out(tmp_path: Path) -> None
             "authenticated": False,
             "permissions": [],
             "expires_at": None,
+            "username": None,
+            "must_change_password": False,
         }
 
         _setup(client)
@@ -46,6 +52,8 @@ def test_auth_status_distinguishes_setup_from_logged_out(tmp_path: Path) -> None
             "authenticated": False,
             "permissions": [],
             "expires_at": None,
+            "username": None,
+            "must_change_password": False,
         }
 
 
@@ -65,7 +73,10 @@ def test_setup_can_only_complete_once(tmp_path: Path) -> None:
         create_app(settings=_settings(tmp_path)), base_url="https://testserver"
     ) as client:
         _setup(client)
-        response = client.post("/api/v1/auth/setup", json={"password": _PASSWORD})
+        response = client.post(
+            "/api/v1/auth/setup",
+            json={"password": _PASSWORD},
+        )
 
     assert response.status_code == 409
     assert response.headers["content-type"].startswith("application/problem+json")
@@ -77,11 +88,14 @@ def test_login_session_csrf_and_logout_flow(tmp_path: Path) -> None:
     app = create_app(settings=_settings(tmp_path))
     with TestClient(app, base_url="https://testserver") as client:
         _setup(client)
-        rejected = client.post("/api/v1/auth/login", json={"password": "wrong password 123"})
+        rejected = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "wrong password 123"},
+        )
         assert rejected.status_code == 401
         assert rejected.json()["code"] == "AUTH_INVALID_CREDENTIALS"
 
-        login = client.post("/api/v1/auth/login", json={"password": _PASSWORD})
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": _PASSWORD})
         assert login.status_code == 200
         session_token = client.cookies.get(SESSION_COOKIE)
         csrf_token = client.cookies.get(CSRF_COOKIE)
@@ -134,7 +148,7 @@ def test_revoked_session_stays_revoked_after_app_restart(tmp_path: Path) -> None
     app = create_app(settings=settings)
     with TestClient(app, base_url="https://testserver") as client:
         _setup(client)
-        client.post("/api/v1/auth/login", json={"password": _PASSWORD})
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": _PASSWORD})
         session_token = client.cookies.get(SESSION_COOKIE)
         csrf_token = client.cookies.get(CSRF_COOKIE)
         assert session_token is not None and csrf_token is not None
@@ -155,7 +169,7 @@ def test_expired_session_is_rejected(tmp_path: Path) -> None:
     app = create_app(settings=_settings(tmp_path))
     with TestClient(app, base_url="https://testserver") as client:
         _setup(client)
-        client.post("/api/v1/auth/login", json={"password": _PASSWORD})
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": _PASSWORD})
         with app.state.runtime.session_factory() as session:
             stored = session.scalar(select(AdminSession))
             assert stored is not None
@@ -173,15 +187,136 @@ def test_login_failures_are_rate_limited(tmp_path: Path) -> None:
         for _ in range(5):
             response = client.post(
                 "/api/v1/auth/login",
-                json={"password": "wrong password 123"},
+                json={"username": "admin", "password": "wrong password 123"},
             )
             assert response.status_code == 401
 
         limited = client.post(
             "/api/v1/auth/login",
-            json={"password": "wrong password 123"},
+            json={"username": "admin", "password": "wrong password 123"},
         )
 
     assert limited.status_code == 429
     assert limited.json()["code"] == "AUTH_RATE_LIMITED"
     assert int(limited.headers["Retry-After"]) >= 1
+
+
+def test_temporary_bootstrap_password_requires_change_and_revokes_session(tmp_path: Path) -> None:
+    app = create_app(settings=_settings(tmp_path))
+    new_password = "new synthetic administrator password"
+    with TestClient(app, base_url="https://testserver") as client:
+        bootstrap = app.state.auth_service.bootstrap_initial_admin(
+            username="operator",
+            password=None,
+        )
+        assert bootstrap.created is True
+        assert bootstrap.temporary_password is not None
+        temporary_password = bootstrap.temporary_password
+
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "operator", "password": temporary_password},
+        )
+        assert login.status_code == 200
+        assert login.json()["must_change_password"] is True
+        csrf_token = client.cookies.get(CSRF_COOKIE)
+        assert csrf_token is not None
+
+        blocked = client.get("/api/v1/system/status")
+        assert blocked.status_code == 403
+        assert blocked.json()["code"] == "AUTH_PASSWORD_CHANGE_REQUIRED"
+
+        changed = client.post(
+            "/api/v1/auth/password",
+            headers={"X-CSRF-Token": csrf_token},
+            json={
+                "current_password": temporary_password,
+                "new_password": new_password,
+                "confirm_password": new_password,
+            },
+        )
+        assert changed.status_code == 204
+        assert client.get("/api/v1/auth/me").json()["authenticated"] is False
+
+        old_login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "operator", "password": temporary_password},
+        )
+        assert old_login.status_code == 401
+        relogin = client.post(
+            "/api/v1/auth/login",
+            json={"username": "operator", "password": new_password},
+        )
+        assert relogin.status_code == 200
+        assert relogin.json()["must_change_password"] is False
+
+        with app.state.runtime.session_factory() as session:
+            administrator = session.get(Administrator, "admin")
+            assert administrator is not None
+            assert administrator.username == "operator"
+            assert administrator.must_change_password is False
+            password_notice = session.scalar(
+                select(AdminNotification).where(
+                    AdminNotification.event_type == "AUTH_PASSWORD_CHANGED"
+                )
+            )
+            assert password_notice is not None
+            assert temporary_password not in password_notice.message
+            assert new_password not in password_notice.message
+
+
+def test_bootstrap_does_not_override_existing_administrator(tmp_path: Path) -> None:
+    app = create_app(settings=_settings(tmp_path))
+    original_password = "original synthetic administrator password"
+    with TestClient(app, base_url="https://testserver"):
+        first = app.state.auth_service.bootstrap_initial_admin(
+            username="admin",
+            password=original_password,
+        )
+        assert first.created is True
+        assert first.temporary_password is None
+
+        second = app.state.auth_service.bootstrap_initial_admin(
+            username="replacement",
+            password="replacement synthetic administrator password",
+        )
+        assert second.created is False
+        assert second.username == "admin"
+
+        with app.state.runtime.session_factory() as session:
+            administrator = session.get(Administrator, "admin")
+            assert administrator is not None
+            assert administrator.username == "admin"
+
+
+def test_admin_inbox_tracks_login_and_mark_read(tmp_path: Path) -> None:
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        _setup(client)
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": _PASSWORD},
+        )
+        assert login.status_code == 200
+        csrf_token = client.cookies.get(CSRF_COOKIE)
+        assert csrf_token is not None
+
+        unread = client.get("/api/v1/notifications/inbox/unread-count")
+        assert unread.status_code == 200
+        assert unread.json()["count"] == 1
+
+        inbox = client.get("/api/v1/notifications/inbox")
+        assert inbox.status_code == 200
+        items = inbox.json()["items"]
+        assert len(items) == 1
+        assert items[0]["event_type"] == "AUTH_LOGIN_SUCCESS"
+        assert _PASSWORD not in inbox.text
+
+        marked = client.post(
+            f"/api/v1/notifications/inbox/{items[0]['id']}/actions",
+            headers={"X-CSRF-Token": csrf_token},
+            json={"action": "mark_read"},
+        )
+        assert marked.status_code == 200
+        assert marked.json()["read_at"] is not None
+        assert client.get("/api/v1/notifications/inbox/unread-count").json()["count"] == 0

@@ -22,7 +22,12 @@ from backend.app.application.task_cancellation import (
 from backend.app.application.task_linking import TaskLinkingResult
 from backend.app.application.task_recovery import RecoveryOutcome, TaskRecoveryCoordinator
 from backend.app.application.tasks import TaskAnalysisService
-from backend.app.domain.site_adapter import SiteConnectionResult, TorrentDetails, TorrentPayload
+from backend.app.domain.site_adapter import (
+    SiteConnectionResult,
+    SiteUserProfile,
+    TorrentDetails,
+    TorrentPayload,
+)
 from backend.app.domain.site_search import SearchPage, SearchQuery, SiteSearchCapabilities
 from backend.app.domain.task_state import (
     PRE_SIDE_EFFECT_CANCELLATION_SCHEMA_VERSION,
@@ -59,6 +64,9 @@ class _BlockingSearchAdapter:
 
     async def test_connection(self) -> SiteConnectionResult:
         return SiteConnectionResult("blocking")
+
+    async def fetch_user_profile(self) -> SiteUserProfile:
+        return SiteUserProfile("blocking", uid="1", username="synthetic")
 
     async def search(self, query: SearchQuery) -> SearchPage:
         self._started.set()

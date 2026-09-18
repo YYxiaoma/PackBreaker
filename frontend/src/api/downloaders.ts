@@ -73,6 +73,22 @@ export interface DownloaderCreateInput {
   path_mappings: PathMapping[];
 }
 
+export interface DownloaderProbeInput {
+  type: DownloaderKind;
+  base_url: string;
+  credential?: DownloaderCredential;
+}
+
+export interface DownloaderRuntimeMetrics {
+  upload_speed_bytes_per_second: number | null;
+  download_speed_bytes_per_second: number | null;
+  total_content_size_bytes: number | null;
+  free_space_bytes: number | null;
+  active_torrent_count: number | null;
+  total_torrent_count: number | null;
+  sampled_at: string;
+}
+
 export interface DownloaderPatchInput {
   name?: string;
   type?: DownloaderKind;
@@ -137,6 +153,18 @@ export async function listDownloaderTorrents(
 
 export async function createDownloader(payload: DownloaderCreateInput): Promise<Downloader> {
   const response = await apiClient.post<Downloader>('/downloaders', payload);
+  return response.data;
+}
+
+export async function probeDownloader(
+  payload: DownloaderProbeInput,
+): Promise<ConnectionProbeResult> {
+  const response = await apiClient.post<ConnectionProbeResult>('/downloaders/probe', payload);
+  return response.data;
+}
+
+export async function getDownloaderMetrics(id: string): Promise<DownloaderRuntimeMetrics> {
+  const response = await apiClient.get<DownloaderRuntimeMetrics>(`/downloaders/${id}/metrics`);
   return response.data;
 }
 

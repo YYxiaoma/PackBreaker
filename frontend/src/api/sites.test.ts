@@ -4,6 +4,7 @@ import { apiClient } from './client';
 import {
   credentialKindForSite,
   deleteSite,
+  getSiteUserProfile,
   resetSiteCircuit,
   setSiteEnabled,
   updateSite,
@@ -27,6 +28,14 @@ describe('站点 API 并发前置条件', () => {
       { name: '新名称', clear_credential: false },
       { headers: { 'If-Match': '"7"' } },
     );
+  });
+
+  it('用户详情使用按需 profile 子资源，不会拼接未编码 site id', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { site_id: 'mteam' } });
+
+    await getSiteUserProfile('site/with slash');
+
+    expect(get).toHaveBeenCalledWith('/sites/site%2Fwith%20slash/profile');
   });
 
   it('删除、启停与 reset-circuit 都携带当前版本', async () => {

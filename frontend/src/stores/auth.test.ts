@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import { ApiProblem } from '../api/client';
 import {
+  changeAdministratorPassword,
   getAuthStatus,
   loginAdministrator,
   logoutAdministrator,
-  setupAdministrator,
 } from '../api/auth';
 import { useAuthStore } from './auth';
 
@@ -13,10 +13,10 @@ vi.mock('../api/auth', async () => {
   const actual = await vi.importActual<typeof import('../api/auth')>('../api/auth');
   return {
     ...actual,
+    changeAdministratorPassword: vi.fn(),
     getAuthStatus: vi.fn(),
     loginAdministrator: vi.fn(),
     logoutAdministrator: vi.fn(),
-    setupAdministrator: vi.fn(),
   };
 });
 
@@ -26,28 +26,23 @@ beforeEach(() => {
 });
 
 describe('管理员认证 store', () => {
-  it('首次初始化后立即建立管理员会话，且 store 不保存口令', async () => {
-    vi.mocked(getAuthStatus).mockResolvedValue({
-      configured: false,
-      authenticated: false,
-      permissions: [],
-      expires_at: null,
-    });
-    vi.mocked(setupAdministrator).mockResolvedValue();
+  it('用户名密码登录后建立会话，且 store 不保存口令', async () => {
     vi.mocked(loginAdministrator).mockResolvedValue({
       authenticated: true,
       expires_at: '2026-09-10T12:00:00Z',
+      username: 'operator',
+      must_change_password: false,
     });
     const store = useAuthStore();
-    await store.bootstrap();
 
     const password = 'synthetic-password-only-for-test';
-    await store.setup(password);
+    await store.login('operator', password);
 
-    expect(setupAdministrator).toHaveBeenCalledWith(password);
-    expect(loginAdministrator).toHaveBeenCalledWith(password);
+    expect(loginAdministrator).toHaveBeenCalledWith('operator', password);
     expect(store.authenticated).toBe(true);
     expect(store.configured).toBe(true);
+    expect(store.username).toBe('operator');
+    expect(store.mustChangePassword).toBe(false);
     expect(JSON.stringify(store.$state)).not.toContain(password);
   });
 
@@ -57,7 +52,7 @@ describe('管理员认证 store', () => {
     );
     const store = useAuthStore();
 
-    await expect(store.login('synthetic-long-password')).rejects.toMatchObject({
+    await expect(store.login('admin', 'synthetic-long-password')).rejects.toMatchObject({
       code: 'AUTH_SETUP_REQUIRED',
     });
     expect(store.configured).toBe(false);
@@ -68,14 +63,44 @@ describe('管理员认证 store', () => {
     vi.mocked(loginAdministrator).mockResolvedValue({
       authenticated: true,
       expires_at: '2026-09-10T12:00:00Z',
+      username: 'admin',
+      must_change_password: false,
     });
     vi.mocked(logoutAdministrator).mockResolvedValue();
     const store = useAuthStore();
-    await store.login('synthetic-long-password');
+    await store.login('admin', 'synthetic-long-password');
 
     await store.logout();
 
     expect(store.authenticated).toBe(false);
     expect(store.configured).toBe(true);
+  });
+
+  it('临时密码会话标记强制改密，改密成功后清除会话状态', async () => {
+    vi.mocked(loginAdministrator).mockResolvedValue({
+      authenticated: true,
+      expires_at: '2026-09-10T12:00:00Z',
+      username: 'admin',
+      must_change_password: true,
+    });
+    vi.mocked(changeAdministratorPassword).mockResolvedValue();
+    const store = useAuthStore();
+    await store.login('admin', 'temporary-synthetic-password');
+
+    expect(store.mustChangePassword).toBe(true);
+    await store.changePassword(
+      'temporary-synthetic-password',
+      'replacement-synthetic-password',
+      'replacement-synthetic-password',
+    );
+
+    expect(changeAdministratorPassword).toHaveBeenCalledWith({
+      current_password: 'temporary-synthetic-password',
+      new_password: 'replacement-synthetic-password',
+      confirm_password: 'replacement-synthetic-password',
+    });
+    expect(store.authenticated).toBe(false);
+    expect(store.mustChangePassword).toBe(false);
+    expect(JSON.stringify(store.$state)).not.toContain('replacement-synthetic-password');
   });
 });

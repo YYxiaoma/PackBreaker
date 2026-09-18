@@ -12,6 +12,7 @@ from backend.app.domain.media_matching import ExternalMediaId
 from backend.app.domain.site_adapter import (
     SiteAdapter,
     SiteConnectionResult,
+    SiteUserProfile,
     TorrentDetails,
     TorrentPayload,
 )
@@ -52,15 +53,41 @@ class SiteAdapterFactory:
         base_url: str,
         credential_kind: SiteCredentialKind,
         credential: str,
+        timeout_seconds: float = 15.0,
+        user_agent: str | None = None,
+        browser_emulation_enabled: bool = False,
+        proxy_url: str | None = None,
     ) -> SiteAdapter:
         if credential_kind is not required_site_credential_kind(kind):
             raise ValueError("站点类型与凭证类型不匹配")
         if kind is SiteKind.MTEAM:
-            return MTeamAdapter(credential, base_url=base_url, transport=self._transport)
+            return MTeamAdapter(
+                credential,
+                base_url=base_url,
+                transport=self._transport,
+                timeout_seconds=timeout_seconds,
+                proxy_url=proxy_url,
+            )
         if kind is SiteKind.HDTIME:
-            return HDTimeAdapter(credential, base_url=base_url, transport=self._transport)
+            return HDTimeAdapter(
+                credential,
+                base_url=base_url,
+                transport=self._transport,
+                timeout_seconds=timeout_seconds,
+                user_agent=user_agent,
+                browser_emulation_enabled=browser_emulation_enabled,
+                proxy_url=proxy_url,
+            )
         if kind is SiteKind.HHCLUB:
-            return HHClubAdapter(credential, base_url=base_url, transport=self._transport)
+            return HHClubAdapter(
+                credential,
+                base_url=base_url,
+                transport=self._transport,
+                timeout_seconds=timeout_seconds,
+                user_agent=user_agent,
+                browser_emulation_enabled=browser_emulation_enabled,
+                proxy_url=proxy_url,
+            )
         raise ValueError("暂不支持该站点类型")
 
 
@@ -74,6 +101,7 @@ class MTeamAdapter:
         base_url: str = _MTEAM_DEFAULT_BASE_URL,
         transport: httpx2.AsyncBaseTransport | None = None,
         timeout_seconds: float = 10.0,
+        proxy_url: str | None = None,
         max_torrent_bytes: int = _MTEAM_TORRENT_LIMIT_BYTES,
     ) -> None:
         if not api_key.strip():
@@ -91,6 +119,7 @@ class MTeamAdapter:
         ) = _normalize_mteam_origins(base_url)
         self._transport = transport
         self._timeout_seconds = timeout_seconds
+        self._proxy_url = proxy_url
         self._max_torrent_bytes = max_torrent_bytes
 
     async def capabilities(self) -> SiteSearchCapabilities:
@@ -111,6 +140,48 @@ class MTeamAdapter:
         if not isinstance(data, Mapping):
             raise SiteAdapterError("SITE_INVALID_RESPONSE", "M-Team profile 响应格式无效")
         return SiteConnectionResult(_MTEAM_SITE_ID)
+
+    async def fetch_user_profile(self) -> SiteUserProfile:
+        data = await self._post_api("/api/member/profile")
+        if not isinstance(data, Mapping):
+            raise SiteAdapterError("SITE_INVALID_RESPONSE", "M-Team profile 响应格式无效")
+        sources = _mteam_profile_sources(data)
+        uploaded = _first_nonnegative_int(sources, "uploaded", "upload", "uploadedBytes")
+        downloaded = _first_nonnegative_int(sources, "downloaded", "download", "downloadedBytes")
+        ratio = _first_nonnegative_float(sources, "ratio", "shareRatio", "shareRate")
+        if ratio is None and uploaded is not None and downloaded not in {None, 0}:
+            ratio = uploaded / downloaded
+        return SiteUserProfile(
+            site_id=_MTEAM_SITE_ID,
+            uid=_first_text(sources, "id", "uid", "userId", max_length=128),
+            username=_first_text(sources, "username", "name", "userName", max_length=256),
+            user_level=_first_text(
+                sources, "level", "userClass", "className", "role", max_length=256
+            ),
+            real_uploaded_bytes=_first_nonnegative_int(
+                sources, "realUploaded", "realUpload", "realUploadedBytes"
+            ),
+            real_downloaded_bytes=_first_nonnegative_int(
+                sources, "realDownloaded", "realDownload", "realDownloadedBytes"
+            ),
+            uploaded_bytes=uploaded,
+            downloaded_bytes=downloaded,
+            ratio=ratio,
+            torrents_posted=_first_nonnegative_int(
+                sources, "torrentCount", "torrents", "publishedCount"
+            ),
+            seeding_count=_first_nonnegative_int(sources, "seeding", "seedingCount", "seedCount"),
+            seeding_size_bytes=_first_nonnegative_int(
+                sources, "seedingSize", "seedingSizeBytes", "seedSize"
+            ),
+            bonus=_first_nonnegative_float(sources, "bonus", "bonusPoints", "magic"),
+            seeding_points=_first_nonnegative_float(
+                sources, "seedingPoints", "seedPoints", "seedBonus"
+            ),
+            bonus_per_hour=_first_nonnegative_float(
+                sources, "bonusPerHour", "hourlyBonus", "bonusHour"
+            ),
+        )
 
     async def search(self, query: SearchQuery) -> SearchPage:
         payload: dict[str, object] = {
@@ -169,6 +240,7 @@ class MTeamAdapter:
                 timeout=self._timeout_seconds,
                 follow_redirects=False,
                 transport=self._transport,
+                proxy=self._proxy_url,
             ) as client:
                 response = await client.post(f"{self._base_url}{path}", json=json, data=form)
         except (httpx2.TimeoutException, httpx2.NetworkError) as exc:
@@ -264,6 +336,7 @@ class MTeamAdapter:
                 timeout=self._timeout_seconds,
                 follow_redirects=False,
                 transport=self._transport,
+                proxy=self._proxy_url,
             ) as client:
                 while True:
                     async with client.stream("GET", current_url) as response:
@@ -425,6 +498,55 @@ def _optional_nonnegative_int(value: object) -> int | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return parsed if parsed >= 0 else None
+
+
+def _optional_nonnegative_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(cast(Any, value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if 0 <= parsed < float("inf") else None
+
+
+def _mteam_profile_sources(value: Mapping[object, object]) -> tuple[Mapping[object, object], ...]:
+    sources: list[Mapping[object, object]] = [value]
+    for key in ("member", "user", "profile", "status", "stats", "memberCount"):
+        nested = value.get(key)
+        if isinstance(nested, Mapping):
+            sources.append(nested)
+    return tuple(sources)
+
+
+def _first_text(
+    sources: tuple[Mapping[object, object], ...],
+    *keys: str,
+    max_length: int,
+) -> str | None:
+    for source in sources:
+        for key in keys:
+            if (value := _optional_text(source.get(key), max_length=max_length)) is not None:
+                return value
+    return None
+
+
+def _first_nonnegative_int(sources: tuple[Mapping[object, object], ...], *keys: str) -> int | None:
+    for source in sources:
+        for key in keys:
+            if (value := _optional_nonnegative_int(source.get(key))) is not None:
+                return value
+    return None
+
+
+def _first_nonnegative_float(
+    sources: tuple[Mapping[object, object], ...], *keys: str
+) -> float | None:
+    for source in sources:
+        for key in keys:
+            if (value := _optional_nonnegative_float(source.get(key))) is not None:
+                return value
+    return None
 
 
 def _optional_aware_datetime(value: object) -> datetime | None:

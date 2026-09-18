@@ -64,7 +64,12 @@ from backend.app.domain.execution_plan import (
 )
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.repair import RepairActionKind, RepairMode
-from backend.app.domain.site_adapter import SiteConnectionResult, TorrentDetails, TorrentPayload
+from backend.app.domain.site_adapter import (
+    SiteConnectionResult,
+    SiteUserProfile,
+    TorrentDetails,
+    TorrentPayload,
+)
 from backend.app.domain.site_search import SearchPage, SearchQuery, SiteSearchCapabilities
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.verification import DownloaderKind, VerificationLevel
@@ -110,6 +115,9 @@ class _FakeSiteAdapter:
 
     async def test_connection(self) -> SiteConnectionResult:
         return SiteConnectionResult("fake")
+
+    async def fetch_user_profile(self) -> SiteUserProfile:
+        return SiteUserProfile("fake", uid="1", username="synthetic")
 
     async def search(self, query: SearchQuery) -> SearchPage:
         return SearchPage("fake", query.page, (), False, 0)

@@ -27,7 +27,12 @@ from backend.app.application.tasks import TaskAnalysisService
 from backend.app.config import AppSettings
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.repair import RepairAction, RepairActionKind, RepairMode, RepairPlan
-from backend.app.domain.site_adapter import SiteConnectionResult, TorrentDetails, TorrentPayload
+from backend.app.domain.site_adapter import (
+    SiteConnectionResult,
+    SiteUserProfile,
+    TorrentDetails,
+    TorrentPayload,
+)
 from backend.app.domain.site_search import (
     SearchPage,
     SearchQuery,
@@ -73,6 +78,9 @@ class _FakeAdapter:
 
     async def test_connection(self) -> SiteConnectionResult:
         return SiteConnectionResult("fake")
+
+    async def fetch_user_profile(self) -> SiteUserProfile:
+        return SiteUserProfile("fake", uid="1", username="synthetic")
 
     async def search(self, query: SearchQuery) -> SearchPage:
         candidate = normalize_candidate_meta(
@@ -1884,8 +1892,18 @@ def _authenticated_client(tmp_path: Path) -> tuple[TestClient, FastAPI, AppSetti
     app = create_app(settings=settings)
     client = TestClient(app, base_url="https://testserver")
     client.__enter__()
-    assert client.post("/api/v1/auth/setup", json={"password": _PASSWORD}).status_code == 201
-    assert client.post("/api/v1/auth/login", json={"password": _PASSWORD}).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/auth/setup", json={"username": "admin", "password": _PASSWORD}
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": _PASSWORD}
+        ).status_code
+        == 200
+    )
     return client, app, settings
 
 

@@ -21,8 +21,18 @@ def _client(tmp_path: Path) -> TestClient:
     )
     client = TestClient(create_app(settings=settings), base_url="https://testserver")
     client.__enter__()
-    assert client.post("/api/v1/auth/setup", json={"password": _PASSWORD}).status_code == 201
-    assert client.post("/api/v1/auth/login", json={"password": _PASSWORD}).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/auth/setup", json={"username": "admin", "password": _PASSWORD}
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": _PASSWORD}
+        ).status_code
+        == 200
+    )
     return client
 
 

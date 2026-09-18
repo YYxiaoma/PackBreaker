@@ -5,13 +5,17 @@ import {
   deleteDownloader,
   diagnoseDownloaderPaths,
   getDownloader,
+  getDownloaderMetrics,
   listDownloaders,
+  probeDownloader,
   setDownloaderEnabled,
   testDownloader,
   updateDownloader,
   type Downloader,
   type DownloaderCreateInput,
   type DownloaderPatchInput,
+  type DownloaderProbeInput,
+  type DownloaderRuntimeMetrics,
   type PathDiagnosticProbeInput,
   type PathDiagnosticReport,
 } from '../api/downloaders';
@@ -23,6 +27,8 @@ export const useDownloaderStore = defineStore('downloaders', () => {
   const error = ref<ApiProblem | null>(null);
   const busy = ref<Record<string, boolean>>({});
   const diagnostics = ref<Record<string, PathDiagnosticReport>>({});
+  const metrics = ref<Record<string, DownloaderRuntimeMetrics>>({});
+  const metricErrors = ref<Record<string, ApiProblem>>({});
 
   function replace(item: Downloader) {
     const index = items.value.findIndex((current) => current.id === item.id);
@@ -42,6 +48,8 @@ export const useDownloaderStore = defineStore('downloaders', () => {
       if (problem.status === 401) {
         items.value = [];
         diagnostics.value = {};
+        metrics.value = {};
+        metricErrors.value = {};
       }
       throw problem;
     } finally {
@@ -62,6 +70,8 @@ export const useDownloaderStore = defineStore('downloaders', () => {
       if (problem.status === 401) {
         items.value = [];
         diagnostics.value = {};
+        metrics.value = {};
+        metricErrors.value = {};
       }
       throw problem;
     } finally {
@@ -90,6 +100,8 @@ export const useDownloaderStore = defineStore('downloaders', () => {
       await deleteDownloader(item.id, item.version);
       items.value = items.value.filter((current) => current.id !== item.id);
       delete diagnostics.value[item.id];
+      delete metrics.value[item.id];
+      delete metricErrors.value[item.id];
     });
   }
 
@@ -105,6 +117,49 @@ export const useDownloaderStore = defineStore('downloaders', () => {
       await refreshOne(item.id);
       return result;
     });
+  }
+
+  async function probe(payload: DownloaderProbeInput) {
+    return guarded('probe', () => probeDownloader(payload));
+  }
+
+  async function refreshMetrics() {
+    const current = [...items.value];
+    if (!current.length) {
+      metrics.value = {};
+      metricErrors.value = {};
+      return;
+    }
+    const results = await Promise.all(
+      current.map(async (item) => {
+        try {
+          return { id: item.id, metric: await getDownloaderMetrics(item.id), problem: null };
+        } catch (caught) {
+          return { id: item.id, metric: null, problem: toApiProblem(caught) };
+        }
+      }),
+    );
+    const unauthorized = results.find((result) => result.problem?.status === 401)?.problem;
+    if (unauthorized) {
+      error.value = unauthorized;
+      items.value = [];
+      diagnostics.value = {};
+      metrics.value = {};
+      metricErrors.value = {};
+      return;
+    }
+    const liveIds = new Set(items.value.map((item) => item.id));
+    const nextMetrics = Object.fromEntries(
+      Object.entries(metrics.value).filter(([id]) => liveIds.has(id)),
+    ) as Record<string, DownloaderRuntimeMetrics>;
+    const nextErrors: Record<string, ApiProblem> = {};
+    for (const result of results) {
+      if (!liveIds.has(result.id)) continue;
+      if (result.metric) nextMetrics[result.id] = result.metric;
+      else if (result.problem) nextErrors[result.id] = result.problem;
+    }
+    metrics.value = nextMetrics;
+    metricErrors.value = nextErrors;
   }
 
   async function diagnose(item: Downloader, probes: PathDiagnosticProbeInput[]) {
@@ -130,10 +185,14 @@ export const useDownloaderStore = defineStore('downloaders', () => {
     error,
     busy,
     diagnostics,
+    metrics,
+    metricErrors,
     refresh,
     create,
     update,
     remove,
+    probe,
+    refreshMetrics,
     testConnection,
     diagnose,
     setEnabled,

@@ -13,6 +13,7 @@ from weakref import WeakValueDictionary
 from backend.app.domain.site_adapter import (
     SiteAdapter,
     SiteConnectionResult,
+    SiteUserProfile,
     TorrentDetails,
     TorrentPayload,
 )
@@ -150,6 +151,7 @@ class SiteReliabilityRegistry:
         config_id: str,
         config_version: int,
         adapter: SiteAdapter,
+        min_request_interval_seconds: float | None = None,
     ) -> SiteAdapter:
         if not config_id.strip() or config_version < 1:
             raise ValueError("站点可靠性绑定必须包含有效配置 ID 与 version")
@@ -160,6 +162,7 @@ class SiteReliabilityRegistry:
             self._policy,
             config_id=config_id,
             config_version=config_version,
+            min_request_interval_seconds=min_request_interval_seconds,
             clock=self._clock,
             sleep=self._sleep,
             random_fn=self._random,
@@ -255,6 +258,7 @@ class ReliableSiteAdapter:
         *,
         config_id: str,
         config_version: int,
+        min_request_interval_seconds: float | None,
         clock: Callable[[], float],
         sleep: Callable[[float], Awaitable[None]],
         random_fn: Callable[[], float],
@@ -265,6 +269,7 @@ class ReliableSiteAdapter:
         self._policy = policy
         self._config_id = config_id
         self._config_version = config_version
+        self._min_request_interval_seconds = max(0.0, min_request_interval_seconds or 0.0)
         self._clock = clock
         self._sleep = sleep
         self._random = random_fn
@@ -280,6 +285,10 @@ class ReliableSiteAdapter:
 
     async def test_connection(self) -> SiteConnectionResult:
         return await self._invoke(self._delegate.test_connection)
+
+    async def fetch_user_profile(self) -> SiteUserProfile:
+        # 用户详情只在显式打开/刷新详情时读取，不与列表刷新绑定。
+        return await self._invoke(self._delegate.fetch_user_profile)
 
     async def search(self, query: SearchQuery) -> SearchPage:
         key: Hashable = ("search", query)
@@ -346,7 +355,10 @@ class ReliableSiteAdapter:
             async with self._state.semaphore:
                 rate_deadline = deadline if attempt > 1 else None
                 if not await self._wait_for_rate_slot(
-                    capabilities.min_request_interval_seconds,
+                    max(
+                        capabilities.min_request_interval_seconds,
+                        self._min_request_interval_seconds,
+                    ),
                     deadline=rate_deadline,
                 ):
                     break

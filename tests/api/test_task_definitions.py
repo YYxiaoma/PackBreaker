@@ -1270,8 +1270,18 @@ def _authenticated_client(tmp_path: Path) -> tuple[TestClient, FastAPI]:
     app = create_app(settings=settings)
     client = TestClient(app, base_url="https://testserver")
     client.__enter__()
-    assert client.post("/api/v1/auth/setup", json={"password": _PASSWORD}).status_code == 201
-    assert client.post("/api/v1/auth/login", json={"password": _PASSWORD}).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/auth/setup", json={"username": "admin", "password": _PASSWORD}
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": _PASSWORD}
+        ).status_code
+        == 200
+    )
     return client, app
 
 

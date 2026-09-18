@@ -37,6 +37,11 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
         "task_execution_plan",
         "notification_channel",
         "notification_outbox",
+        "admin_notification",
+        "ai_agent_setting",
+        "ai_channel_binding",
+        "ai_conversation",
+        "ai_message",
         "history_scan",
         "history_scan_file",
         "history_scan_materialization",
@@ -179,6 +184,17 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     } == {"uq_task_execution_plan_plan_digest"}
     site_columns = {column["name"] for column in inspector.get_columns("site")}
     assert "credential_kind" in site_columns
+    assert {
+        "request_timeout_seconds",
+        "search_interval_seconds",
+        "user_agent",
+        "browser_emulation_enabled",
+        "proxy_enabled",
+        "proxy_host",
+        "proxy_port",
+        "proxy_username",
+        "proxy_secret_id",
+    }.issubset(site_columns)
     site_checks = {constraint["name"] for constraint in inspector.get_check_constraints("site")}
     assert {"ck_site_type", "ck_site_credential_kind"}.issubset(site_checks)
     with engine.begin() as connection:
@@ -203,6 +219,97 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("notification_outbox")
     } == {"uq_notification_outbox_channel_subject_event_key"}
+    administrator_columns = {column["name"] for column in inspector.get_columns("administrator")}
+    assert {
+        "username",
+        "must_change_password",
+        "password_changed_at",
+        "last_login_at",
+    }.issubset(administrator_columns)
+    channel_columns = {column["name"] for column in inspector.get_columns("notification_channel")}
+    assert {
+        "event_types",
+        "proxy_enabled",
+        "proxy_host",
+        "proxy_port",
+        "proxy_username",
+        "proxy_secret_id",
+    }.issubset(channel_columns)
+    ai_setting_columns = {column["name"] for column in inspector.get_columns("ai_agent_setting")}
+    assert {
+        "enabled",
+        "provider_kind",
+        "base_url",
+        "api_key_secret_id",
+        "model",
+        "request_timeout_seconds",
+        "max_context_messages",
+        "data_scopes",
+        "connection_status",
+        "last_test_at",
+        "version",
+    }.issubset(ai_setting_columns)
+    engine.dispose()
+
+
+def test_v015_database_upgrades_to_v016_management_foundation(tmp_path: Path) -> None:
+    database_path = tmp_path / "v015-to-v016.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database_path)
+    command.upgrade(config, "0024_task_center_v015")
+
+    engine = create_engine(sqlite_database_url(database_path))
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO administrator (id, password_hash, created_at, updated_at) "
+                "VALUES ('admin', 'legacy-hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO site "
+                "(id, name, type, base_url, credential_kind, secret_id, capabilities, "
+                "connection_status, enabled, version, last_test_at, created_at, updated_at) "
+                "VALUES ('legacy-site', 'legacy-site', 'MTEAM', 'https://api.m-team.cc', "
+                "'API_KEY', NULL, '{}', 'UNTESTED', 0, 1, NULL, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO notification_channel "
+                "(id, name, type, secret_id, task_link_base_url, aggregation_window_seconds, "
+                "connection_status, enabled, version, last_test_at, created_at, updated_at) "
+                "VALUES ('legacy-channel', 'legacy-channel', 'TELEGRAM', NULL, NULL, 300, "
+                "'UNTESTED', 0, 1, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    command.upgrade(config, "head")
+    command.check(config)
+    with engine.connect() as connection:
+        administrator = connection.execute(
+            text(
+                "SELECT username, must_change_password, password_hash "
+                "FROM administrator WHERE id = 'admin'"
+            )
+        ).one()
+        site = connection.execute(
+            text(
+                "SELECT request_timeout_seconds, search_interval_seconds, proxy_enabled "
+                "FROM site WHERE id = 'legacy-site'"
+            )
+        ).one()
+        channel = connection.execute(
+            text(
+                "SELECT event_types, proxy_enabled FROM notification_channel "
+                "WHERE id = 'legacy-channel'"
+            )
+        ).one()
+    assert administrator == ("admin", 0, "legacy-hash")
+    assert site == (15, 0, 0)
+    assert channel == ("[]", 0)
     engine.dispose()
 
 

@@ -5,30 +5,71 @@ import { Activity, Bell, Plus, Settings2, Trash2 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 import { ApiProblem } from '../api/client';
-import type { NotificationChannel, NotificationChannelKind } from '../api/notifications';
+import type {
+  NotificationChannel,
+  NotificationChannelKind,
+  NotificationEventType,
+  NotificationProxyInput,
+  NotificationProxyPatchInput,
+} from '../api/notifications';
 import { useNotificationStore } from '../stores/notifications';
+
+interface NotificationDraft {
+  name: string;
+  type: NotificationChannelKind;
+  enabled: boolean;
+  eventTypes: NotificationEventType[];
+  botToken: string;
+  chatId: string;
+  sendKey: string;
+  proxyEnabled: boolean;
+  proxyHost: string;
+  proxyPort: number | null;
+  proxyUsername: string;
+  proxyPassword: string;
+  clearProxyPassword: boolean;
+}
+
+const EVENT_OPTIONS: Array<{ value: NotificationEventType; label: string }> = [
+  { value: 'AUTH_LOGIN_SUCCESS', label: '登录' },
+  { value: 'AUTH_PASSWORD_CHANGED', label: '修改密码' },
+  { value: 'TASK_EXECUTION_RESULT', label: '任务执行结果' },
+  { value: 'DOWNLOADER_CREATED', label: '添加下载器' },
+  { value: 'SITE_CREATED', label: '添加站点' },
+];
 
 const store = useNotificationStore();
 const { items, loading, busy, error } = storeToRefs(store);
 const dialogVisible = ref(false);
 const editing = ref<NotificationChannel | null>(null);
 const replaceCredential = ref(false);
-const draft = reactive({
+const draft = reactive<NotificationDraft>({
   name: '',
   type: 'TELEGRAM' as NotificationChannelKind,
-  taskLinkBaseUrl: '',
-  aggregationWindowSeconds: 300,
+  enabled: false,
+  eventTypes: EVENT_OPTIONS.map((item) => item.value),
   botToken: '',
   chatId: '',
   sendKey: '',
+  proxyEnabled: false,
+  proxyHost: '',
+  proxyPort: null,
+  proxyUsername: '',
+  proxyPassword: '',
+  clearProxyPassword: false,
 });
 
 onMounted(() => void store.refresh().catch(() => undefined));
 
-function resetSecrets(): void {
+function resetCredentialSecrets(): void {
   draft.botToken = '';
   draft.chatId = '';
   draft.sendKey = '';
+}
+
+function resetSecrets(): void {
+  resetCredentialSecrets();
+  draft.proxyPassword = '';
 }
 
 function openCreate(): void {
@@ -37,8 +78,13 @@ function openCreate(): void {
   Object.assign(draft, {
     name: '',
     type: 'TELEGRAM' as NotificationChannelKind,
-    taskLinkBaseUrl: '',
-    aggregationWindowSeconds: 300,
+    enabled: false,
+    eventTypes: EVENT_OPTIONS.map((item) => item.value),
+    proxyEnabled: false,
+    proxyHost: '',
+    proxyPort: null,
+    proxyUsername: '',
+    clearProxyPassword: false,
   });
   resetSecrets();
   dialogVisible.value = true;
@@ -50,8 +96,13 @@ function openEdit(channel: NotificationChannel): void {
   Object.assign(draft, {
     name: channel.name,
     type: channel.type,
-    taskLinkBaseUrl: channel.task_link_base_url ?? '',
-    aggregationWindowSeconds: channel.aggregation_window_seconds,
+    enabled: channel.enabled,
+    eventTypes: [...channel.event_types],
+    proxyEnabled: channel.proxy_enabled,
+    proxyHost: channel.proxy_host ?? '',
+    proxyPort: channel.proxy_port,
+    proxyUsername: channel.proxy_username ?? '',
+    clearProxyPassword: false,
   });
   resetSecrets();
   dialogVisible.value = true;
@@ -72,30 +123,99 @@ function credentialPayload(kind: NotificationChannelKind): Record<string, unknow
   return { serverchan: { send_key: draft.sendKey.trim() } };
 }
 
+function proxyPayload(): NotificationProxyInput {
+  if (draft.proxyEnabled && (!draft.proxyHost.trim() || draft.proxyPort === null)) {
+    throw new Error('启用代理时请填写代理地址和端口');
+  }
+  return {
+    enabled: draft.proxyEnabled,
+    host: draft.proxyHost.trim() || null,
+    port: draft.proxyPort,
+    username: draft.proxyUsername.trim() || null,
+    ...(draft.proxyPassword ? { password: draft.proxyPassword } : {}),
+  };
+}
+
+function proxyPatchPayload(): NotificationProxyPatchInput {
+  return {
+    ...proxyPayload(),
+    clear_password: draft.clearProxyPassword,
+  };
+}
+
+function eventLabel(type: NotificationEventType): string {
+  return EVENT_OPTIONS.find((item) => item.value === type)?.label ?? type;
+}
+
+async function sendTestMessage(): Promise<void> {
+  try {
+    if (editing.value) {
+      await store.testConnection(editing.value);
+      ElMessage.success('已使用当前保存配置发送测试消息');
+      return;
+    }
+    await store.probeTemporary({
+      type: draft.type,
+      ...credentialPayload(draft.type),
+      proxy: proxyPayload(),
+    });
+    ElMessage.success('测试消息发送成功；当前表单尚未保存');
+  } catch (caught) {
+    if (caught instanceof Error && !(caught instanceof ApiProblem))
+      ElMessage.warning(caught.message);
+    else ElMessage.error(caught instanceof ApiProblem ? caught.message : '测试消息发送失败');
+  }
+}
+
 async function save(): Promise<void> {
   if (!draft.name.trim()) {
     ElMessage.warning('请输入渠道名称');
     return;
   }
+  if (!draft.eventTypes.length) {
+    ElMessage.warning('请至少选择一种事件通知类型');
+    return;
+  }
   try {
     if (editing.value === null) {
-      await store.create({
+      const created = await store.create({
         name: draft.name.trim(),
         type: draft.type,
-        task_link_base_url: draft.taskLinkBaseUrl.trim() || null,
-        aggregation_window_seconds: draft.aggregationWindowSeconds,
+        event_types: [...draft.eventTypes],
+        proxy: proxyPayload(),
         ...credentialPayload(draft.type),
       });
-      ElMessage.success('通知渠道已保存；请先测试连接，再启用');
+      if (draft.enabled) {
+        try {
+          await store.testConnection(created);
+          const tested = store.items.find((item) => item.id === created.id);
+          if (tested) await store.setEnabled(tested, true);
+          ElMessage.success('通知渠道已保存、测试并启用');
+        } catch (caught) {
+          ElMessage.warning(
+            caught instanceof ApiProblem
+              ? `渠道已保存但保持停用：${caught.message}`
+              : '渠道已保存但测试失败，保持停用',
+          );
+        }
+      } else {
+        ElMessage.success('通知渠道已保存并保持停用');
+      }
     } else {
       const payload: Parameters<typeof store.update>[1] = {
         name: draft.name.trim(),
-        task_link_base_url: draft.taskLinkBaseUrl.trim() || null,
-        aggregation_window_seconds: draft.aggregationWindowSeconds,
+        event_types: [...draft.eventTypes],
         credential_action: replaceCredential.value ? 'SET' : 'KEEP',
+        proxy: proxyPatchPayload(),
       };
       if (replaceCredential.value) Object.assign(payload, credentialPayload(editing.value.type));
-      await store.update(editing.value, payload);
+      const updated = await store.update(editing.value, payload);
+      if (!draft.enabled && updated.enabled) {
+        await store.setEnabled(updated, false);
+      } else if (draft.enabled && !updated.enabled) {
+        if (updated.connection_status === 'OK') await store.setEnabled(updated, true);
+        else ElMessage.warning('配置已保存；连接配置发生变化，请发送测试消息后再启用');
+      }
       ElMessage.success('通知渠道已更新');
     }
     closeDialog();
@@ -144,10 +264,7 @@ function kindLabel(kind: NotificationChannelKind): string {
 </script>
 
 <template>
-  <div class="section-heading">
-    <div>
-      <h3>通知渠道</h3>
-    </div>
+  <div class="notification-toolbar">
     <el-button type="primary" @click="openCreate"><Plus :size="15" />添加渠道</el-button>
   </div>
   <el-alert
@@ -168,7 +285,7 @@ function kindLabel(kind: NotificationChannelKind): string {
         <el-switch
           :model-value="channel.enabled"
           :loading="busy[`enable:${channel.id}`]"
-          :disabled="channel.connection_status !== 'OK'"
+          :disabled="!channel.enabled && channel.connection_status !== 'OK'"
           @change="toggle(channel)"
         />
       </div>
@@ -188,10 +305,24 @@ function kindLabel(kind: NotificationChannelKind): string {
             >{{ channel.connection_status }}</el-tag
           >
         </dd>
-        <dt>聚合窗口</dt>
-        <dd>{{ channel.aggregation_window_seconds }} 秒</dd>
-        <dt>任务链接</dt>
-        <dd>{{ channel.task_link_base_url || '未配置' }}</dd>
+        <dt>事件类型</dt>
+        <dd class="notification-event-list">
+          {{ channel.event_types.map(eventLabel).join('、') || '未配置' }}
+        </dd>
+        <dt>独立代理</dt>
+        <dd>
+          {{
+            channel.proxy_enabled
+              ? `${channel.proxy_host ?? '—'}:${channel.proxy_port ?? '—'}${
+                  channel.proxy_credential_configured ? ' · 已配置认证' : ''
+                }`
+              : '未启用'
+          }}
+        </dd>
+        <dt>最近测试</dt>
+        <dd>
+          {{ channel.last_test_at ? new Date(channel.last_test_at).toLocaleString() : '尚未测试' }}
+        </dd>
       </dl>
       <div class="card-actions">
         <el-button
@@ -229,18 +360,28 @@ function kindLabel(kind: NotificationChannelKind): string {
           <el-option label="Server酱" value="SERVERCHAN" />
         </el-select>
       </el-form-item>
-      <el-form-item label="任务链接基础地址">
-        <el-input v-model="draft.taskLinkBaseUrl" placeholder="https://packbreaker.example" />
+      <el-form-item label="状态">
+        <el-radio-group v-model="draft.enabled">
+          <el-radio :value="true">启用</el-radio>
+          <el-radio :value="false">关闭</el-radio>
+        </el-radio-group>
       </el-form-item>
-      <el-form-item label="重复事件聚合窗口（秒）">
-        <el-input-number v-model="draft.aggregationWindowSeconds" :min="1" :max="86400" />
+      <el-form-item label="事件通知类型" required>
+        <el-select v-model="draft.eventTypes" multiple collapse-tags collapse-tags-tooltip>
+          <el-option
+            v-for="option in EVENT_OPTIONS"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
+          />
+        </el-select>
       </el-form-item>
       <div v-if="editing" class="setting-row">
         <div>
           <b>替换凭证</b>
           <p>关闭时保留现有凭证。</p>
         </div>
-        <el-switch v-model="replaceCredential" @change="resetSecrets" />
+        <el-switch v-model="replaceCredential" @change="resetCredentialSecrets" />
       </div>
       <template v-if="!editing || replaceCredential">
         <template v-if="draft.type === 'TELEGRAM'">
@@ -264,8 +405,47 @@ function kindLabel(kind: NotificationChannelKind): string {
           />
         </el-form-item>
       </template>
+
+      <el-divider content-position="left">独立代理</el-divider>
+      <el-form-item>
+        <el-switch v-model="draft.proxyEnabled" active-text="启用该通知渠道独立代理" />
+      </el-form-item>
+      <div v-if="draft.proxyEnabled" class="notification-form-grid">
+        <el-form-item label="代理地址" required>
+          <el-input v-model="draft.proxyHost" placeholder="127.0.0.1" />
+        </el-form-item>
+        <el-form-item label="代理端口" required>
+          <el-input-number v-model="draft.proxyPort" :min="1" :max="65535" />
+        </el-form-item>
+        <el-form-item label="代理账号">
+          <el-input v-model="draft.proxyUsername" autocomplete="username" />
+        </el-form-item>
+        <el-form-item label="代理密码">
+          <el-input
+            v-model="draft.proxyPassword"
+            type="password"
+            show-password
+            autocomplete="new-password"
+            :disabled="draft.clearProxyPassword"
+            :placeholder="editing?.proxy_credential_configured ? '留空保持现有代理密码' : '可选'"
+          />
+        </el-form-item>
+      </div>
+      <el-checkbox
+        v-if="editing?.proxy_credential_configured"
+        v-model="draft.clearProxyPassword"
+        @change="draft.proxyPassword = ''"
+      >
+        清除已保存的代理密码
+      </el-checkbox>
     </el-form>
     <template #footer>
+      <el-button
+        :loading="busy.probe || (editing ? busy[`test:${editing.id}`] : false)"
+        @click="sendTestMessage"
+      >
+        <Activity :size="14" />发送测试消息
+      </el-button>
       <el-button @click="closeDialog">取消</el-button>
       <el-button
         type="primary"
@@ -276,3 +456,27 @@ function kindLabel(kind: NotificationChannelKind): string {
     </template>
   </el-dialog>
 </template>
+
+<style scoped>
+.notification-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
+.notification-event-list {
+  overflow-wrap: anywhere;
+}
+
+.notification-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+@media (max-width: 640px) {
+  .notification-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

@@ -9,6 +9,9 @@ export type SiteCreateInput = components['schemas']['SiteCreateRequest'];
 export type SitePatchInput = components['schemas']['SitePatchRequest'];
 export type SiteProbeResult = components['schemas']['SiteProbeResponse'];
 export type SiteHealth = components['schemas']['SiteHealthResponse'];
+export type SiteProfile = components['schemas']['SiteProfileResponse'];
+export type SiteTemporaryProbeInput = components['schemas']['SiteTemporaryProbeRequest'];
+export type SiteUserProfile = components['schemas']['SiteUserProfileResponse'];
 
 export function credentialKindForSite(kind: SiteKind): SiteCredentialKind {
   return kind === 'MTEAM' ? 'API_KEY' : 'COOKIE';
@@ -25,8 +28,23 @@ export async function listSites(): Promise<Site[]> {
   return response.data.items;
 }
 
+export async function listSiteProfiles(): Promise<SiteProfile[]> {
+  const response = await apiClient.get<{ items: SiteProfile[] }>('/sites/profiles');
+  return response.data.items;
+}
+
+export async function probeSite(payload: SiteTemporaryProbeInput): Promise<SiteProbeResult> {
+  const response = await apiClient.post<SiteProbeResult>('/sites/probe', payload);
+  return response.data;
+}
+
 export async function getSite(id: string): Promise<Site> {
   const response = await apiClient.get<Site>(sitePath(id));
+  return response.data;
+}
+
+export async function getSiteUserProfile(id: string): Promise<SiteUserProfile> {
+  const response = await apiClient.get<SiteUserProfile>(`${sitePath(id)}/profile`);
   return response.data;
 }
 

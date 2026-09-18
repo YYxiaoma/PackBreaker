@@ -91,6 +91,67 @@ async def test_hdtime_search_uses_external_id_and_stable_sort_mapping() -> None:
 
 
 @pytest.mark.asyncio
+async def test_hdtime_user_profile_is_loaded_on_demand_from_same_origin() -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requested_paths.append(request.url.path)
+        assert request.url.host == "hdtime.org"
+        assert request.headers.get("cookie") == _COOKIE
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">profile</a>'
+                    '<a href="userdetails.php?id=99">SyntheticUser</a>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            assert request.url.params["id"] == "99"
+            return httpx2.Response(
+                200,
+                text="""
+                <html><body>
+                  <a href="usercp.php">profile</a>
+                  <table>
+                    <tr><td>用户等级</td><td>Elite</td></tr>
+                    <tr><td>真实上传量</td><td>2.00 TiB</td></tr>
+                    <tr><td>上传量</td><td>3.00 TiB</td></tr>
+                    <tr><td>下载量</td><td>1.50 TiB</td></tr>
+                    <tr><td>发种数</td><td>12</td></tr>
+                    <tr><td>做种数</td><td>34</td></tr>
+                    <tr><td>做种量</td><td>4.00 TiB</td></tr>
+                    <tr><td>魔力值</td><td>56.75</td></tr>
+                    <tr><td>每小时魔力值</td><td>7.25</td></tr>
+                  </table>
+                </body></html>
+                """,
+            )
+        return httpx2.Response(404)
+
+    profile = await HDTimeAdapter(
+        _COOKIE, transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+
+    assert requested_paths == ["/index.php", "/userdetails.php"]
+    assert profile.site_id == "hdtime"
+    assert profile.uid == "99"
+    assert profile.username == "SyntheticUser"
+    assert profile.user_level == "Elite"
+    assert profile.real_uploaded_bytes == 2 * 1024**4
+    assert profile.real_downloaded_bytes is None
+    assert profile.uploaded_bytes == 3 * 1024**4
+    assert profile.downloaded_bytes == int(1.5 * 1024**4)
+    assert profile.ratio == 2.0
+    assert profile.torrents_posted == 12
+    assert profile.seeding_count == 34
+    assert profile.seeding_size_bytes == 4 * 1024**4
+    assert profile.bonus == 56.75
+    assert profile.seeding_points is None
+    assert profile.bonus_per_hour == 7.25
+
+
+@pytest.mark.asyncio
 async def test_hdtime_rejects_login_redirect_and_login_page() -> None:
     def redirect_handler(_request: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(302, headers={"Location": "/login.php"})

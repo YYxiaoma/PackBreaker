@@ -46,9 +46,9 @@ def _authenticated_client(tmp_path: Path) -> tuple[TestClient, FastAPI]:
     app = create_app(settings=_settings(tmp_path))
     client = TestClient(app, base_url="https://testserver")
     client.__enter__()
-    setup = client.post("/api/v1/auth/setup", json={"password": _PASSWORD})
+    setup = client.post("/api/v1/auth/setup", json={"username": "admin", "password": _PASSWORD})
     assert setup.status_code == 201
-    login = client.post("/api/v1/auth/login", json={"password": _PASSWORD})
+    login = client.post("/api/v1/auth/login", json={"username": "admin", "password": _PASSWORD})
     assert login.status_code == 200
     return client, app
 
@@ -175,7 +175,7 @@ def test_release_preflight_api_is_local_read_only_and_skips_backup_exercise(
         assert response.headers["cache-control"] == "no-store"
         payload = response.json()
         assert payload["status"] == "ready"
-        assert payload["app_version"] == "0.1.5"
+        assert payload["app_version"] == "0.1.6"
         codes = {item["code"] for item in payload["checks"]}
         assert {
             "CONFIG_DIR_OK",
