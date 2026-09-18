@@ -1,98 +1,430 @@
 # AGENTS.md
 
-本文件适用于整个 PackBreaker 仓库。参与本项目的自动化编码代理必须遵守以下规则。
+本文件适用于整个 PackBreaker 仓库，是自动化编码代理、代码生成工具和协作开发者必须遵守的仓库级规则。
 
-## 沟通与文档
+目标不是“尽快让代码跑起来”，而是**在不破坏源数据、不泄漏凭证、不绕过安全门的前提下持续推进功能**。
 
-- 与用户沟通、编写说明文档、提交说明和界面文案时使用中文。
-- 代码标识符、协议字段和第三方 API 原始名称保持英文。
-- 说明行为时明确区分“已实现”“计划实现”和“待确认”，不得把需求设计描述成已完成能力。
+---
 
-## 项目目标
+## 1. 沟通与事实口径
 
-PackBreaker 是面向 PT 场景的自动拆包辅种系统。系统从 qBittorrent 或 Transmission 的大包任务中识别影片/剧集单元，跨站搜索候选 torrent，在验证本地数据与候选内容一致后，通过硬链接复用数据并完成辅种。
+- 与用户沟通、界面文案、说明文档和提交说明优先使用中文。
+- 代码标识符、协议字段、第三方 API 原始名称保持英文。
+- 必须明确区分：
+  - **已实现**：代码与测试已经存在；
+  - **已验证**：已有自动化或真实环境证据；
+  - **计划实现 / PENDING**：只有设计或 Registry 占位；
+  - **外部阻塞**：需要真实站点、Provider、Bot、Docker daemon 等外部条件。
+- 不得把 MockTransport、Fake backend 或设计文档描述成真实环境证据。
+- 不得为了让测试通过而弱化安全断言、删除失败场景、跳过迁移验证或扩大默认权限。
 
-当前研发约束优先级如下：
+---
 
-1. `docs/README.md` 是现行研发文档入口，其中列出的当前版本设计、支持矩阵、测试与验收文档定义产品范围、安全目标和验收标准。
-2. `docs/` 中的模块设计文档定义架构、接口、数据、安全与测试实现约束。
-3. 本文件定义代码、测试、凭证和交付规范。
-4. `README.md` 提供项目概览，不替代研发设计与验收文档。
-5. 已移除的历史需求基线 HTML 与早期原型素材仅通过 Git 历史追溯，不在当前工作树中继续维护。
+## 2. 研发约束的优先级
 
-行为或范围发生变化时，先更新对应版本设计、支持边界与验收文档，再同步相关测试和 README。
+发生冲突时按以下顺序判断：
 
-## 技术基线
+1. `docs/README.md` 中当前版本设计、支持矩阵、已知限制、测试与验收文档；
+2. 已落地的领域安全不变量与自动化测试；
+3. 本文件；
+4. README 产品介绍。
 
-- 后端：Python 3.11、FastAPI、SQLAlchemy、Alembic、SQLite WAL、APScheduler、asyncio 任务队列。
-- 前端：Vue 3、Vite、Element Plus、Pinia、Axios、ECharts。
-- 开发工具：uv、Ruff、mypy、pytest；Node.js 22、pnpm 10、TypeScript strict、Vitest、Playwright。
-- 部署：前后端单镜像，FastAPI 托管前端产物；v1.0 面向 `linux/amd64`。
-- 运行数据位于挂载目录，源码、运行数据、凭证和媒体文件必须分离。
+README 可以有宣传表达，但**不能作为降低安全门或扩大正式支持范围的依据**。
 
-计划采用以下顶层结构；创建代码骨架后如需调整，必须同步本文件：
+历史需求基线 HTML 和早期原型图片已从当前工作树移除，需要追溯时使用 Git 历史。
+
+---
+
+## 3. 当前仓库结构
 
 ```text
-backend/             FastAPI 应用、迁移与后端依赖
-frontend/            Vue 3 应用
-tests/               单元、集成和合成夹具
-docs/                架构、接口、部署与测试文档
-scripts/             可重复执行的开发和运维脚本
+backend/                     FastAPI、领域服务、适配器、持久化、迁移
+backend/migrations/          Alembic 历史迁移链
+frontend/                    Vue 3 管理端
+tests/                       单元 / API / Application / Integration 测试
+docs/                        设计、支持矩阵、验收、部署和发布文档
+scripts/                     check / test / 发布 / 运维 / E2E 工具
+release-baseline.json        上一正式 Release 的不可变升级基线
+frontend/openapi.json        受版本控制的 OpenAPI 快照
+frontend/src/api/generated/  OpenAPI 生成的 TypeScript 类型
 ```
 
-## 不可破坏的安全约束
+技术基线：
 
-- 源任务数据视为只读。任何自动流程不得写入、截断、重命名或删除源文件。
-- 硬链接目标需要写入修复时，必须先复制并原子替换为独立 inode；不得通过硬链接修改源数据。
-- 只有所有候选 piece 均由本地数据验证通过的 `FULL_VERIFIED` 任务，才允许 qBittorrent 跳过校验。
-- 名称、总大小、IMDb/豆瓣 ID、文件名相似度和抽样 hash 只能筛选或排序候选，不能证明内容完整一致。
-- 缺失图片、NFO、字幕等不得使用任意占位内容。只能复用字节一致的文件或安全下载对应 piece。
-- 拒绝 torrent 中的绝对路径、路径穿越、NUL 字符和越过目标根目录的解析结果。
-- 清理和回滚只能处理 operation journal 明确登记为本系统创建的资源，不得根据路径猜测所有权。
-- 重复触发、重试、Webhook 重放或进程恢复不得创建重复链接、重复任务或重复下载器种子。
-- 未满足上述约束的实现不得通过降低校验等级、吞掉异常或改用宽松默认值继续执行。
+- Python 3.11
+- FastAPI / SQLAlchemy / Alembic / SQLite WAL
+- Vue 3 / Vite / TypeScript strict / Element Plus / Pinia
+- pytest / Ruff / mypy / Vitest / Playwright
+- Docker 单镜像，正式发布目标为 `linux/amd64`
 
-## 后端开发规范
+---
 
-- Python 代码使用完整类型标注；领域规则放在 service/domain 层，API 路由只负责输入输出和授权。
-- 外部网络与下载器 I/O 使用异步接口，并设置明确的超时、有限重试和取消传播；不得在事件循环中执行长时间阻塞操作。
-- 站点、下载器和通知渠道通过适配器接口接入。核心任务流程不得依赖具体站点响应或客户端私有字段。
-- 所有文件系统和下载器副作用必须具备幂等键、操作日志和可恢复检查点；执行前记录意图，执行后记录结果。
-- 使用 `pathlib` 处理路径。文件操作前验证解析后路径、设备 ID、文件类型、权限、冲突和符号链接目标。
-- 数据库结构变更必须通过 Alembic 迁移完成；不得仅修改 ORM 模型。SQLite 连接必须保持 WAL 所需配置。
-- 数据库存储 UTC 时间并使用带时区的时间类型；界面按用户时区展示。
-- 错误使用稳定的机器可读错误码，并保留 trace_id；面向用户的信息不得暴露堆栈和凭证。
+## 4. 不可破坏的核心安全不变量
 
-## 前端开发规范
+### 4.1 源数据只读
 
-- 页面围绕重复操作和故障定位设计，优先清晰的信息密度、状态筛选和批量操作。
-- 任务详情必须展示匹配证据、逐文件映射、验证等级、执行动作、失败原因和恢复入口。
-- 危险操作必须展示确切影响范围并二次确认；不能用仅靠颜色表达的状态。
-- 所有凭证输入使用密码控件，回显时保持脱敏；前端状态、URL 和浏览器日志不得保存明文凭证。
-- 支持中文、响应式布局和深浅主题；新增页面需同时检查桌面与移动视口，不得出现文本遮挡或不可操作控件。
+- 源媒体数据默认视为只读。
+- 自动流程不得截断、覆盖、重命名或删除源文件。
+- Hardlink 目标如果需要被客户端下载器写入修复，必须先隔离为独立 inode。
+- 任何实现都不能因为“目标文件看起来是 PackBreaker 创建的”就猜测 ownership；必须有 journal / snapshot 证据。
 
-## API 与凭证
+### 4.2 候选验证不能偷懒
 
-- 写接口必须进行认证、参数校验、审计记录和幂等处理。
-- 下载完成 Webhook 按需求基线验证 HMAC-SHA256、时间戳、随机值和幂等键，并限制请求体大小。
-- 密码只保存强哈希；站点、下载器和通知凭证必须加密落盘，主密钥不得存入数据库。
-- 日志、异常、通知、测试快照和诊断包必须统一脱敏 API Key、passkey、Cookie、Token、密码和 announce URL 查询参数。
-- 不得把真实凭证、`.torrent`、SQLite 数据库、用户日志或媒体文件提交到仓库。
+- 名称、总大小、IMDb/豆瓣 ID、文件名相似度、抽样 hash 只能用于筛选和排序。
+- 只有满足当前领域规则的 `FULL_VERIFIED` 才能进入允许跳过客户端校验的路径。
+- qBittorrent 是否能 skip checking 还必须受实际 WebAPI capability 约束。
+- Transmission 不得因为已有 piece 证据就跳过自身 verify 流程。
+- 无法证明时应保持人工确认、客户端下载校验、阻断或 `RECONCILE_REQUIRED`，不能“猜成功”。
 
-## 测试要求
+### 4.3 路径与文件系统必须失败关闭
 
-- 解析、映射、piece 验证、状态转换和路径安全采用单元测试，覆盖 BitTorrent v1/v2/hybrid、多文件、padding、零长度和跨文件 piece。
-- 下载器与站点通过契约测试和可控模拟服务验证；默认测试不得连接真实 PT 站点或修改真实下载器。
-- 文件副作用使用临时目录和合成字节，必须断言源文件内容与 inode 在成功、失败、取消和恢复后保持不变。
-- 对相同事件重复执行至少验证：任务唯一、资源唯一、下载器动作唯一。
-- 涉及 LINKING、ADDING、CLIENT_VERIFYING 的改动必须覆盖中断恢复和回滚。
-- 修复缺陷时增加能在修复前失败、修复后通过的回归测试。测试失败不得通过删除断言或降低验证等级解决。
-- 正式发布必须满足 v0.3 中“v1.0 验收标准”的全部项目。
+必须拒绝：
 
-## Git 与交付
+- 绝对路径
+- `..` 路径穿越
+- NUL
+- 越过允许根目录
+- 不受信符号链接
+- 不可证明 ownership 的目标覆盖
+- 跨设备 Hardlink
 
-- 保持提交范围单一，使用 Conventional Commits，例如 `feat: 增加路径映射诊断`、`fix: 隔离硬链接修复写入`。
-- 提交前运行与改动范围匹配的格式、静态检查和测试；工具链尚未建立时，在交付说明中明确未执行的检查。
-- 不提交生成产物、缓存、运行数据库、日志、真实 torrent、媒体数据和本地环境文件。
-- 新增依赖前确认维护状态、许可证和必要性，并锁定可复现版本。
-- 完成修改时说明变更内容、验证方式、已知限制和对应需求条目。
+文件系统副作用必须有 preflight、snapshot、journal 与幂等恢复证据。
+
+### 4.4 所有外部写操作都必须可重放、可恢复
+
+以下动作必须进入 operation journal 或对应的持久化幂等链：
+
+- 创建目录
+- 创建 / 删除 Hardlink
+- qB add / recheck / start / remove
+- Transmission add / verify / start / remove
+- repair 写入
+- rollback / release
+
+要求：
+
+- **先记录意图，再执行副作用，再记录结果**；
+- 响应丢失时先读真实状态对账，不盲目重发；
+- 重启后能够从已有 journal 继续收敛；
+- 回滚只处理能证明由 PackBreaker 创建且 after snapshot 仍匹配的资源。
+
+---
+
+## 5. 凭证与隐私
+
+### 5.1 SecretStore
+
+以下秘密必须进入 SecretStore 或专用强哈希，不得明文落库：
+
+- 站点 Cookie / API Key
+- 下载器密码 / API Key
+- 代理密码
+- Telegram Bot Token
+- Server酱 SendKey
+- AI Provider API Key
+- 管理员密码
+
+GET API 只能返回 `credential_configured` 等布尔状态，不得回显秘密。
+
+### 5.2 日志与诊断
+
+日志、错误、通知、诊断包、AI Tool 上下文、测试快照中不得出现：
+
+- Cookie
+- API Key
+- Token
+- 密码
+- announce URL query
+- 带 userinfo 的 URL
+- 真实 torrent payload
+- 第三方原始敏感响应
+
+一次性管理员临时密码是特殊启动凭证：
+
+- 只允许通过专用 bootstrap 输出到 stderr；
+- 不进入结构化 logging sink；
+- 不写数据库；
+- 不进入通知、诊断或 AI 上下文。
+
+---
+
+## 6. 站点开发规则
+
+- 站点请求目标必须来自受审查的 `SiteProfileRegistry`。
+- 不允许用户输入任意 URL 决定 Cookie / API Key 的发送目标。
+- 当前正式持久化支持范围只由 `PERSISTED_SITE_KINDS` 决定。
+- `PENDING_ADAPTER` 站点可以在 Registry / UI 中展示，但必须：
+  - 前端禁用保存/测试；
+  - 后端返回稳定的 pending 错误；
+  - 不创建 Site；
+  - 不创建 Secret。
+- 新站点从 pending 升级为正式支持前，至少需要：
+  1. 认证方式确认；
+  2. adapter；
+  3. 共享契约测试；
+  4. 错误分类；
+  5. 凭证同源保护；
+  6. 真实只读验收。
+- 不得通过自动 Headless Browser、验证码绕过或 JS Challenge 绕过扩大兼容范围。
+- torrent 下载 token / 一次性下载链接默认不得做隐式自动重试。
+
+---
+
+## 7. 下载器开发规则
+
+qBittorrent 与 Transmission 通过统一领域接口接入，但**不能抹平协议差异**。
+
+### qBittorrent
+
+- 能力判断必须基于真实 WebAPI version。
+- add / recheck / start / remove 必须验证 hash、save path、ownership/tag、progress/state。
+- remove 必须固定不删除数据。
+- skip checking 只能在领域验证和 WebAPI capability 同时允许时使用。
+
+### Transmission
+
+- 4.1.x 使用 JSON-RPC 2.0 snake_case 方法。
+- add 默认 paused。
+- verify 与 start 必须是独立 journal 动作。
+- remove 必须固定 `delete_local_data=false`。
+- 不得把 qB 的 skip-check 语义套到 Transmission。
+
+路径映射变化会使旧执行计划 stale，不能在 ADDING 阶段偷偷切换 downloader / save path。
+
+---
+
+## 8. 后端开发规范
+
+- Python 使用完整类型标注。
+- 领域规则放在 domain / application 层，API router 保持薄。
+- 外部网络、下载器、通知、AI Provider 使用 async I/O。
+- 所有外部调用必须有明确 timeout；重试只能用于明确幂等且安全的读取。
+- 取消必须传播，不能吞掉 `CancelledError`。
+- 稳定业务错误使用机器可读 error code；用户响应不得暴露第三方正文、堆栈或秘密。
+- 数据库时间统一使用 UTC，展示层再应用用户时区。
+- 数据库结构变更必须有 Alembic migration，不能只改 ORM。
+- SQLite migration 特别注意父表 rebuild 与 child FK / `ON DELETE` 副作用；已有真实数据兼容优先于“迁移看起来更漂亮”。
+
+---
+
+## 9. 前端开发规范
+
+- 前端资源类型优先使用生成的 OpenAPI TypeScript 类型，不重复手写可能漂移的 schema。
+- 修改后端 API 后必须同步：
+  1. `frontend/openapi.json`
+  2. `frontend/src/api/generated/schema.ts`
+  3. 前端 API wrapper / store / component
+  4. 契约测试
+- 新页面必须检查：
+  - 桌面布局
+  - 390px 左右移动视口
+  - 浅色主题
+  - 深色主题
+  - loading / empty / error 状态
+- 危险操作必须展示真实影响范围并要求明确确认。
+- 凭证输入只能“写入 / 替换 / 清除”，不能回显。
+- 前端不能把旧状态伪装成实时状态；实时指标失败时显示不可用或最后成功时间。
+
+---
+
+## 10. 认证、通知与 AI
+
+### 管理员认证
+
+- 正式登录为 username + password。
+- 首次 bootstrap 后若是临时密码账户，只允许改密和退出等必要动作。
+- 改密后撤销全部会话并要求重新登录。
+- 不能重新引入未认证 setup 后门。
+
+### 通知
+
+- Telegram / Server酱凭证进入 SecretStore。
+- 渠道连接关键字段变化后必须回到 `UNTESTED` 并停用，不能沿用旧连接证据。
+- 未保存表单 probe 不能创建 Channel 或 Secret。
+- 通知事件过滤在服务端执行，不能只靠前端隐藏。
+
+### AI Agent
+
+v0.1.6 的 AI 必须保持**只读**：
+
+- 支持 OpenAI 与 OpenAI-compatible；
+- Model 由用户自由填写；
+- Provider API Key 进入 SecretStore；
+- Tool 使用显式白名单；
+- 禁止任意 Shell、任意 SQL、任意 URL；
+- Tool 输出继续脱敏；
+- 有限工具轮次与上下文上限；
+- Telegram 入口必须经过 Chat ID / User ID allowlist；
+- update_id cursor 必须持久化，避免重启重复消费；
+- 未授权 Telegram 更新不能触发 Provider 或 Tool；
+- 不提供 Web AI Chat；
+- AI 不得新增绕过 CSRF、Idempotency-Key、人工审核、Execution Gate 或 journal 的写接口。
+
+---
+
+## 11. 数据库与迁移
+
+- `pyproject.toml` 是当前项目版本主来源。
+- 新 migration 必须接到当前 Alembic head。
+- 历史 migration 不做重写式“美化”。
+- 每次 schema 变化至少验证：
+  - fresh DB → head；
+  - 上一正式版本 → head；
+  - migration 数据保真；
+  - Runtime 自动升级；
+  - 备份/恢复兼容。
+- 对真实生产数据库做研发验收时，默认：
+  1. SQLite backup API 创建一致性副本；
+  2. 只迁移副本；
+  3. 原库只读；
+  4. 验收结束再次确认原 revision 未变化。
+
+除非用户明确授权，不得拿真实运行库直接做开发迁移试验。
+
+---
+
+## 12. 版本、OpenAPI 与发布基线
+
+### 当前版本表面必须一致
+
+修改版本时同步检查：
+
+- `pyproject.toml`
+- `frontend/package.json`
+- Dockerfile `ARG VERSION`
+- `uv.lock` root package version
+- OpenAPI `info.version`
+- runtime `app_version()`
+
+### release-baseline.json 的语义
+
+`release-baseline.json` **不是当前 candidate 版本**。
+
+它必须固定“上一正式已发布 Release”的：
+
+- version / tag
+- commit
+- immutable image digest
+- Alembic revision
+- release workflow run id
+
+它用于 candidate 的相邻版本升级和回滚门禁。不要为了“版本号看起来一致”把 baseline 改成当前未发布 candidate。
+
+### OpenAPI 生成
+
+标准流程：
+
+```bash
+python scripts/export_openapi.py frontend/openapi.json
+frontend/node_modules/.bin/openapi-typescript \
+  frontend/openapi.json \
+  -o frontend/src/api/generated/schema.ts
+frontend/node_modules/.bin/prettier \
+  --config frontend/.prettierrc.json \
+  --write frontend/src/api/generated/schema.ts
+```
+
+不要对 `frontend/openapi.json` 额外跑 Prettier；仓库漂移门使用 exporter 的规范输出。
+
+---
+
+## 13. 测试规则
+
+普通自动化默认**完全离线**：
+
+- 不访问真实 PT；
+- 不访问真实 qB / Transmission；
+- 不读取真实媒体；
+- 不发送真实 Telegram；
+- 不调用真实 AI Provider；
+- 不操作 Docker daemon，除非明确在专用 Docker CI Job。
+
+修复缺陷时必须增加“修复前失败、修复后通过”的回归测试。
+
+高风险改动需要重点覆盖：
+
+- BitTorrent v1/v2/hybrid
+- 路径逃逸
+- inode / source snapshot
+- operation journal
+- 并发幂等
+- 响应丢失
+- 进程重启
+- rollback
+- migration
+- Secret canary
+
+标准本地门禁：
+
+```bash
+python scripts/check.py
+python scripts/test.py
+```
+
+其中 `scripts/check.py` 是提交前 canonical 静态门；修改生成契约、迁移、安全边界、发布逻辑时必须通过。
+
+浏览器交互变化还需要运行：
+
+```bash
+node scripts/check-prototype.cjs
+```
+
+该 E2E 的未显式 mock API 必须继续失败关闭。
+
+---
+
+## 14. 真实环境验收
+
+真实环境只用于自动化无法替代的现场证据。
+
+原则：
+
+- 默认只读；
+- 先明确会发出哪些请求；
+- 不主动搜索/取种/写下载器，除非验收目标明确要求并得到用户授权；
+- 不输出 Cookie / API Key / UID / username / 内网地址；
+- 真实站点失败不能通过切镜像域名或降低校验“修成通过”；
+- 外部站点故障、缺凭证、无 Docker daemon 必须明确记为阻塞，不伪造完成。
+
+现场证据应写入专门验收文档，并只保留非敏感摘要。
+
+---
+
+## 15. Git 与仓库卫生
+
+- 使用 Conventional Commits，例如：
+  - `feat: add downloader runtime metrics`
+  - `fix: preserve source inode during repair`
+  - `chore: refresh release baseline`
+- 一个提交尽量保持一个清晰主题。
+- 未经用户明确要求，不擅自 commit / push / tag / release。
+- 不 force push，除非用户明确要求并已说明风险。
+- 不提交：
+  - 真实 Cookie / API Key / Token / 密码
+  - `.torrent`
+  - SQLite 数据库
+  - runtime 日志
+  - 媒体文件
+  - secret.key
+  - 本地缓存 / 临时测试产物
+- 新增依赖前检查必要性、维护状态、许可证和锁文件。
+- 删除历史文件时同步清理 README / docs / AGENTS 中的引用。
+
+---
+
+## 16. 完成一个任务前
+
+至少确认：
+
+1. 功能是否真的实现，而不是只改 UI；
+2. 安全门有没有被绕过；
+3. 是否需要 migration；
+4. OpenAPI / 生成类型是否同步；
+5. 是否需要更新支持矩阵 / 已知限制 / 当前版本设计；
+6. 是否添加了回归测试；
+7. 是否通过与改动范围匹配的静态和动态测试；
+8. 是否存在真实环境才能证明的部分；
+9. 是否误把外部阻塞描述成成功；
+10. 工作区是否混入秘密或临时产物。
+
+完成说明必须列出：**改了什么、验证了什么、还没验证什么、是否存在外部条件。**

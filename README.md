@@ -1,51 +1,427 @@
-# PackBreaker
+<div align="center">
 
-PackBreaker 是一个面向 PT 场景的自动拆包辅种系统。它以“大包”下载任务为输入，将内容识别为单影片或单集单元，跨站搜索匹配资源，并通过硬链接复用已有数据完成辅种。
+# 🚀 PackBreaker
 
-## 核心能力
+### PT 大包自动拆包 · 内容级验证 · Hardlink 辅种 · AI 运维
 
-- 接入 qBittorrent 与 Transmission，支持多个下载器实例
-- 监控大包任务并执行解析、搜索、匹配、硬链接、添加辅种和状态确认
-- 通过统一适配器接入多个 PT 站点，首批计划支持 M-Team、HDTime 和 HHClub
-- 提供失败重试、99% 卡死修复、缺失附属文件修复和人工确认
-- 支持历史影片扫描辅种与电视剧按季、集拆包辅种
-- 提供任务管理、配置、日志、通知和升级界面
+**让几十 TB 的 PT 大包辅种，从重复劳动变成一条安全、可验证、可恢复的自动化流水线。**
 
-## 技术方向
+<p>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11"></a>
+  <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
+  <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64"></a>
+  <img src="https://img.shields.io/badge/v0.1.6-candidate-F59E0B" alt="v0.1.6 candidate">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
+</p>
 
-- 后端：Python 3.11、FastAPI、SQLAlchemy、Alembic、SQLite、APScheduler
-- 前端：Vue 3、Vite、Element Plus、Pinia、Axios、ECharts
-- 部署：Docker 单镜像，首个正式版本面向 `linux/amd64`
+<p>
+  <a href="#features">✨ 功能</a> ·
+  <a href="#workflow">🧬 工作流</a> ·
+  <a href="#ai-agent">🤖 AI</a> ·
+  <a href="#security">🔐 安全</a> ·
+  <a href="#quick-start">📦 快速开始</a> ·
+  <a href="./docs/README.md">📚 文档</a>
+</p>
 
-## 项目状态
+</div>
 
-PackBreaker 已完成 M6 发布与运维闭环的主要能力，当前最新正式版本为 `v0.1.3`。该版本的 linux/amd64 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:1dbbe55cc7b9b1ec6e35afe62ab7ecf32db092350dfeec4cf5966a06d165f48d`；Release workflow run `35046214232` 已成功完成正式发布门禁与 Release 资产发布。
+PackBreaker 是一个面向 PT 场景的**自动拆包辅种系统**。它从 qBittorrent / Transmission 的大包任务或媒体目录出发，自动完成**内容识别 → 跨站搜索 → Piece 级验证 → 人工审核 → Hardlink 复用 → 客户端校验 → 启动做种 → 故障恢复**。
 
-当前 `main` 为 `v0.1.4` candidate，在正式 `v0.1.3` 之后继续迭代界面与升级体验。除既有 qBittorrent/Transmission 主链、M-Team/HDTime/HHClub、v1/v2/hybrid piece 验证、人工审核、journal-backed 执行/取消/回滚、历史扫描、repair、备份恢复、健康/日志/诊断等能力外，独立 `docker run` 正在采用“单常驻 PackBreaker + 升级期间一次性 helper”的一键升级方式：主容器挂载 docker.sock，用户从左上角版本弹窗确认升级后，临时 helper 负责按正式 Release 的不可变 digest 重建主容器、等待 healthcheck，并在失败时恢复切换瞬间数据库备份与旧容器。升级结束后临时 helper 自动删除。
+如果你曾经为了一个大包手工拆目录、挨个搜站、比文件、算大小、建硬链接、加种、重检、盯 99%、修失败任务——**PackBreaker 的目标，就是把这整套苦力活压缩成一条真正可控的自动化工作流。**
 
-发布、升级与支持边界见 `docs/deployment.md`、`docs/upgrade-compatibility.md`、`docs/support-matrix.md` 与 `docs/known-limitations.md`。
+> **不是“能跑就行”的辅种脚本。**
+>
+> PackBreaker 更在意：候选到底是不是同一份内容、Hardlink 会不会伤到源数据、动作执行到一半崩溃后能不能恢复、升级失败后能不能回滚。
 
-### 本地开发
+<table>
+  <tr>
+    <td align="center"><strong>🎬 自动拆包</strong><br>影片 / 剧集 / 季 / 集 / Specials</td>
+    <td align="center"><strong>🧬 字节级验证</strong><br>BitTorrent v1 / v2 / hybrid</td>
+    <td align="center"><strong>🛡️ 安全执行</strong><br>Gate / Plan / Journal / Recovery</td>
+    <td align="center"><strong>🤖 AI 运维</strong><br>只读 Tool + Telegram 对话</td>
+  </tr>
+</table>
 
-准备 Python 3.11、Node.js 22.12+ 与 pnpm 10.34.5：
+| **722** 后端测试 | **76** 前端测试 | **28/28** qB 真实路径映射 | **3220/3220** Transmission 真实路径映射 |
+| ---: | ---: | ---: | ---: |
+| 全量通过 | 全量通过 | 全部成功 | 全部成功 |
+
+---
+
+<a id="workflow"></a>
+
+## 🚀 30 秒看懂 PackBreaker
+
+```mermaid
+flowchart LR
+    A[qBittorrent / Transmission<br/>大包或媒体目录] --> B[识别影片 / 剧集 / 集数]
+    B --> C[跨站搜索候选]
+    C --> D[评分 + 硬冲突过滤]
+    D --> E[BitTorrent Piece 完整验证]
+    E --> F{安全门}
+    F -->|FULL_VERIFIED| G[生成 Hardlink<br/>Execution Plan]
+    F -->|存在歧义| H[人工审核<br/>CLIENT_CHECK_REQUIRED]
+    H --> G
+    G --> I[添加到 qB / Transmission]
+    I --> J[客户端下载校验]
+    J --> K[启动做种]
+    K --> L[DONE]
+    L --> M[日志 / Journal / 对账 / 恢复]
+```
+
+PackBreaker 不是“文件名看起来像就直接加种”的脚本。它把**候选发现、内容验证、人工确认、文件复用、客户端下载器动作、故障恢复**拆成清晰的状态链，每一个真正会产生副作用的动作都有对应安全门。
+
+---
+
+<a id="features"></a>
+
+## ✨ 功能全景
+
+| 模块 | 能力 |
+| --- | --- |
+| 🎬 **自动拆包与识别** | 从大包或目录中识别影片、电视剧、季/集、Specials 与多版本内容，支持手动任务和监控任务 |
+| 🔎 **跨站候选搜索** | 统一站点适配器、逐步放宽查询、候选评分、硬冲突过滤、IMDb 等元数据辅助匹配 |
+| 🧬 **内容级验证** | 支持 BitTorrent **v1 / v2 / hybrid**，包含跨文件 piece、Merkle、padding、零长度文件等复杂场景 |
+| 🔗 **零拷贝数据复用** | 通过 Hardlink 复用已有媒体数据；写入修复前强制 inode 隔离，保护源文件 |
+| 🧠 **安全执行引擎** | Preflight、人工审核、Execution Gate、Execution Plan、operation journal、幂等执行、崩溃恢复 |
+| 🧲 **qB / Transmission** | 多实例管理、测试连接、实时上传/下载速度、任务总大小、剩余空间、任务数量、路径映射诊断 |
+| 🛠️ **99% / 异常修复** | 支持客户端下载校验、失败重试、repair、缺失附属文件处理、对账与人工修复入口 |
+| 🗂️ **任务中心** | 手动拆包、监控拆包、Cron、执行记录、成功/失败计数、重试、状态追踪 |
+| 🌐 **站点管理** | 固定可信站点 Profile、Cookie/API Key、UA、浏览器请求头仿真、独立代理、连接测试、用户详情 |
+| 🔔 **通知系统** | Telegram / Server酱、事件订阅、独立代理、测试消息、失败重试、站内 Inbox |
+| 🤖 **AI 助手** | OpenAI / OpenAI-compatible、自定义 Base URL / Model、只读 Tool、Telegram Long Polling 对话 |
+| 🧾 **日志与诊断** | 结构化日志、筛选查询、脱敏导出、系统健康、诊断包、trace_id |
+| 💾 **备份与恢复** | SQLite 一致性备份、计划备份、校验、离线恢复、升级前自动快照 |
+| ⬆️ **安全升级** | Release digest 校验、Preflight、一次性 updater helper、健康检查、失败自动回滚 |
+| 👤 **管理体验** | 用户名密码登录、首次临时密码、强制改密、头像抽屉、深浅主题、站内通知、About |
+
+---
+
+## 🧨 为什么它和普通“辅种脚本”不太一样
+
+### 1. 它真的会验证内容，而不是只相信文件名
+
+候选 torrent 不会因为名称、大小或 IMDb ID 看起来像就被直接执行。PackBreaker 会尽可能把“看起来对”推进成“**内容确实对**”。
+
+- BitTorrent v1 piece 验证
+- BitTorrent v2 Merkle / piece layer 验证
+- hybrid 双协议一致性检查
+- 多文件跨边界 piece
+- padding / 零长度文件
+- 文件快照与当前性检查
+
+对于不能被严格证明的内容，PackBreaker 宁愿停下来让你确认，也不会赌一次“应该没问题”。
+
+### 2. 它把 Hardlink 当成高风险写操作认真处理
+
+Hardlink 很高效，也很危险：对链接目标的写入可能直接影响源文件。
+
+PackBreaker 的执行链会持续证明路径、inode、device、ownership 和 journal 状态。需要写入修复时，会先把目标隔离成独立 inode，再允许客户端下载器修改。
+
+**目标很简单：辅种可以失败，源数据不能坏。**
+
+### 3. 它能从“动作已经发生，但程序没来得及记账”这种最麻烦的故障里恢复
+
+PackBreaker 使用 operation journal 记录副作用意图和结果。即使遇到：
+
+- 请求已经发给下载器但响应丢失
+- Hardlink 已创建但数据库还没提交
+- verify/start 成功后进程崩溃
+- 容器重启
+- 升级失败
+
+系统也会优先根据真实状态和历史证据进行**只读对账**，而不是盲目重做同一个动作。
+
+---
+
+## 🧩 核心工作流
+
+```mermaid
+stateDiagram-v2
+    [*] --> ANALYZING
+    ANALYZING --> SEARCHING
+    SEARCHING --> MATCHING
+    MATCHING --> VERIFYING
+    VERIFYING --> PREFLIGHT
+    PREFLIGHT --> AWAITING_CONFIRMATION
+    AWAITING_CONFIRMATION --> LINKING
+    LINKING --> ADDING
+    ADDING --> CLIENT_VERIFYING
+    CLIENT_VERIFYING --> SEEDING
+    SEEDING --> DONE
+
+    ANALYZING --> RETRY
+    SEARCHING --> RETRY
+    MATCHING --> RETRY
+    VERIFYING --> RETRY
+    ADDING --> RECONCILE_REQUIRED
+    CLIENT_VERIFYING --> RECONCILE_REQUIRED
+    SEEDING --> RECONCILE_REQUIRED
+```
+
+真正的下载器写操作不会从“搜索结果”直接跳过去。中间存在验证、审核、Gate、Plan 和 Journal，多层安全边界共同决定一个候选是否有资格执行。
+
+---
+
+## 🧲 下载器支持
+
+当前真实验证基线：
+
+| 下载器 | 已验证版本 | 当前能力 |
+| --- | --- | --- |
+| **qBittorrent** | 5.2.3 / WebAPI 2.15.1 | 认证、Torrent 读取、路径映射、运行指标、添加、recheck、start、remove、恢复 |
+| **Transmission** | 4.1.3 / RPC 6.0.1 | JSON-RPC、Torrent 读取、路径映射、运行指标、add、verify、start、remove、恢复 |
+
+v0.1.6 真实环境验收中，qBittorrent 28/28、Transmission 3220/3220 个真实 Torrent save path 均成功映射到容器目录。
+
+---
+
+## 🌐 站点支持
+
+正式可配置：
+
+- **M-TEAM** — API Key
+- **HDTime** — Cookie
+- **HHClub** — Cookie
+
+站点地址由后端受信任 Profile Registry 固定，避免把 Cookie / API Key 发送到用户误填的第三方域名。
+
+已经进入 Registry、但仍处于 **PENDING_ADAPTER** 的计划站点：
+
+- KeepFrds
+- HDHome
+- UBits
+- HDFans
+- BTSCHOOL
+- PTTime
+- Rousi Pro
+
+这些站点会在界面中标明“待适配”，在适配器、共享契约测试与真实只读验收完成前，前端和后端都会阻止保存或探测。
+
+---
+
+<a id="ai-agent"></a>
+
+## 🤖 AI 助手：让 PackBreaker 能“看懂自己的系统状态”
+
+v0.1.6 加入了第一版只读 AI Agent。
+
+支持：
+
+- OpenAI 官方 API
+- OpenAI-compatible 第三方服务
+- 自定义 Base URL
+- Model 自由填写，不依赖后端模型白名单
+- API Key 加密进入 SecretStore
+- 真实 Provider Probe
+- Telegram Long Polling 对话
+- Chat ID / User ID allowlist
+- 有界会话上下文
+- 每会话限流
+
+AI 只能通过白名单只读 Tool 获取 PackBreaker 信息，例如：
+
+- 系统健康
+- 版本状态
+- 任务列表与执行详情
+- 脱敏日志
+- 站点状态
+- 下载器状态
+- 帮助文档
+
+> **AI 不拥有 Shell、任意 SQL、任意 URL 或执行任务的能力。**
+>
+> v0.1.6 不提供 Web AI Chat，AI 对话入口固定在 Telegram。它可以帮你“看系统、查问题、解释状态”，但不能绕过 PackBreaker 原有的人工确认、CSRF、Idempotency-Key、Execution Gate 或 operation journal。
+
+---
+
+<a id="security"></a>
+
+## 🔐 安全不是附加功能，是主流程的一部分
+
+PackBreaker 对“自动化”采用偏保守的设计：
+
+- 源数据默认只读
+- 不明确的候选不自动批准
+- 不允许任意站点 URL 接收凭证
+- Secret 只以密文进入数据库
+- Cookie / API Key / Token / 密码不会通过 GET API 回显
+- 日志、通知、诊断包和 AI Tool 上下文统一脱敏
+- 路径穿越、绝对路径、NUL、符号链接逃逸失败关闭
+- 下载器写操作必须经过幂等和 journal
+- 回滚只处理能证明属于 PackBreaker 的资源
+- 真实环境测试默认只读，普通 CI 永不连接真实 PT / 下载器
+
+**自动化的价值不应该建立在“出了问题再说”之上。**
+
+---
+
+## 🖥️ 管理界面
+
+v0.1.6 管理端覆盖：
+
+- 总览 Dashboard
+- 任务中心
+- 预演与确认
+- 站点管理
+- 下载器管理
+- 清理与对账
+- 日志中心
+- 系统设置
+  - 通知渠道
+  - AI 助手
+  - 备份策略
+- 用户抽屉
+  - Inbox
+  - 深浅主题
+  - 修改密码
+  - 退出登录
+- About / 版本更新
+
+桌面和移动端共享同一套功能模型，关键操作均保留明确状态和失败原因。
+
+---
+
+<a id="quick-start"></a>
+
+## 📦 快速部署
+
+### Docker Compose
+
+准备一个供 PackBreaker 访问的公共媒体目录，然后：
+
+```bash
+export PACKBREAKER_DATA_PATH=/path/to/common/storage
+export PUID=1000
+export PGID=1000
+
+docker compose up --build -d
+```
+
+默认访问：
+
+```text
+http://<服务器IP>:8000
+```
+
+### 独立 Docker 容器
+
+```bash
+docker run -d \
+  --name packbreaker \
+  --restart unless-stopped \
+  --user 0:0 \
+  -e PUID=0 \
+  -e PGID=0 \
+  -e PACKBREAKER_TIMEZONE="Asia/Shanghai" \
+  -p 8000:8000 \
+  -v /root/packbreaker/config:/config \
+  -v /path/to/common/storage:/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  ghcr.io/yyxiaoma/packbreaker:latest
+```
+
+挂载 `docker.sock` 后可以使用单容器一键升级；它等价于 Docker 主机级管理权限，只应在受信任宿主机上启用。不希望授予该权限时，请参考 [部署文档](./docs/deployment.md) 使用手工 digest 升级或独立 updater helper。
+
+### 第一次登录
+
+默认管理员用户名：
+
+```text
+admin
+```
+
+如果没有配置管理员密码，PackBreaker 首次启动会生成一个**一次性临时密码**，只输出到容器启动日志，不进入普通结构化日志、数据库、通知或 AI 上下文。
+
+查看：
+
+```bash
+docker logs packbreaker
+```
+
+使用临时密码登录后必须立即修改密码。
+
+---
+
+## 🛠️ 本地开发
+
+环境：
+
+- Python 3.11
+- Node.js 22.12+
+- pnpm 10.34.5
+- uv
+
+安装并启动前端：
 
 ```bash
 corepack pnpm --dir frontend install --frozen-lockfile
 corepack pnpm --dir frontend dev
 ```
 
-浏览器访问 `http://127.0.0.1:5173/`。安装完整开发依赖后，可运行 `uv run python scripts/check.py` 执行静态检查与 OpenAPI 生成漂移检查，运行 `uv run python scripts/test.py` 执行后端/前端测试和生产构建。
-
-Docker 环境可直接运行：
+常用质量门：
 
 ```bash
-docker compose up --build -d
+uv run python scripts/check.py
+uv run python scripts/test.py
 ```
 
-生产运维记录应保存正式 Release manifest 给出的完整 `@sha256:` digest，而不是只记录可移动 tag。Compose 管理的主容器继续采用宿主机显式更新 digest；独立 `docker run --name packbreaker` 的单容器一键升级需要把 `/var/run/docker.sock` 挂载到主容器，完整安全边界和部署命令见 `docs/deployment.md`。若不愿向主容器授予 Docker 管理权限，仍可使用独立 `packbreaker-updater` 兼容模式。
+其中：
 
-研发设计、接口规范、测试计划、支持边界和实施路线请参阅[研发文档索引](./docs/README.md)。已移除的历史需求基线与早期原型素材可通过 Git 历史追溯。
+- `scripts/check.py`：仓库安全扫描、Ruff、mypy、Prettier、Vue typecheck、OpenAPI 漂移检查
+- `scripts/test.py`：后端 pytest、前端 Vitest、production build
 
-## 许可证
+---
 
-本项目采用 [MIT License](./LICENSE)。
+## 📊 当前状态
+
+当前 `main` 对应 **v0.1.6 candidate**；最新正式 Release 仍以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中已发布版本为准。
+
+v0.1.6 candidate 当前自动化与现场证据包括：
+
+- 后端 722 tests passed
+- 前端 15 个测试文件 / 76 tests passed
+- production build 通过
+- browser warm E2E 通过
+- qBittorrent / Transmission 真实只读连接与路径映射通过
+- M-TEAM / HHClub 真实用户详情读取通过
+- v0.1.5 数据库副本升级到 v0.1.6 migration head 通过
+- AI Secret canary 证明原始敏感值不会进入 Provider Tool 上下文
+
+完整支持边界和已知限制请看：
+
+- [支持矩阵](./docs/support-matrix.md)
+- [已知限制](./docs/known-limitations.md)
+- [v0.1.6 真实环境验收](./docs/v0.1.6-real-environment-acceptance.md)
+- [部署与运维](./docs/deployment.md)
+- [研发文档索引](./docs/README.md)
+
+---
+
+## 🧱 技术栈
+
+**Backend**
+
+Python 3.11 · FastAPI · SQLAlchemy · Alembic · SQLite WAL · asyncio · APScheduler
+
+**Frontend**
+
+Vue 3 · Vite · TypeScript strict · Element Plus · Pinia · Axios · ECharts
+
+**Quality & Release**
+
+pytest · Ruff · mypy · Vitest · Playwright · OpenAPI generated types · Docker · GitHub Actions · SBOM · immutable image digest
+
+---
+
+## 🤝 贡献与开发约束
+
+如果你准备修改核心匹配、文件系统、下载器写链、迁移、安全或 AI Tool，请先阅读 [AGENTS.md](./AGENTS.md) 和 [研发文档索引](./docs/README.md)。
+
+PackBreaker 更欢迎“证据更强、恢复更稳、安全门更清晰”的改动，而不是单纯让流程跑得更激进。
+
+---
+
+## 📄 License
+
+PackBreaker 使用 [MIT License](./LICENSE)。
