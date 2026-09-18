@@ -70,7 +70,7 @@ docker compose up --build -d
 
 Compose 使用 `packbreaker-config` named volume 保存 SQLite、主密钥和锁，数据根通过 `PACKBREAKER_DATA_PATH` 显式 bind mount 到 `/data`；默认 HTTP 端口为 8000，可用 `PACKBREAKER_HTTP_PORT` 修改宿主机端口。容器设置 `no-new-privileges`，健康检查执行 `python -m backend.app.healthcheck`，只请求本机 `/api/v1/health/ready`。
 
-生产部署建议把实际运行版本记录为正式 Release manifest 中的不可变 digest。Web 一键升级只支持独立 `docker run --name packbreaker` 管理的主容器；检测到 `com.docker.compose.*` 标签时会失败关闭，避免应用在 Compose 之外替换容器后被后续 `docker compose up` 按旧声明覆盖。因此仓库 `compose.yaml` 继续采用宿主机显式更新 digest 的方式。
+生产部署建议把实际运行版本记录为正式 Release manifest 中的不可变 digest。Compose 用户可以选择两种升级方式：不挂载 Docker socket 时由宿主机显式更新 digest；显式挂载 `/var/run/docker.sock` 时允许从 Web 发起一键升级。Web updater 会保留 Compose labels、端口、环境变量、挂载、restart policy 和受支持的单网络配置，但不会修改宿主机上的 `compose.yaml`，因此 Web 升级后必须把 YAML 中的 `image:` 同步到新 Release digest，避免后续 `docker compose up` 按旧声明重新创建旧版本。
 
 独立 `docker run` 的推荐易用部署是“单常驻容器”模式：主 PackBreaker 挂载 Docker socket，平时只有一个 `packbreaker` 容器；用户在左上角版本弹窗点击一键升级时，主服务完成正式 Release/digest 复验和一致性备份，然后临时创建一个 `AutoRemove` updater 容器。临时 helper 接管后停止旧主容器、按原部署参数创建新主容器、等待 healthcheck，并在失败时恢复切换瞬间数据库与旧容器。helper 退出后由 Docker 自动删除，因此升级结束后重新回到单常驻容器状态。
 
@@ -92,7 +92,7 @@ docker run -d \
 
 若不愿把 Docker socket 授予主容器，仍可采用兼容的最小权限模式：主 PackBreaker 不挂 docker.sock，另外常驻 `packbreaker-updater`，二者共享同一个 `/config`。独立 helper 使用 `/config/updater/updater.sock` + 随机 token 接受受限升级请求。该模式继续受支持，但不再是独立 `docker run` 的默认易用部署。
 
-如果使用自定义 `PUID`/`PGID`，应确保 `/data` 内需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限；单容器一键升级还要求主进程身份能够访问挂载的 Docker socket。`0` 是有效值；`PUID=0`、`PGID=0` 时服务进程保持 root 身份运行。入口不会为了方便而修改媒体树所有权。默认 Compose 不授予 Docker 管理权限，也不支持 Web 在 Compose 之外替换主容器；Compose 部署按宿主机不可变 digest runbook 升级。
+如果使用自定义 `PUID`/`PGID`，应确保 `/data` 内需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限；Web 一键升级还要求主进程身份能够访问挂载的 Docker socket。`0` 是有效值；`PUID=0`、`PGID=0` 时服务进程保持 root 身份运行。入口不会为了方便而修改媒体树所有权。默认仓库 `compose.yaml` 不授予 Docker 管理权限；需要 Web 升级时可由用户显式取消 docker.sock 挂载注释。
 
 ## 6. 网络与反向代理
 
@@ -212,7 +212,7 @@ flowchart LR
 - `GET /system/upgrade` 会读取当前正式 Release、目标 digest 和当前可用升级执行器状态；`POST /system/upgrade/actions` 要求管理员会话、CSRF 和 `Idempotency-Key`。
 - 写入升级请求前，主服务重新读取正式 Release、执行完整本地 preflight 并创建一致性升级前备份；页面上的旧目标 digest 已变化时直接拒绝。
 - 单容器模式由主服务通过 Docker API 启动一次性 `AutoRemove` helper；helper 使用当前镜像中的受限升级程序，目标只接受正式 Release 的官方不可变 digest。兼容的独立 updater helper 仍可作为不授予主容器 docker.sock 的替代方案。
-- helper inspect 当前 `packbreaker` 容器，只复制允许的端口、环境变量、挂载、restart policy、单网络等配置；一次性模式会继续保留主容器的 docker.sock 挂载，以便未来版本仍可一键升级。Docker Compose 管理标签、`AutoRemove`、`container:<id>` namespace/网络和多网络、显式静态 IP/MAC 等无法安全重建的部署失败关闭。
+- helper inspect 当前 `packbreaker` 容器，只复制允许的端口、环境变量、挂载、restart policy、Compose labels、单网络等配置；一次性模式会继续保留主容器的 docker.sock 挂载，以便未来版本仍可一键升级。`AutoRemove`、`container:<id>` namespace/网络和多网络、显式静态 IP/MAC 等无法安全重建的部署仍失败关闭。
 - helper 停止旧容器后再创建一份“切换瞬间”静止数据库备份，重命名旧容器，创建/启动新容器并等待 Docker healthcheck。新容器健康后尝试删除旧容器；若仅旧停止容器清理失败，健康升级保持成功并留下人工清理提示，不会反向回滚健康新版本。
 - 新版本启动、迁移或 healthcheck 失败时，helper 会删除失败的新容器；若数据库可能已被新容器修改，则使用旧镜像的维护命令恢复切换瞬间备份，再把旧容器改回原名、启动并验证健康。自动回滚无法收敛时状态转为 `manual_recovery_required` 并禁止继续覆盖现场。
 - 新版本健康检查包含迁移版本、数据库/secret 自检和实例/worker 运行条件，不要求所有 PT 站在线。

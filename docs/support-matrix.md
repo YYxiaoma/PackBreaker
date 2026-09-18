@@ -50,7 +50,7 @@ v0.1.6 Profile Registry 另外列出以下**待适配**类型，但它们当前�
 - 生产回滚不依赖 Alembic 原地 downgrade；旧镜像不能读取新 schema 时必须恢复兼容的升级前/离线备份。
 - `v0.1.2` Release workflow run `34937718889` 已真实跑绿 `v0.1.1` 基线启动/备份 → `v0.1.2` 候选接管/readiness → 用 `v0.1.1` 镜像恢复旧备份 → `v0.1.1` 再次 readiness，并额外通过独立 updater helper 的真实成功升级与故障候选自动数据库/容器回滚。
 - `release-baseline.json` 当前固定正式 `v0.1.6` digest；后续候选版本必须以该最新 published baseline 做相邻版本升级/回滚门禁后才允许进入正式发布。
-- `v0.1.2` 正式提供独立 updater helper 的 Web 一键升级链路。自动容器替换只承诺单个 PackBreaker 容器、唯一可写 `/config`、官方 GHCR 镜像、可安全重建的端口/环境/挂载/restart policy 和单网络配置；Docker Compose 管理标签、复杂 namespace、多网络、显式静态 IP/MAC 或 AutoRemove 容器失败关闭。
+- `v0.1.2` 正式提供独立 updater helper 的 Web 一键升级链路。当前 main 允许显式挂载 docker.sock 的 Compose 单容器使用同一 Web 升级链，并保留 Compose labels；自动容器替换仍只承诺单个 PackBreaker 容器、唯一可写 `/config`、官方 GHCR 镜像、可安全重建的端口/环境/挂载/restart policy 和单网络配置。复杂 namespace、多网络、显式静态 IP/MAC 或 AutoRemove 容器继续失败关闭。
 
 ## 6. 兼容承诺原则
 

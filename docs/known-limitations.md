@@ -18,7 +18,7 @@
 ## 3. 升级与 Docker 权限
 
 - 独立 `docker run --name packbreaker` 支持“单常驻容器”一键升级：主容器挂载 docker.sock，点击版本弹窗的升级按钮后临时创建 `AutoRemove` helper 接管停机、容器替换、健康检查与失败回滚；升级窗口内会短暂存在第二个 helper 容器，结束后自动删除。若不愿向主容器授予 docker.sock，仍可额外常驻独立 `packbreaker-updater` 作为兼容的最小权限方案。
-- 自动升级只支持能够安全重建的单容器部署：必须存在唯一可写 `/config` 挂载，当前镜像必须来自官方 GHCR；Docker Compose 管理标签、`AutoRemove`、`container:<id>` network/PID/IPC namespace、多网络、显式静态 IP/MAC 等配置会阻断自动升级。Compose/Swarm/Kubernetes 拓扑仍需宿主机管理员按 runbook 手工升级。
+- 自动升级只支持能够安全重建的单容器部署：必须存在唯一可写 `/config` 挂载，当前镜像必须来自官方 GHCR；Compose 管理容器在显式挂载 docker.sock 时可使用 Web 一键升级，并保留 Compose labels，但 updater 不修改宿主机 `compose.yaml`，因此升级后需同步 YAML 的 image digest。`AutoRemove`、`container:<id>` network/PID/IPC namespace、多网络、显式静态 IP/MAC 等配置仍会阻断自动升级；Swarm/Kubernetes 拓扑仍需宿主机管理员按 runbook 手工升级。
 - `/var/run/docker.sock` 等价于 Docker 主机级管理权限；单容器易用模式把该权限授予主 PackBreaker，因此只应在受信宿主机启用。服务端升级入口仍限制到官方 Release 不可变 digest 和目标 `packbreaker` 容器，但这不能把 Docker socket 本身变成低权限接口。
 - 自动回滚依赖旧镜像仍可启动且 `/config` 可写；若 Docker daemon、卷、旧镜像或离线恢复本身不可用，helper 会进入 `manual_recovery_required`，不会继续覆盖现场。
 - `stable` 是可移动发现通道，不能作为生产安装、升级或回滚的唯一身份；运维记录必须保存完整 image digest。

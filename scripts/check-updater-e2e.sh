@@ -352,6 +352,9 @@ prepare_transient_case() {
     --env PUID=0 \
     --env PGID=0 \
     --env PACKBREAKER_TIMEZONE=Asia/Shanghai \
+    --label com.docker.compose.project=packbreaker-e2e \
+    --label com.docker.compose.service=packbreaker \
+    --label com.docker.compose.container-number=1 \
     --publish 127.0.0.1:18083:8000 \
     --volume "$transient_config:/config" \
     --volume "$transient_data:/data" \
@@ -491,6 +494,9 @@ docker exec --user 0:0 "$transient_main" \
   python -c 'import sqlite3; c=sqlite3.connect("/config/packbreaker.db", timeout=30); row=c.execute("SELECT probe_value FROM release_upgrade_probe WHERE probe_key=\"upgrade\"").fetchone(); assert row == ("transient-original",), row; c.close()'
 wait_transient_terminal
 test -n "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/var/run/docker.sock"}}{{.Source}}{{end}}{{end}}')"
+test "$(docker inspect "$transient_main" --format '{{index .Config.Labels "com.docker.compose.project"}}')" = "packbreaker-e2e"
+test "$(docker inspect "$transient_main" --format '{{index .Config.Labels "com.docker.compose.service"}}')" = "packbreaker"
+test "$(docker inspect "$transient_main" --format '{{index .Config.Labels "com.docker.compose.container-number"}}')" = "1"
 assert_quiesced_backup_exists "$transient_config"
 wait_transient_helper_cleanup
 

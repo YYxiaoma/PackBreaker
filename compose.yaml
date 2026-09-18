@@ -17,6 +17,9 @@ services:
     volumes:
       - packbreaker-config:/config
       - "${PACKBREAKER_DATA_PATH:-./runtime/data}:/data"
+      # 可选：需要在 Web 中执行一键升级时取消下一行注释。
+      # 挂载 docker.sock 等价于授予容器 Docker 主机级管理权限。
+      # - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "python", "-m", "backend.app.healthcheck"]
       interval: 30s

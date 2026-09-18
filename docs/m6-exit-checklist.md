@@ -74,7 +74,7 @@ M6 于 2026-09-14 在 M5 正式关闭后启动。M6 不放宽既有安全门；�
 - `GET /api/v1/system/release/preflight` 复用 release preflight 的本地检查，但固定 `exercise_backup=false`，因此页面刷新不会创建/删除备份演练文件；返回配置目录、SQLite head/integrity、现有主密钥、`/data` 根与 docker.sock 风险，不访问 PT/下载器/通知，也不遍历媒体树。
 - `GET /api/v1/system/upgrade` 展示当前版本、最新正式 Release/digest 与当前升级执行器 phase/阻断原因；`POST /api/v1/system/upgrade/actions` 要求管理员会话、CSRF 和 `Idempotency-Key`，并在交给 helper 前重新确认 Release、跑完整 preflight、创建一致性备份。
 - 单容器易用模式由主 PackBreaker 挂载 docker.sock，只在用户确认升级后创建一次性 `AutoRemove` helper；helper 创建切换瞬间静止数据库备份、按 allowlist 重建容器配置、等待 Docker healthcheck，并在失败时恢复旧数据库/旧容器。若不授予主容器 docker.sock，原独立 `packbreaker-updater` Unix socket + token 模式仍可作为兼容路径。
-- 自动升级当前只支持可安全重建的单容器/单网络拓扑；Docker Compose 管理标签、AutoRemove、container namespace、多网络、显式静态 IP/MAC 等失败关闭。无可用升级执行器时仍可按不可变 digest runbook 手工升级/回滚。
+- 自动升级当前只支持可安全重建的单容器/单网络拓扑；当前 main 已允许显式挂载 docker.sock 的 Compose 单容器保留 Compose labels 后走 Web 升级。AutoRemove、container namespace、多网络、显式静态 IP/MAC 等仍失败关闭。无可用升级执行器时仍可按不可变 digest runbook 手工升级/回滚。
 - CI `updater-e2e` 真实 Docker 门禁从 `release-baseline.json` 的正式不可变 baseline 出发，通过 Runner 内临时 registry 验证成功替换和“候选修改数据库后 healthcheck 失败”的自动容器/数据库回滚；当前真实 job 仍走独立 helper，单容器一次性 helper 已有专项合成门禁并需在下一次正式发布前补入同一真实 Docker job。所有门禁均不使用生产 `/config`、PT、下载器或媒体目录。
 
 ## 11. v1.0 验收证据索引与发布边界

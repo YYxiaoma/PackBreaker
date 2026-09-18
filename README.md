@@ -138,6 +138,20 @@ PackBreaker 使用 operation journal 记录副作用意图和结果。即使遇�
 
 ```mermaid
 stateDiagram-v2
+    state "分析任务" as ANALYZING
+    state "搜索候选" as SEARCHING
+    state "匹配候选" as MATCHING
+    state "验证内容" as VERIFYING
+    state "执行前预检" as PREFLIGHT
+    state "等待人工确认" as AWAITING_CONFIRMATION
+    state "创建硬链接" as LINKING
+    state "添加到下载器" as ADDING
+    state "客户端下载校验" as CLIENT_VERIFYING
+    state "启动做种" as SEEDING
+    state "完成" as DONE
+    state "等待重试" as RETRY
+    state "需要对账" as RECONCILE_REQUIRED
+
     [*] --> ANALYZING
     ANALYZING --> SEARCHING
     SEARCHING --> MATCHING
@@ -288,14 +302,42 @@ v0.1.6 管理端覆盖：
 
 ### Docker Compose
 
-准备一个供 PackBreaker 访问的公共媒体目录，然后：
+如果直接部署正式 v0.1.6，可以创建一个 `compose.yaml`：
+
+```yaml
+services:
+  packbreaker:
+    image: ghcr.io/yyxiaoma/packbreaker@sha256:b250b4dd945648fca884989d4c6ce14692dea839d4364f462d6080806357f13d
+    container_name: packbreaker
+    restart: unless-stopped
+    user: "0:0"
+    ports:
+      - "8000:8000"
+    environment:
+      PUID: "0"
+      PGID: "0"
+      PACKBREAKER_TIMEZONE: "Asia/Shanghai"
+    volumes:
+      - /root/packbreaker/config:/config
+      - /path/to/common/storage:/data
+      # 可选：需要在 Web 中一键升级时挂载。
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-m", "backend.app.healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+```
+
+把 `/path/to/common/storage` 替换为 qBittorrent / Transmission 与 PackBreaker 都能访问的公共媒体父目录。源文件与 Hardlink 目标应尽量位于同一文件系统，否则创建 Hardlink 时会因 `EXDEV` 失败。
+
+启动：
 
 ```bash
-export PACKBREAKER_DATA_PATH=/path/to/common/storage
-export PUID=1000
-export PGID=1000
-
-docker compose up --build -d
+docker compose up -d
 ```
 
 默认访问：
@@ -303,6 +345,23 @@ docker compose up --build -d
 ```text
 http://<服务器IP>:8000
 ```
+
+> **Compose 用户可以自行选择升级方式。**
+>
+> - **宿主机升级**：不挂载 `docker.sock`，在宿主机修改 `image:` 的正式 Release digest，再执行：
+>
+> ```bash
+> docker compose pull
+> docker compose up -d
+> ```
+>
+> - **Web 一键升级**：挂载 `/var/run/docker.sock:/var/run/docker.sock`，PackBreaker 会通过一次性 updater helper 重建当前容器，并保留 Compose labels、端口、环境变量、挂载、restart policy 和受支持的单网络配置。
+>
+> Web 升级不会修改宿主机上的 `compose.yaml`。升级成功后，请把 YAML 中的 `image:` 同步到新 Release digest；否则以后再次执行 `docker compose up -d` 时，Compose 可能按旧声明重新创建旧版本。
+>
+> `docker.sock` 等价于 Docker 主机级管理权限，只应在受信宿主机上启用。
+>
+> **版本说明：正式 v0.1.6 镜像仍包含旧的 Compose Web 升级阻断；上述 Compose Web 升级能力从当前 main / 下一正式版本开始提供。**
 
 ### 独立 Docker 容器
 

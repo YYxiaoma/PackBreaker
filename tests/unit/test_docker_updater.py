@@ -145,6 +145,33 @@ def test_replacement_plan_can_preserve_docker_socket_for_single_container_upgrad
     assert "/var/run/docker.sock:/var/run/docker.sock" in host["Binds"]
 
 
+def test_replacement_plan_preserves_compose_labels_for_web_upgrade() -> None:
+    container = _container()
+    container["Config"]["Labels"].update(
+        {
+            "com.docker.compose.project": "packbreaker",
+            "com.docker.compose.service": "packbreaker",
+            "com.docker.compose.container-number": "1",
+            "com.docker.compose.project.config_files": "/srv/packbreaker/compose.yaml",
+        }
+    )
+
+    plan = build_replacement_plan(
+        container,
+        _old_image(),
+        target_image=_TARGET,
+        allowed_image=_OFFICIAL,
+        preserve_docker_socket=True,
+    )
+
+    labels = plan.create_payload["Labels"]
+    assert labels["com.docker.compose.project"] == "packbreaker"
+    assert labels["com.docker.compose.service"] == "packbreaker"
+    assert labels["com.docker.compose.container-number"] == "1"
+    assert labels["com.docker.compose.project.config_files"] == "/srv/packbreaker/compose.yaml"
+    assert "/var/run/docker.sock:/var/run/docker.sock" in plan.create_payload["HostConfig"]["Binds"]
+
+
 def test_replacement_plan_accepts_private_registry_with_port_for_isolated_e2e() -> None:
     repository = "127.0.0.1:5000/packbreaker"
     container = _container()
@@ -181,12 +208,6 @@ def test_replacement_plan_rejects_invalid_private_registry_port() -> None:
 @pytest.mark.parametrize(
     ("mutation", "code"),
     [
-        (
-            lambda item: item["Config"]["Labels"].__setitem__(
-                "com.docker.compose.project", "packbreaker"
-            ),
-            "UPGRADE_COMPOSE_MANAGED_UNSUPPORTED",
-        ),
         (
             lambda item: item["NetworkSettings"]["Networks"]["bridge"].__setitem__(
                 "IPAMConfig", {"IPv4Address": "172.17.0.10"}

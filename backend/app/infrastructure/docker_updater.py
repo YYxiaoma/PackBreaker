@@ -362,12 +362,6 @@ def build_replacement_plan(
     config = _required_mapping(container, "Config", "目标容器 Config 无效")
     host = _required_mapping(container, "HostConfig", "目标容器 HostConfig 无效")
     old_image_config = _optional_mapping(old_image.get("Config"))
-    labels = _optional_mapping(config.get("Labels"))
-    if any(key.startswith("com.docker.compose.") for key in labels):
-        raise DockerUpdaterError(
-            "UPGRADE_COMPOSE_MANAGED_UNSUPPORTED",
-            "Docker Compose 管理的容器不能由独立 updater 在 Compose 之外安全替换",
-        )
     if config.get("MacAddress") not in (None, ""):
         raise DockerUpdaterError(
             "UPGRADE_STATIC_MAC_ADDRESS_UNSUPPORTED",
