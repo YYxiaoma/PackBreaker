@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - "candidate/**"
     paths:
       - ".github/workflows/candidate-docker-e2e.yml"
       - "Dockerfile"
