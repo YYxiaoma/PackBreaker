@@ -21,6 +21,16 @@ _DIGEST = "sha256:" + "8" * 64
 _TARGET_IMAGE = f"{OFFICIAL_IMAGE}@{_DIGEST}"
 
 
+@pytest.fixture(autouse=True)
+def _freeze_current_version_for_upgrade_scenarios(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "backend.app.application.system_upgrades.app_version",
+        lambda: "0.1.7",
+    )
+
+
 class FakeReleaseProvider:
     def __init__(self, target: ReleaseTarget) -> None:
         self.target = target
