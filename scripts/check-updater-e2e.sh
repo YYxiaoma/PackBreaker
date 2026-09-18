@@ -150,6 +150,36 @@ wait_transient_helper_cleanup() {
   done
 }
 
+wait_transient_terminal() {
+  for attempt in $(seq 1 30); do
+    local status_json phase request_id
+    status_json="$(
+      docker exec --user 0:0 \
+        --env PB_TARGET_CONTAINER="$transient_main" \
+        --env PB_ALLOWED_IMAGE="$registry_repo" \
+        "$transient_main" \
+        python -c 'import json,os; from pathlib import Path; from backend.app.infrastructure.transient_updater import TransientUpdaterLauncher; launcher=TransientUpdaterLauncher(config_dir=Path("/config"), target_container=os.environ["PB_TARGET_CONTAINER"], allowed_image=os.environ["PB_ALLOWED_IMAGE"]); print(json.dumps(launcher.status().as_dict(), sort_keys=True))'
+    )"
+    phase="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["phase"])' <<<"$status_json")"
+    request_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("request_id") or "")' <<<"$status_json")"
+    case "$phase" in
+      succeeded)
+        test "$request_id" = "$transient_request"
+        return 0
+        ;;
+      rolled_back|failed|manual_recovery_required)
+        echo "$status_json" >&2
+        return 1
+        ;;
+    esac
+    if [ "$attempt" -eq 30 ]; then
+      echo "$status_json" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 wait_docker_healthy() {
   local container="$1"
   for attempt in $(seq 1 90); do
@@ -459,12 +489,7 @@ test "$transient_new_container_id" != "$transient_initial_container_id"
 test "$(docker inspect "$transient_main" --format '{{.Image}}')" = "$candidate_image_id"
 docker exec --user 0:0 "$transient_main" \
   python -c 'import sqlite3; c=sqlite3.connect("/config/packbreaker.db", timeout=30); row=c.execute("SELECT probe_value FROM release_upgrade_probe WHERE probe_key=\"upgrade\"").fetchone(); assert row == ("transient-original",), row; c.close()'
-docker exec --user 0:0 \
-  --env PB_REQUEST_ID="$transient_request" \
-  --env PB_TARGET_CONTAINER="$transient_main" \
-  --env PB_ALLOWED_IMAGE="$registry_repo" \
-  "$transient_main" \
-  python -c 'import os; from pathlib import Path; from backend.app.infrastructure.transient_updater import TransientUpdaterLauncher; launcher=TransientUpdaterLauncher(config_dir=Path("/config"), target_container=os.environ["PB_TARGET_CONTAINER"], allowed_image=os.environ["PB_ALLOWED_IMAGE"]); status=launcher.status(); assert status.phase == "succeeded", status; assert status.request_id == os.environ["PB_REQUEST_ID"], status' >/dev/null
+wait_transient_terminal
 test -n "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/var/run/docker.sock"}}{{.Source}}{{end}}{{end}}')"
 assert_quiesced_backup_exists "$transient_config"
 wait_transient_helper_cleanup
