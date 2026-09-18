@@ -10,7 +10,8 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11"></a>
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64"></a>
-  <img src="https://img.shields.io/badge/v0.1.6-released-2563EB" alt="v0.1.6 released">
+  <img src="https://img.shields.io/badge/latest_release-v0.1.6-2563EB" alt="latest release v0.1.6">
+  <img src="https://img.shields.io/badge/main-v0.1.7_candidate-F59E0B" alt="main v0.1.7 candidate">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 
@@ -361,7 +362,7 @@ http://<服务器IP>:8000
 >
 > `docker.sock` 等价于 Docker 主机级管理权限，只应在受信宿主机上启用。
 >
-> **版本说明：正式 v0.1.6 镜像仍包含旧的 Compose Web 升级阻断；上述 Compose Web 升级能力从当前 main / 下一正式版本开始提供。**
+> **版本说明：正式 v0.1.6 镜像仍包含旧的 Compose Web 升级阻断；上述 Compose Web 升级能力已经进入当前 v0.1.7 candidate。**
 
 ### 独立 Docker 容器
 
@@ -434,9 +435,9 @@ uv run python scripts/test.py
 
 ## 📊 当前状态
 
-**v0.1.6 已正式发布。** 当前 `main` 保持 v0.1.6 版本线并包含发布后的文档/基线更新；正式部署身份以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中的 release manifest 与不可变 image digest 为准。
+**最新正式版本是 v0.1.6；当前 `main` 已进入 v0.1.7 candidate。** v0.1.7 的第一项已落地能力是 Compose 容器在显式挂载 `docker.sock` 时支持 Web 一键升级，并继续保留 Compose labels 与原容器关键配置。正式部署身份仍以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中的 release manifest 与不可变 image digest 为准。
 
-v0.1.6 当前自动化、现场与正式发布证据包括：
+v0.1.6 的自动化、现场与正式发布证据包括：
 
 - 后端 722 tests passed
 - 前端 15 个测试文件 / 76 tests passed
