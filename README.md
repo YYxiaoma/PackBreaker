@@ -10,8 +10,8 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11"></a>
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64"></a>
-  <img src="https://img.shields.io/badge/latest_release-v0.1.7-2563EB" alt="latest release v0.1.7">
-  <img src="https://img.shields.io/badge/main-v0.1.8_candidate-F59E0B" alt="main v0.1.8 candidate">
+  <img src="https://img.shields.io/badge/latest_release-v0.1.8-2563EB" alt="latest release v0.1.8">
+  <img src="https://img.shields.io/badge/main-v0.1.8_released-16A34A" alt="main v0.1.8 released">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 
@@ -432,19 +432,21 @@ uv run python scripts/test.py
 
 ## 📊 当前状态
 
-**最新正式版本仍是 v0.1.7；当前 `main` 已进入 v0.1.8 candidate。** v0.1.8 已完成统一任务生命周期、风险授权、Web / Telegram 高风险审批、自动校验、资源释放与恢复闭环，并通过发布前真实环境与 Docker candidate 门禁。正式部署身份仍以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中的 release manifest 与不可变 image digest 为准。
+**最新正式版本是 v0.1.8；当前 `main` 已完成 v0.1.8 正式发布。** v0.1.8 已完成统一任务生命周期、风险授权、Web / Telegram 高风险审批、自动校验、资源释放与恢复闭环，并通过真实环境、Docker candidate 与正式 Release 全链路门禁。正式部署身份仍以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中的 release manifest 与不可变 image digest 为准。
 
-v0.1.8 candidate 的发布前证据包括：
+v0.1.8 的正式发布证据包括：
 
 - 后端 759 tests passed
 - 前端 17 个测试文件 / 81 tests passed
 - production build 通过
 - Candidate Docker E2E run `35351598555` 已完成 candidate 镜像构建、`v0.1.7 → v0.1.8 → v0.1.7` 升级/回滚、真实 updater、自动回滚与 Compose label preservation
 - main 上的 Candidate Docker E2E run `35353218750` 再次通过
+- main CI run `35365772447` 已完成 quality、browser-e2e、container 与 updater-e2e 四项门禁
 - qBittorrent 与 Transmission 的真实 add / verify / start / remove / rollback 安全语义已完成现场验收
 - HHClub fresh candidate 已完成 Analyze → Review → Gate → Plan → qB add/start → DONE → release 的真实完整任务闭环，并在收尾后保持零验收残留
 - Web / Telegram Approval、监控高风险预授权与 startup recovery 已完成真实验收
-- v0.1.7 的正式不可变镜像仍为 `ghcr.io/yyxiaoma/packbreaker@sha256:d60027f8f72bf3001c1a18b935ab82f6a793ea435d1a3e6482efe6fc5b0ea68a`，作为 v0.1.8 正式发布前的相邻升级基线
+- Release workflow run `35366864779` 已完成 release quality gates、`v0.1.7 → v0.1.8 → v0.1.7` 升级/回滚、真实 updater helper E2E、linux/amd64 镜像发布、SPDX SBOM、release manifest、SHA256SUMS、GitHub Release 与 `stable/latest` 推进
+- 正式不可变镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:f114296a40c3bc68f036071382ea3029818fc909ef78a2c07a5ab382e6c4d0d3`
 
 完整支持边界和已知限制请看：
 
