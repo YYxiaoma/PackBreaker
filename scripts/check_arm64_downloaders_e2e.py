@@ -19,6 +19,7 @@ from backend.app.domain.verification import VerificationLevel
 from backend.app.infrastructure.adapters.downloaders import (
     QbittorrentAdapter,
     QbittorrentAddRequest,
+    QbittorrentTorrentState,
     TransmissionAdapter,
     TransmissionAddRequest,
 )
@@ -30,6 +31,36 @@ _ACTIVE_STAGE = "setup"
 def _mark_stage(stage: str) -> None:
     global _ACTIVE_STAGE
     _ACTIVE_STAGE = stage
+
+
+def _assert_qb_state(
+    states: tuple[QbittorrentTorrentState, ...],
+    *,
+    save_path: str,
+    tag: str,
+) -> None:
+    """Emit only synthetic test state, never credentials or arbitrary API response bodies."""
+    if (
+        len(states) == 1
+        and states[0].verification_complete
+        and states[0].save_path == save_path
+        and tag in states[0].tags
+    ):
+        return
+    state = states[0] if len(states) == 1 else None
+    print(
+        "::error file=scripts/check_arm64_downloaders_e2e.py::"
+        f"qb synthetic status count={len(states)} "
+        f"state={state.state if state else 'missing-or-duplicate'} "
+        f"progress={state.progress if state else 'unknown'} "
+        f"verification_complete={state.verification_complete if state else False} "
+        f"save_path_matches={state.save_path == save_path if state else False} "
+        f"tag_present={tag in state.tags if state else False}",
+        flush=True,
+    )
+    raise AssertionError(
+        "qBittorrent synthetic torrent state is not verified or has identity drift"
+    )
 
 
 def synthetic_torrent(content: bytes) -> bytes:
@@ -100,9 +131,7 @@ async def run_real_downloader_probe(kind: str, data_root: Path, password: str) -
                 if qb_states and qb_states[0].verification_complete:
                     break
                 await asyncio.sleep(1)
-            assert len(qb_states) == 1 and qb_states[0].verification_complete, qb_states
-            assert qb_states[0].save_path == str(target.parent), qb_states
-            assert "packbreaker-arm64-ci" in qb_states[0].tags, qb_states
+            _assert_qb_state(qb_states, save_path=str(target.parent), tag="packbreaker-arm64-ci")
             _mark_stage("qb-start")
             await qb_adapter.start_torrent(torrent_hash)
             _mark_stage("qb-seeding-status")
