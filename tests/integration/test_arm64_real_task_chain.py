@@ -48,6 +48,7 @@ from backend.app.infrastructure.persistence.models import OperationJournal, Unpa
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskExecutionPlanRepository,
 )
+from backend.app.infrastructure.torrent_parser import parse_torrent
 from tests.application.test_task_adding import _AddingFixture, _FakeSiteProvider
 
 pytest_plugins = ("tests.application.test_task_adding",)
@@ -301,9 +302,37 @@ async def test_authorized_transmission_task_journal_verifies_then_seeds_real_cli
         assert original.st_ino == target.stat(follow_symlinks=False).st_ino
 
     with _test_stage("tr-journal-backed-add"):
-        added = await adding.execute(
-            adding_fixture.unit_id, execution_plan_id=adding_fixture.plan_id
-        )
+        try:
+            added = await adding.execute(
+                adding_fixture.unit_id, execution_plan_id=adding_fixture.plan_id
+            )
+        except ApplicationError as exc:
+            if exc.code == "DOWNLOADER_STATE_MISMATCH":
+                meta = parse_torrent(adding_fixture.torrent_content)
+                assert meta.v1_info_hash is not None
+                observed = await adapter.get_torrents((meta.v1_info_hash,))
+                with adding_fixture.factory() as session:
+                    journal = session.scalar(
+                        select(OperationJournal).where(
+                            OperationJournal.operation_type == TRANSMISSION_ADD_OPERATION
+                        )
+                    )
+                    assert journal is not None
+                    expected_path = journal.intent.get("remote_save_path")
+                    expected_tag = journal.intent.get("ownership_tag")
+                assert isinstance(expected_path, str) and isinstance(expected_tag, str)
+                state = observed[0] if len(observed) == 1 else None
+                print(
+                    "::error file=tests/integration/test_arm64_real_task_chain.py::"
+                    f"tr add synthetic mismatch count={len(observed)} "
+                    f"path_matches={state.download_dir == expected_path if state else False} "
+                    f"label_matches={expected_tag in state.labels if state else False} "
+                    f"stopped={state.stopped if state else False} "
+                    f"status={state.status if state else 'unknown'} "
+                    f"progress={state.percent_done if state else 'unknown'}",
+                    flush=True,
+                )
+            raise
     with _test_stage("tr-add-state"):
         assert added.status is TaskStatus.CLIENT_VERIFYING and added.skip_checking is False
         states = await adapter.get_torrents((added.torrent_hash,))
