@@ -192,6 +192,8 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **同一任务全链路 → 真实 qBittorrent（GitHub CI run `35447763395` 成功）**：原生 ARM64 隔离 qBittorrent 单任务集成测试不预先插入批准计划、恢复到早期状态或预建 Hardlink。合成源文件与内存站点从正式 `TaskAnalysisService` 创建任务、分析、批准当前候选、生成 Execution Gate/Execution Plan 起步；正式 LINKING/ADDING/SEEDING 协调器再通过同一个 SQLite 任务和 journal 与无外网真实 qBittorrent WebAPI 收敛到 DONE，核验非法候选不得批准、计划前无文件副作用、LINK/ADD/START journal 及重放幂等、源 inode/mtime 不变。首次 CI run `35447424803` 在新任务 `qb-full-lifecycle` 阶段失败，原因是合成种子的 info-hash 与前一项已存在任务相同；提交 `4d3a730` 使用不同的合成内容并增加客户端不存在相同哈希的前置断言，run `35447763395` 的原生 ARM64 job 与全部五项 CI job 成功。真实下载器临时口令仅存在于 CI 进程环境，数据库目标下载器的凭证存在标志使用非凭据合成哨兵，避免保存临时口令；模拟站点及模拟管理员身份不等于真实 PT 或浏览器人工审批。Transmission 同一任务全链路、Web 审批点击、正式跨版本 ARM64 升级及 GHCR 双架构发布资产仍未验收。
 
+**同一任务全链路 → 真实 Transmission（新增，待原生 ARM64 CI 验收）**：扩展同一条合成任务测试，使用独立 128 MiB 合成媒体和动态大小的模拟站点候选，完整调用正式分析、模拟管理员审批、Execution Gate/Execution Plan 与 LINKING，随后通过隔离 Transmission 4.1.3 的真实 RPC 完成 ADDING → CLIENT_VERIFYING（不可跳过真实校验）→ SEEDING → DONE。要求 LINK/ADD/VERIFY/START 四种 journal 均 APPLIED，重复执行幂等，源 inode/mtime/size 和 Hardlink 不变；专属种子哈希、测试目录和无外网容器与其他测试隔离。该新增测试尚未取得原生 ARM64 CI 通过证据，不代表真实 PT/浏览器人工审批，也不解除正式 ARM64 跨版本升级与多平台发布资产门禁。
+
 ## 9. 工作项拆分模板
 
 每个 Issue 至少包含：

@@ -65,6 +65,8 @@ def test_ci_container_gate_exercises_immutable_previous_release() -> None:
     assert "tests/integration/test_arm64_full_task_lifecycle.py" in downloader_e2e
     assert "run_full_lifecycle_probe" in downloader_e2e
     assert "test_native_arm64_full_approved_qb_real_task_lifecycle" in downloader_e2e
+    assert "test_native_arm64_full_approved_tr_real_task_lifecycle" in downloader_e2e
+    assert 'run_full_lifecycle_probe "$tr_name" tr "$tr_password"' in downloader_e2e
     assert 'run_journal_backed_task_probe "$qb_name" qb "$qb_password"' in downloader_e2e
     assert 'run_journal_backed_task_probe "$tr_name" tr "$tr_password"' in downloader_e2e
     assert "test_authorized_transmission_task" in downloader_e2e

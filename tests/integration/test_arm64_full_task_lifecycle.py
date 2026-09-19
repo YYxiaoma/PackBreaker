@@ -1,4 +1,4 @@
-"""One synthetic task from real analysis and approval through a real ARM64 qB client.
+"""One synthetic task through real analysis/approval and native ARM64 clients.
 
 The site and approving actor are isolated test doubles. All task/plan/journal
 rows are created by the production application services, never hand-inserted.
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -17,9 +18,10 @@ from sqlalchemy import select
 
 from backend.app.application.downloader_operations import (
     QbittorrentAddOperationService,
+    QbittorrentRecheckOperationService,
     QbittorrentStartOperationService,
 )
-from backend.app.application.downloaders import QbittorrentWriteBinding
+from backend.app.application.downloaders import QbittorrentWriteBinding, TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import (
     CREATE_HARDLINK_OPERATION,
@@ -27,14 +29,30 @@ from backend.app.application.filesystem_operations import (
 )
 from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.task_adding import TaskAddingCoordinator
+from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
 from backend.app.application.task_linking import TaskLinkingCoordinator
 from backend.app.application.task_seeding import TaskSeedingCoordinator
 from backend.app.application.tasks import TaskAnalysisService
+from backend.app.application.transmission_operations import (
+    TRANSMISSION_ADD_OPERATION,
+    TRANSMISSION_START_OPERATION,
+    TRANSMISSION_VERIFY_OPERATION,
+    TransmissionAddOperationService,
+    TransmissionStartOperationService,
+    TransmissionVerifyOperationService,
+)
 from backend.app.domain.downloader import (
     DownloaderCredential,
     PathMappingRule,
     ProbeStatus,
     downloader_execution_binding_digest,
+)
+from backend.app.domain.site_adapter import TorrentDetails
+from backend.app.domain.site_search import (
+    CandidateMeta,
+    SearchPage,
+    SearchQuery,
+    normalize_candidate_meta,
 )
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, identify_task_units
@@ -42,6 +60,8 @@ from backend.app.domain.verification import DownloaderKind, VerificationLevel
 from backend.app.infrastructure.adapters.downloaders import (
     QbittorrentAdapter,
     QbittorrentWriteAdapter,
+    TransmissionAdapter,
+    TransmissionWriteAdapter,
 )
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.database import (
@@ -64,11 +84,33 @@ from tests.application.test_task_adding import (
 )
 
 
+class _SizedSyntheticSite(_FakeAdapter):
+    def __init__(self, torrent: bytes, length: int) -> None:
+        super().__init__("synthetic", torrent)
+        self.length = length
+
+    def _candidate(self) -> CandidateMeta:
+        return normalize_candidate_meta(
+            site_id=self.site_id,
+            torrent_id="42",
+            display_name="Movie.2026",
+            total_size=self.length,
+        )
+
+    async def search(self, query: SearchQuery) -> SearchPage:
+        self.search_calls.append(query)
+        return SearchPage(self.site_id, query.page, (self._candidate(),), False, 1)
+
+    async def fetch_details(self, torrent_id: str) -> TorrentDetails:
+        return TorrentDetails(self._candidate())
+
+
 async def _run_full_lifecycle(
     sandbox: Path,
-    client: QbittorrentWriteAdapter,
+    client: QbittorrentWriteAdapter | TransmissionWriteAdapter,
     *,
     remote_root: str,
+    kind: DownloaderKind = DownloaderKind.QBITTORRENT,
 ) -> None:
     data_root = sandbox / "data"
     source_root = data_root / "source"
@@ -80,6 +122,11 @@ async def _run_full_lifecycle(
     # Reusing that fixture's hash would exercise the existing-torrent guard
     # instead of this new task's ADD/START journal.
     content = b"fullchainarm64v1"
+    if kind is DownloaderKind.TRANSMISSION:
+        # A tiny synthetic file verifies before Transmission can expose its
+        # mandatory CHECKING evidence. This isolated large fixture is never
+        # taken from or written to a user's media directory.
+        content = b"fullchainarm64tr" * (8 * 1024 * 1024)
     source = source_root / "Movie.2026.mkv"
     source.write_bytes(content)
     before = source.stat(follow_symlinks=False)
@@ -90,27 +137,28 @@ async def _run_full_lifecycle(
     assert not await client.get_torrents((meta.v1_info_hash,)), (
         "single-task CI fixture must use a distinct torrent hash"
     )
-    site_adapter = _FakeAdapter("synthetic", torrent)
+    site_adapter = _SizedSyntheticSite(torrent, len(content))
     sites = _FakeSiteProvider((EnabledSiteAdapter("synthetic-site", 1, "synthetic", site_adapter),))
 
     engine = create_sqlite_engine(sandbox / "full-lifecycle.db")
     Base.metadata.create_all(engine)
     factory = create_session_factory(engine)
     service = TaskAnalysisService(factory, sites, data_root=data_root)
-    downloader_id = "synthetic-full-lifecycle-qb"
+    is_tr = kind is DownloaderKind.TRANSMISSION
+    downloader_id = "synthetic-full-lifecycle-tr" if is_tr else "synthetic-full-lifecycle-qb"
     mappings = (PathMappingRule(remote_root, str(data_root)),)
     capabilities = {
-        "client": "qBittorrent",
-        "version": "v5.2.3",
-        "api_version": "2.15.1",
-        "supports_skip_checking": True,
+        "client": "Transmission" if is_tr else "qBittorrent",
+        "version": "4.1.3" if is_tr else "v5.2.3",
+        "api_version": "6.0.0" if is_tr else "2.15.1",
+        "supports_skip_checking": not is_tr,
         "supports_force_recheck": True,
         "supports_verify_progress": True,
     }
     binding_digest = downloader_execution_binding_digest(
         downloader_id=downloader_id,
         version=1,
-        kind=DownloaderKind.QBITTORRENT,
+        kind=kind,
         enabled=True,
         connection_status=ProbeStatus.OK,
         path_mapping_status=ProbeStatus.OK,
@@ -133,9 +181,11 @@ async def _run_full_lifecycle(
         session.add(
             Downloader(
                 id=downloader_id,
-                name="Isolated qBittorrent",
-                type=DownloaderKind.QBITTORRENT.value,
-                base_url="http://127.0.0.1:8080",
+                name="Isolated Transmission" if is_tr else "Isolated qBittorrent",
+                type=kind.value,
+                base_url=(
+                    "http://127.0.0.1:9091/transmission/rpc" if is_tr else "http://127.0.0.1:8080"
+                ),
                 secret_id="synthetic-credential-id",
                 path_mappings=[{"remote_prefix": remote_root, "container_prefix": str(data_root)}],
                 capabilities=capabilities,
@@ -218,32 +268,73 @@ async def _run_full_lifecycle(
         assert linked.hardlink_journal_ids == replay_link.hardlink_journal_ids
         target_file = target_root / source.name
         assert target_file.stat(follow_symlinks=False).st_ino == before.st_ino
-        provider = _FakeDownloaderProvider(
-            QbittorrentWriteBinding(
+        binding: QbittorrentWriteBinding | TransmissionWriteBinding
+        if is_tr:
+            binding = TransmissionWriteBinding(
                 downloader_id=downloader_id,
                 downloader_version=1,
                 binding_digest=binding_digest,
                 path_mappings=mappings,
                 capabilities=capabilities,
-                adapter=client,
                 data_root=data_root,
+                adapter=cast(TransmissionWriteAdapter, client),
             )
-        )
+        else:
+            binding = QbittorrentWriteBinding(
+                downloader_id=downloader_id,
+                downloader_version=1,
+                binding_digest=binding_digest,
+                path_mappings=mappings,
+                capabilities=capabilities,
+                data_root=data_root,
+                adapter=cast(QbittorrentWriteAdapter, client),
+            )
+        provider = _FakeDownloaderProvider(binding)
         adding = TaskAddingCoordinator(
             factory,
             sites,
             provider,
             QbittorrentAddOperationService(factory),
+            TransmissionAddOperationService(factory),
             data_root=data_root,
         )
         first = await adding.execute(units[0].id, execution_plan_id=plan.id)
-        assert first.status is TaskStatus.SEEDING and first.skip_checking
+        assert first.status is (TaskStatus.CLIENT_VERIFYING if is_tr else TaskStatus.SEEDING)
+        assert first.skip_checking is (not is_tr)
         replay_add = await adding.execute(units[0].id, execution_plan_id=plan.id)
         assert replay_add.replayed and replay_add.qbit_journal_id == first.qbit_journal_id
+        verification_journal_id: str | None = None
+        if is_tr:
+            verifier = TaskClientVerificationCoordinator(
+                factory,
+                provider,
+                QbittorrentRecheckOperationService(factory),
+                TransmissionVerifyOperationService(factory),
+                data_root=data_root,
+            )
+            first_check = await verifier.execute(units[0].id, execution_plan_id=plan.id)
+            assert first_check.recheck_journal_id
+            if first_check.status is TaskStatus.CLIENT_VERIFYING:
+                for _ in range(60):
+                    observed = await client.get_torrents((first.torrent_hash,))
+                    assert len(observed) == 1
+                    if observed[0].verification_complete:
+                        break
+                    await asyncio.sleep(1)
+                else:
+                    raise AssertionError("isolated Transmission did not finish mandatory verify")
+                verified = await verifier.execute(units[0].id, execution_plan_id=plan.id)
+            else:
+                verified = first_check
+            assert verified.status is TaskStatus.SEEDING
+            assert verified.verification_outcome == "VERIFIED"
+            assert verified.recheck_journal_id == first_check.recheck_journal_id
+            verification_journal_id = verified.recheck_journal_id
         seeder = TaskSeedingCoordinator(
             factory,
             provider,
             QbittorrentStartOperationService(factory),
+            TransmissionStartOperationService(factory),
             data_root=data_root,
         )
         try:
@@ -258,7 +349,7 @@ async def _run_full_lifecycle(
                 await asyncio.sleep(1)
             else:
                 raise AssertionError(
-                    "isolated real qBittorrent did not enter verified seeding"
+                    "isolated real downloader did not enter verified seeding"
                 ) from exc
             done = await seeder.execute(units[0].id, execution_plan_id=plan.id)
             assert done.recovered_after_unknown_result
@@ -271,11 +362,19 @@ async def _run_full_lifecycle(
             journals = list(
                 session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
             )
-            assert [item.operation_type for item in journals] == [
-                CREATE_HARDLINK_OPERATION,
-                "QBITTORRENT_ADD",
-                "QBITTORRENT_START",
-            ]
+            expected_operations = [CREATE_HARDLINK_OPERATION]
+            if is_tr:
+                expected_operations.extend(
+                    [
+                        TRANSMISSION_ADD_OPERATION,
+                        TRANSMISSION_VERIFY_OPERATION,
+                        TRANSMISSION_START_OPERATION,
+                    ]
+                )
+                assert journals[2].id == verification_journal_id
+            else:
+                expected_operations.extend(["QBITTORRENT_ADD", "QBITTORRENT_START"])
+            assert [item.operation_type for item in journals] == expected_operations
             assert all(item.status == "APPLIED" for item in journals)
         after = source.stat(follow_symlinks=False)
         assert (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) == (
@@ -324,3 +423,40 @@ async def test_native_arm64_full_approved_qb_real_task_lifecycle() -> None:
     dedicated = sandbox / "data" / "full-lifecycle"
     dedicated.mkdir(mode=0o700)
     await _run_full_lifecycle(dedicated, client, remote_root="/downloads/full-lifecycle/data")
+
+
+@pytest.mark.skipif(
+    not os.environ.get("PACKBREAKER_CI_REAL_TR_SANDBOX"),
+    reason="requires isolated native ARM64 Transmission Docker namespace",
+)
+@pytest.mark.asyncio
+async def test_native_arm64_full_approved_tr_real_task_lifecycle() -> None:
+    raw = os.environ.get("PACKBREAKER_CI_REAL_TR_SANDBOX", "")
+    sandbox = Path(raw)
+    assert (
+        raw
+        and sandbox.name == "tr"
+        and sandbox.parent.name.startswith(".ci-arm64-real-downloaders.")
+        and sandbox.parent.parent == Path.cwd()
+        and not sandbox.is_symlink()
+        and not sandbox.parent.is_symlink()
+        and (sandbox / "data").is_dir()
+    )
+    password = os.environ.get("PACKBREAKER_CI_REAL_TR_PASSWORD", "")
+    if not password:
+        raise ValueError("isolated Transmission temporary password is required")
+    client = TransmissionAdapter(
+        "http://127.0.0.1:9091/transmission/rpc",
+        DownloaderCredential(username="packbreaker", password=password),
+    )
+    connection = await client.test_connection()
+    assert connection.capabilities.version.startswith("4.1.3")
+    assert not connection.capabilities.supports_skip_checking
+    dedicated = sandbox / "data" / "full-lifecycle"
+    dedicated.mkdir(mode=0o700)
+    await _run_full_lifecycle(
+        dedicated,
+        client,
+        remote_root="/downloads/full-lifecycle/data",
+        kind=DownloaderKind.TRANSMISSION,
+    )

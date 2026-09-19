@@ -26,6 +26,8 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **同一任务真实 qBittorrent 全链路门禁已通过**：GitHub CI run `35447763395` 在原生 ARM64 隔离 qBittorrent 测试中，以合成源文件/模拟站点和模拟管理员审批身份创建真实的任务、审核、执行计划及 Hardlink/ADD/START journal，并在同一任务中经真实客户端收敛到 DONE，含未授权失败关闭、重放与源文件安全检查；合成种子使用与前一项测试不同的信息哈希以防止误测已有任务，不使用生产媒体或凭据。此门禁不等于真实 PT、Web UI 人工点击、Transmission 同一任务全链路及正式 ARM64 发布/跨版本升级已获验证。
 
+**同一任务真实 Transmission 全链路门禁（新增，待新 CI）**：使用独立 128 MiB 合成媒体、模拟站点/管理员及真实 Transmission 4.1.3 隔离 RPC，覆盖从分析、审批、执行计划、Hardlink 到不可跳过的客户端下载校验、做种和 DONE，要求 LINK/ADD/VERIFY/START journal 与源文件不变量成立。只有相应原生 ARM64 CI 完成成功才能记录通过；正式 ARM64 升级、真实 Web 审批及多平台发行身份仍为独立退出条件。
+
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 
 ## 2. 下载器

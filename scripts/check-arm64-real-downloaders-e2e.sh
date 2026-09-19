@@ -125,23 +125,37 @@ PY
 }
 
 run_full_lifecycle_probe() {
-  local namespace_pid
-  namespace_pid="$(docker inspect "$qb_name" --format '{{.State.Pid}}')"
+  local container="$1" kind="$2" password="$3" namespace_pid sandbox_root sandbox_key password_key selected_test
+  namespace_pid="$(docker inspect "$container" --format '{{.State.Pid}}')"
   test "$namespace_pid" -gt 1
+  if [ "$kind" = qb ]; then
+    sandbox_root="$sandbox"
+    sandbox_key=PACKBREAKER_CI_REAL_QB_SANDBOX
+    password_key=PACKBREAKER_CI_REAL_QB_PASSWORD
+    selected_test=test_native_arm64_full_approved_qb_real_task_lifecycle
+  elif [ "$kind" = tr ]; then
+    sandbox_root="$sandbox/tr"
+    sandbox_key=PACKBREAKER_CI_REAL_TR_SANDBOX
+    password_key=PACKBREAKER_CI_REAL_TR_PASSWORD
+    selected_test=test_native_arm64_full_approved_tr_real_task_lifecycle
+  else
+    echo 'Unknown isolated full lifecycle downloader kind' >&2
+    return 1
+  fi
   # The sole real-client credential remains in the isolated test process.
   # Neither this test nor the in-memory approval/site stub persists it.
   if ! sudo nsenter --target "$namespace_pid" --net -- \
     setpriv --reuid "$(id -u)" --regid "$(id -g)" --clear-groups \
-    env "PACKBREAKER_CI_REAL_QB_SANDBOX=$sandbox" \
-      "PACKBREAKER_CI_REAL_QB_PASSWORD=$qb_password" \
+    env "$sandbox_key=$sandbox_root" \
+      "$password_key=$password" \
     "$PWD/.venv/bin/python" -m pytest -q \
       tests/integration/test_arm64_full_task_lifecycle.py \
-      -k test_native_arm64_full_approved_qb_real_task_lifecycle \
-      --junitxml "$sandbox/full-lifecycle-result.xml"; then
-    echo '::error::isolated full-lifecycle qBittorrent test failed (see pytest output)' >&2
+      -k "$selected_test" \
+      --junitxml "$sandbox_root/full-lifecycle-result.xml"; then
+    echo "::error::isolated full-lifecycle $kind test failed (see pytest output)" >&2
     return 1
   fi
-  python3 - "$sandbox/full-lifecycle-result.xml" <<'PY'
+  python3 - "$sandbox_root/full-lifecycle-result.xml" <<'PY'
 import sys
 from xml.etree import ElementTree
 
@@ -178,7 +192,7 @@ run_probe "$qb_name" qbittorrent "$qb_password"
 phase="qb-journal-backed-task"
 run_journal_backed_task_probe "$qb_name" qb "$qb_password"
 phase="qb-full-lifecycle"
-run_full_lifecycle_probe
+run_full_lifecycle_probe "$qb_name" qb "$qb_password"
 unset qb_password
 docker rm --force "$qb_name" >/dev/null
 
@@ -199,5 +213,7 @@ phase="tr-real-api"
 run_probe "$tr_name" transmission "$tr_password"
 phase="tr-journal-backed-task"
 run_journal_backed_task_probe "$tr_name" tr "$tr_password"
+phase="tr-full-lifecycle"
+run_full_lifecycle_probe "$tr_name" tr "$tr_password"
 unset tr_password
 echo 'Isolated native ARM64 qBittorrent and Transmission Docker API tests passed'
