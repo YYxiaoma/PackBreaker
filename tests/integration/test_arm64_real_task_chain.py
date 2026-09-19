@@ -8,6 +8,7 @@ not the preceding authorization/LINKING stages or Web UI approval.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -18,6 +19,7 @@ import pytest
 from sqlalchemy import select
 
 from backend.app.application.downloaders import QbittorrentWriteBinding
+from backend.app.application.errors import ApplicationError
 from backend.app.domain.downloader import DownloaderCredential
 from backend.app.domain.task_state import TaskStatus
 from backend.app.infrastructure.adapters.downloaders import QbittorrentAdapter
@@ -115,10 +117,29 @@ async def test_authorized_qb_task_journal_replays_without_duplicate_real_add(
     assert len(all_torrents) == 1
 
     with _test_stage("journal-backed-start"):
-        done = await adding_fixture.seeder.execute(
-            adding_fixture.unit_id,
-            execution_plan_id=adding_fixture.plan_id,
-        )
+        try:
+            done = await adding_fixture.seeder.execute(
+                adding_fixture.unit_id,
+                execution_plan_id=adding_fixture.plan_id,
+            )
+        except ApplicationError as exc:
+            if exc.code != "DOWNLOADER_START_NOT_CONFIRMED":
+                raise
+            # The real client may acknowledge start before switching out of
+            # stoppedUP. Do not issue a second start while its result is unknown:
+            # first observe the real client, then let the journal reconcile.
+            for _ in range(45):
+                latest = await adapter.get_torrents((first.torrent_hash,))
+                if len(latest) == 1 and latest[0].seeding:
+                    break
+                await asyncio.sleep(1)
+            else:
+                raise AssertionError("real qBittorrent never entered verified seeding") from exc
+            done = await adding_fixture.seeder.execute(
+                adding_fixture.unit_id,
+                execution_plan_id=adding_fixture.plan_id,
+            )
+            assert done.recovered_after_unknown_result
     assert done.status is TaskStatus.DONE
     with _test_stage("journal-backed-start-replay"):
         repeated_done = await adding_fixture.seeder.execute(
