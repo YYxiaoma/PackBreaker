@@ -24,6 +24,13 @@ from backend.app.infrastructure.adapters.downloaders import (
 )
 from backend.app.infrastructure.torrent_parser import parse_torrent
 
+_ACTIVE_STAGE = "setup"
+
+
+def _mark_stage(stage: str) -> None:
+    global _ACTIVE_STAGE
+    _ACTIVE_STAGE = stage
+
 
 def synthetic_torrent(content: bytes) -> bytes:
     piece_length = 16 * 1024
@@ -67,6 +74,7 @@ async def run_real_downloader_probe(kind: str, data_root: Path, password: str) -
         assert meta.v1_info_hash is not None
         torrent_hash = meta.v1_info_hash
         if kind == "qbittorrent":
+            _mark_stage("qb-connect")
             qb_adapter = QbittorrentAdapter(
                 "http://127.0.0.1:8080",
                 DownloaderCredential(username="admin", password=password),
@@ -74,6 +82,7 @@ async def run_real_downloader_probe(kind: str, data_root: Path, password: str) -
             capabilities = (await qb_adapter.test_connection()).capabilities
             assert capabilities.version.lstrip("v").startswith("5.2.3"), capabilities.version
             assert capabilities.supports_skip_checking
+            _mark_stage("qb-add")
             qb_added = await qb_adapter.add_torrent(
                 QbittorrentAddRequest(
                     torrent_content=torrent,
@@ -85,6 +94,7 @@ async def run_real_downloader_probe(kind: str, data_root: Path, password: str) -
             )
             assert qb_added.success_count == 1 and qb_added.failure_count == 0, qb_added
             assert torrent_hash in qb_added.added_torrent_ids, qb_added
+            _mark_stage("qb-verify-status")
             for _ in range(45):
                 qb_states = await qb_adapter.get_torrents((torrent_hash,))
                 if qb_states and qb_states[0].verification_complete:
@@ -93,17 +103,21 @@ async def run_real_downloader_probe(kind: str, data_root: Path, password: str) -
             assert len(qb_states) == 1 and qb_states[0].verification_complete, qb_states
             assert qb_states[0].save_path == str(target.parent), qb_states
             assert "packbreaker-arm64-ci" in qb_states[0].tags, qb_states
+            _mark_stage("qb-start")
             await qb_adapter.start_torrent(torrent_hash)
+            _mark_stage("qb-seeding-status")
             for _ in range(30):
                 qb_states = await qb_adapter.get_torrents((torrent_hash,))
                 if qb_states and qb_states[0].seeding:
                     break
                 await asyncio.sleep(1)
             assert len(qb_states) == 1 and qb_states[0].seeding, qb_states
+            _mark_stage("qb-stop-remove")
             await qb_adapter.stop_torrent(torrent_hash)
             await qb_adapter.remove_torrent_keep_files(torrent_hash)
             assert not await qb_adapter.get_torrents((torrent_hash,))
         else:
+            _mark_stage("tr-connect")
             tr_adapter = TransmissionAdapter(
                 "http://127.0.0.1:9091/transmission/rpc",
                 DownloaderCredential(username="packbreaker", password=password),
@@ -111,6 +125,7 @@ async def run_real_downloader_probe(kind: str, data_root: Path, password: str) -
             capabilities = (await tr_adapter.test_connection()).capabilities
             assert capabilities.version.startswith("4.1.3"), capabilities.version
             assert not capabilities.supports_skip_checking
+            _mark_stage("tr-add")
             tr_added = await tr_adapter.add_torrent(
                 TransmissionAddRequest(
                     torrent_content=torrent,
@@ -125,6 +140,7 @@ async def run_real_downloader_probe(kind: str, data_root: Path, password: str) -
                 and tr_states[0].stopped
                 and tr_states[0].download_dir == str(target.parent)
             )
+            _mark_stage("tr-verify")
             await tr_adapter.verify_torrent(torrent_hash)
             for _ in range(45):
                 tr_states = await tr_adapter.get_torrents((torrent_hash,))
@@ -132,13 +148,16 @@ async def run_real_downloader_probe(kind: str, data_root: Path, password: str) -
                     break
                 await asyncio.sleep(1)
             assert len(tr_states) == 1 and tr_states[0].verification_complete, tr_states
+            _mark_stage("tr-start")
             await tr_adapter.start_torrent(torrent_hash)
+            _mark_stage("tr-seeding-status")
             for _ in range(30):
                 tr_states = await tr_adapter.get_torrents((torrent_hash,))
                 if tr_states and tr_states[0].seeding:
                     break
                 await asyncio.sleep(1)
             assert len(tr_states) == 1 and tr_states[0].seeding, tr_states
+            _mark_stage("tr-stop-remove")
             await tr_adapter.stop_torrent(torrent_hash)
             await tr_adapter.remove_torrent_keep_files(torrent_hash)
             assert not await tr_adapter.get_torrents((torrent_hash,))
@@ -159,7 +178,19 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=Path("/downloads"))
     args = parser.parse_args()
     password = os.environ.get("PACKBREAKER_CI_DOWNLOADER_PASSWORD", "")
-    asyncio.run(run_real_downloader_probe(args.kind, args.data_root, password))
+    try:
+        asyncio.run(run_real_downloader_probe(args.kind, args.data_root, password))
+    except Exception as exc:
+        # CI annotations must not include third-party response bodies or credentials.
+        code = getattr(exc, "code", None)
+        safe_code = code if isinstance(code, str) and code.isidentifier() else "unspecified"
+        print(
+            f"::error file=scripts/check_arm64_downloaders_e2e.py::"
+            f"isolated {args.kind} API phase={_ACTIVE_STAGE} "
+            f"exception={type(exc).__name__} code={safe_code}",
+            flush=True,
+        )
+        raise
     print(f"isolated {args.kind} real API E2E passed")
 
 
