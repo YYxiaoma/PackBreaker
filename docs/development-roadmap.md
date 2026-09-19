@@ -194,7 +194,9 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **同一任务全链路 → 真实 Transmission（GitHub CI run `35448894436` 原生 ARM64 下载器门禁成功）**：扩展同一条合成任务测试，使用独立 128 MiB 合成媒体和动态大小的模拟站点候选，完整调用正式分析、模拟管理员审批、Execution Gate/Execution Plan 与 LINKING，随后通过隔离 Transmission 4.1.3 的真实 RPC 完成 ADDING → CLIENT_VERIFYING（不可跳过真实校验）→ SEEDING → DONE。要求 LINK/ADD/VERIFY/START 四种 journal 均 APPLIED，重复执行幂等，源 inode/mtime/size 和 Hardlink 不变；专属种子哈希、测试目录和无外网容器与其他测试隔离。原生 ARM64 CI run `35448894436` 已通过新增下载器门禁，站点及管理员身份仍为明确的合成测试对象，不代表真实 PT/浏览器人工审批，也不解除正式 ARM64 跨版本升级与多平台发布资产门禁。
 
-**Web 审批入口双下载器衔接（新增，待新 CI）**：修复审核页将可选目标限制为 qBittorrent 的问题：已启用且连接与路径安全检查均通过的 Transmission 也可选择创建 Execution Plan；切换目标或目标根后，原计划不再允许直接执行，必须为当前选择重新生成 READY/CURRENT 计划；选择 Transmission 时明确提示不可跳过的客户端下载校验。新增浏览器模拟 API 门禁检验切换目标、计划请求与防误执行，另用真实 FastAPI TestClient 的管理员会话/CSRF、模拟站点和未连接的合成 Transmission 配置走通 HTTP 审批、执行门及只读计划。浏览器门禁对后端仍采用隔离 Mock；两项测试不等于浏览器连接真实服务的人工点击验收，正式 ARM64 跨版本升级与多平台发布也仍待单独验收。
+**Web 审批入口双下载器衔接（提交 `51403ed`，GitHub CI run `35450823906` 成功）**：修复审核页将可选目标限制为 qBittorrent 的问题：已启用且连接与路径安全检查均通过的 Transmission 也可选择创建 Execution Plan；切换目标或目标根后，原计划不再允许直接执行，必须为当前选择重新生成 READY/CURRENT 计划；选择 Transmission 时明确提示不可跳过的客户端下载校验。新增浏览器模拟 API 门禁检验切换目标、计划请求与防误执行，另用真实 FastAPI TestClient 的管理员会话/CSRF、模拟站点和未连接的合成 Transmission 配置走通 HTTP 审批、执行门及只读计划。GitHub CI run `35450823906` 整体及其全部五项 job 成功；浏览器门禁对后端仍采用隔离 Mock，两项测试不等于浏览器连接真实服务的人工点击验收，正式 ARM64 跨版本升级与多平台发布也仍待单独验收。
+
+**隔离浏览器 → 真实 FastAPI 审批链路（新增，待新 CI 验收）**：新增仅供测试、绑定 loopback 的 FastAPI 沙箱与单独的 Vite 配置，使用 Playwright 自动点击正式审核/分析组件，经真实 HTTP 管理员登录、只读分析、候选审核、执行门、Transmission 执行计划生成，并从真实后端读回当前任务、目标类型、计划绑定和零 journal；对比合成源文件 inode/size/mtime 与空目标目录。仅使用独立临时配置/数据目录、合成站点适配器及指向 `.invalid` 的合成下载器，不调用执行动作、不连接真实 PT 或下载器。此切片证明真实浏览器组件与真实 FastAPI 的联动，不等于正式 App 导航全流程、真人操作、真实 PT/客户端下载链路或正式 ARM64 跨版本升级/双平台发布验收。
 
 ## 9. 工作项拆分模板
 

@@ -135,6 +135,13 @@ jobs:
     needs: quality
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned uv and isolated FastAPI browser fixture dependencies
+        run: |
+          python -m pip install "uv==0.12.11"
+          uv sync --frozen --all-groups
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -164,6 +171,8 @@ jobs:
             sleep 1
           done
           (cd frontend && corepack pnpm test:e2e)
+      - name: Exercise real browser to isolated FastAPI admin approval and Transmission plan
+        run: node scripts/check-web-approval-e2e.cjs
 
   container:
     runs-on: ubuntu-latest
