@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-candidate_image="${1:?usage: check-updater-e2e.sh <candidate-image>}"
+candidate_image="${1:?usage: check-updater-e2e.sh <candidate-image> [--synthetic-arm64-baseline]}"
+baseline_mode="${2:-formal}"
+if [[ "$baseline_mode" != formal && "$baseline_mode" != --synthetic-arm64-baseline ]]; then
+  echo "Invalid baseline mode: $baseline_mode" >&2
+  exit 2
+fi
 baseline_payload="$(python3 scripts/validate_release_baseline.py --json)"
 baseline_image="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["immutable_image"])' <<<"$baseline_payload")"
 baseline_version="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' <<<"$baseline_payload")"
 candidate_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+if [[ "$baseline_mode" == --synthetic-arm64-baseline ]]; then
+  # There is no published ARM64 baseline yet; this is a container replacement/rollback
+  # exercise using two distinct locally built ARM64 image identities, NOT an upgrade
+  # from the published v0.1.9 release and NOT a cross-version migration claim.
+  baseline_version="$candidate_version"
+fi
 runtime_uid="$(id -u)"
 runtime_gid="$(id -g)"
 runtime_user="$runtime_uid:$runtime_gid"
@@ -393,10 +404,27 @@ trigger_transient_upgrade() {
 
 mkdir -p "$fault_build_dir"
 
-echo "Pull formal baseline by immutable digest: $baseline_image"
-docker pull "$baseline_image" >/dev/null
+if [[ "$baseline_mode" == --synthetic-arm64-baseline ]]; then
+  test "$(uname -m)" = aarch64
+  test "$(docker image inspect "$candidate_image" --format '{{.Os}}/{{.Architecture}}')" = linux/arm64
+  mkdir -p "$fault_build_dir/synthetic-baseline"
+  cat >"$fault_build_dir/synthetic-baseline/Dockerfile" <<'DOCKERFILE'
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+LABEL org.packbreaker.ci.synthetic-arm64-baseline="true"
+DOCKERFILE
+  baseline_image="packbreaker:updater-e2e-arm64-baseline"
+  echo "Build isolated synthetic ARM64 baseline (NOT a published release)"
+  docker build --platform linux/arm64 --build-arg BASE_IMAGE="$candidate_image" \
+    --tag "$baseline_image" "$fault_build_dir/synthetic-baseline" >/dev/null
+  test "$(docker image inspect "$baseline_image" --format '{{.Os}}/{{.Architecture}}')" = linux/arm64
+else
+  echo "Pull formal baseline by immutable digest: $baseline_image"
+  docker pull "$baseline_image" >/dev/null
+fi
 baseline_image_id="$(docker image inspect "$baseline_image" --format '{{.Id}}')"
 candidate_image_id="$(docker image inspect "$candidate_image" --format '{{.Id}}')"
+test "$baseline_image_id" != "$candidate_image_id"
 test "$(docker run --rm "$candidate_image" python -c 'from backend.app.versioning import app_version; print(app_version())')" = "$candidate_version"
 
 echo "Start isolated local registry"
@@ -500,4 +528,4 @@ test "$(docker inspect "$transient_main" --format '{{index .Config.Labels "com.d
 assert_quiesced_backup_exists "$transient_config"
 wait_transient_helper_cleanup
 
-echo "updater E2E passed: formal $baseline_version -> candidate $candidate_version, unhealthy-candidate rollback, and single-container transient helper replacement"
+echo "updater E2E passed: baseline_mode=$baseline_mode $baseline_version -> candidate $candidate_version, unhealthy-candidate rollback, and single-container transient helper replacement"

@@ -85,3 +85,14 @@ def test_cross_image_gate_restores_baseline_backup_instead_of_downgrading_databa
     assert "backend.app.maintenance restore-backup" in script
     assert "--confirm-replace-current-database" in script
     assert "alembic downgrade" not in script
+
+
+def test_native_arm64_updater_gate_keeps_formal_amd64_baseline_unchanged() -> None:
+    script = (ROOT / "scripts" / "check-updater-e2e.sh").read_text(encoding="utf-8")
+    assert 'baseline_mode="${2:-formal}"' in script
+    assert 'docker pull "$baseline_image"' in script
+    assert 'if [[ "$baseline_mode" == --synthetic-arm64-baseline ]]; then' in script
+    assert 'baseline_version="$candidate_version"' in script
+    assert 'test "$(uname -m)" = aarch64' in script
+    assert 'test "$baseline_image_id" != "$candidate_image_id"' in script
+    assert 'LABEL org.packbreaker.ci.synthetic-arm64-baseline="true"' in script

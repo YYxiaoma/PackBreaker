@@ -11,6 +11,7 @@ permissions:
 jobs:
   arm64:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -55,6 +56,30 @@ jobs:
             python -c 'import os; from pathlib import Path; src=Path("/data/.packbreaker-arm64-smoke-source"); dest=Path("/data/.packbreaker-arm64-smoke-link"); src.write_bytes(b"synthetic"); os.link(src,dest); assert src.stat().st_ino == dest.stat().st_ino; os.setxattr(dest,"user.packbreaker.arm64_probe",b"ok"); assert os.getxattr(dest,"user.packbreaker.arm64_probe") == b"ok"; dest.unlink(); src.unlink()'
           docker exec --user "$(id -u):$(id -g)" packbreaker-ci-arm64 \
             python -m backend.app.maintenance backup
+          mapfile -t backups < <(find .ci-arm64-config/backups -maxdepth 1 -type f -name 'packbreaker-*.db' -printf '%f\n')
+          test "${#backups[@]}" -eq 1
+          backup_name="${backups[0]}"
+          docker stop packbreaker-ci-arm64 >/dev/null
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --volume "$PWD/.ci-arm64-config:/config" \
+            --volume "$PWD/.ci-arm64-data:/data" packbreaker:ci-arm64 \
+            python -m backend.app.maintenance verify-backup "/config/backups/$backup_name"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --volume "$PWD/.ci-arm64-config:/config" \
+            --volume "$PWD/.ci-arm64-data:/data" packbreaker:ci-arm64 \
+            python -m backend.app.maintenance restore-backup "/config/backups/$backup_name" \
+            --confirm-replace-current-database
+          docker start packbreaker-ci-arm64 >/dev/null
+          for attempt in $(seq 1 60); do
+            if docker exec --user "$(id -u):$(id -g)" packbreaker-ci-arm64 \
+              python -m backend.app.healthcheck >/dev/null 2>&1; then
+              break
+            fi
+            test "$attempt" -ne 60
+            sleep 1
+          done
+      - name: Exercise native ARM64 Docker updater and failure rollback with synthetic baseline
+        run: bash scripts/check-updater-e2e.sh packbreaker:ci-arm64 --synthetic-arm64-baseline
 
   quality:
     runs-on: ubuntu-latest
