@@ -10,8 +10,8 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11"></a>
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64"></a>
-  <img src="https://img.shields.io/badge/latest_release-v0.1.8-2563EB" alt="latest release v0.1.8">
-  <img src="https://img.shields.io/badge/main-v0.1.9_release_candidate-2563EB" alt="main v0.1.9 release candidate">
+  <img src="https://img.shields.io/badge/latest_release-v0.1.9-2563EB" alt="latest release v0.1.9">
+  <img src="https://img.shields.io/badge/main-v0.1.9_released-16A34A" alt="main v0.1.9 released">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 
@@ -432,9 +432,13 @@ uv run python scripts/test.py
 
 ## 📊 当前状态
 
-**最新已验证正式版本为 v0.1.8；当前 `main` 正在准备 v0.1.9 发布。** v0.1.9 聚焦总览页重构、系统资源只读监控、日志中文化以及任务中心和导航交互精简。正式部署身份仍以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中的 release manifest 与不可变 image digest 为准；v0.1.9 必须在发布流水线全部完成后才算正式发布。
+**最新正式版本为 v0.1.9。** 本版聚焦总览页重构、系统资源只读监控、日志中文化以及任务中心和导航交互精简。正式 Release workflow run [`35429394091`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35429394091) 已成功完成全量质量门、`v0.1.8 → v0.1.9 → v0.1.8` 真实 Docker 升级/回滚、真实 updater helper 升级与自动回滚 E2E，并发布 `linux/amd64` 镜像、SPDX SBOM、release manifest 和校验和。正式部署使用 [v0.1.9 Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v0.1.9) 中的不可变 digest，不能用可移动 tag 代替。
 
-v0.1.8 的正式发布证据包括：
+- v0.1.9 发布 commit：`cc70391cb42adc8755637d1cf23d407902e30dfe`
+- v0.1.9 正式镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`
+- GHCR `0.1.9`、`stable`、`latest` 已核验均指向该 digest；正式 Release 的 manifest / SBOM / SHA256SUMS 校验通过。
+
+此前 v0.1.8 的正式发布证据包括：
 
 - 后端 759 tests passed
 - 前端 17 个测试文件 / 81 tests passed

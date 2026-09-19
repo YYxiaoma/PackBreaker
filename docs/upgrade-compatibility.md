@@ -31,7 +31,7 @@ PackBreaker 启动取得 `/config` 单实例锁并完成主密钥自检后，数
 
 ## 4. 正式镜像升级基线与跨镜像门禁
 
-`release-baseline.json` 当前固定最新正式 `v0.1.8`：tag、发布 commit `7ee1625786ff58c128f6b0948100b97b9153e5cd`、Alembic revision `0029_v018_compatibility`、Release workflow run `35366864779` 与公开 GHCR digest `sha256:f114296a40c3bc68f036071382ea3029818fc909ef78a2c07a5ab382e6c4d0d3`。`scripts/validate_release_baseline.py` 已进入静态门禁，禁止把基线退化成可移动 tag、错误 digest、未来版本或与 tag 不一致的身份。正式 tag workflow 还会通过 GitHub Releases API 要求 baseline tag 必须等于当前最新正式 Release。
+`release-baseline.json` 当前固定最新正式 `v0.1.9`：tag、发布 commit `cc70391cb42adc8755637d1cf23d407902e30dfe`、Alembic revision `0029_v018_compatibility`（本版没有新增迁移）、Release workflow run `35429394091` 与公开 GHCR digest `sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。`scripts/validate_release_baseline.py` 已进入静态门禁，禁止把基线退化成可移动 tag、错误 digest、未来版本或与 tag 不一致的身份。正式 tag workflow 还会通过 GitHub Releases API 要求 baseline tag 必须等于当前最新正式 Release。
 
 CI/container 与未来 tag release 都执行 `scripts/check-release-upgrade.sh`：先按基线 digest 启动上一正式镜像，在隔离 `/config` 写入合成兼容探针并创建一致性升级前备份；随后让当前候选镜像直接接管同一 config 并通过 readiness/探针校验；最后停止候选镜像，用**上一正式镜像自己的维护工具**恢复升级前备份，再启动同一基线 digest 并重新证明 readiness、Alembic revision 与探针数据。门禁明确禁止以 `alembic downgrade` 代替生产回滚。
 
@@ -44,3 +44,5 @@ CI/container 与未来 tag release 都执行 `scripts/check-release-upgrade.sh`�
 `v0.1.7` Release workflow run `35302608582` 进一步以正式 `v0.1.6` baseline 完成 `v0.1.6 → v0.1.7 → v0.1.6` 相邻版本门禁，并在真实 Docker updater E2E 中验证 Compose labels 与 docker.sock 在 transient replacement 后保留。该能力因此从 candidate 证据升级为正式发布证据。
 
 `v0.1.8` Release workflow run `35366864779` 以正式 `v0.1.7` baseline 完成 `v0.1.7 → v0.1.8 → v0.1.7` 相邻版本门禁、真实 updater helper 升级与自动回滚，并在全部门禁通过后发布不可变 linux/amd64 镜像、SBOM、release manifest 与 GitHub Release。正式 digest 为 `sha256:f114296a40c3bc68f036071382ea3029818fc909ef78a2c07a5ab382e6c4d0d3`。
+
+`v0.1.9` Release workflow run `35429394091` 以正式 `v0.1.8` baseline 完成 `v0.1.8 → v0.1.9 → v0.1.8` 相邻版本门禁、真实 updater helper 升级与自动回滚，并在全部门禁通过后发布不可变 linux/amd64 镜像、SBOM、release manifest 与 GitHub Release。正式 digest 为 `sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。

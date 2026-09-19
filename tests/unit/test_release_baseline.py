@@ -10,17 +10,17 @@ from scripts.validate_release_baseline import load_release_baseline, project_ver
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_repository_release_baseline_is_immutable_v018() -> None:
+def test_repository_release_baseline_is_immutable_v019() -> None:
     baseline = load_release_baseline()
 
-    assert baseline.version == "0.1.8"
-    assert baseline.tag == "v0.1.8"
-    assert baseline.commit == "7ee1625786ff58c128f6b0948100b97b9153e5cd"
+    assert baseline.version == "0.1.9"
+    assert baseline.tag == "v0.1.9"
+    assert baseline.commit == "cc70391cb42adc8755637d1cf23d407902e30dfe"
     assert baseline.alembic_revision == "0029_v018_compatibility"
-    assert baseline.release_workflow_run_id == 35366864779
+    assert baseline.release_workflow_run_id == 35429394091
     assert baseline.immutable_image == (
         "ghcr.io/yyxiaoma/packbreaker@"
-        "sha256:f114296a40c3bc68f036071382ea3029818fc909ef78a2c07a5ab382e6c4d0d3"
+        "sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d"
     )
 
 
