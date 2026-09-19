@@ -204,6 +204,8 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **原生 ARM64 双镜像数据库备份/恢复门禁（提交 `66b54d2`，GitHub CI run `35470043525` 成功）**：CI 原生 ARM64 Runner 扩展 `check-release-upgrade.sh` 的显式 `--synthetic-arm64-baseline` 模式：仅接受 ARM64 主机及 ARM64 候选镜像，另建带合成标签且 image ID 不同的本地 ARM64 基线，验证基线和候选应用版本相同；在完全隔离的临时 `/config` 创建数据库探针及一致性备份后，候选容器接管、探针与 revision 校验，再使用原基线镜像验证并恢复旧备份，重新启动原基线镜像验证 readiness、revision 与探针。正式 AMD64 `v0.1.9` 不变，正式 Release workflow 仍使用其不可变 digest 执行真实相邻版本升级/回滚；本切片仅证明**原生 ARM64 同版本不同本地镜像身份**之间的备份/恢复链，不能冒充不存在的旧正式 ARM64 Release、跨版本迁移或 v1.0.0 GHCR 多平台正式发布。
 
+**发布索引子镜像清单完整性门禁（新增，待 CI）**：扩展 Release workflow 已调用的 `verify_release_platforms.py`，不再仅检查 GHCR index 中标注的两个平台，还会按各自不可变 child digest 读取真实 registry 的子镜像 manifest，拒绝重复或无效 digest、错误 mediaType/size、缺失 image config 或运行层，以及不能解析为镜像的子清单。离线单元测试涵盖 v0.x 单平台兼容、v1.0.0 双平台、provenance unknown/unknown 排除及多种损坏场景。此切片尚未触发正式 Release 或读取不存在的 v1.0.0 镜像；index 的平台标签与子清单存在性不证明 config CPU 架构、OCI labels、真实宿主机启动成功，发布资产和跨版本 ARM64 仍为独立门禁。
+
 ## 9. 工作项拆分模板
 
 每个 Issue 至少包含：

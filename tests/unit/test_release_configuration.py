@@ -26,6 +26,14 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
     assert "ubuntu-24.04-arm" in workflow
     assert "needs: arm64-validation" in workflow
     assert "verify_release_platforms.py" in workflow
+    platform_checker = (ROOT / "scripts" / "verify_release_platforms.py").read_text(
+        encoding="utf-8"
+    )
+    assert "verify_release_children(raw" in platform_checker
+    assert 'f"{repository}@{digest}"' in platform_checker
+    assert workflow.index("scripts/verify_release_platforms.py") < workflow.index(
+        "Generate SPDX SBOM from immutable image digest"
+    )
     assert "docker/setup-qemu-action@v3" in workflow
     assert "docker/build-push-action@v7.3.0" in workflow
     assert "steps.build.outputs.digest" in workflow

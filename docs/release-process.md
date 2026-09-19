@@ -24,7 +24,7 @@ Dockerfile 的三个 `FROM` 都使用“精确补丁版本 + sha256 digest”固
 2. 校验 `release-baseline.json`，并通过 GitHub Releases API 强制其 tag 必须等于当前最新正式 Release；这样后续版本不能跳过直接上一正式版本的兼容门禁。
 3. 运行 `scripts/check.py` 和 `scripts/test.py` 全量质量门禁。
 4. 本地构建 release candidate，先执行“上一正式 release 不可变 digest → 当前候选 → 恢复升级前备份并回滚上一正式 digest”的兼容门禁，再执行独立 updater helper 的真实 Docker 成功升级与故障候选自动数据库/容器回滚 E2E；两条门禁都通过前不推送新正式镜像。
-5. v0.x 继续构建单平台 `linux/amd64`；v1.0.0 起在原生 ARM64 验证通过后使用 Buildx 构建双架构镜像并推送 GHCR，检查不可变 digest 的真实平台索引，随后记录 registry 返回的最终 image digest。
+5. v0.x 继续构建单平台 `linux/amd64`；v1.0.0 起在原生 ARM64 验证通过后使用 Buildx 构建双架构镜像并推送 GHCR。按 registry 返回的不可变 index digest 检查实际平台列表，并逐个按索引子 digest 读取 `linux/amd64`、`linux/arm64` 子镜像 manifest，验证各子清单的格式、配置和层 descriptor 均有效；缺失、错误格式、重复 digest 或不能读取任何一个子镜像均失败关闭。此验证发生在生成 SBOM / GitHub Release 资产之前，但平台声明本身仍不能证明子镜像 config 中的实际 CPU 架构、程序版本、镜像标签或两种宿主机上的运行结果；这些需要独立的 runtime / config 验收证据。
 6. 只按 `<image>@<digest>` 扫描镜像并生成 SPDX JSON SBOM。
 7. 生成 `packbreaker-<version>.release.json`，绑定 version/tag/commit/platform（v1.0.0 起为 platforms）/image digest/SBOM 文件名与 SBOM SHA-256，并为 release JSON 与 SBOM 生成 `SHA256SUMS`。在任何资产上传之前运行 `scripts/verify_release_evidence.py`，以独立的 workflow 输入交叉核对完整不可变镜像身份、commit、tag、双平台声明、SPDX 版本、文件名与三份资产的校验和；缺失、重复、额外资产或符号链接均失败关闭。该本地一致性检查不能证明镜像已在两架构真实运行或 SBOM 内容由其正确生成，实际镜像平台仍以 GHCR index 检查和原生 ARM64 门禁为准。
 8. 本地资产检查通过后上传 GitHub Actions evidence artifact，创建同 tag 的 GitHub Release，并发布 SBOM、release manifest、checksums 与自动 release notes。
