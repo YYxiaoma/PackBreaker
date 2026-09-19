@@ -202,7 +202,7 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **v1.0.0 双架构发布资产一致性门禁（提交 `6ef936a`，GitHub CI run `35465172086` 成功）**：新增仅操作测试合成 JSON 的 `verify_release_evidence.py`，在 Release workflow 生成 SBOM/manifest/SHA256SUMS 之后、任何上传 GitHub 资产之前执行。要求独立输入的 tag、commit、镜像 index digest 与发布清单相同，v1.0.0+ 严格声明 `linux/amd64` 与 `linux/arm64`，SPDX 2.3、SBOM 内容哈希和 SHA256SUMS 一致，拒绝额外/缺失/重复文件以及符号链接；保留 v0.x AMD64 兼容回归。该检查仅是正式发布时可运行的本地资产防漂移门禁；尚未创建 v1.0.0 Tag、推送多平台 GHCR 镜像、完成正式 ARM64 跨版本升级或验证真实发布资产。
 
-**原生 ARM64 双镜像数据库备份/恢复门禁（新增，待 CI）**：CI 原生 ARM64 Runner 扩展 `check-release-upgrade.sh` 的显式 `--synthetic-arm64-baseline` 模式：仅接受 ARM64 主机及 ARM64 候选镜像，另建带合成标签且 image ID 不同的本地 ARM64 基线，验证基线和候选应用版本相同；在完全隔离的临时 `/config` 创建数据库探针及一致性备份后，候选容器接管、探针与 revision 校验，再使用原基线镜像验证并恢复旧备份，重新启动原基线镜像验证 readiness、revision 与探针。正式 AMD64 `v0.1.9` 不变，正式 Release workflow 仍使用其不可变 digest 执行真实相邻版本升级/回滚；本切片仅证明**原生 ARM64 同版本不同本地镜像身份**之间的备份/恢复链，不能冒充不存在的旧正式 ARM64 Release、跨版本迁移或 v1.0.0 GHCR 多平台正式发布。
+**原生 ARM64 双镜像数据库备份/恢复门禁（提交 `66b54d2`，GitHub CI run `35470043525` 成功）**：CI 原生 ARM64 Runner 扩展 `check-release-upgrade.sh` 的显式 `--synthetic-arm64-baseline` 模式：仅接受 ARM64 主机及 ARM64 候选镜像，另建带合成标签且 image ID 不同的本地 ARM64 基线，验证基线和候选应用版本相同；在完全隔离的临时 `/config` 创建数据库探针及一致性备份后，候选容器接管、探针与 revision 校验，再使用原基线镜像验证并恢复旧备份，重新启动原基线镜像验证 readiness、revision 与探针。正式 AMD64 `v0.1.9` 不变，正式 Release workflow 仍使用其不可变 digest 执行真实相邻版本升级/回滚；本切片仅证明**原生 ARM64 同版本不同本地镜像身份**之间的备份/恢复链，不能冒充不存在的旧正式 ARM64 Release、跨版本迁移或 v1.0.0 GHCR 多平台正式发布。
 
 ## 9. 工作项拆分模板
 
