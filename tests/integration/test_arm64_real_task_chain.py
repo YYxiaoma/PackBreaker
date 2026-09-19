@@ -9,6 +9,8 @@ not the preceding authorization/LINKING stages or Web UI approval.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -23,6 +25,26 @@ from backend.app.infrastructure.persistence.models import OperationJournal, Unpa
 from tests.application.test_task_adding import _AddingFixture
 
 pytest_plugins = ("tests.application.test_task_adding",)
+
+
+@contextmanager
+def _test_stage(name: str) -> Iterator[None]:
+    try:
+        yield
+    except Exception as exc:
+        error_code = getattr(exc, "code", None)
+        safe_code = (
+            error_code if isinstance(error_code, str) and error_code.isidentifier() else "unknown"
+        )
+        # The stage/type/code are sufficient for debugging without exposing
+        # container paths, API response bodies or ephemeral credentials.
+        print(
+            f"::error file=tests/integration/test_arm64_real_task_chain.py::"
+            f"isolated task chain stage={name} exception={type(exc).__name__} code={safe_code}",
+            flush=True,
+        )
+        raise
+
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("PACKBREAKER_CI_REAL_QB_SANDBOX"),
@@ -73,32 +95,36 @@ async def test_authorized_qb_task_journal_replays_without_duplicate_real_add(
         target.stat(follow_symlinks=False).st_ino,
     )
 
-    first = await adding_fixture.coordinator.execute(
-        adding_fixture.unit_id,
-        execution_plan_id=adding_fixture.plan_id,
-    )
+    with _test_stage("journal-backed-add"):
+        first = await adding_fixture.coordinator.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
     assert first.status is TaskStatus.SEEDING and first.skip_checking
     assert not first.replayed
     before_replay = await adapter.get_torrents((first.torrent_hash,))
     assert len(before_replay) == 1 and before_replay[0].verification_complete
 
-    replay = await adding_fixture.coordinator.execute(
-        adding_fixture.unit_id,
-        execution_plan_id=adding_fixture.plan_id,
-    )
+    with _test_stage("journal-backed-add-replay"):
+        replay = await adding_fixture.coordinator.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
     assert replay.replayed and replay.qbit_journal_id == first.qbit_journal_id
     all_torrents = await adapter.get_torrents((first.torrent_hash,))
     assert len(all_torrents) == 1
 
-    done = await adding_fixture.seeder.execute(
-        adding_fixture.unit_id,
-        execution_plan_id=adding_fixture.plan_id,
-    )
+    with _test_stage("journal-backed-start"):
+        done = await adding_fixture.seeder.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
     assert done.status is TaskStatus.DONE
-    repeated_done = await adding_fixture.seeder.execute(
-        adding_fixture.unit_id,
-        execution_plan_id=adding_fixture.plan_id,
-    )
+    with _test_stage("journal-backed-start-replay"):
+        repeated_done = await adding_fixture.seeder.execute(
+            adding_fixture.unit_id,
+            execution_plan_id=adding_fixture.plan_id,
+        )
     assert repeated_done.replayed and repeated_done.start_journal_id == done.start_journal_id
     with adding_fixture.factory() as session:
         task = session.get(UnpackTask, adding_fixture.task_id)

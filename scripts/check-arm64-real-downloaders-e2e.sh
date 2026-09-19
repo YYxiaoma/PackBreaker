@@ -72,13 +72,31 @@ run_journal_backed_task_probe() {
   # namespace; setpriv immediately returns to the non-root CI UID/GID.
   # The fixture's source is in the synthetic bind mount; its SQLite journal is
   # elsewhere in the same throwaway CI sandbox and is removed by cleanup.
-  sudo nsenter --target "$namespace_pid" --net -- \
+  if ! sudo nsenter --target "$namespace_pid" --net -- \
     setpriv --reuid "$(id -u)" --regid "$(id -g)" --clear-groups \
     env "PACKBREAKER_CI_REAL_QB_SANDBOX=$sandbox" \
       "PACKBREAKER_CI_REAL_QB_PASSWORD=$qb_password" \
     "$PWD/.venv/bin/python" -m pytest -q \
         tests/integration/test_arm64_real_task_chain.py \
-        --junitxml "$sandbox/task-chain-result.xml"
+        --junitxml "$sandbox/task-chain-result.xml"; then
+    python3 - "$sandbox/task-chain-result.xml" <<'PY'
+import pathlib
+import sys
+from xml.etree import ElementTree
+
+result = pathlib.Path(sys.argv[1])
+if not result.is_file():
+    print("::error::isolated task chain did not produce pytest XML (namespace or fixture setup)")
+else:
+    suite = ElementTree.parse(result).getroot()
+    for node in suite.iter("testcase"):
+        for failure in (*node.findall("failure"), *node.findall("error")):
+            kind = failure.attrib.get("type", "unknown")
+            safe_kind = kind if kind.replace(".", "").isidentifier() else "unknown"
+            print(f"::error::isolated task chain junit failure_type={safe_kind}")
+PY
+    return 1
+  fi
   python3 - "$sandbox/task-chain-result.xml" <<'PY'
 import sys
 from xml.etree import ElementTree
