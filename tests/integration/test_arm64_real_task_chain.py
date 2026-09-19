@@ -297,6 +297,7 @@ async def test_authorized_transmission_task_journal_verifies_then_seeds_real_cli
     target = adding_fixture.data_root / "target" / source.name
     original = source.stat(follow_symlinks=False)
     with _test_stage("tr-preflight-file"):
+        assert original.st_size >= 64 * 1024 * 1024
         assert original.st_ino == target.stat(follow_symlinks=False).st_ino
 
     with _test_stage("tr-journal-backed-add"):

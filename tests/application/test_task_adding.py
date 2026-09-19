@@ -322,6 +322,12 @@ def adding_fixture(tmp_path: Path) -> _AddingFixture:
     source_root.mkdir(parents=True)
     target_root.mkdir()
     content = b"0123456789abcdef"
+    if os.environ.get("PACKBREAKER_CI_REAL_TR_SANDBOX"):
+        # The real ARM64 Transmission verify can complete a 16-byte fixture
+        # before any RPC observes checking. Enlarge ONLY this disposable CI
+        # fixture so the mandatory client verification yields observable proof.
+        # All normal application tests keep their original tiny synthetic file.
+        content *= 8 * 1024 * 1024  # 128 MiB, synthetic data only
     source_file = source_root / "Movie.2026.mkv"
     source_file.write_bytes(content)
     os.link(source_file, target_root / "Movie.2026.mkv")
