@@ -483,6 +483,7 @@ async def test_qbittorrent_5215_add_uses_paused_multipart_and_reads_actual_state
             body = request.content
             assert b'name="savepath"' in body and b"/downloads/seed" in body
             assert b'name="paused"' in body and b"true" in body
+            assert b'name="stopped"' in body and b"true" in body
             assert b'name="skip_checking"' in body and b"false" in body
             assert b'name="tags"' in body and b"packbreaker-test" in body
             assert b"application/x-bittorrent" in body

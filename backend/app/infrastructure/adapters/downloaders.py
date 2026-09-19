@@ -405,6 +405,10 @@ class QbittorrentAdapter:
             form: dict[str, str] = {
                 "savepath": request.save_path,
                 "paused": "true",
+                # qBittorrent 5.x uses `stopped`; retaining `paused` alone can
+                # silently start a new torrent on WebAPI 2.15.x. Both are safe
+                # and the older alias is kept for the supported legacy API.
+                "stopped": "true",
                 "skip_checking": "true" if request.skip_checking else "false",
             }
             if request.tags:
