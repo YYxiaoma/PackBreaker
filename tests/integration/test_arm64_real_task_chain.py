@@ -218,16 +218,17 @@ async def test_authorized_transmission_task_journal_verifies_then_seeds_real_cli
     adding_fixture: _AddingFixture,
 ) -> None:
     """Exercise real RPC and journal without skipping Transmission's mandatory verify."""
-    password = os.environ.get("PACKBREAKER_CI_REAL_TR_PASSWORD", "")
-    if not password:
-        raise ValueError("isolated Transmission temporary password is required")
-    adapter = TransmissionAdapter(
-        "http://127.0.0.1:9091/transmission/rpc",
-        DownloaderCredential(username="packbreaker", password=password),
-    )
-    connection = await adapter.test_connection()
-    assert connection.capabilities.version.startswith("4.1.3")
-    assert not connection.capabilities.supports_skip_checking
+    with _test_stage("tr-preflight-connect"):
+        password = os.environ.get("PACKBREAKER_CI_REAL_TR_PASSWORD", "")
+        if not password:
+            raise ValueError("isolated Transmission temporary password is required")
+        adapter = TransmissionAdapter(
+            "http://127.0.0.1:9091/transmission/rpc",
+            DownloaderCredential(username="packbreaker", password=password),
+        )
+        connection = await adapter.test_connection()
+        assert connection.capabilities.version.startswith("4.1.3")
+        assert not connection.capabilities.supports_skip_checking
 
     old_binding = adding_fixture.downloader_provider.binding
     assert isinstance(old_binding, QbittorrentWriteBinding)
@@ -295,20 +296,23 @@ async def test_authorized_transmission_task_journal_verifies_then_seeds_real_cli
     source = adding_fixture.source_file
     target = adding_fixture.data_root / "target" / source.name
     original = source.stat(follow_symlinks=False)
-    assert original.st_ino == target.stat(follow_symlinks=False).st_ino
+    with _test_stage("tr-preflight-file"):
+        assert original.st_ino == target.stat(follow_symlinks=False).st_ino
 
     with _test_stage("tr-journal-backed-add"):
         added = await adding.execute(
             adding_fixture.unit_id, execution_plan_id=adding_fixture.plan_id
         )
-    assert added.status is TaskStatus.CLIENT_VERIFYING and added.skip_checking is False
-    states = await adapter.get_torrents((added.torrent_hash,))
-    assert len(states) == 1 and states[0].stopped
+    with _test_stage("tr-add-state"):
+        assert added.status is TaskStatus.CLIENT_VERIFYING and added.skip_checking is False
+        states = await adapter.get_torrents((added.torrent_hash,))
+        assert len(states) == 1 and states[0].stopped
     with _test_stage("tr-journal-backed-add-replay"):
         add_replay = await adding.execute(
             adding_fixture.unit_id, execution_plan_id=adding_fixture.plan_id
         )
-    assert add_replay.replayed and add_replay.qbit_journal_id == added.qbit_journal_id
+    with _test_stage("tr-add-replay-state"):
+        assert add_replay.replayed and add_replay.qbit_journal_id == added.qbit_journal_id
 
     with _test_stage("tr-journal-backed-verify"):
         first_check = await verifier.execute(
@@ -329,9 +333,18 @@ async def test_authorized_transmission_task_journal_verifies_then_seeds_real_cli
             )
         else:
             verified = first_check
-    assert verified.status is TaskStatus.SEEDING
-    assert verified.verification_outcome == "VERIFIED"
-    assert verified.recheck_journal_id == first_check.recheck_journal_id
+    with _test_stage("tr-verification-evidence"):
+        if verified.status is not TaskStatus.SEEDING:
+            print(
+                f"::error file=tests/integration/test_arm64_real_task_chain.py::"
+                f"tr verified state={verified.status.value} "
+                f"outcome={verified.verification_outcome} "
+                f"checking_observed={verified.checking_observed}",
+                flush=True,
+            )
+        assert verified.status is TaskStatus.SEEDING
+        assert verified.verification_outcome == "VERIFIED"
+        assert verified.recheck_journal_id == first_check.recheck_journal_id
 
     with _test_stage("tr-journal-backed-start"):
         try:
@@ -352,30 +365,32 @@ async def test_authorized_transmission_task_journal_verifies_then_seeds_real_cli
                 adding_fixture.unit_id, execution_plan_id=adding_fixture.plan_id
             )
             assert done.recovered_after_unknown_result
-    assert done.status is TaskStatus.DONE
+    with _test_stage("tr-start-state"):
+        assert done.status is TaskStatus.DONE
     with _test_stage("tr-journal-backed-start-replay"):
         repeated = await seeder.execute(
             adding_fixture.unit_id, execution_plan_id=adding_fixture.plan_id
         )
-    assert repeated.replayed and repeated.start_journal_id == done.start_journal_id
-    with adding_fixture.factory() as session:
-        task = session.get(UnpackTask, adding_fixture.task_id)
-        assert task is not None and task.status == TaskStatus.DONE.value
-        journals = list(
-            session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
+    with _test_stage("tr-completion-and-file-invariants"):
+        assert repeated.replayed and repeated.start_journal_id == done.start_journal_id
+        with adding_fixture.factory() as session:
+            task = session.get(UnpackTask, adding_fixture.task_id)
+            assert task is not None and task.status == TaskStatus.DONE.value
+            journals = list(
+                session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
+            )
+            assert [item.operation_type for item in journals] == [
+                TRANSMISSION_ADD_OPERATION,
+                TRANSMISSION_VERIFY_OPERATION,
+                TRANSMISSION_START_OPERATION,
+            ]
+            assert all(item.status == "APPLIED" for item in journals)
+        after = source.stat(follow_symlinks=False)
+        assert (original.st_dev, original.st_ino, original.st_size, original.st_mtime_ns) == (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
         )
-        assert [item.operation_type for item in journals] == [
-            TRANSMISSION_ADD_OPERATION,
-            TRANSMISSION_VERIFY_OPERATION,
-            TRANSMISSION_START_OPERATION,
-        ]
-        assert all(item.status == "APPLIED" for item in journals)
-    after = source.stat(follow_symlinks=False)
-    assert (original.st_dev, original.st_ino, original.st_size, original.st_mtime_ns) == (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    )
-    assert target.stat(follow_symlinks=False).st_ino == original.st_ino
-    assert target.read_bytes() == source.read_bytes()
+        assert target.stat(follow_symlinks=False).st_ino == original.st_ino
+        assert target.read_bytes() == source.read_bytes()
