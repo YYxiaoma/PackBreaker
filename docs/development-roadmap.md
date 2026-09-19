@@ -200,6 +200,8 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **正式 App 导航 → 执行记录 → Web 审批 → Transmission 只读计划（GitHub CI run `35463902355` 成功）**：隔离浏览器测试不再仅通过测试专用挂载直接进入审核组件；使用与生产入口一致的 `App.vue`、Pinia 与 Element Plus，自侧栏“任务中心”进入由正式任务定义服务创建的合成手动任务，打开真实持久化执行记录与“审核 / 对账”，再以真实 FastAPI 管理员会话完成只读分析、审批、执行门与 Transmission 计划。测试仍在 loopback 中使用 `.invalid` 站点/下载器配置与内存站点适配器，检查零写操作 journal、源文件 inode/mtime/size 和空目标目录；没有点击“确认并执行”，不替代真实 PT、真人点击或真实客户端与浏览器同任务执行验收。正式 ARM64 跨版本升级和 GHCR 双架构发布资产仍待单独验收。
 
+**v1.0.0 双架构发布资产一致性门禁（新增，待 CI）**：新增仅操作测试合成 JSON 的 `verify_release_evidence.py`，在 Release workflow 生成 SBOM/manifest/SHA256SUMS 之后、任何上传 GitHub 资产之前执行。要求独立输入的 tag、commit、镜像 index digest 与发布清单相同，v1.0.0+ 严格声明 `linux/amd64` 与 `linux/arm64`，SPDX 2.3、SBOM 内容哈希和 SHA256SUMS 一致，拒绝额外/缺失/重复文件以及符号链接；保留 v0.x AMD64 兼容回归。该检查仅是正式发布时可运行的本地资产防漂移门禁；尚未创建 v1.0.0 Tag、推送多平台 GHCR 镜像、完成正式 ARM64 跨版本升级或验证真实发布资产。
+
 ## 9. 工作项拆分模板
 
 每个 Issue 至少包含：

@@ -33,6 +33,13 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
     assert "format: spdx-json" in workflow
     assert "scripts/release_manifest.py" in workflow
     assert "sha256sum *.json > SHA256SUMS" in workflow
+    assert "scripts/verify_release_evidence.py" in workflow
+    assert workflow.index("scripts/verify_release_evidence.py") < workflow.index(
+        "Upload release evidence artifact"
+    )
+    assert workflow.index("scripts/verify_release_evidence.py") < workflow.index(
+        "Publish GitHub release assets"
+    )
     assert "Refuse an existing immutable version image" in workflow
     assert "Refuse an existing GitHub Release" in workflow
     assert "Require baseline to be the latest published release" in workflow

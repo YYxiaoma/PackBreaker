@@ -195,6 +195,16 @@ jobs:
             --output "release/packbreaker-${{ steps.release_meta.outputs.version }}.release.json" \
             --generated-at "${{ steps.release_meta.outputs.created }}"
           (cd release && sha256sum *.json > SHA256SUMS)
+      - name: Fail closed on local Release asset identity before any asset upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python scripts/verify_release_evidence.py \
+            --release-dir release \
+            --tag "$GITHUB_REF_NAME" \
+            --image "${{ steps.release_meta.outputs.image }}" \
+            --image-digest "${{ steps.build.outputs.digest }}" \
+            --commit "$GITHUB_SHA"
       - name: Upload release evidence artifact
         uses: actions/upload-artifact@v4
         with:
