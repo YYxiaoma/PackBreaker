@@ -7,6 +7,14 @@ test "$(uname -m)" = aarch64
 test "$(docker image inspect "$candidate_image" --format '{{.Os}}/{{.Architecture}}')" = linux/arm64
 
 suffix="${GITHUB_RUN_ID:-local}-$$"
+phase="init"
+report_failure() {
+  local exit_code="$?"
+  printf '::error file=scripts/check-arm64-real-downloaders-e2e.sh::ARM64 isolated downloader failure: phase=%s exit=%s\n' \
+    "$phase" "$exit_code" >&2
+  exit "$exit_code"
+}
+trap report_failure ERR
 qb_name="packbreaker-arm64-qb-e2e-$suffix"
 tr_name="packbreaker-arm64-tr-e2e-$suffix"
 sandbox="$(mktemp -d "$PWD/.ci-arm64-real-downloaders.XXXXXXXX")"
@@ -58,34 +66,43 @@ run_probe() {
 # The qBittorrent temporary password is generated for this disposable container.
 # Consume it privately; never echo docker logs or the temporary credential to CI.
 qb_image="lscr.io/linuxserver/qbittorrent:5.2.3-libtorrentv1"
+phase="qb-image-pull"
 check_image "$qb_image"
+phase="qb-container-start"
 docker run --detach --name "$qb_name" --network none \
   --env "PUID=$(id -u)" --env "PGID=$(id -g)" \
   --volume "$sandbox/qb-config:/config" \
   --volume "$sandbox/data:/downloads" \
   "$qb_image" >/dev/null
+phase="qb-port-ready"
 wait_port "$qb_name" 8080
 qb_password=""
+phase="qb-ephemeral-password"
 for attempt in $(seq 1 40); do
   qb_password="$(docker logs "$qb_name" 2>&1 | python3 -c 'import re,sys; text=sys.stdin.read(); found=re.findall(r"temporary password[^\n]*?:\s*(\S+)",text,re.I); print(found[-1] if found else "")')"
   if [ -n "$qb_password" ]; then break; fi
   sleep 1
 done
 test -n "$qb_password" || { echo "No ephemeral qBittorrent password was generated" >&2; exit 1; }
+phase="qb-real-api"
 run_probe "$qb_name" qbittorrent "$qb_password"
 unset qb_password
 docker rm --force "$qb_name" >/dev/null
 
 tr_image="lscr.io/linuxserver/transmission:4.1.3"
+phase="tr-image-pull"
 check_image "$tr_image"
 tr_password="$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')"
+phase="tr-container-start"
 docker run --detach --name "$tr_name" --network none \
   --env "PUID=$(id -u)" --env "PGID=$(id -g)" \
   --env USER=packbreaker --env "PASS=$tr_password" \
   --volume "$sandbox/tr-config:/config" \
   --volume "$sandbox/data:/downloads" \
   "$tr_image" >/dev/null
+phase="tr-port-ready"
 wait_port "$tr_name" 9091
+phase="tr-real-api"
 run_probe "$tr_name" transmission "$tr_password"
 unset tr_password
 echo 'Isolated native ARM64 qBittorrent and Transmission Docker API tests passed'
