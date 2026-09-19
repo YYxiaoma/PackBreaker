@@ -32,6 +32,8 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **隔离浏览器真实 HTTP 审批门禁已通过（GitHub CI run `35452724809`）**：测试专用的 loopback FastAPI 与 Vite、Playwright 自动点击正式审核/分析组件完成合成任务只读分析、管理员审核、执行门与 Transmission 执行计划，实际读取持久化任务与计划并检查没有 journal/源文件或目标文件副作用。仅使用临时合成数据和不可连接的下载器配置；尚不覆盖正式 App 导航全流程、真人操作、真实 PT/客户端服务和 ARM64 正式发行或跨版本升级。
 
+**正式 App 导航及执行记录中的浏览器审批门禁（新增，待 CI）**：测试以正式 `App.vue` 和真实 FastAPI 的任务定义、执行记录、底层任务为入口，自动从任务中心导航至“审核 / 对账”，完成合成任务分析、管理员会话审批及 Transmission 无副作用执行计划；验证计划与底层任务绑定且没有 Hardlink、journal 或源文件变化。并不执行真实下载器写操作，不覆盖真实 PT、真人点击或正式 ARM64 跨版本升级与发布验收。
+
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 
 ## 2. 下载器

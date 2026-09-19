@@ -76,8 +76,21 @@ function start(command, args, options = {}) {
     assert.equal(login.status(), 200, `synthetic login: ${login.status()}`);
     assert.equal((await login.json()).authenticated, true);
 
-    await page.goto(`${frontendUrl}/tests/web-approval.html`);
-    await page.waitForFunction(() => document.documentElement.dataset.ciApprovalReady === 'true');
+    await page.goto(`${frontendUrl}/tests/web-approval.html?mode=full-app`);
+    await page.waitForFunction(() => document.documentElement.dataset.ciApprovalReady === 'full-app');
+    await page.getByRole('navigation', { name: '主导航' })
+      .getByRole('button', { name: '任务中心', exact: true }).click();
+    await page.getByRole('heading', { name: '任务中心' }).waitFor();
+    assert.equal(decodeURIComponent(new URL(page.url()).hash.slice(1)), '任务中心');
+    const definition = page.locator('.definition-table .el-table__row')
+      .filter({ hasText: '隔离浏览器审批任务' });
+    await definition.getByRole('button', { name: '查看', exact: true }).click();
+    const definitionDrawer = page.locator('.el-drawer').filter({ hasText: '任务详情 · 隔离浏览器审批任务' });
+    await definitionDrawer.getByRole('tab', { name: '执行记录' }).click();
+    await definitionDrawer.locator('.execution-history-toolbar').waitFor();
+    await definitionDrawer.locator('.el-table__row').getByRole('button', { name: '查看', exact: true }).click();
+    const executionDrawer = page.locator('.el-drawer').filter({ hasText: '执行记录详情' });
+    await executionDrawer.getByRole('tab', { name: '审核 / 对账' }).click();
     await page.getByRole('heading', { name: '审核、校验与对账' }).waitFor();
     await page.getByRole('textbox', { name: '源目录相对路径' }).fill('web-review-source');
     await page.getByRole('button', { name: '分析', exact: true }).click();
@@ -125,7 +138,7 @@ function start(command, args, options = {}) {
     assert.equal(after.mtimeMs, before.mtimeMs);
     assert.deepEqual(fs.readdirSync(target), [], 'plan must not create hardlinks');
     assert.deepEqual(errors, [], 'real browser must not have uncaught errors');
-    console.log('PASS isolated real browser -> FastAPI auth, analyze, admin approval, gate and Transmission read-only plan');
+    console.log('PASS real App navigation -> task execution record -> isolated FastAPI admin approval and Transmission read-only plan');
   } finally {
     await browser.close();
   }
