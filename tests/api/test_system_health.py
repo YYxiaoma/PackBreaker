@@ -25,6 +25,7 @@ from backend.app.infrastructure.persistence.models import (
     new_uuid,
 )
 from backend.app.main import create_app
+from scripts.release_manifest import project_version
 
 _PASSWORD = "synthetic correct horse battery staple"
 _CANARY_SITE_URL = "https://secret-canary.example.invalid"
@@ -175,7 +176,7 @@ def test_release_preflight_api_is_local_read_only_and_skips_backup_exercise(
         assert response.headers["cache-control"] == "no-store"
         payload = response.json()
         assert payload["status"] == "ready"
-        assert payload["app_version"] == "0.1.8"
+        assert payload["app_version"] == project_version()
         codes = {item["code"] for item in payload["checks"]}
         assert {
             "CONFIG_DIR_OK",
