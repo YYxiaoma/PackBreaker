@@ -170,6 +170,8 @@ jobs:
           fi
           python scripts/verify_release_platforms.py \
             --image "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}" \
+            --tag "$GITHUB_REF_NAME" \
+            --commit "$GITHUB_SHA" \
             "${platform_args[@]}"
       - name: Generate SPDX SBOM from immutable image digest
         uses: anchore/sbom-action@v0.24.2

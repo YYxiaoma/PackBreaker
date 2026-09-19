@@ -26,11 +26,17 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
     assert "ubuntu-24.04-arm" in workflow
     assert "needs: arm64-validation" in workflow
     assert "verify_release_platforms.py" in workflow
+    assert '--tag "$GITHUB_REF_NAME"' in workflow
+    assert '--commit "$GITHUB_SHA"' in workflow
     platform_checker = (ROOT / "scripts" / "verify_release_platforms.py").read_text(
         encoding="utf-8"
     )
-    assert "verify_release_children(raw" in platform_checker
+    assert "verify_release_children(" in platform_checker
+    assert "read_config=read_child_config" in platform_checker
     assert 'f"{repository}@{digest}"' in platform_checker
+    assert '"{{json .Image}}"' in platform_checker
+    assert "org.opencontainers.image.version" in platform_checker
+    assert "org.opencontainers.image.revision" in platform_checker
     assert workflow.index("scripts/verify_release_platforms.py") < workflow.index(
         "Generate SPDX SBOM from immutable image digest"
     )
@@ -56,6 +62,20 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
     assert ":stable" in workflow
     assert "--generate-notes" in workflow
     assert "check-release-upgrade.sh packbreaker:release-candidate" in workflow
+
+
+def test_candidate_e2e_reads_real_published_baseline_image_config_without_publishing() -> None:
+    candidate = (ROOT / ".github" / "workflows" / "candidate-docker-e2e.yml").read_text(
+        encoding="utf-8"
+    )
+    assert '"scripts/verify_release_platforms.py"' in candidate
+    assert "docker/setup-buildx-action@v3" in candidate
+    assert '"--image", baseline["immutable_image"]' in candidate
+    assert '"--tag", baseline["tag"]' in candidate
+    assert '"--commit", baseline["commit"]' in candidate
+    assert candidate.index("Verify actual published AMD64 baseline") < candidate.index(
+        "Build current main as local candidate"
+    )
 
 
 def test_ci_container_gate_exercises_immutable_previous_release() -> None:

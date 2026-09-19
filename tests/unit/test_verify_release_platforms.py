@@ -13,6 +13,8 @@ from scripts.verify_release_platforms import main, verify_release_children, veri
 _OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 _OCI_CONFIG = "application/vnd.oci.image.config.v1+json"
 _OCI_LAYER = "application/vnd.oci.image.layer.v1.tar+gzip"
+TAG = "v1.0.0"
+COMMIT = "1" * 40
 
 
 def _child(digit: str = "d") -> dict[str, Any]:
@@ -22,6 +24,44 @@ def _child(digit: str = "d") -> dict[str, Any]:
         "config": {"mediaType": _OCI_CONFIG, "digest": "sha256:" + digit * 64, "size": 432},
         "layers": [{"mediaType": _OCI_LAYER, "digest": "sha256:" + "e" * 64, "size": 654}],
     }
+
+
+def _config(arch: str = "amd64") -> dict[str, Any]:
+    return {
+        "os": "linux",
+        "architecture": arch,
+        "config": {
+            "Labels": {
+                "org.opencontainers.image.version": TAG[1:],
+                "org.opencontainers.image.revision": COMMIT,
+            }
+        },
+        "rootfs": {"type": "layers", "diff_ids": ["sha256:" + "f" * 64]},
+    }
+
+
+def _verify(
+    index: object,
+    *,
+    multiarch: bool = True,
+    read_manifest: Callable[[str], object] = lambda _: _child(),
+    read_config: Callable[[str], object] | None = None,
+    tag: str = TAG,
+    commit: str = COMMIT,
+) -> None:
+    if read_config is None:
+
+        def read_config(digest: str) -> object:
+            return _config("amd64" if digest == "sha256:" + "a" * 64 else "arm64")
+
+    verify_release_children(
+        index,
+        multiarch=multiarch,
+        read_manifest=read_manifest,
+        read_config=read_config,
+        tag=tag,
+        commit=commit,
+    )
 
 
 def _child_index() -> dict[str, Any]:
@@ -91,14 +131,14 @@ def test_release_children_resolves_both_immutable_platform_digests_not_attestati
         requested.append(digest)
         return _child()
 
-    verify_release_children(_child_index(), multiarch=True, read_manifest=read_child)
+    _verify(_child_index(), read_manifest=read_child)
     assert requested == ["sha256:" + "a" * 64, "sha256:" + "b" * 64]
 
 
 def test_legacy_amd64_release_still_resolves_its_child() -> None:
     index = _child_index()
     index["manifests"] = index["manifests"][:1]
-    verify_release_children(index, multiarch=False, read_manifest=lambda _: _child())
+    _verify(index, multiarch=False)
 
 
 @pytest.mark.parametrize(
@@ -116,14 +156,14 @@ def test_release_children_fail_closed_on_invalid_platform_descriptor(
     index = _child_index()
     index["manifests"][1][field] = value
     with pytest.raises(ValueError, match=message):
-        verify_release_children(index, multiarch=True, read_manifest=lambda _: _child())
+        _verify(index)
 
 
 def test_release_children_rejects_one_digest_claimed_by_two_architectures() -> None:
     index = _child_index()
     index["manifests"][1]["digest"] = index["manifests"][0]["digest"]
     with pytest.raises(ValueError, match="共用同一个"):
-        verify_release_children(index, multiarch=True, read_manifest=lambda _: _child())
+        _verify(index)
 
 
 @pytest.mark.parametrize(
@@ -149,7 +189,7 @@ def test_release_children_rejects_missing_or_non_image_child_manifests(
     child = _child()
     mutation(child)
     with pytest.raises(ValueError, match=message):
-        verify_release_children(_child_index(), multiarch=True, read_manifest=lambda _: child)
+        _verify(_child_index(), read_manifest=lambda _: child)
 
 
 def test_cli_reads_index_and_each_child_by_exact_digest(
@@ -160,17 +200,85 @@ def test_cli_reads_index_and_each_child_by_exact_digest(
 
     def fake_run(args: list[str], **_kwargs: object) -> SimpleNamespace:
         requested.append(args)
-        payload = _child_index() if args[-1] == image else _child()
+        if args[-1] == image:
+            payload = _child_index()
+        elif "--format" in args:
+            payload = _config("amd64" if args[-1].endswith("a" * 64) else "arm64")
+        else:
+            payload = _child()
         return SimpleNamespace(stdout=json.dumps(payload))
 
     monkeypatch.setattr("scripts.verify_release_platforms.subprocess.run", fake_run)
     monkeypatch.setattr(
-        sys, "argv", ["verify_release_platforms.py", "--image", image, "--multiarch"]
+        sys,
+        "argv",
+        [
+            "verify_release_platforms.py",
+            "--image",
+            image,
+            "--multiarch",
+            "--tag",
+            TAG,
+            "--commit",
+            COMMIT,
+        ],
     )
     assert main() == 0
     assert [args[-1] for args in requested] == [
         image,
         "ghcr.io/yyxiaoma/packbreaker@sha256:" + "a" * 64,
+        "ghcr.io/yyxiaoma/packbreaker@sha256:" + "a" * 64,
+        "ghcr.io/yyxiaoma/packbreaker@sha256:" + "b" * 64,
         "ghcr.io/yyxiaoma/packbreaker@sha256:" + "b" * 64,
     ]
-    assert "每个平台不可变子镜像" in capsys.readouterr().out
+    assert "实际架构/版本/提交身份" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("architecture", ["amd64", "arm64"])
+def test_release_children_rejects_mislabeled_actual_architecture(architecture: str) -> None:
+    def config_for(digest: str) -> object:
+        actual = "amd64" if digest.endswith("a" * 64) else "arm64"
+        return _config(architecture if actual != architecture else "riscv64")
+
+    with pytest.raises(ValueError, match="实际镜像配置与索引平台声明不一致"):
+        _verify(_child_index(), read_config=config_for)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("os",), "windows", "平台声明"),
+        (("architecture",), "amd64", "平台声明"),
+        (("variant",), "v7", "variant"),
+        (("config", "Labels", "org.opencontainers.image.version"), "0.1.9", "版本标签"),
+        (("config", "Labels", "org.opencontainers.image.revision"), "2" * 40, "提交标签"),
+        (("config", "Labels"), {}, "版本标签"),
+        (("rootfs", "diff_ids"), [], "rootfs"),
+        (("rootfs", "diff_ids"), ["sha256:short"], "rootfs"),
+        (("rootfs", "type"), "empty", "rootfs"),
+    ],
+)
+def test_release_children_rejects_bad_actual_image_config(
+    path: tuple[str, ...], value: object, message: str
+) -> None:
+    config = _config("arm64")
+    target = config
+    for field in path[:-1]:
+        target = target[field]
+    target[path[-1]] = value
+    with pytest.raises(ValueError, match=message):
+        _verify(
+            _child_index(),
+            read_config=lambda digest: _config() if digest.endswith("a" * 64) else config,
+        )
+
+
+@pytest.mark.parametrize(
+    ("tag", "commit"),
+    [("v1.0.1", COMMIT), (TAG, "2" * 40), ("bad", COMMIT), (TAG, "short")],
+)
+def test_release_children_rejects_identity_mismatch_and_invalid_workflow_inputs(
+    tag: str, commit: str
+) -> None:
+    with pytest.raises(ValueError, match="标签|发布 tag|提交 SHA"):
+        _verify(_child_index(), tag=tag, commit=commit)

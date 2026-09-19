@@ -40,6 +40,8 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **GHCR 多平台子镜像清单离线回归门禁已通过（GitHub CI run `35476485411`）**：发布工作流对每个宣称的平台读取不可变 child manifest，核对真实子镜像配置与层描述符存在且结构有效，拒绝无效或重复 digest 等异常；离线测试尚不等于正式 v1.0.0 GHCR 发布后的真实性验证，子 config 实际 CPU 架构、版本标签和原生运行仍需独立检查。
 
+**发布子镜像实际 CPU 架构与版本身份门禁（新增，待 CI）**：发布工作流在上传资产前将独立 tag/commit 与每个平台不可变子镜像的 `.Image` config 比对，要求实际架构、rootfs 与版本/修订标签正确；Candidate Docker E2E 将只读检查已发布 v0.1.9 的真实 AMD64 不可变 baseline。此两项测试不是 v1.0.0 正式双架构 GHCR 配置拉取或两架构正式镜像运行证据。
+
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 
 ## 2. 下载器

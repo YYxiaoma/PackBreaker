@@ -9,6 +9,8 @@ from typing import Any
 
 SUPPORTED_PLATFORMS = frozenset({"linux/amd64", "linux/arm64"})
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+_TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
 _IMAGE_MANIFEST_TYPES = frozenset(
     {
         "application/vnd.oci.image.manifest.v1+json",
@@ -76,15 +78,21 @@ def verify_release_index(payload: object, *, multiarch: bool) -> None:
 
 
 def verify_release_children(
-    payload: object, *, multiarch: bool, read_manifest: Callable[[str], object]
+    payload: object,
+    *,
+    multiarch: bool,
+    read_manifest: Callable[[str], object],
+    read_config: Callable[[str], object],
+    tag: str,
+    commit: str,
 ) -> None:
-    """Resolve each runnable child by immutable digest and validate its actual manifest.
+    """Resolve runnable child manifests and image configs by immutable digest.
 
-    OCI platform descriptors are claims supplied by the index. This gate checks
-    that their child manifests really resolve to executable image manifests;
-    checking each config's architecture and runtime labels remains a separate
-    native-platform release acceptance requirement.
+    Index platform claims are not sufficient: verify the actual image config's
+    architecture and release identity independently for each platform.
     """
+    if _TAG.fullmatch(tag) is None or _COMMIT.fullmatch(commit) is None:
+        raise ValueError("发布 tag 或独立提交 SHA 无效")
     verify_release_index(payload, multiarch=multiarch)
     assert isinstance(payload, dict)
     descriptors = payload["manifests"]
@@ -111,14 +119,49 @@ def verify_release_children(
             raise ValueError(f"{arch} 子镜像缺少运行层")
         for index, layer in enumerate(layers):
             _descriptor(layer, media_types=_LAYER_TYPES, label=f"{arch} layer[{index}]")
+        config = read_config(digest)
+        if not isinstance(config, Mapping):
+            raise ValueError(f"{arch} 实际镜像配置缺失")
+        if (
+            config.get("os") != platform["os"]
+            or config.get("architecture") != platform["architecture"]
+        ):
+            raise ValueError(f"{arch} 实际镜像配置与索引平台声明不一致")
+        config_variant = config.get("variant")
+        if config_variant not in (None, "") and not (
+            arch == "linux/arm64" and config_variant == "v8"
+        ):
+            raise ValueError(f"{arch} 实际镜像配置 variant 不匹配")
+        config_body = config.get("config")
+        if not isinstance(config_body, Mapping):
+            raise ValueError(f"{arch} 实际镜像配置缺少运行配置")
+        labels = config_body.get("Labels")
+        if not isinstance(labels, Mapping):
+            raise ValueError(f"{arch} 实际镜像配置缺少 OCI labels")
+        if labels.get("org.opencontainers.image.version") != tag[1:]:
+            raise ValueError(f"{arch} 实际镜像版本标签与发布 tag 不一致")
+        if labels.get("org.opencontainers.image.revision") != commit:
+            raise ValueError(f"{arch} 实际镜像提交标签与发布 commit 不一致")
+        rootfs = config.get("rootfs")
+        if not isinstance(rootfs, Mapping) or rootfs.get("type") != "layers":
+            raise ValueError(f"{arch} 实际镜像配置 rootfs 无效")
+        diff_ids = rootfs.get("diff_ids")
+        if (
+            not isinstance(diff_ids, list)
+            or len(diff_ids) != len(layers)
+            or not all(isinstance(item, str) and _DIGEST.fullmatch(item) for item in diff_ids)
+        ):
+            raise ValueError(f"{arch} 实际镜像配置 rootfs 层数或摘要不匹配")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="验证 GHCR 发布 digest 的真实平台列表")
     parser.add_argument("--image", required=True, help="不可变 image@sha256:digest")
     parser.add_argument("--multiarch", action="store_true")
+    parser.add_argument("--tag", required=True, help="独立 GitHub Release tag，如 v1.0.0")
+    parser.add_argument("--commit", required=True, help="独立 GitHub 40 位提交 SHA")
     args = parser.parse_args()
-    if "@sha256:" not in args.image:
+    if re.fullmatch(r"[a-z0-9][a-z0-9._/-]+@sha256:[0-9a-f]{64}", args.image) is None:
         parser.error("必须按完整不可变 digest 检查正式镜像")
     process = subprocess.run(
         ["docker", "buildx", "imagetools", "inspect", "--raw", args.image],
@@ -140,8 +183,33 @@ def main() -> int:
         )
         return json.loads(child_process.stdout)
 
-    verify_release_children(raw, multiarch=args.multiarch, read_manifest=read_child_manifest)
-    print("Release 平台索引及每个平台不可变子镜像 manifest 校验通过")
+    def read_child_config(digest: str) -> object:
+        config_process = subprocess.run(
+            [
+                "docker",
+                "buildx",
+                "imagetools",
+                "inspect",
+                "--format",
+                "{{json .Image}}",
+                f"{repository}@{digest}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+        return json.loads(config_process.stdout)
+
+    verify_release_children(
+        raw,
+        multiarch=args.multiarch,
+        read_manifest=read_child_manifest,
+        read_config=read_child_config,
+        tag=args.tag,
+        commit=args.commit,
+    )
+    print("Release 平台索引、子镜像清单及实际架构/版本/提交身份校验通过")
     return 0
 
 
