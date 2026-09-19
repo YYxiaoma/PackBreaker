@@ -176,7 +176,7 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 - 外部链路与升级：在 ARM64 真实环境验证 qBittorrent / Transmission 的受控端到端链路，分别演练 ARM64 上的版本升级、Web updater、失败回滚和旧备份恢复；平台/架构校验不得让 ARM64 主机拉取或替换为 AMD64 镜像。
 - 退出条件：两种架构的构建与自动化门禁通过，原生 ARM64 真实 Docker 运行及必要业务链/升级恢复取得可追溯证据，更新支持矩阵、部署说明和已知限制后，方可在 v1.0.0 Release 中宣布 `linux/arm64` 正式支持。ARMv7 / 32 位 ARM 不在本版范围内。
 
-**研发进度（未正式验收）**：已实现双架构发布清单/发布基线解析、CI 原生 ARM64 Runner 和 Release Buildx 双平台配置、镜像 index 核验、Web 升级的运行平台判断，以及 Docker helper 拉取目标镜像后在停止旧容器前比对 Linux CPU 架构。GitHub CI run `35433054300` 已通过原生 ARM64 后端测试、Docker 构建、容器健康检查、隔离文件的 hardlink/xattr 和备份。后续代码新增原生 ARM64 数据库验证/恢复与基于隔离合成 ARM64 基线的 Docker updater 成功/失败回滚门禁；门禁须在新的 CI run 成功后才算验收。由于 v0.1.9 正式镜像仅有 AMD64，合成基线测试不代表 ARM64 上真实跨正式版本升级；ARM64 真实下载器链路与正式发布多平台 digest 也仍待验收，正式支持状态保持不变。
+**研发进度（尚未满足正式支持退出条件）**：已实现双架构发布清单/发布基线解析、CI 原生 ARM64 Runner 和 Release Buildx 双平台配置、镜像 index 核验、Web 升级的运行平台判断，以及 Docker helper 停止旧容器前的 Linux CPU 架构一致性检查。GitHub CI run `35433684405` 已通过原生 ARM64 后端测试、Docker 构建与健康检查、隔离 hardlink/xattr、数据库备份验证/恢复，以及基于两个不同本地 ARM64 镜像身份的 Docker updater 成功替换、故障回滚和一次性 helper E2E；同次 run 的 AMD64、浏览器与 updater 门禁及独立 Candidate Docker E2E run `35433684406` 也已通过。由于 v0.1.9 正式镜像仅有 AMD64，此合成基线测试不代表 ARM64 上真实跨正式版本升级或 Web UI 实际点击验收；ARM64 真实下载器业务链与正式发布多平台 digest 仍待验收，正式支持状态保持不变。
 
 ## 9. 工作项拆分模板
 
