@@ -54,6 +54,9 @@ def test_ci_container_gate_exercises_immutable_previous_release() -> None:
     assert "tests/application/test_task_linking.py" in workflow
     assert "tests/application/test_task_adding.py" in workflow
     assert "tests/application/test_transmission_operations.py" in workflow
+    assert "tests/application/test_filesystem_operations.py" in workflow
+    assert "tests/application/test_task_repairs.py" in workflow
+    assert "check-arm64-real-downloaders-e2e.sh" in workflow
     assert "restore-backup" in workflow
     assert "--synthetic-arm64-baseline" in workflow
     assert '--build-arg VERSION="$version"' in workflow

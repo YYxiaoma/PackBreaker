@@ -31,6 +31,8 @@ jobs:
             tests/application/test_task_adding.py \
             tests/application/test_downloader_operations.py \
             tests/application/test_transmission_operations.py \
+            tests/application/test_filesystem_operations.py \
+            tests/application/test_task_repairs.py \
             tests/unit/test_piece_verifier.py \
             tests/unit/test_v2_piece_verifier.py
       - name: Build native ARM64 runtime image
@@ -92,6 +94,8 @@ jobs:
           done
       - name: Exercise native ARM64 Docker updater and failure rollback with synthetic baseline
         run: bash scripts/check-updater-e2e.sh packbreaker:ci-arm64 --synthetic-arm64-baseline
+      - name: Exercise isolated native ARM64 qBittorrent and Transmission Docker APIs
+        run: bash scripts/check-arm64-real-downloaders-e2e.sh packbreaker:ci-arm64
 
   quality:
     runs-on: ubuntu-latest

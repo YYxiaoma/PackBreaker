@@ -180,6 +180,8 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **ARM64 业务链门禁（GitHub CI run `35434318531` 的原生 ARM64 job 成功）**：在原生 ARM64 Runner 单独完成任务分析、task linking/journal、task adding 与 qBittorrent/Transmission 模拟协议适配器、v1/v2/hybrid piece 校验回归；在原生 ARM64 Docker 容器的独立临时数据卷完成合成 v1/v2/hybrid torrent 与媒体的真实文件读取、稳定映射、完整内容校验、源 inode/mtime 不变检查、合成文件 Hardlink 建立与清理，以及损坏内容不得 FULL_VERIFIED 的失败关闭测试。容器业务探针不添加下载器任务，也不连接真实下载器或 PT 站点；模拟适配器测试不等于 ARM64 上 qBittorrent/Transmission 的真实服务 E2E。现有证据也不包含真实 ARM64 文件上的 repair inode isolation/journal 崩溃恢复和正式多架构 GHCR 镜像验收。
 
+**原生 ARM64 隔离下载器门禁（新增、待 GitHub CI 验收）**：CI 在独立 `--network none` 的 qBittorrent 5.2.3 / Transmission 4.1.3 ARM64 Docker 容器运行本项目真实 HTTP 适配器，以合成私有种子和独立临时目录验证暂停添加、下载器自身校验/播种、状态与归属、keep-data 删除及源 inode/mtime 不变；临时凭据仅供 CI 容器内使用，测试后清理。并在原生 ARM64 Runner 重跑完整的 repair inode 隔离、xattr、故障注入与 journal 恢复回归。此门禁通过后能证明隔离真实下载器的 API 链路，但不代表真实 PT 站点、生产下载器、正式 GHCR 双架构镜像或整个任务生命周期的真实 E2E 已完成。
+
 ## 9. 工作项拆分模板
 
 每个 Issue 至少包含：
