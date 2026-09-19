@@ -11,7 +11,7 @@
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64"></a>
   <img src="https://img.shields.io/badge/latest_release-v0.1.8-2563EB" alt="latest release v0.1.8">
-  <img src="https://img.shields.io/badge/main-v0.1.8_released-16A34A" alt="main v0.1.8 released">
+  <img src="https://img.shields.io/badge/main-v0.1.9_release_candidate-2563EB" alt="main v0.1.9 release candidate">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 
@@ -432,7 +432,7 @@ uv run python scripts/test.py
 
 ## 📊 当前状态
 
-**最新正式版本是 v0.1.8；当前 `main` 已完成 v0.1.8 正式发布。** v0.1.8 已完成统一任务生命周期、风险授权、Web / Telegram 高风险审批、自动校验、资源释放与恢复闭环，并通过真实环境、Docker candidate 与正式 Release 全链路门禁。正式部署身份仍以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中的 release manifest 与不可变 image digest 为准。
+**最新已验证正式版本为 v0.1.8；当前 `main` 正在准备 v0.1.9 发布。** v0.1.9 聚焦总览页重构、系统资源只读监控、日志中文化以及任务中心和导航交互精简。正式部署身份仍以 [GitHub Releases](https://github.com/YYxiaoma/PackBreaker/releases) 中的 release manifest 与不可变 image digest 为准；v0.1.9 必须在发布流水线全部完成后才算正式发布。
 
 v0.1.8 的正式发布证据包括：
 
@@ -455,6 +455,7 @@ v0.1.8 的正式发布证据包括：
 - [v0.1.6 真实环境验收](./docs/v0.1.6-real-environment-acceptance.md)
 - [v0.1.7 开发与发布记录](./docs/v0.1.7-development.md)
 - [v0.1.8 研发文档](./docs/v0.1.8-development.md)
+- [v0.1.9 发布说明与验收范围](./docs/v0.1.9-release.md)
 - [部署与运维](./docs/deployment.md)
 - [研发文档索引](./docs/README.md)
 
