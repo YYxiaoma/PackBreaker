@@ -83,6 +83,9 @@ class _FakeTransmission:
         self.delay_remove = False
         self.apply_on_start = True
         self.start_status = 5
+        self.add_initial_checking = False
+        self.stop_settling_reads = 0
+        self.stop_pending_hash: str | None = None
 
     async def add_torrent(self, request: TransmissionAddRequest) -> TransmissionAddResult:
         self.add_calls += 1
@@ -96,7 +99,7 @@ class _FakeTransmission:
         self.states[torrent_hash] = TransmissionTorrentState(
             torrent_hash=torrent_hash,
             download_dir=request.save_path,
-            status=0,
+            status=2 if self.add_initial_checking else 0,
             labels=request.labels,
             percent_done=1.0,
             recheck_progress=0.0,
@@ -109,11 +112,21 @@ class _FakeTransmission:
     async def get_torrents(
         self, torrent_hashes: tuple[str, ...]
     ) -> tuple[TransmissionTorrentState, ...]:
+        if self.stop_pending_hash is not None:
+            if self.stop_settling_reads > 0:
+                self.stop_settling_reads -= 1
+            else:
+                key = self.stop_pending_hash
+                self.states[key] = replace(self.states[key], status=0)
+                self.stop_pending_hash = None
         return tuple(self.states[item] for item in torrent_hashes if item in self.states)
 
     async def stop_torrent(self, torrent_hash: str) -> None:
         self.stop_calls += 1
-        self.states[torrent_hash] = replace(self.states[torrent_hash], status=0)
+        if self.stop_settling_reads:
+            self.stop_pending_hash = torrent_hash
+        else:
+            self.states[torrent_hash] = replace(self.states[torrent_hash], status=0)
 
     async def start_torrent(self, torrent_hash: str) -> None:
         self.start_calls += 1
@@ -356,6 +369,57 @@ async def test_transmission_add_response_loss_recovers_from_owned_label_without_
     assert recovered.recovered_after_unknown_result is True
     assert adapter.add_calls == 1
     assert recovered.ownership_tag in next(iter(adapter.states.values())).labels
+
+
+@pytest.mark.asyncio
+async def test_transmission_add_waits_for_initial_checking_to_stop_without_second_write(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    adapter.add_initial_checking = True
+    adapter.stop_settling_reads = 2
+
+    result = await TransmissionAddOperationService(factory).execute(
+        _add_request(task_id, torrent), binding
+    )
+
+    assert adapter.add_calls == 1
+    assert adapter.stop_calls == 1
+    assert adapter.stop_pending_hash is None
+    assert adapter.states[result.torrent_hash].stopped
+    with factory() as session:
+        journal = session.get(OperationJournal, result.journal_id)
+        assert journal is not None and journal.status == OperationStatus.APPLIED.value
+
+
+@pytest.mark.asyncio
+async def test_transmission_add_checking_identity_drift_fails_closed(
+    operation_fixture: tuple[sessionmaker[Session], str, _FakeTransmission, _Binding, bytes],
+) -> None:
+    factory, task_id, adapter, binding, torrent = operation_fixture
+    adapter.add_initial_checking = True
+
+    async def stop_with_identity_drift(torrent_hash: str) -> None:
+        adapter.stop_calls += 1
+        adapter.states[torrent_hash] = replace(
+            adapter.states[torrent_hash], labels=("external",), status=2
+        )
+
+    adapter.stop_torrent = stop_with_identity_drift  # type: ignore[method-assign]
+    with pytest.raises(ApplicationError) as failure:
+        await TransmissionAddOperationService(factory).execute(
+            _add_request(task_id, torrent), binding
+        )
+
+    assert failure.value.code == "DOWNLOADER_STATE_MISMATCH"
+    assert adapter.add_calls == 1 and adapter.stop_calls == 1
+    with factory() as session:
+        journal = session.scalar(
+            select(OperationJournal).where(
+                OperationJournal.operation_type == TRANSMISSION_ADD_OPERATION
+            )
+        )
+        assert journal is not None and journal.status == OperationStatus.RECONCILE_REQUIRED.value
 
 
 @pytest.mark.asyncio

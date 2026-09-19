@@ -405,18 +405,36 @@ class TransmissionAddOperationService:
         except DownloaderAdapterError as exc:
             self._mark_reconcile(journal.id)
             raise _adapter_application_error(exc, "Transmission 未保持停止状态") from exc
-        stopped = tuple(
-            item
-            for item in refreshed
-            if item.torrent_hash == state.torrent_hash
-            and item.download_dir == prepared.remote_save_path
-            and prepared.ownership_tag in item.labels
-            and item.stopped
-        )
-        if len(stopped) != 1:
-            self._mark_reconcile(journal.id)
-            raise _state_mismatch("Transmission 未按暂停添加约束保持停止状态")
-        return stopped[0]
+        # Transmission can keep reporting CHECKING after a successful stop
+        # request while an automatic initial verification is winding down.
+        # Observe it without reissuing any external write. Identity drift,
+        # disappearance, or an unexpected active state always fails closed.
+        for attempt in range(61):
+            matching = tuple(
+                item
+                for item in refreshed
+                if item.torrent_hash == state.torrent_hash
+                and item.download_dir == prepared.remote_save_path
+                and prepared.ownership_tag in item.labels
+            )
+            if len(refreshed) != 1 or len(matching) != 1:
+                self._mark_reconcile(journal.id)
+                raise _state_mismatch("Transmission 停止等待期间 torrent 身份、归属或路径发生变化")
+            current = matching[0]
+            if current.stopped:
+                return current
+            if not current.checking or attempt == 60:
+                self._mark_reconcile(journal.id)
+                raise _state_mismatch("Transmission 未按暂停添加约束保持停止状态")
+            await asyncio.sleep(0.5)
+            try:
+                refreshed = await _get_states(adapter, (state.torrent_hash,))
+            except DownloaderAdapterError as exc:
+                self._mark_reconcile(journal.id)
+                raise _adapter_application_error(
+                    exc, "Transmission 停止状态等待期间读取失败"
+                ) from exc
+        raise AssertionError("unreachable transmission stop confirmation")
 
     def _record_intent(self, prepared: _PreparedAdd) -> _JournalView:
         request = prepared.request
