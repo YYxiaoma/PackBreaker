@@ -181,6 +181,8 @@ const path = require('node:path');
       side_effects_started:false,
       created_at:now(),
     });
+    let selectedExecutionPlanDownloader='qb-e2e';
+    const requestedPlanTargets=[];
     const plan=id=>({
       id:`plan-${id}`,
       actions:[{kind:'HARDLINK',length:1073741824,source_relative_path:`source/${id}.mkv`,torrent_path:`${id}.mkv`}],
@@ -198,8 +200,8 @@ const path = require('node:path');
       ready:true,
       side_effects_started:realTasks[id].status!=='AWAITING_CONFIRMATION',
       target_device:123,
-      target_downloader_id:'qb-e2e',
-      target_downloader_version:7,
+      target_downloader_id:id==='task-e2e-execute'?selectedExecutionPlanDownloader:'qb-e2e',
+      target_downloader_version:id==='task-e2e-execute'&&selectedExecutionPlanDownloader==='tr-e2e'?4:7,
       target_remote_save_path:'/downloads/e2e',
       target_root:'seeding/e2e',
       verification_level:id==='task-e2e-execute'?'CLIENT_CHECK_REQUIRED':'FULL_VERIFIED',
@@ -488,8 +490,21 @@ const path = require('node:path');
       capabilities:{webapi_version:'2.15.1',application_version:'5.2.3'},connection_status:'OK',path_mapping_status:'OK',
       enabled:true,version:7,last_test_at:now(),last_path_diagnostic_at:now(),created_at:now(),updated_at:now(),
     };
-    await page.route('**/api/v1/downloaders',route=>fulfillJson(route,{items:[e2eDownloader]}));
+    const e2eTransmission={
+      ...e2eDownloader,id:'tr-e2e',name:'Transmission E2E',type:'TRANSMISSION',base_url:'http://tr-e2e.local',
+      version:4,capabilities:{application_version:'4.1.3',supports_skip_checking:false},
+    };
+    await page.route('**/api/v1/downloaders',route=>fulfillJson(route,{items:[e2eDownloader,e2eTransmission]}));
     await page.route('**/api/v1/downloaders/qb-e2e/metrics',route=>fulfillJson(route,{
+      upload_speed_bytes_per_second:1024,
+      download_speed_bytes_per_second:2048,
+      total_content_size_bytes:3221225472,
+      free_space_bytes:107374182400,
+      active_torrent_count:1,
+      total_torrent_count:2,
+      sampled_at:now(),
+    }));
+    await page.route('**/api/v1/downloaders/tr-e2e/metrics',route=>fulfillJson(route,{
       upload_speed_bytes_per_second:1024,
       download_speed_bytes_per_second:2048,
       total_content_size_bytes:3221225472,
@@ -572,7 +587,8 @@ const path = require('node:path');
       ],
     }));
     await page.route('**/api/v1/task-units/**',async route=>{
-      const url=new URL(route.request().url());
+      const request=route.request();
+      const url=new URL(request.url());
       const match=url.pathname.match(/\/api\/v1\/task-units\/unit-(task-e2e-(?:execute|cancel|reconcile|pre-cancel))\/(.+)$/);
       if(!match)return route.fallback();
       const id=match[1],tail=match[2];
@@ -580,7 +596,18 @@ const path = require('node:path');
       if(tail==='decision')return fulfillJson(route,review(id));
       if(tail==='decision/verification')return fulfillJson(route,verification(id));
       if(tail==='execution-gate')return fulfillJson(route,gate(id));
-      if(tail==='execution-plan')return fulfillJson(route,plan(id));
+      if(tail==='execution-plan'){
+        if(request.method()==='POST'){
+          const body=request.postDataJSON();
+          assert.equal(body.target_root,'seeding/e2e','Web 执行计划应保留用户选定的安全目标根');
+          assert.ok(['qb-e2e','tr-e2e'].includes(body.target_downloader_id));
+          if(id==='task-e2e-execute'){
+            requestedPlanTargets.push(body.target_downloader_id);
+            selectedExecutionPlanDownloader=body.target_downloader_id;
+          }
+        }
+        return fulfillJson(route,plan(id));
+      }
       return fulfillJson(route,{code:'NOT_FOUND',detail:'E2E route not found'},404);
     });
     await page.route('**/api/v1/tasks**',async route=>{
@@ -833,6 +860,26 @@ const path = require('node:path');
     const executionDrawer=page.locator('.el-drawer').filter({hasText:'执行记录详情'}).last();
     await executionDrawer.getByRole('tab',{name:'审核 / 对账',exact:true}).click();
     await executionDrawer.getByRole('heading',{name:'审核、校验与对账',exact:true,level:3}).waitFor();
+    // 浏览器可选择两种已连接且凭据/路径安全门通过的目标。改变选择时
+    // 旧 qB 计划不得继续可执行；只有真正生成 Transmission 计划后才能执行。
+    const targetSelector=executionDrawer.locator('.review-editor .el-form-item')
+      .filter({hasText:'目标下载器（必须已通过连接与路径安全门）'})
+      .locator('.el-select').first();
+    await targetSelector.click();
+    await page.getByRole('option',{name:/Transmission E2E/}).click();
+    const executionButton=executionDrawer.getByRole('button',{name:'确认并执行当前计划',exact:true});
+    assert.equal(await executionButton.isDisabled(),true,'目标切换后不得执行原 qB 计划');
+    await executionDrawer.getByRole('button',{name:'生成无副作用计划',exact:true}).click();
+    await executionDrawer.getByText('目标 Transmission E2E · v4',{exact:true}).waitFor();
+    assert.deepEqual(requestedPlanTargets,['tr-e2e'],'Web 应提交所选 Transmission 的执行计划');
+    assert.equal(await executionButton.isDisabled(),false,'新 Transmission 计划通过后方可执行');
+    await targetSelector.click();
+    await page.getByRole('option',{name:/qB E2E/}).click();
+    assert.equal(await executionButton.isDisabled(),true,'切回 qB 时不得执行旧 Transmission 计划');
+    await executionDrawer.getByRole('button',{name:'生成无副作用计划',exact:true}).click();
+    await executionDrawer.getByText('目标 qB E2E · v7',{exact:true}).waitFor();
+    assert.deepEqual(requestedPlanTargets,['tr-e2e','qb-e2e']);
+    assert.equal(await executionButton.isDisabled(),false);
     await page.getByRole('button',{name:'确认并执行当前计划',exact:true}).click();
     await page.locator('.el-message-box').getByRole('button',{name:'执行当前计划',exact:true}).click();
     await page.getByText(/API_UNAVAILABLE/).waitFor();

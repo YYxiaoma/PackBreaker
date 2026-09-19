@@ -26,6 +26,7 @@ import {
   type TaskUnit,
 } from '../api/tasks';
 import type { PreflightReviewItem } from '../preflightReviews';
+import { eligibleTaskExecutionTargets, targetClientCheckRequired } from '../taskExecutionTargets';
 import {
   canCancelBeforeSideEffects,
   cancellationIsCooperativeAnalysis,
@@ -111,12 +112,20 @@ const selectedTargetDownloader = computed(
     targetDownloaders.value.find((item) => item.id === executionPlan.value?.target_downloader_id) ??
     null,
 );
+const requiresClientCheck = computed(() =>
+  targetClientCheckRequired(
+    selectedTargetDownloader.value,
+    executionPlan.value?.client_check_required ?? false,
+  ),
+);
 const canStartExecute = computed(
   () =>
     executionPlan.value?.ready === true &&
     executionPlan.value.current === true &&
     props.item.task.status === 'AWAITING_CONFIRMATION' &&
     selectedTargetDownloader.value !== null &&
+    targetDownloaderId.value === executionPlan.value.target_downloader_id &&
+    targetRoot.value.trim() === executionPlan.value.target_root &&
     !loading.value &&
     !executing.value,
 );
@@ -197,13 +206,7 @@ async function load(): Promise<void> {
       listTaskUnits(props.item.task.id),
       listDownloaders(),
     ]);
-    targetDownloaders.value = downloaders.filter(
-      (item) =>
-        item.type === 'QBITTORRENT' &&
-        item.enabled &&
-        item.connection_status === 'OK' &&
-        item.path_mapping_status === 'OK',
-    );
+    targetDownloaders.value = eligibleTaskExecutionTargets(downloaders);
     const inventoryDigest = preflightInventoryDigest(props.item);
     unit.value =
       units.find(
@@ -373,7 +376,7 @@ async function executeExecutionPlan(): Promise<void> {
       ElMessage.warning('目标下载器当前不可用或路径配置已变化');
       return;
     }
-    const verificationNote = latest.client_check_required
+    const verificationNote = targetClientCheckRequired(downloader, latest.client_check_required)
       ? '执行后需要完整客户端校验。'
       : '当前计划可按验证结果决定是否需要客户端校验。';
     try {
@@ -730,12 +733,12 @@ function showError(error: unknown): void {
         </el-button>
       </div>
       <el-form label-position="top">
-        <el-form-item label="目标 qBittorrent（必须已通过连接与路径安全门）">
-          <el-select v-model="targetDownloaderId" placeholder="选择目标 qBittorrent" filterable>
+        <el-form-item label="目标下载器（必须已通过连接与路径安全门）">
+          <el-select v-model="targetDownloaderId" placeholder="选择目标下载器" filterable>
             <el-option
               v-for="downloader in targetDownloaders"
               :key="downloader.id"
-              :label="`${downloader.name} · v${downloader.version}`"
+              :label="`${downloader.name} · ${downloader.type === 'TRANSMISSION' ? 'Transmission' : 'qBittorrent'} · v${downloader.version}`"
               :value="downloader.id"
             />
           </el-select>
@@ -768,7 +771,7 @@ function showError(error: unknown): void {
             {{ formatByteUpperBound(executionPlan.estimated_download_bytes_upper_bound) }}
           </span>
           <span v-if="executionPlan.target_remote_save_path">
-            qB 保存路径 {{ executionPlan.target_remote_save_path }}
+            下载器保存路径 {{ executionPlan.target_remote_save_path }}
           </span>
           <span v-if="executionPlan.blocked_reasons.length" class="gate-blocked">
             计划阻断：{{ executionPlan.blocked_reasons.join('；') }}
@@ -789,7 +792,7 @@ function showError(error: unknown): void {
         <div class="mutation-action-panel">
           <el-alert
             title="这是实际执行入口"
-            description="点击后会再次读取 latest execution plan，并由后端重新核对 plan/gate/review/source/目标下载器绑定。通过确认后才可能创建 journal-owned 目录/硬链接并向 qBittorrent 写入；源文件始终只读。"
+            description="点击后会再次读取 latest execution plan，并由后端重新核对 plan/gate/review/source/目标下载器绑定。通过确认后才可能创建 journal-owned 目录/硬链接并向所选下载器写入；源文件始终只读。"
             type="warning"
             :closable="false"
             show-icon
@@ -807,7 +810,7 @@ function showError(error: unknown): void {
             <span v-if="selectedTargetDownloader">
               目标 {{ selectedTargetDownloader.name }} · v{{ selectedTargetDownloader.version }}
             </span>
-            <span v-if="executionPlan.client_check_required" class="gate-blocked">
+            <span v-if="requiresClientCheck" class="gate-blocked">
               本计划必须完整执行客户端校验，禁止 skip-check。
             </span>
             <span v-if="lastMutation">
@@ -819,7 +822,8 @@ function showError(error: unknown): void {
               当前任务可能已进入后续状态；重试只会继续确认第一次请求的结果。
             </small>
             <small v-else-if="!canExecute">
-              仅 AWAITING_CONFIRMATION 且计划 READY + CURRENT、目标下载器仍通过安全门时可首次执行。
+              仅 AWAITING_CONFIRMATION 且计划 READY +
+              CURRENT、选择与当前计划一致、目标下载器仍通过安全门时可首次执行。
             </small>
             <el-button
               type="warning"

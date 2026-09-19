@@ -1577,6 +1577,99 @@ def test_transmission_plan_binding_is_allowed_and_requires_verify_capabilities(
         client.__exit__(None, None, None)
 
 
+def test_authenticated_web_approval_creates_transmission_plan_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    """Exercise real HTTP auth/CSRF, approval, gate and Transmission planning."""
+    client, app, settings = _authenticated_client(tmp_path)
+    source_root = settings.data_dir / "web-review-source"
+    target_root = settings.data_dir / "web-review-target"
+    source_root.mkdir()
+    target_root.mkdir()
+    content = b"0123456789abcdef"
+    source_file = source_root / "Movie.2026.mkv"
+    source_file.write_bytes(content)
+    before = source_file.stat(follow_symlinks=False)
+    unit = identify_task_units((SourceTaskFile(source_file.name, len(content)),))[0]
+    task_id = _create_task(app, unit.normalized_unit_key)
+    app.state.task_analysis_service = TaskAnalysisService(
+        app.state.runtime.session_factory,
+        _FakeSiteProvider(
+            _FakeAdapter(_v1_torrent(source_file.name.encode(), content, piece_length=4))
+        ),
+        data_root=settings.data_dir,
+    )
+    downloader_id = _create_ready_transmission_target(app, settings)
+    secret_id = app.state.secret_store.put(
+        kind="DOWNLOADER_CREDENTIAL",
+        value=b'{"username":"synthetic","password":"test-only-not-a-real-client","api_key":null}',
+    )
+    with app.state.runtime.session_factory() as session:
+        downloader = session.get(Downloader, downloader_id)
+        assert downloader is not None
+        downloader.secret_id = secret_id
+        session.commit()
+
+    try:
+        response = client.get("/api/v1/downloaders")
+        assert response.status_code == 200
+        target = next(item for item in response.json()["items"] if item["id"] == downloader_id)
+        assert target["type"] == "TRANSMISSION"
+        assert target["credential_configured"] is True
+        assert target["connection_status"] == target["path_mapping_status"] == "OK"
+
+        analyzed = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers=_csrf(client),
+            json={"action": "analyze", "source_root": "web-review-source"},
+        )
+        assert analyzed.status_code == 200
+        unit_id = client.get(f"/api/v1/tasks/{task_id}/units").json()["items"][0]["id"]
+        candidate_id = client.get(f"/api/v1/tasks/{task_id}/candidates").json()["items"][0]["id"]
+        review_payload = {
+            "expected_version": 0,
+            "approved_candidate_id": candidate_id,
+            "rejected_candidate_ids": [],
+            "manual_mappings": [],
+            "note": "仅供隔离 Web 审批 API 验收",
+        }
+        review_url = f"/api/v1/task-units/{unit_id}/decision"
+        assert client.post(review_url, json=review_payload).status_code == 403
+        assert client.get(review_url).status_code == 404
+        approved = client.post(review_url, headers=_csrf(client), json=review_payload)
+        assert approved.status_code == 200
+        assert approved.json()["actor_kind"] == "admin_session"
+        assert approved.json()["approved_candidate_id"] == candidate_id
+        assert client.get(f"/api/v1/tasks/{task_id}").json()["status"] == "AWAITING_CONFIRMATION"
+        gate = client.post(f"/api/v1/task-units/{unit_id}/execution-gate", headers=_csrf(client))
+        assert gate.status_code == 200 and gate.json()["eligible"] is True
+
+        plan_url = f"/api/v1/task-units/{unit_id}/execution-plan"
+        plan_payload = {
+            "target_root": "web-review-target",
+            "target_downloader_id": downloader_id,
+        }
+        assert client.post(plan_url, json=plan_payload).status_code == 403
+        plan = client.post(plan_url, headers=_csrf(client), json=plan_payload)
+        assert plan.status_code == 200
+        assert plan.json()["ready"] is True and plan.json()["current"] is True
+        assert plan.json()["target_downloader_id"] == downloader_id
+        assert plan.json()["target_remote_save_path"] == "/downloads/web-review-target"
+        assert plan.json()["hardlink_count"] == 1
+        assert client.get(plan_url).json()["plan_digest"] == plan.json()["plan_digest"]
+        with app.state.runtime.session_factory() as session:
+            assert list(session.scalars(select(OperationJournal))) == []
+        after = source_file.stat(follow_symlinks=False)
+        assert (before.st_ino, before.st_size, before.st_mtime_ns) == (
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        )
+        assert list(target_root.iterdir()) == []
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_repair_plan_endpoint_is_read_only_redacted_and_mode_only(tmp_path: Path) -> None:
     client, app, _settings = _authenticated_client(tmp_path)
 
