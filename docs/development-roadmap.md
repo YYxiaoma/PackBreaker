@@ -190,6 +190,8 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **前置分析 → 审批 → Execution Plan → LINKING（GitHub CI run `35446449569` 成功）**：在新建的独立合成任务中运行正式 `TaskAnalysisService` 完成只读文件清单扫描、模拟站点搜索/取种、全文内容证据、模拟管理员提交审核 revision、当前 Execution Gate 与只读 Execution Plan，随后使用正式 `TaskLinkingCoordinator` 创建并重放 Hardlink journal；测试未审批与越权候选失败关闭、计划生成前源文件/目录/journal 不变、链接后的 inode/mtime 不变量。原生 ARM64 CI `35446449569` 的该专项和全部 5 项 CI job 已通过。该切片仅用本地模拟站点和未连接的目标下载器配置，不冒充真实 Web 人工点击或实际客户端下载器；后置真实 qBittorrent/Transmission 链路仍由上述独立原生 ARM64 门禁覆盖，尚未把两个切片串成同一真实客户端任务，也未完成正式 ARM64 跨版本升级及 GHCR 双架构发行验收。
 
+**同一任务全链路 → 真实 qBittorrent（新增，待 CI 验收）**：新增原生 ARM64 隔离 qBittorrent 单任务集成测试，不再预先插入批准计划、恢复到早期状态或预建 Hardlink。合成源文件与内存站点从正式 `TaskAnalysisService` 创建任务、分析、批准当前候选、生成 Execution Gate/Execution Plan 起步；正式 LINKING/ADDING/SEEDING 协调器再通过同一个 SQLite 任务和 journal 与无外网真实 qBittorrent WebAPI 收敛到 DONE，核验非法候选不得批准、计划前无文件副作用、LINK/ADD/START journal 及重放幂等、源 inode/mtime 不变。真实下载器临时口令仅存在于 CI 进程环境，数据库目标下载器的凭证存在标志使用非凭据合成哨兵，避免保存临时口令；模拟站点及模拟管理员身份不等于真实 PT 或浏览器人工审批。该门禁尚待 GitHub CI 执行成功后方可宣布通过；Transmission 同一任务全链路、Web 审批点击、正式跨版本 ARM64 升级及 GHCR 双架构发布资产仍未验收。
+
 ## 9. 工作项拆分模板
 
 每个 Issue 至少包含：

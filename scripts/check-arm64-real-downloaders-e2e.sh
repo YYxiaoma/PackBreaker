@@ -124,6 +124,34 @@ assert all(suite.attrib.get(field) == "0" for field in ("skipped", "errors", "fa
 PY
 }
 
+run_full_lifecycle_probe() {
+  local namespace_pid
+  namespace_pid="$(docker inspect "$qb_name" --format '{{.State.Pid}}')"
+  test "$namespace_pid" -gt 1
+  # The sole real-client credential remains in the isolated test process.
+  # Neither this test nor the in-memory approval/site stub persists it.
+  if ! sudo nsenter --target "$namespace_pid" --net -- \
+    setpriv --reuid "$(id -u)" --regid "$(id -g)" --clear-groups \
+    env "PACKBREAKER_CI_REAL_QB_SANDBOX=$sandbox" \
+      "PACKBREAKER_CI_REAL_QB_PASSWORD=$qb_password" \
+    "$PWD/.venv/bin/python" -m pytest -q \
+      tests/integration/test_arm64_full_task_lifecycle.py \
+      -k test_native_arm64_full_approved_qb_real_task_lifecycle \
+      --junitxml "$sandbox/full-lifecycle-result.xml"; then
+    echo '::error::isolated full-lifecycle qBittorrent test failed (see pytest output)' >&2
+    return 1
+  fi
+  python3 - "$sandbox/full-lifecycle-result.xml" <<'PY'
+import sys
+from xml.etree import ElementTree
+
+root = ElementTree.parse(sys.argv[1]).getroot()
+suite = root.find("testsuite") if root.tag == "testsuites" else root
+assert suite is not None and suite.attrib.get("tests") == "1"
+assert all(suite.attrib.get(field) == "0" for field in ("skipped", "errors", "failures"))
+PY
+}
+
 # The qBittorrent temporary password is generated for this disposable container.
 # Consume it privately; never echo docker logs or the temporary credential to CI.
 qb_image="lscr.io/linuxserver/qbittorrent:5.2.3-libtorrentv1"
@@ -149,6 +177,8 @@ phase="qb-real-api"
 run_probe "$qb_name" qbittorrent "$qb_password"
 phase="qb-journal-backed-task"
 run_journal_backed_task_probe "$qb_name" qb "$qb_password"
+phase="qb-full-lifecycle"
+run_full_lifecycle_probe
 unset qb_password
 docker rm --force "$qb_name" >/dev/null
 
