@@ -55,6 +55,7 @@ from backend.app.infrastructure.persistence.models import (
     UnpackTask,
 )
 from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
+from backend.app.infrastructure.torrent_parser import parse_torrent
 from tests.application.test_analysis import _FakeAdapter, _FakeSiteProvider
 from tests.application.test_task_adding import (
     _FakeDownloaderProvider,
@@ -74,12 +75,21 @@ async def _run_full_lifecycle(
     target_root = data_root / "target"
     source_root.mkdir(parents=True)
     target_root.mkdir()
-    content = b"0123456789abcdef"
+    # Deliberately differs from the prior journal-backed test in the *same*
+    # isolated client: a torrent hash identifies content, not its save path.
+    # Reusing that fixture's hash would exercise the existing-torrent guard
+    # instead of this new task's ADD/START journal.
+    content = b"fullchainarm64v1"
     source = source_root / "Movie.2026.mkv"
     source.write_bytes(content)
     before = source.stat(follow_symlinks=False)
     unit = identify_task_units((SourceTaskFile(source.name, len(content)),))[0]
     torrent = _v1_torrent(source.name.encode(), content, piece_length=16384)
+    meta = parse_torrent(torrent)
+    assert meta.v1_info_hash is not None
+    assert not await client.get_torrents((meta.v1_info_hash,)), (
+        "single-task CI fixture must use a distinct torrent hash"
+    )
     site_adapter = _FakeAdapter("synthetic", torrent)
     sites = _FakeSiteProvider((EnabledSiteAdapter("synthetic-site", 1, "synthetic", site_adapter),))
 
