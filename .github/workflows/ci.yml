@@ -95,6 +95,8 @@ jobs:
           done
       - name: Exercise native ARM64 Docker updater and failure rollback with synthetic baseline
         run: bash scripts/check-updater-e2e.sh packbreaker:ci-arm64 --synthetic-arm64-baseline
+      - name: Exercise native ARM64 backup restore across distinct synthetic image identities
+        run: bash scripts/check-release-upgrade.sh packbreaker:ci-arm64 --synthetic-arm64-baseline
       - name: Exercise isolated native ARM64 qBittorrent and Transmission Docker APIs
         run: bash scripts/check-arm64-real-downloaders-e2e.sh packbreaker:ci-arm64
 

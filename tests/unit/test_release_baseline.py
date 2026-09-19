@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -96,3 +97,42 @@ def test_native_arm64_updater_gate_keeps_formal_amd64_baseline_unchanged() -> No
     assert 'test "$(uname -m)" = aarch64' in script
     assert 'test "$baseline_image_id" != "$candidate_image_id"' in script
     assert 'LABEL org.packbreaker.ci.synthetic-arm64-baseline="true"' in script
+
+
+def test_native_arm64_release_backup_restore_gate_is_same_version_and_keeps_formal_baseline() -> (
+    None
+):
+    script = (ROOT / "scripts" / "check-release-upgrade.sh").read_text(encoding="utf-8")
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert 'baseline_mode="${2:-formal}"' in script
+    assert 'if [[ "$baseline_mode" == --synthetic-arm64-baseline ]]; then' in script
+    assert 'test "$(uname -m)" = aarch64' in script
+    assert "\"$candidate_image\" --format '{{.Os}}/{{.Architecture}}'" in script
+    assert '" = linux/arm64' in script
+    assert 'LABEL org.packbreaker.ci.synthetic-arm64-baseline="true"' in script
+    assert 'test "$baseline_version" = "$candidate_version"' in script
+    assert 'test -n "$baseline_revision"' in script
+    assert 'test "$(docker image inspect "$baseline_image" --format \'{{.Id}}\')" !=' in script
+    assert 'docker pull "$baseline_image"' in script
+    assert "backend.app.maintenance verify-backup" in script
+    assert "backend.app.maintenance restore-backup" in script
+    assert 'assert_probe "$candidate_container"' in script
+    assert 'assert_probe "$rollback_container"' in script
+    assert "check-release-upgrade.sh packbreaker:ci-arm64 --synthetic-arm64-baseline" in ci
+    assert "check-release-upgrade.sh packbreaker:release-candidate" in release
+    assert "--synthetic-arm64-baseline" not in release
+
+
+def test_native_arm64_release_backup_restore_gate_rejects_unknown_mode_before_docker() -> None:
+    result = subprocess.run(
+        ["bash", "scripts/check-release-upgrade.sh", "synthetic-candidate", "--unrecognized"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 2
+    assert "Invalid baseline mode" in result.stderr

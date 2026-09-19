@@ -36,6 +36,8 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **v1.0.0 多平台发布资产一致性门禁已通过离线回归（GitHub CI run `35465172086`）**：发布流水线在上传资产前验证不可变 GHCR index digest 与清单、双架构声明、提交/tag、SPDX 文件哈希及 SHA256SUMS 一致，并拒绝多余或不安全文件。相关单元测试使用离线合成资产，不是正式 v1.0.0 镜像发布或 ARM64 版本升级的真实环境证据。
 
+**ARM64 合成双镜像备份/恢复门禁（新增，待 CI）**：原生 ARM64 Runner 使用不同的本地同版本 ARM64 image ID 演练完整数据库探针/备份、候选接管与原基线备份恢复、旧容器再次 readiness；与现有 updater 合成替换/故障回滚独立执行。无上一正式 ARM64 版本，因此不能将该门禁描述为正式 ARM64 跨版本升级或多平台 GHCR 发布验收；正式 AMD64 v0.1.9 基线与原有正式跨版本门禁不变。
+
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 
 ## 2. 下载器

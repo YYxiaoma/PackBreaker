@@ -46,3 +46,5 @@ CI/container 与未来 tag release 都执行 `scripts/check-release-upgrade.sh`�
 `v0.1.8` Release workflow run `35366864779` 以正式 `v0.1.7` baseline 完成 `v0.1.7 → v0.1.8 → v0.1.7` 相邻版本门禁、真实 updater helper 升级与自动回滚，并在全部门禁通过后发布不可变 linux/amd64 镜像、SBOM、release manifest 与 GitHub Release。正式 digest 为 `sha256:f114296a40c3bc68f036071382ea3029818fc909ef78a2c07a5ab382e6c4d0d3`。
 
 `v0.1.9` Release workflow run `35429394091` 以正式 `v0.1.8` baseline 完成 `v0.1.8 → v0.1.9 → v0.1.8` 相邻版本门禁、真实 updater helper 升级与自动回滚，并在全部门禁通过后发布不可变 linux/amd64 镜像、SBOM、release manifest 与 GitHub Release。正式 digest 为 `sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。
+
+v1.0.0 ARM64 研发阶段另设原生 ARM64 合成双镜像数据库备份/恢复门禁：由同一候选构建带合成标签但 image ID 不同的本地 ARM64 基线，严格要求两镜像应用版本一致，分别启动并核查持久化数据库探针、revision、备份恢复与最终 readiness。它用于补齐原生 ARM64 容器文件/数据库链路，不替代正式 v0.1.9（仅 AMD64）→ v1.0.0 AMD64 的相邻版本门禁，不表示旧版已正式发布 ARM64 镜像，也不构成正式 ARM64 跨版本升级证据。
