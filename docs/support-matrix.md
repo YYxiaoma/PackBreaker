@@ -10,7 +10,7 @@
 | Linux 其他架构 | 未声明支持 | 尚无构建、恢复和性能验收矩阵。 |
 | Windows / macOS 原生生产运行 | 未声明支持 | 可用于开发，但 v1.0 生产部署以 Linux 容器为边界。 |
 
-**v1.0.0 研发中（尚未正式支持）**：源码已增加 `linux/arm64`（aarch64）双架构发布契约、原生 ARM64 CI 构建/测试任务、发布 manifest 平台验证及 Web 升级跨架构阻断。GitHub CI run `35433684405` 已通过原生 ARM64 后端测试、Docker 构建、启动/健康、隔离 hardlink/xattr、数据库备份验证/恢复，以及基于合成 ARM64 基线的真实 Docker updater 成功替换、故障回滚和一次性 helper E2E；独立 Candidate Docker E2E run `35433684406` 亦通过。run `35436525382` 已通过隔离真实 ARM64 下载器 API 测试，run `35440660113` 已通过两种下载器的已授权连续任务链。由于 v0.1.9 正式镜像仅含 AMD64，合成基线门禁不是 ARM64 正式跨版本升级或 Web UI 点击验收证据；前置分析/审批/链接的完整 PackBreaker 任务生命周期和正式多平台镜像尚待验收。取得全部必要证据并发布 v1.0.0 后才能调整正式支持声明。ARMv7 不包含在本次目标中，详细退出条件见 [研发路线图](./development-roadmap.md)。
+**v1.0.0 研发中（尚未正式支持）**：源码已增加 `linux/arm64`（aarch64）双架构发布契约、原生 ARM64 CI 构建/测试任务、发布 manifest 平台验证及 Web 升级跨架构阻断。GitHub CI run `35433684405` 已通过原生 ARM64 后端测试、Docker 构建、启动/健康、隔离 hardlink/xattr、数据库备份验证/恢复，以及基于合成 ARM64 基线的真实 Docker updater 成功替换、故障回滚和一次性 helper E2E；独立 Candidate Docker E2E run `35433684406` 亦通过。run `35436525382` 已通过隔离真实 ARM64 下载器 API 测试，run `35440660113` 已通过两种下载器的已授权连续任务链，run `35447763395` 与 `35448894436` 已分别通过 qBittorrent/Transmission 单条合成任务从分析到 DONE 的真实 ARM64 客户端门禁。由于 v0.1.9 正式镜像仅含 AMD64，合成基线门禁不是 ARM64 正式跨版本升级或 Web UI 点击验收证据；真实 PT、浏览器人工审批和正式多平台镜像尚待验收。取得全部必要证据并发布 v1.0.0 后才能调整正式支持声明。ARMv7 不包含在本次目标中，详细退出条件见 [研发路线图](./development-roadmap.md)。
 
 ARM64 业务测试范围：GitHub CI run `35434318531` 的原生 ARM64 job 已通过真实 ARM64 Docker 容器的隔离 v1/v2/hybrid 媒体读取、映射、FULL_VERIFIED 与损坏降级、合成文件 Hardlink 及只读源不变量检查；原生 ARM64 Runner 的 qBittorrent/Transmission **模拟适配器**、任务 journal 和 linking 回归也已通过。此证据不代表真实 qBittorrent/Transmission 服务在 ARM64 环境下完成端到端验收，亦不代表正式 ARM64 跨版本升级或发行镜像验收。
 
@@ -26,7 +26,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **同一任务真实 qBittorrent 全链路门禁已通过**：GitHub CI run `35447763395` 在原生 ARM64 隔离 qBittorrent 测试中，以合成源文件/模拟站点和模拟管理员审批身份创建真实的任务、审核、执行计划及 Hardlink/ADD/START journal，并在同一任务中经真实客户端收敛到 DONE，含未授权失败关闭、重放与源文件安全检查；合成种子使用与前一项测试不同的信息哈希以防止误测已有任务，不使用生产媒体或凭据。此门禁不等于真实 PT、Web UI 人工点击、Transmission 同一任务全链路及正式 ARM64 发布/跨版本升级已获验证。
 
-**同一任务真实 Transmission 全链路门禁（新增，待新 CI）**：使用独立 128 MiB 合成媒体、模拟站点/管理员及真实 Transmission 4.1.3 隔离 RPC，覆盖从分析、审批、执行计划、Hardlink 到不可跳过的客户端下载校验、做种和 DONE，要求 LINK/ADD/VERIFY/START journal 与源文件不变量成立。只有相应原生 ARM64 CI 完成成功才能记录通过；正式 ARM64 升级、真实 Web 审批及多平台发行身份仍为独立退出条件。
+**同一任务真实 Transmission 全链路门禁已通过**：GitHub CI run `35448894436` 在原生 ARM64 隔离 Transmission 4.1.3 容器中，使用独立 128 MiB 合成媒体、模拟站点与模拟管理员，完成从分析、审批、执行计划、Hardlink 到不可跳过的客户端下载校验、做种和 DONE，且 LINK/ADD/VERIFY/START journal、幂等重放与源文件不变量检查通过。正式 ARM64 升级、真实 Web 审批及多平台发行身份仍为独立退出条件。
 
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 
