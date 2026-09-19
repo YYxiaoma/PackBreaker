@@ -30,7 +30,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **Web 审批入口双下载器门禁已通过（GitHub CI run `35450823906`）**：审核页现可列出已启用且通过连接与路径门禁的 Transmission；目标选择或目标根与已加载执行计划不一致时必须重新生成计划，且 Transmission 必须显示客户端下载校验提示。新增前端单元与模拟 API 浏览器测试，并在真实 FastAPI TestClient 管理员会话中测试审批的 CSRF 保护、执行门、Transmission 目标计划和零文件/下载器副作用。CI 整体及全部五项 job 成功；浏览器与真实 HTTP 服务尚未连成同一个 E2E 会话，不能据此宣布 Web 人工实测、真实 PT 或正式 ARM64 升级/发布已完成。
 
-**隔离浏览器真实 HTTP 审批门禁（新增，待新 CI）**：测试专用的 loopback FastAPI 与 Vite、Playwright 自动点击正式审核/分析组件完成合成任务只读分析、管理员审核、执行门与 Transmission 执行计划，实际读取持久化任务与计划并检查没有 journal/源文件或目标文件副作用。仅使用临时合成数据和不可连接的下载器配置；尚不覆盖正式 App 导航全流程、真人操作、真实 PT/客户端服务和 ARM64 正式发行或跨版本升级。
+**隔离浏览器真实 HTTP 审批门禁已通过（GitHub CI run `35452724809`）**：测试专用的 loopback FastAPI 与 Vite、Playwright 自动点击正式审核/分析组件完成合成任务只读分析、管理员审核、执行门与 Transmission 执行计划，实际读取持久化任务与计划并检查没有 journal/源文件或目标文件副作用。仅使用临时合成数据和不可连接的下载器配置；尚不覆盖正式 App 导航全流程、真人操作、真实 PT/客户端服务和 ARM64 正式发行或跨版本升级。
 
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 
