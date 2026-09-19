@@ -34,7 +34,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **正式 App 导航及执行记录中的浏览器审批门禁已通过（GitHub CI run `35463902355`）**：测试以正式 `App.vue` 和真实 FastAPI 的任务定义、执行记录、底层任务为入口，自动从任务中心导航至“审核 / 对账”，完成合成任务分析、管理员会话审批及 Transmission 无副作用执行计划；验证计划与底层任务绑定且没有 Hardlink、journal 或源文件变化。并不执行真实下载器写操作，不覆盖真实 PT、真人点击或正式 ARM64 跨版本升级与发布验收。
 
-**v1.0.0 多平台发布资产一致性门禁（新增，待 CI）**：发布流水线在上传资产前验证不可变 GHCR index digest 与清单、双架构声明、提交/tag、SPDX 文件哈希及 SHA256SUMS 一致，并拒绝多余或不安全文件。相关单元测试使用离线合成资产，不是正式 v1.0.0 镜像发布或 ARM64 版本升级的真实环境证据。
+**v1.0.0 多平台发布资产一致性门禁已通过离线回归（GitHub CI run `35465172086`）**：发布流水线在上传资产前验证不可变 GHCR index digest 与清单、双架构声明、提交/tag、SPDX 文件哈希及 SHA256SUMS 一致，并拒绝多余或不安全文件。相关单元测试使用离线合成资产，不是正式 v1.0.0 镜像发布或 ARM64 版本升级的真实环境证据。
 
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 
