@@ -18,6 +18,10 @@ ARM64 业务测试范围：GitHub CI run `35434318531` 的原生 ARM64 job 已�
 
 **ARM64 已授权任务连续链路已通过**：GitHub CI run `35439015971` 已通过独立无外网 qBittorrent 容器上的真实应用层 ADDING、SEEDING、ADD/START journal 和重放机制，检查服务端 `DONE` 与真实客户端状态及文件 inode 一致性。run `35440660113` 已通过独立无外网 Transmission 容器中的 ADDING、CLIENT_VERIFYING、SEEDING、ADD/VERIFY/START journal 和源文件不变测试；该测试使用专用的 128 MiB 合成媒体以获得真实客户端校验过程的可观察证据。前置 ANALYZING/LINKING、Web UI 审批、正式跨版本升级和正式双架构发布仍需分别取得证据，不能把已授权任务切片扩大声明为全部正式支持。
 
+Transmission 的较大合成样本曾暴露自动校验期间首次停止请求尚未收敛的竞态（CI run `35440957090`）；提交 `05431a9` 仅在确认 torrent 身份、归属与保存路径不变时限时只读等待停止状态，不重发外部写操作，超时仍要求对账。原生 ARM64 CI run `35442764543` 和独立 Candidate Docker E2E run `35442764564` 已通过修复后的门禁；该证据仅覆盖隔离已授权任务链，正式 ARM64 跨版本升级和完整前置任务生命周期仍未验收。
+
+下一切片已实现但尚待新 CI 验收：从 CI 合成的已批准 Execution Plan 交给正式 LINKING 协调器创建 Hardlink 与文件操作 journal，接续 qBittorrent / Transmission 的隔离真实客户端添加、校验、做种和幂等恢复；同时明确前置分析、审批动作和执行计划生成过程并未在同一个真实客户端任务中贯通，不据此宣称全生命周期或正式 ARM64 支持。
+
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 
 ## 2. 下载器

@@ -25,9 +25,15 @@ from backend.app.application.downloader_operations import (
 )
 from backend.app.application.downloaders import QbittorrentWriteBinding, TransmissionWriteBinding
 from backend.app.application.errors import ApplicationError
+from backend.app.application.filesystem_operations import (
+    CREATE_HARDLINK_OPERATION,
+    FilesystemOperationService,
+)
 from backend.app.application.task_adding import TaskAddingCoordinator
 from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
+from backend.app.application.task_linking import TaskLinkingCoordinator
 from backend.app.application.task_seeding import TaskSeedingCoordinator
+from backend.app.application.tasks import ExecutionPlanView
 from backend.app.application.transmission_operations import (
     TRANSMISSION_ADD_OPERATION,
     TRANSMISSION_START_OPERATION,
@@ -48,6 +54,7 @@ from backend.app.infrastructure.persistence.models import OperationJournal, Unpa
 from backend.app.infrastructure.persistence.task_analysis_repositories import (
     TaskExecutionPlanRepository,
 )
+from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 from backend.app.infrastructure.torrent_parser import parse_torrent
 from tests.application.test_task_adding import _AddingFixture, _FakeSiteProvider
 
@@ -71,6 +78,80 @@ def _test_stage(name: str) -> Iterator[None]:
             flush=True,
         )
         raise
+
+
+def _link_approved_synthetic_task(fixture: _AddingFixture) -> str:
+    """Execute real LINKING from the fixture's already approved plan, without inventing approval."""
+    target = fixture.data_root / "target" / fixture.source_file.name
+    assert target.is_file() and target.stat().st_ino == fixture.source_file.stat().st_ino
+    # Undo only the fixture-created target link, never the synthetic source.
+    target.unlink()
+    assert not target.exists() and fixture.source_file.is_file()
+    with fixture.factory() as session:
+        plan = TaskExecutionPlanRepository(session).get(fixture.plan_id)
+        task = session.get(UnpackTask, fixture.task_id)
+        assert plan is not None and plan.ready and task is not None
+        assert task.status == TaskStatus.ADDING.value
+        assert task.version == plan.task_version + 2
+        task.status = TaskStatus.AWAITING_CONFIRMATION.value
+        task.version = plan.task_version
+        task.checkpoint = {}
+        session.commit()
+        binding = fixture.downloader_provider.binding
+        view = ExecutionPlanView(
+            id=plan.id,
+            plan_digest=plan.plan_digest,
+            ready=True,
+            current=True,
+            current_reasons=(),
+            target_root=plan.target_root,
+            target_device=(fixture.data_root / "target").stat().st_dev,
+            target_downloader_id=binding.downloader_id,
+            target_downloader_version=binding.downloader_version,
+            target_remote_save_path="/downloads/target",
+            verification_level=plan.verification_level,
+            client_check_required=plan.client_check_required,
+            hardlink_count=1,
+            client_fetch_count=0,
+            create_directory_count=0,
+            estimated_download_bytes_upper_bound=0,
+            blocked_reasons=(),
+            actions=(
+                {
+                    "torrent_path": fixture.source_file.name,
+                    "kind": "HARDLINK",
+                    "length": fixture.source_file.stat().st_size,
+                    "source_relative_path": fixture.source_file.name,
+                },
+            ),
+            execution_allowed=False,
+            side_effects_started=False,
+            created_at=plan.created_at,
+        )
+
+    class ApprovedPlanProvider:
+        def get_execution_plan(self, unit_id: str) -> ExecutionPlanView:
+            assert unit_id == fixture.unit_id
+            return view
+
+    linker = TaskLinkingCoordinator(
+        fixture.factory,
+        ApprovedPlanProvider(),
+        FilesystemOperationService(fixture.factory, SafeFilesystemGateway(fixture.data_root)),
+        data_root=fixture.data_root,
+    )
+    with _test_stage("approved-plan-real-linking"):
+        linked = linker.execute(fixture.unit_id, execution_plan_id=fixture.plan_id)
+        repeated = linker.execute(fixture.unit_id, execution_plan_id=fixture.plan_id)
+    assert not linked.replayed and repeated.replayed
+    assert linked.linked_file_count == 1 and len(linked.hardlink_journal_ids) == 1
+    assert repeated.hardlink_journal_ids == linked.hardlink_journal_ids
+    assert linked.client_fetch_count == 0
+    assert (
+        target.stat(follow_symlinks=False).st_ino
+        == fixture.source_file.stat(follow_symlinks=False).st_ino
+    )
+    return linked.hardlink_journal_ids[0]
 
 
 pytestmark = pytest.mark.skipif(
@@ -129,6 +210,8 @@ async def test_authorized_qb_task_journal_replays_without_duplicate_real_add(
     binding = adding_fixture.downloader_provider.binding
     assert isinstance(binding, QbittorrentWriteBinding)
     adding_fixture.downloader_provider.binding = replace(binding, adapter=adapter)
+
+    linked_journal_id = _link_approved_synthetic_task(adding_fixture)
 
     source = adding_fixture.source_file
     target = adding_fixture.data_root / "target" / source.name
@@ -195,9 +278,11 @@ async def test_authorized_qb_task_journal_replays_without_duplicate_real_add(
             session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
         )
         assert [entry.operation_type for entry in journals] == [
+            CREATE_HARDLINK_OPERATION,
             "QBITTORRENT_ADD",
             "QBITTORRENT_START",
         ]
+        assert journals[0].id == linked_journal_id
         assert all(entry.status == "APPLIED" for entry in journals)
 
     after = source.stat(follow_symlinks=False)
@@ -294,6 +379,7 @@ async def test_authorized_transmission_task_journal_verifies_then_seeds_real_cli
         TransmissionStartOperationService(adding_fixture.factory),
         data_root=adding_fixture.data_root,
     )
+    linked_journal_id = _link_approved_synthetic_task(adding_fixture)
     source = adding_fixture.source_file
     target = adding_fixture.data_root / "target" / source.name
     original = source.stat(follow_symlinks=False)
@@ -410,10 +496,12 @@ async def test_authorized_transmission_task_journal_verifies_then_seeds_real_cli
                 session.scalars(select(OperationJournal).order_by(OperationJournal.created_at))
             )
             assert [item.operation_type for item in journals] == [
+                CREATE_HARDLINK_OPERATION,
                 TRANSMISSION_ADD_OPERATION,
                 TRANSMISSION_VERIFY_OPERATION,
                 TRANSMISSION_START_OPERATION,
             ]
+            assert journals[0].id == linked_journal_id
             assert all(item.status == "APPLIED" for item in journals)
         after = source.stat(follow_symlinks=False)
         assert (original.st_dev, original.st_ino, original.st_size, original.st_mtime_ns) == (
