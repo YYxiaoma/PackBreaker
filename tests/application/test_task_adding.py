@@ -328,7 +328,9 @@ def adding_fixture(tmp_path: Path) -> _AddingFixture:
     inventory = scan_source_inventory(source_root)
     inventory_digest = source_inventory_digest(inventory)
     source = inventory[0]
-    torrent_content = _v1_torrent(source_file.name.encode(), content, piece_length=4)
+    # Real qBittorrent accepts the same synthetic task fixture when the piece
+    # size satisfies BitTorrent's conventional minimum (16 KiB).
+    torrent_content = _v1_torrent(source_file.name.encode(), content, piece_length=16384)
     meta = parse_torrent(torrent_content)
 
     downloader_id = "target-qb"
@@ -2301,12 +2303,13 @@ def _v1_torrent(name: bytes, content: bytes, *, piece_length: int) -> bytes:
     )
     return _bencode(
         {
+            b"announce": b"https://example.invalid/announce",
             b"info": {
                 b"length": len(content),
                 b"name": name,
                 b"piece length": piece_length,
                 b"pieces": pieces,
-            }
+            },
         }
     )
 

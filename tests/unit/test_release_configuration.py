@@ -57,6 +57,12 @@ def test_ci_container_gate_exercises_immutable_previous_release() -> None:
     assert "tests/application/test_filesystem_operations.py" in workflow
     assert "tests/application/test_task_repairs.py" in workflow
     assert "check-arm64-real-downloaders-e2e.sh" in workflow
+    downloader_e2e = (ROOT / "scripts" / "check-arm64-real-downloaders-e2e.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "tests/integration/test_arm64_real_task_chain.py" in downloader_e2e
+    assert "nsenter --target" in downloader_e2e and "--net" in downloader_e2e
+    assert "--junitxml" in downloader_e2e and 'suite.attrib.get("tests") == "1"' in downloader_e2e
     assert "restore-backup" in workflow
     assert "--synthetic-arm64-baseline" in workflow
     assert '--build-arg VERSION="$version"' in workflow

@@ -182,6 +182,8 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **原生 ARM64 隔离下载器门禁（GitHub CI run `35436525382` 的 ARM64 job 成功）**：CI 在独立 `--network none` 的 qBittorrent 5.2.3 / Transmission 4.1.3 ARM64 Docker 容器运行本项目真实 HTTP 适配器，以合成私有种子和独立临时目录验证停止添加、客户端内容校验/播种、状态与归属、keep-data 删除及源 inode/mtime 不变；临时凭据仅供 CI 容器内使用，测试后清理。原生 ARM64 Runner 同次通过 repair inode 隔离、xattr、故障注入与 journal 恢复回归。该验收发现 qBittorrent 5.x 对 `paused=true` 未保持新任务停止状态，提交 `a0b37db` 在添加请求中同时发送 `stopped=true`，并以真实客户端状态成功验收。此门禁证明隔离真实下载器的 API 链路，不代表真实 PT 站点、生产下载器、正式 GHCR 双架构镜像、完整 PackBreaker 任务生命周期或 ARM64 正式跨版本升级已完成。
 
+**已授权任务到真实客户端的连续链路（新增，CI 待验收）**：在上述 `--network none` qBittorrent 隔离容器的网络命名空间中，由原生 ARM64 Runner 使用本机 Python 环境运行现有 journal-backed 任务夹具，将真实 qBittorrent WebAPI 注入应用层绑定。测试从合成、已授权且已链接的 `ADDING` 任务出发，连续检验 `ADDING → SEEDING → DONE`、客户端停止添加/校验/启动状态、ADD/START journal 持久化以及重放不重复添加或启动、源 inode/mtime 与 Hardlink 不变。测试数据仅放在自动创建的隔离 Docker 共享卷，不接触用户目录。此切片不涵盖前置 Web 审批、从 ANALYZING 到 LINKING 的真实连续执行、Transmission 整条任务链或正式跨版本升级；须待新的 GitHub ARM64 CI 成功后记录通过。
+
 ## 9. 工作项拆分模板
 
 每个 Issue 至少包含：

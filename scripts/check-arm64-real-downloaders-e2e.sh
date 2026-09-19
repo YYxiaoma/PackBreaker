@@ -63,6 +63,34 @@ run_probe() {
     < scripts/check_arm64_downloaders_e2e.py
 }
 
+run_journal_backed_task_probe() {
+  local namespace_pid
+  namespace_pid="$(docker inspect "$qb_name" --format '{{.State.Pid}}')"
+  test "$namespace_pid" -gt 1
+  # Run the repository's real journal-backed task coordinators against the
+  # isolated client's loopback HTTP API. nsenter changes only the network
+  # namespace; setpriv immediately returns to the non-root CI UID/GID.
+  # The fixture's source is in the synthetic bind mount; its SQLite journal is
+  # elsewhere in the same throwaway CI sandbox and is removed by cleanup.
+  sudo nsenter --target "$namespace_pid" --net -- \
+    setpriv --reuid "$(id -u)" --regid "$(id -g)" --clear-groups \
+    env "PACKBREAKER_CI_REAL_QB_SANDBOX=$sandbox" \
+      "PACKBREAKER_CI_REAL_QB_PASSWORD=$qb_password" \
+    "$PWD/.venv/bin/python" -m pytest -q \
+        tests/integration/test_arm64_real_task_chain.py \
+        --junitxml "$sandbox/task-chain-result.xml"
+  python3 - "$sandbox/task-chain-result.xml" <<'PY'
+import sys
+from xml.etree import ElementTree
+
+root = ElementTree.parse(sys.argv[1]).getroot()
+suite = root.find("testsuite") if root.tag == "testsuites" else root
+assert suite is not None
+assert suite.attrib.get("tests") == "1", "Expected exactly one isolated real task test"
+assert all(suite.attrib.get(field) == "0" for field in ("skipped", "errors", "failures"))
+PY
+}
+
 # The qBittorrent temporary password is generated for this disposable container.
 # Consume it privately; never echo docker logs or the temporary credential to CI.
 qb_image="lscr.io/linuxserver/qbittorrent:5.2.3-libtorrentv1"
@@ -86,6 +114,8 @@ done
 test -n "$qb_password" || { echo "No ephemeral qBittorrent password was generated" >&2; exit 1; }
 phase="qb-real-api"
 run_probe "$qb_name" qbittorrent "$qb_password"
+phase="qb-journal-backed-task"
+run_journal_backed_task_probe
 unset qb_password
 docker rm --force "$qb_name" >/dev/null
 
