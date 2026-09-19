@@ -61,6 +61,10 @@ def test_ci_container_gate_exercises_immutable_previous_release() -> None:
         encoding="utf-8"
     )
     assert "tests/integration/test_arm64_real_task_chain.py" in downloader_e2e
+    assert 'run_journal_backed_task_probe "$qb_name" qb "$qb_password"' in downloader_e2e
+    assert 'run_journal_backed_task_probe "$tr_name" tr "$tr_password"' in downloader_e2e
+    assert "test_authorized_transmission_task" in downloader_e2e
+    assert "PACKBREAKER_CI_REAL_TR_SANDBOX" in downloader_e2e
     assert "nsenter --target" in downloader_e2e and "--net" in downloader_e2e
     assert "--junitxml" in downloader_e2e and 'suite.attrib.get("tests") == "1"' in downloader_e2e
     assert "restore-backup" in workflow

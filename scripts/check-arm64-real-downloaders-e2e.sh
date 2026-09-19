@@ -19,7 +19,7 @@ qb_name="packbreaker-arm64-qb-e2e-$suffix"
 tr_name="packbreaker-arm64-tr-e2e-$suffix"
 sandbox="$(mktemp -d "$PWD/.ci-arm64-real-downloaders.XXXXXXXX")"
 test "${sandbox#"$PWD/.ci-arm64-real-downloaders."}" != "$sandbox"
-mkdir -p "$sandbox/qb-config" "$sandbox/tr-config" "$sandbox/data"
+mkdir -p "$sandbox/qb-config" "$sandbox/tr-config" "$sandbox/data" "$sandbox/tr/data"
 chmod 700 "$sandbox" "$sandbox/qb-config" "$sandbox/tr-config"
 chmod 755 "$sandbox/data"
 
@@ -53,20 +53,35 @@ wait_port() {
 }
 
 run_probe() {
-  local container="$1" kind="$2" password="$3"
+  local container="$1" kind="$2" password="$3" synthetic_data="$sandbox/data"
+  if [ "$kind" = transmission ]; then synthetic_data="$sandbox/tr/data"; fi
   docker run --rm --interactive \
     --network "container:$container" \
     --user "$(id -u):$(id -g)" \
-    --volume "$sandbox/data:/downloads" \
+    --volume "$synthetic_data:/downloads" \
     --env "PACKBREAKER_CI_DOWNLOADER_PASSWORD=$password" \
     "$candidate_image" python - "$kind" --data-root /downloads \
     < scripts/check_arm64_downloaders_e2e.py
 }
 
 run_journal_backed_task_probe() {
-  local namespace_pid
-  namespace_pid="$(docker inspect "$qb_name" --format '{{.State.Pid}}')"
+  local container="$1" kind="$2" password="$3" namespace_pid sandbox_root sandbox_key password_key selected_test
+  namespace_pid="$(docker inspect "$container" --format '{{.State.Pid}}')"
   test "$namespace_pid" -gt 1
+  if [ "$kind" = qb ]; then
+    sandbox_root="$sandbox"
+    sandbox_key=PACKBREAKER_CI_REAL_QB_SANDBOX
+    password_key=PACKBREAKER_CI_REAL_QB_PASSWORD
+    selected_test=test_authorized_qb_task
+  elif [ "$kind" = tr ]; then
+    sandbox_root="$sandbox/tr"
+    sandbox_key=PACKBREAKER_CI_REAL_TR_SANDBOX
+    password_key=PACKBREAKER_CI_REAL_TR_PASSWORD
+    selected_test=test_authorized_transmission_task
+  else
+    echo 'Unknown isolated downloader test kind' >&2
+    return 1
+  fi
   # Run the repository's real journal-backed task coordinators against the
   # isolated client's loopback HTTP API. nsenter changes only the network
   # namespace; setpriv immediately returns to the non-root CI UID/GID.
@@ -74,12 +89,12 @@ run_journal_backed_task_probe() {
   # elsewhere in the same throwaway CI sandbox and is removed by cleanup.
   if ! sudo nsenter --target "$namespace_pid" --net -- \
     setpriv --reuid "$(id -u)" --regid "$(id -g)" --clear-groups \
-    env "PACKBREAKER_CI_REAL_QB_SANDBOX=$sandbox" \
-      "PACKBREAKER_CI_REAL_QB_PASSWORD=$qb_password" \
+    env "$sandbox_key=$sandbox_root" \
+      "$password_key=$password" \
     "$PWD/.venv/bin/python" -m pytest -q \
-        tests/integration/test_arm64_real_task_chain.py \
-        --junitxml "$sandbox/task-chain-result.xml"; then
-    python3 - "$sandbox/task-chain-result.xml" <<'PY'
+        tests/integration/test_arm64_real_task_chain.py -k "$selected_test" \
+        --junitxml "$sandbox_root/task-chain-result.xml"; then
+    python3 - "$sandbox_root/task-chain-result.xml" <<'PY'
 import pathlib
 import sys
 from xml.etree import ElementTree
@@ -97,7 +112,7 @@ else:
 PY
     return 1
   fi
-  python3 - "$sandbox/task-chain-result.xml" <<'PY'
+  python3 - "$sandbox_root/task-chain-result.xml" <<'PY'
 import sys
 from xml.etree import ElementTree
 
@@ -133,7 +148,7 @@ test -n "$qb_password" || { echo "No ephemeral qBittorrent password was generate
 phase="qb-real-api"
 run_probe "$qb_name" qbittorrent "$qb_password"
 phase="qb-journal-backed-task"
-run_journal_backed_task_probe
+run_journal_backed_task_probe "$qb_name" qb "$qb_password"
 unset qb_password
 docker rm --force "$qb_name" >/dev/null
 
@@ -146,11 +161,13 @@ docker run --detach --name "$tr_name" --network none \
   --env "PUID=$(id -u)" --env "PGID=$(id -g)" \
   --env USER=packbreaker --env "PASS=$tr_password" \
   --volume "$sandbox/tr-config:/config" \
-  --volume "$sandbox/data:/downloads" \
+  --volume "$sandbox/tr/data:/downloads" \
   "$tr_image" >/dev/null
 phase="tr-port-ready"
 wait_port "$tr_name" 9091
 phase="tr-real-api"
 run_probe "$tr_name" transmission "$tr_password"
+phase="tr-journal-backed-task"
+run_journal_backed_task_probe "$tr_name" tr "$tr_password"
 unset tr_password
 echo 'Isolated native ARM64 qBittorrent and Transmission Docker API tests passed'
