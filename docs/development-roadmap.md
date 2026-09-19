@@ -186,7 +186,9 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **Transmission 自动校验与暂停添加竞态修复（提交 `05431a9`，GitHub CI run `35442764543` 成功）**：较大合成样本在 run `35440957090` 中发现 Transmission 在添加后自动进入 CHECKING，首次 stop 后仍可能短暂报告 status=2。现在添加操作在仅对 torrent 身份、ownership label 和 save_path 验证完全一致时，发送一次停止命令并限时只读观察；停止确认后才能将 ADD journal 标记为 APPLIED，状态异常、身份漂移或超时继续失败关闭。新增延迟停止及归属变化回归测试；CI `35442764543` 已通过原生 ARM64 下载器真实任务链和全部 5 项 CI job，独立 Candidate Docker E2E run `35442764564` 也成功。后续仍需补齐前置分析/审批/Execution Plan/LINKING 的同一任务全链路，以及正式跨版本 ARM64 升级与多平台发行身份验收。
 
-**已批准计划 → LINKING → 真实下载器（新增，待 GitHub CI 验收）**：以 CI 沙箱中已有审批记录和 Execution Plan 的合成任务为起点，撤销仅由夹具创建的目标 Hardlink，然后由正式 `TaskLinkingCoordinator` 生成 CREATE_HARDLINK journal 和新的 ADDING checkpoint，再继续原生 ARM64 qBittorrent / Transmission 真实下载器任务链；检查 LINKING 幂等重放、所有操作 journal 均 APPLIED、源文件 inode/mtime 与 Hardlink 不变量。额外的本地模拟适配器回归已通过；新切片需要在原生 ARM64 CI 成功后才能记为已验收，且仍不涵盖同一任务的 ANALYZING、人工审批动作与 Execution Plan 生成过程，也不触碰真实 PT 或生产数据。
+**已批准计划 → LINKING → 真实下载器（GitHub CI run `35443372973` 成功）**：以 CI 沙箱中已有审批记录和 Execution Plan 的合成任务为起点，撤销仅由夹具创建的目标 Hardlink，然后由正式 `TaskLinkingCoordinator` 生成 CREATE_HARDLINK journal 和新的 ADDING checkpoint，再继续原生 ARM64 qBittorrent / Transmission 真实下载器任务链；检查 LINKING 幂等重放、所有操作 journal 均 APPLIED、源文件 inode/mtime 与 Hardlink 不变量。本地模拟适配器回归与原生 ARM64 隔离真实下载器门禁均已通过；该切片仍不涵盖同一任务的 ANALYZING、人工审批动作与 Execution Plan 生成过程，也不触碰真实 PT 或生产数据。
+
+**前置分析 → 审批 → Execution Plan → LINKING（新门禁，待 GitHub CI 验收）**：在新建的独立合成任务中运行正式 `TaskAnalysisService` 完成只读文件清单扫描、模拟站点搜索/取种、全文内容证据、人工审核 revision、当前 Execution Gate 与只读 Execution Plan，随后使用正式 `TaskLinkingCoordinator` 创建并重放 Hardlink journal；测试未审批与越权候选失败关闭、计划生成前源文件/目录/journal 不变、链接后的 inode/mtime 不变量。该切片仅用本地模拟站点和未连接的目标下载器配置，不冒充真实 Web 人工点击或实际客户端下载器；后置真实 qBittorrent/Transmission 链路仍由上述独立原生 ARM64 门禁覆盖，尚未把两个切片串成同一真实客户端任务，也未完成正式 ARM64 跨版本升级及 GHCR 双架构发行验收。
 
 ## 9. 工作项拆分模板
 

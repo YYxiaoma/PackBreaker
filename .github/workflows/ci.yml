@@ -27,6 +27,7 @@ jobs:
         run: |
           uv run python -m pytest -q \
             tests/application/test_analysis.py \
+            tests/application/test_arm64_pre_execution_chain.py \
             tests/application/test_task_linking.py \
             tests/application/test_task_adding.py \
             tests/application/test_downloader_operations.py \

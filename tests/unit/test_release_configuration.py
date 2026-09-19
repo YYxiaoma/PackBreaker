@@ -52,6 +52,7 @@ def test_ci_container_gate_exercises_immutable_previous_release() -> None:
     assert "user.packbreaker.arm64_probe" in workflow
     assert "scripts/check_arm64_business_e2e.py" in workflow
     assert "tests/application/test_task_linking.py" in workflow
+    assert "tests/application/test_arm64_pre_execution_chain.py" in workflow
     assert "tests/application/test_task_adding.py" in workflow
     assert "tests/application/test_transmission_operations.py" in workflow
     assert "tests/application/test_filesystem_operations.py" in workflow
