@@ -12,7 +12,7 @@
 
 **v1.0.0 研发中（尚未正式支持）**：源码已增加 `linux/arm64`（aarch64）双架构发布契约、原生 ARM64 CI 构建/测试任务、发布 manifest 平台验证及 Web 升级跨架构阻断。GitHub CI run `35433684405` 已通过原生 ARM64 后端测试、Docker 构建、启动/健康、隔离 hardlink/xattr、数据库备份验证/恢复，以及基于合成 ARM64 基线的真实 Docker updater 成功替换、故障回滚和一次性 helper E2E；独立 Candidate Docker E2E run `35433684406` 亦通过。由于 v0.1.9 正式镜像仅含 AMD64，合成基线门禁不是 ARM64 正式跨版本升级或 Web UI 点击验收证据；真实 ARM64 下载器业务链和正式多平台镜像也尚待验收。取得全部必要证据并发布 v1.0.0 后才能调整正式支持声明。ARMv7 不包含在本次目标中，详细退出条件见 [研发路线图](./development-roadmap.md)。
 
-ARM64 业务测试范围：已在 CI 中加入真实 ARM64 Docker 容器的隔离 v1/v2/hybrid 媒体读取、映射、FULL_VERIFIED 与损坏降级、合成文件 Hardlink 及只读源不变量检查；原生 ARM64 Runner 另跑 qBittorrent/Transmission **模拟适配器**、任务 journal 和 linking 回归。以上新增门禁在对应 GitHub CI 成功前仅视为代码已实现；不代表真实 qBittorrent/Transmission 服务在 ARM64 环境下完成端到端验收。
+ARM64 业务测试范围：GitHub CI run `35434318531` 的原生 ARM64 job 已通过真实 ARM64 Docker 容器的隔离 v1/v2/hybrid 媒体读取、映射、FULL_VERIFIED 与损坏降级、合成文件 Hardlink 及只读源不变量检查；原生 ARM64 Runner 的 qBittorrent/Transmission **模拟适配器**、任务 journal 和 linking 回归也已通过。此证据不代表真实 qBittorrent/Transmission 服务在 ARM64 环境下完成端到端验收，亦不代表正式 ARM64 跨版本升级或发行镜像验收。
 
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 
