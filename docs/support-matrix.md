@@ -6,9 +6,11 @@
 
 | 项目 | 当前状态 | 说明 |
 | --- | --- | --- |
-| Linux `amd64` 容器 | 发布目标 | Dockerfile 与 release workflow 只声明 `linux/amd64`；正式发布身份必须使用完整 image digest。 |
+| Linux `amd64` 容器 | 当前已发布目标 | v0.1.9 正式镜像仅包含 `linux/amd64`；正式发布身份必须使用完整 image digest。 |
 | Linux 其他架构 | 未声明支持 | 尚无构建、恢复和性能验收矩阵。 |
 | Windows / macOS 原生生产运行 | 未声明支持 | 可用于开发，但 v1.0 生产部署以 Linux 容器为边界。 |
+
+**v1.0.0 研发中（尚未正式支持）**：源码已增加 `linux/arm64`（aarch64）双架构发布契约、CI 原生 ARM64 构建/测试任务、发布 manifest 平台验证及 Web 升级跨架构阻断；目前仅完成 AMD64 研发 Runner 的自动化验收，尚缺原生 ARM64 Docker、核心业务链、真实发布镜像及升级/回滚现场证据。取得上述证据并发布 v1.0.0 后才能调整正式支持声明。ARMv7 不包含在本次目标中，详细退出条件见 [研发路线图](./development-roadmap.md)。
 
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 

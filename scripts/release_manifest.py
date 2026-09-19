@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_DUAL_PLATFORMS = ("linux/amd64", "linux/arm64")
 
 
 def project_version(pyproject: Path = ROOT / "pyproject.toml") -> str:
@@ -51,12 +52,12 @@ def build_release_manifest(
         raise ValueError("SBOM 文件不存在")
 
     timestamp = (generated_at or datetime.now(UTC)).astimezone(UTC)
-    return {
-        "format_version": 1,
+    multiarch = tuple(int(part) for part in version.split(".")) >= (1, 0, 0)
+    manifest: dict[str, object] = {
+        "format_version": 2 if multiarch else 1,
         "version": version,
         "tag": tag,
         "commit": commit,
-        "platform": "linux/amd64",
         "image": image,
         "image_digest": image_digest,
         "immutable_image": f"{image}@{image_digest}",
@@ -64,6 +65,11 @@ def build_release_manifest(
         "sbom_sha256": _sha256(sbom_path),
         "generated_at": timestamp.isoformat().replace("+00:00", "Z"),
     }
+    if multiarch:
+        manifest["platforms"] = list(_DUAL_PLATFORMS)
+    else:
+        manifest["platform"] = "linux/amd64"
+    return manifest
 
 
 def _sha256(path: Path) -> str:

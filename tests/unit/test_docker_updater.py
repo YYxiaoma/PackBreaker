@@ -88,6 +88,8 @@ def _container() -> dict[str, Any]:
 
 def _old_image() -> dict[str, Any]:
     return {
+        "Os": "linux",
+        "Architecture": "amd64",
         "Config": {
             "User": "packbreaker",
             "Cmd": ["python", "-m", "backend.app.container_entrypoint"],
@@ -99,7 +101,7 @@ def _old_image() -> dict[str, Any]:
             ],
             "Labels": {"org.opencontainers.image.title": "PackBreaker"},
             "ExposedPorts": {"8000/tcp": {}},
-        }
+        },
     }
 
 
@@ -246,9 +248,18 @@ def test_replacement_plan_fails_closed_for_unsafe_runtime_shapes(
 
 
 class FakeDocker:
-    def __init__(self, *, fail_new_health: bool = False, fail_old_cleanup: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_new_health: bool = False,
+        fail_old_cleanup: bool = False,
+        old_arch: str = "amd64",
+        target_arch: str = "amd64",
+    ) -> None:
         self.fail_new_health = fail_new_health
         self.fail_old_cleanup = fail_old_cleanup
+        self.old_arch = old_arch
+        self.target_arch = target_arch
         self.calls: list[tuple[str, object]] = []
 
     def inspect_container(self, container: str) -> dict[str, Any]:
@@ -257,7 +268,9 @@ class FakeDocker:
 
     def inspect_image(self, image: str) -> dict[str, Any]:
         self.calls.append(("inspect_image", image))
-        return _old_image()
+        info = _old_image()
+        info["Architecture"] = self.target_arch if image == _TARGET else self.old_arch
+        return info
 
     def pull_image(self, image: str, *, timeout_seconds: float = 900.0) -> None:
         self.calls.append(("pull", image))
@@ -343,6 +356,33 @@ def test_upgrade_executor_switches_to_new_container_after_health() -> None:
     assert phases == ["pulling", "stopping", "starting", "verifying"]
     assert ("remove", ("old-container-id", False)) in docker.calls
     assert not any(call[0] == "restore" for call in docker.calls)
+
+
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_upgrade_executor_preserves_architecture_before_stopping_old_container(arch: str) -> None:
+    docker = FakeDocker(old_arch=arch, target_arch=arch)
+    outcome = DockerUpgradeExecutor(
+        docker,
+        target_container="packbreaker",
+        allowed_image=_OFFICIAL,
+        config_dir=Path("/config"),
+        backup_factory=_backup_factory,
+    ).execute(_request(), phase=lambda _phase, _message: None)
+    assert outcome.phase == "succeeded"
+
+
+def test_upgrade_executor_blocks_cross_arch_image_before_stopping_old_container() -> None:
+    docker = FakeDocker(old_arch="arm64", target_arch="amd64")
+    with pytest.raises(DockerUpdaterError) as exc_info:
+        DockerUpgradeExecutor(
+            docker,
+            target_container="packbreaker",
+            allowed_image=_OFFICIAL,
+            config_dir=Path("/config"),
+            backup_factory=_backup_factory,
+        ).execute(_request(), phase=lambda _phase, _message: None)
+    assert exc_info.value.code == "UPGRADE_PLATFORM_MISMATCH"
+    assert not any(call[0] in {"stop", "rename", "create"} for call in docker.calls)
 
 
 def test_upgrade_executor_does_not_rollback_healthy_upgrade_when_old_cleanup_fails() -> None:

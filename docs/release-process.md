@@ -12,7 +12,7 @@ PackBreaker 当前项目版本来自 `pyproject.toml`。正式发布 tag 必须�
 
 ## 2. 基础镜像与目标平台
 
-Dockerfile 的三个 `FROM` 都使用“精确补丁版本 + sha256 digest”固定基础镜像，避免构建时被同名可变 tag 悄然替换。当前发布目标只声明 `linux/amd64`，release workflow 也显式使用该平台构建。
+Dockerfile 的三个 `FROM` 都使用“精确补丁版本 + sha256 digest”固定基础镜像，避免构建时被同名可变 tag 悄然替换。v0.1.9 已正式发布的镜像仅含 `linux/amd64`。v1.0.0 研发分支的 Release workflow 已预设 `linux/amd64,linux/arm64` 双架构 Buildx 发布目标，并增加原生 ARM64 CI/发布前启动备份验证与最终镜像索引检查；在真实 ARM64 Docker 和升级/回滚验收完成前，该变更不代表已正式支持 ARM64。
 
 更新基础镜像时必须显式修改 Dockerfile 中的 tag 和 digest，并重新通过容器、迁移、恢复与仓库安全门禁；不能只修改 tag 而省略 digest。
 
@@ -24,9 +24,9 @@ Dockerfile 的三个 `FROM` 都使用“精确补丁版本 + sha256 digest”固
 2. 校验 `release-baseline.json`，并通过 GitHub Releases API 强制其 tag 必须等于当前最新正式 Release；这样后续版本不能跳过直接上一正式版本的兼容门禁。
 3. 运行 `scripts/check.py` 和 `scripts/test.py` 全量质量门禁。
 4. 本地构建 release candidate，先执行“上一正式 release 不可变 digest → 当前候选 → 恢复升级前备份并回滚上一正式 digest”的兼容门禁，再执行独立 updater helper 的真实 Docker 成功升级与故障候选自动数据库/容器回滚 E2E；两条门禁都通过前不推送新正式镜像。
-5. 使用 Buildx 构建并推送单平台 `linux/amd64` GHCR 镜像，记录 registry 返回的最终 image digest。
+5. v0.x 继续构建单平台 `linux/amd64`；v1.0.0 起在原生 ARM64 验证通过后使用 Buildx 构建双架构镜像并推送 GHCR，检查不可变 digest 的真实平台索引，随后记录 registry 返回的最终 image digest。
 6. 只按 `<image>@<digest>` 扫描镜像并生成 SPDX JSON SBOM。
-7. 生成 `packbreaker-<version>.release.json`，绑定 version/tag/commit/platform/image digest/SBOM 文件名与 SBOM SHA-256，并为 release JSON 与 SBOM 生成 `SHA256SUMS`。
+7. 生成 `packbreaker-<version>.release.json`，绑定 version/tag/commit/platform（v1.0.0 起为 platforms）/image digest/SBOM 文件名与 SBOM SHA-256，并为 release JSON 与 SBOM 生成 `SHA256SUMS`。
 8. 上传 GitHub Actions evidence artifact，创建同 tag 的 GitHub Release，并发布 SBOM、release manifest、checksums 与自动 release notes。
 9. 只有 Release 资产全部发布成功后，才把 `stable` 与兼容 Docker 默认习惯的 `latest` 通道一起移动到本次已经记录的不可变 image digest；中途失败不会推进这两个可移动通道。
 
@@ -38,7 +38,7 @@ Buildx 同时开启 provenance 元数据，但当前 M6 不把它表述为独立
 
 每个正式版本至少包含：
 
-- GHCR `linux/amd64` 镜像及不可变 digest；
+- GHCR 正式镜像及不可变 digest；v0.x 为 `linux/amd64`，v1.0.0 目标为 `linux/amd64` + `linux/arm64`；
 - `packbreaker-<version>.spdx.json`；
 - `packbreaker-<version>.release.json`；
 - `SHA256SUMS`；

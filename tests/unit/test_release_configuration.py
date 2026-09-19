@@ -22,7 +22,11 @@ def test_all_dockerfile_base_images_are_digest_pinned() -> None:
 def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-    assert "platforms: linux/amd64" in workflow
+    assert "linux/amd64,linux/arm64" in workflow
+    assert "ubuntu-24.04-arm" in workflow
+    assert "needs: arm64-validation" in workflow
+    assert "verify_release_platforms.py" in workflow
+    assert "docker/setup-qemu-action@v3" in workflow
     assert "docker/build-push-action@v7.3.0" in workflow
     assert "steps.build.outputs.digest" in workflow
     assert "anchore/sbom-action@v0.24.2" in workflow
@@ -42,6 +46,10 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
 def test_ci_container_gate_exercises_immutable_previous_release() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
+    assert "runs-on: ubuntu-24.04-arm" in workflow
+    assert "docker build --platform linux/arm64" in workflow
+    assert "python -m backend.app.maintenance backup" in workflow
+    assert "user.packbreaker.arm64_probe" in workflow
     assert '--build-arg VERSION="$version"' in workflow
     assert "check-release-upgrade.sh packbreaker:ci" in workflow
     assert "release-baseline.json" in (ROOT / "scripts" / "validate_release_baseline.py").read_text(

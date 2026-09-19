@@ -29,6 +29,11 @@ def _freeze_current_version_for_upgrade_scenarios(
         "backend.app.application.system_upgrades.app_version",
         lambda: "0.1.7",
     )
+    # Historical v0.1.x synthetic targets are AMD64-only on either CI architecture.
+    monkeypatch.setattr(
+        "backend.app.application.system_upgrades.runtime_platform",
+        lambda: "linux/amd64",
+    )
 
 
 class FakeReleaseProvider:
@@ -138,6 +143,35 @@ async def test_status_reports_newer_release_and_ready_helper(tmp_path: Path) -> 
     assert status.update_available is True
     assert status.can_upgrade is True
     assert status.blocked_reasons == ()
+
+
+@pytest.mark.asyncio
+async def test_arm64_host_rejects_amd64_release_before_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.app.application.system_upgrades.runtime_platform", lambda: "linux/arm64"
+    )
+    backup = FakeBackupRunner()
+    service = SystemUpgradeService(
+        _settings(tmp_path),
+        release_client=FakeReleaseProvider(_target()),
+        updater_client=FakeUpdaterGateway(_idle()),
+        main_docker_socket_path=tmp_path / "missing.sock",
+        preflight_runner=_ready_preflight,
+    )
+    status = await service.status()
+    assert not status.can_upgrade
+    assert "RELEASE_PLATFORM_UNSUPPORTED" in status.blocked_reasons
+    with pytest.raises(ApplicationError) as exc_info:
+        await service.execute(
+            target_version="0.1.8",
+            target_image_digest=_DIGEST,
+            idempotency_key="arm64-target-mismatch",
+            backup_driver=backup,
+        )
+    assert exc_info.value.code == "RELEASE_PLATFORM_UNSUPPORTED"
+    assert backup.calls == 0
 
 
 @pytest.mark.asyncio

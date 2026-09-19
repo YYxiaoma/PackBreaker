@@ -24,6 +24,29 @@ def test_repository_release_baseline_is_immutable_v019() -> None:
     )
 
 
+def test_v100_multiplatform_baseline_contract(tmp_path: Path) -> None:
+    payload = json.loads((ROOT / "release-baseline.json").read_text(encoding="utf-8"))
+    payload.update(
+        format_version=2,
+        version="1.0.0",
+        tag="v1.0.0",
+        platform="multi",
+        platforms=["linux/amd64", "linux/arm64"],
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(payload), encoding="utf-8")
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nversion = "1.0.0"\n', encoding="utf-8")
+    result = load_release_baseline(baseline, pyproject=pyproject)
+    assert result.platforms == ("linux/amd64", "linux/arm64")
+    assert result.as_dict()["platforms"] == ("linux/amd64", "linux/arm64")
+
+    payload["platforms"] = ["linux/amd64"]
+    baseline.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="必须包含"):
+        load_release_baseline(baseline, pyproject=pyproject)
+
+
 def test_release_baseline_rejects_mutable_or_mismatched_identity(tmp_path: Path) -> None:
     payload = json.loads((ROOT / "release-baseline.json").read_text(encoding="utf-8"))
     payload["image_digest"] = "sha256:short"

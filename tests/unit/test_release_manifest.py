@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.release_manifest as release_manifest
 from scripts.release_manifest import build_release_manifest, project_version, validate_release_tag
 
 
@@ -31,10 +32,33 @@ def test_release_manifest_binds_version_digest_commit_and_sbom(tmp_path: Path) -
 
     assert payload["version"] == version
     assert payload["immutable_image"] == f"ghcr.io/yyxiaoma/packbreaker@sha256:{'a' * 64}"
-    assert payload["platform"] == "linux/amd64"
+    if tuple(int(part) for part in version.split(".")) >= (1, 0, 0):
+        assert payload["format_version"] == 2
+        assert payload["platforms"] == ["linux/amd64", "linux/arm64"]
+    else:
+        assert payload["format_version"] == 1
+        assert payload["platform"] == "linux/amd64"
     assert payload["sbom_file"] == sbom.name
     assert len(str(payload["sbom_sha256"])) == 64
     assert payload["generated_at"] == "2026-09-14T08:00:00Z"
+
+
+def test_v100_manifest_declares_both_platforms_and_immutable_index(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(release_manifest, "project_version", lambda: "1.0.0")
+    sbom = tmp_path / "sbom.json"
+    sbom.write_text("{}", encoding="utf-8")
+    manifest = build_release_manifest(
+        tag="v1.0.0",
+        image="ghcr.io/yyxiaoma/packbreaker",
+        image_digest="sha256:" + "a" * 64,
+        commit="b" * 40,
+        sbom_path=sbom,
+    )
+    assert manifest["format_version"] == 2
+    assert manifest["platforms"] == ["linux/amd64", "linux/arm64"]
+    assert "platform" not in manifest
 
 
 def test_release_manifest_rejects_tag_version_mismatch(tmp_path: Path) -> None:

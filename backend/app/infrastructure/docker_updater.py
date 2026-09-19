@@ -543,6 +543,19 @@ class DockerUpgradeExecutor:
 
         phase("pulling", "正在拉取并验证目标不可变镜像")
         self._docker.pull_image(request.target_image)
+        target_image_info = self._docker.inspect_image(request.target_image)
+        old_arch = old_image.get("Architecture")
+        target_arch = target_image_info.get("Architecture")
+        if (
+            old_image.get("Os") != "linux"
+            or target_image_info.get("Os") != "linux"
+            or old_arch not in {"amd64", "arm64"}
+            or target_arch != old_arch
+        ):
+            raise DockerUpdaterError(
+                "UPGRADE_PLATFORM_MISMATCH",
+                "目标镜像与原运行镜像的 Linux CPU 架构不一致，禁止停止旧容器",
+            )
         old_backup_name = f"{plan.container_name}-rollback-{request.request_id[:12]}"
         new_container_id: str | None = None
         old_renamed = False

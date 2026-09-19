@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import platform
 
 import httpx2
 import pytest
@@ -62,6 +63,51 @@ def test_manifest_rejects_tag_mismatch() -> None:
     with pytest.raises(ReleaseUpdateError) as exc_info:
         parse_release_manifest(_manifest(), expected_tag="v0.1.3")
     assert exc_info.value.code == "RELEASE_IDENTITY_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [("x86_64", "linux/amd64"), ("aarch64", "linux/arm64"), ("armv7l", "unsupported")],
+)
+def test_v100_release_uses_native_cpu_platform(
+    monkeypatch: pytest.MonkeyPatch, machine: str, expected: str
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    payload = _manifest()
+    payload.update(
+        format_version=2,
+        version="1.0.0",
+        tag="v1.0.0",
+        platforms=["linux/amd64", "linux/arm64"],
+    )
+    del payload["platform"]
+    if expected == "unsupported":
+        with pytest.raises(ReleaseUpdateError) as exc_info:
+            parse_release_manifest(payload, expected_tag="v1.0.0")
+        assert exc_info.value.code == "RELEASE_PLATFORM_UNSUPPORTED"
+    else:
+        assert parse_release_manifest(payload, expected_tag="v1.0.0").platform == expected
+
+
+@pytest.mark.parametrize(
+    "platforms", [["linux/amd64"], ["linux/arm64"], ["linux/arm64", "linux/amd64"]]
+)
+def test_v100_rejects_incomplete_or_unordered_platform_index(platforms: list[str]) -> None:
+    payload = _manifest()
+    payload.update(format_version=2, version="1.0.0", tag="v1.0.0", platforms=platforms)
+    del payload["platform"]
+    with pytest.raises(ReleaseUpdateError) as exc_info:
+        parse_release_manifest(payload, expected_tag="v1.0.0")
+    assert exc_info.value.code == "RELEASE_PLATFORM_UNSUPPORTED"
+
+
+def test_v100_rejects_legacy_single_platform_manifest() -> None:
+    payload = _manifest()
+    payload.update(version="1.0.0", tag="v1.0.0")
+    with pytest.raises(ReleaseUpdateError) as exc_info:
+        parse_release_manifest(payload, expected_tag="v1.0.0")
+    assert exc_info.value.code == "RELEASE_MANIFEST_INVALID"
 
 
 def test_release_client_resolves_latest_redirect_then_fetches_manifest() -> None:

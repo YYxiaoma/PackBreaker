@@ -10,8 +10,54 @@ permissions:
   packages: write
 
 jobs:
+  arm64-validation:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned uv and dependencies on native ARM64
+        run: |
+          python -m pip install "uv==0.12.11"
+          uv sync --frozen --all-groups
+      - name: Run native ARM64 backend validation
+        run: uv run python scripts/ci_pytest.py
+      - name: Build and smoke test native ARM64 release candidate
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          docker build --platform linux/arm64 \
+            --build-arg VERSION="${GITHUB_REF_NAME#v}" \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --tag packbreaker:release-arm64-candidate .
+          mkdir -p .ci-release-arm64-config .ci-release-arm64-data
+          chmod 700 .ci-release-arm64-config
+          docker run --detach --name packbreaker-release-arm64 \
+            --user "$(id -u):$(id -g)" \
+            --publish 18001:8000 \
+            --volume "$PWD/.ci-release-arm64-config:/config" \
+            --volume "$PWD/.ci-release-arm64-data:/data" \
+            packbreaker:release-arm64-candidate
+          trap 'docker logs packbreaker-release-arm64 || true; docker rm --force packbreaker-release-arm64 >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18001/api/v1/health/ready >/dev/null; then
+              break
+            fi
+            test "$attempt" -ne 60
+            sleep 1
+          done
+          docker exec --user "$(id -u):$(id -g)" packbreaker-release-arm64 \
+            python -m backend.app.maintenance preflight
+          docker exec --user "$(id -u):$(id -g)" packbreaker-release-arm64 \
+            python -c 'import os; from pathlib import Path; src=Path("/data/.packbreaker-arm64-smoke-source"); dest=Path("/data/.packbreaker-arm64-smoke-link"); src.write_bytes(b"synthetic"); os.link(src,dest); assert src.stat().st_ino == dest.stat().st_ino; os.setxattr(dest,"user.packbreaker.arm64_probe",b"ok"); assert os.getxattr(dest,"user.packbreaker.arm64_probe") == b"ok"; dest.unlink(); src.unlink()'
+          docker exec --user "$(id -u):$(id -g)" packbreaker-release-arm64 \
+            python -m backend.app.maintenance backup
+
   release:
     runs-on: ubuntu-latest
+    needs: arm64-validation
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -83,6 +129,7 @@ jobs:
           echo "image=$image" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "created=$created" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -99,12 +146,12 @@ jobs:
             echo "::error::release image already exists: $image:$version"
             exit 1
           fi
-      - name: Build and publish linux/amd64 image
+      - name: Build and publish target architecture image index
         id: build
         uses: docker/build-push-action@v7.3.0
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ startsWith(github.ref_name, 'v0.') && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           push: true
           provenance: mode=max
           tags: |
@@ -113,6 +160,17 @@ jobs:
             VERSION=${{ steps.release_meta.outputs.version }}
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ steps.release_meta.outputs.created }}
+      - name: Verify published immutable digest has exactly the intended platforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform_args=()
+          if [[ "$GITHUB_REF_NAME" != v0.* ]]; then
+            platform_args+=(--multiarch)
+          fi
+          python scripts/verify_release_platforms.py \
+            --image "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}" \
+            "${platform_args[@]}"
       - name: Generate SPDX SBOM from immutable image digest
         uses: anchore/sbom-action@v0.24.2
         with:

@@ -166,6 +166,18 @@ qBittorrent 写侧现已落地 5.2.3/WebAPI 2.15.1 内部主链切片：executio
 - linux/amd64 镜像可从空配置安装、升级、回滚和恢复备份。
 - 已知限制、支持版本、升级兼容矩阵和后续计划已发布。
 
+### v1.0.0 扩展目标：正式支持 Linux ARM64 / aarch64（计划）
+
+v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通过同一官方版本标签和多平台 OCI manifest 发布双架构镜像；`arm64` 与 `aarch64` 指同一 64 位 ARM 架构。本目标不追溯扩大 v0.1.9 及以前版本的正式支持声明，未通过下列门禁前仍按 [支持矩阵](./support-matrix.md) 标记为未支持。
+
+- 构建与依赖：审查全部 Docker 基础镜像、Python 锁定依赖及原生扩展、前端构建依赖的 ARM64 可用性；CI 对 `linux/amd64` 和 `linux/arm64` 分别构建，并在原生 ARM64 Runner 上执行测试，不以 QEMU 构建成功冒充原生运行验收。
+- 发布与供应链：Release workflow 推送包含两个架构的 manifest，核对平台清单及每架构镜像可运行；release manifest、不可变 digest、SBOM 和校验资产绑定多平台发布身份，同时保留现有 AMD64 的发布/回滚保证。
+- 应用与文件安全：ARM64 下完成空配置启动、健康检查、迁移/备份/恢复、媒体扫描、v1/v2/hybrid 内容验证、任务生命周期、硬链接、受控 repair inode isolation、xattr ownership 和 journal 崩溃恢复测试；真实文件系统不满足 hardlink/xattr 前提时仍须失败关闭。
+- 外部链路与升级：在 ARM64 真实环境验证 qBittorrent / Transmission 的受控端到端链路，分别演练 ARM64 上的版本升级、Web updater、失败回滚和旧备份恢复；平台/架构校验不得让 ARM64 主机拉取或替换为 AMD64 镜像。
+- 退出条件：两种架构的构建与自动化门禁通过，原生 ARM64 真实 Docker 运行及必要业务链/升级恢复取得可追溯证据，更新支持矩阵、部署说明和已知限制后，方可在 v1.0.0 Release 中宣布 `linux/arm64` 正式支持。ARMv7 / 32 位 ARM 不在本版范围内。
+
+**研发进度（未正式验收）**：已实现双架构发布清单/发布基线解析、CI 原生 ARM64 Runner 和 Release Buildx 双平台配置、镜像 index 核验、Web 升级的运行平台判断，以及 Docker helper 拉取目标镜像后在停止旧容器前比对 Linux CPU 架构。AMD64 开发环境的静态检查和自动化测试已通过；原生 ARM64 CI 及真实 Docker 镜像、下载器链路和升级/回滚 E2E 尚未执行，正式支持状态保持不变。
+
 ## 9. 工作项拆分模板
 
 每个 Issue 至少包含：
@@ -195,7 +207,7 @@ qBittorrent 写侧现已落地 5.2.3/WebAPI 2.15.1 内部主链切片：executio
 
 ## 11. v1.0 后候选
 
-- arm64/armv7 镜像。
+- armv7 / 32 位 ARM 镜像（不纳入 v1.0.0 双架构目标）。
 - MoviePilot 插件。
 - 更多 NexusPHP、Gazelle、UNIT3D 和官方 API 站点。
 - 多个本地来源拼装同一候选。

@@ -18,6 +18,7 @@ from backend.app.infrastructure.release_updates import (
     ReleaseTarget,
     ReleaseUpdateClient,
     ReleaseUpdateError,
+    runtime_platform,
     semantic_version,
 )
 from backend.app.infrastructure.transient_updater import TransientUpdaterLauncher
@@ -148,6 +149,8 @@ class SystemUpgradeService:
             blocked.append(release_error_code or "RELEASE_TARGET_UNAVAILABLE")
             update_available = False
         else:
+            if latest.platform != runtime_platform():
+                blocked.append("RELEASE_PLATFORM_UNSUPPORTED")
             try:
                 update_available = semantic_version(latest.version) > semantic_version(
                     current_version
@@ -247,6 +250,13 @@ class SystemUpgradeService:
                 status=409,
                 title="没有可升级的新版本",
                 detail="目标正式版本不高于当前运行版本",
+            )
+        if target.platform != runtime_platform():
+            raise ApplicationError(
+                code="RELEASE_PLATFORM_UNSUPPORTED",
+                status=409,
+                title="升级目标不支持当前架构",
+                detail="当前主机 CPU 架构不在该正式镜像的支持范围内，禁止跨架构替换容器",
             )
 
         preflight = await asyncio.to_thread(

@@ -28,9 +28,13 @@ class ReleaseBaseline:
     immutable_image: str
     alembic_revision: str
     release_workflow_run_id: int
+    platforms: tuple[str, ...] | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return asdict(self)
+        payload: dict[str, object] = asdict(self)
+        if self.platforms is None:
+            payload.pop("platforms")
+        return payload
 
 
 def _semver_tuple(value: str, *, label: str) -> tuple[int, int, int]:
@@ -76,10 +80,11 @@ def load_release_baseline(
         "alembic_revision",
         "release_workflow_run_id",
     }
-    if set(payload) != required:
-        raise ValueError("release baseline 字段集合与 format_version=1 契约不一致")
-    if payload.get("format_version") != 1:
-        raise ValueError("release baseline format_version 必须为 1")
+    fmt = payload.get("format_version")
+    if fmt not in {1, 2} or isinstance(fmt, bool):
+        raise ValueError("release baseline format_version 必须为 1 或 2")
+    if set(payload) != (required if fmt == 1 else required | {"platforms"}):
+        raise ValueError("release baseline 字段集合与格式版本契约不一致")
 
     string_fields = required - {"format_version", "release_workflow_run_id"}
     for field in string_fields:
@@ -99,8 +104,14 @@ def load_release_baseline(
         raise ValueError("release baseline tag 与 version 不一致")
     if not _COMMIT.fullmatch(payload["commit"]):
         raise ValueError("release baseline commit 必须是 40 位小写十六进制 SHA")
-    if payload["platform"] != "linux/amd64":
-        raise ValueError("release baseline platform 必须为 linux/amd64")
+    if fmt == 1:
+        if payload["platform"] != "linux/amd64":
+            raise ValueError("旧版 release baseline platform 必须为 linux/amd64")
+    else:
+        if baseline_semver < (1, 0, 0) or payload["platform"] != "multi":
+            raise ValueError("双架构 release baseline 要求 v1.0.0+ 且 platform=multi")
+        if payload["platforms"] != ["linux/amd64", "linux/arm64"]:
+            raise ValueError("双架构 release baseline 必须包含 linux/amd64、linux/arm64")
 
     image = payload["image"]
     digest = payload["image_digest"]
@@ -115,6 +126,8 @@ def load_release_baseline(
     if not _ALEMBIC_REVISION.fullmatch(payload["alembic_revision"]):
         raise ValueError("release baseline alembic_revision 格式无效")
 
+    if fmt == 2:
+        payload["platforms"] = tuple(payload["platforms"])
     return ReleaseBaseline(**payload)
 
 
