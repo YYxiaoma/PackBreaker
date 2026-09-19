@@ -726,6 +726,22 @@ const path = require('node:path');
       await page.screenshot({path:path.join(output,`${viewport.name}.png`),fullPage:true});
     }
     upgradeStatusDelayMs=0;
+    // 低视口下菜单应保持可滚动，但原生 Y 轴滚动条不应遮挡侧栏。
+    await page.setViewportSize({width:1440,height:380});
+    const sidebarScroll=await page.locator('.sidebar > nav').evaluate(nav=>{
+      const scrollable=nav.scrollHeight>nav.clientHeight;
+      const scrollbarWidth=getComputedStyle(nav).scrollbarWidth;
+      nav.scrollTop=nav.scrollHeight;
+      const last=nav.querySelector('.nav-item:last-child');
+      const navBounds=nav.getBoundingClientRect();
+      const lastBounds=last?.getBoundingClientRect();
+      return {scrollable,scrollbarWidth,scrolled:nav.scrollTop>0,
+        lastVisible:Boolean(lastBounds&&lastBounds.bottom<=navBounds.bottom+1&&lastBounds.top>=navBounds.top-1)};
+    });
+    assert.equal(sidebarScroll.scrollable,true,'低视口侧栏菜单应保持可滚动');
+    assert.equal(sidebarScroll.scrollbarWidth,'none','侧栏导航不应出现原生 Y 轴滚动条');
+    assert.equal(sidebarScroll.scrolled,true,'低视口侧栏菜单仍应能滚动到底部');
+    assert.equal(sidebarScroll.lastVisible,true,'低视口侧栏最后一项必须可访问');
     await page.setViewportSize({width:1440,height:900});
     // 顶栏状态使用现有只读健康快照；搜索是页面/功能快捷导航，通知复用已有管理员通知抽屉。
     await page.getByRole('button',{name:'系统运行正常',exact:true}).waitFor();

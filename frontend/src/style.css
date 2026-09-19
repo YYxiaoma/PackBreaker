@@ -146,8 +146,14 @@ button svg,
   border-radius: 50%;
   flex-shrink: 0;
 }
-nav {
+.sidebar > nav {
   overflow-y: auto;
+  /* 窗口较矮时仍可滚动菜单，但不显示侧栏内突兀的原生滚动条。 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.sidebar > nav::-webkit-scrollbar {
+  display: none;
 }
 .nav-item {
   display: flex;
