@@ -629,7 +629,6 @@ async function remove(item: Downloader) {
         </div>
       </el-form>
       <template #footer>
-        <el-button @click="dialog = false">取消</el-button>
         <el-button v-if="!editing" :loading="busy.probe === true" @click="probeDraft">
           <Activity :size="14" />测试连接
         </el-button>

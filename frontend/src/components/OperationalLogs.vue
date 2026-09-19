@@ -11,6 +11,11 @@ import {
   type OperationalLogList,
   type OperationalLogQuery,
 } from '../api/system';
+import {
+  formatOperationalLogFields,
+  operationalLoggerLabel,
+  systemLogPresentation,
+} from '../operationalLogPresentation';
 import { taskEventTranslation } from '../taskExecutionEvents';
 
 const LOG_CONTEXT_STORAGE_KEY = 'packbreaker.log-context.v1';
@@ -123,15 +128,6 @@ function formatTimestamp(value: string): string {
   return new Date(value).toLocaleString();
 }
 
-function formatFields(entry: OperationalLogEntry): string {
-  const fields = Object.entries(entry.fields);
-  if (!fields.length) return '';
-  return fields
-    .slice(0, 6)
-    .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
-    .join(' · ');
-}
-
 function formatBytes(value: number): string {
   if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MiB`;
   return `${Math.round(value / 1024)} KiB`;
@@ -220,9 +216,14 @@ onMounted(() => {
               >
             </small>
           </template>
-          <b v-else>{{ entry.message }}</b>
+          <template v-else>
+            <b>{{ systemLogPresentation(entry).title }}</b>
+            <small v-if="systemLogPresentation(entry).detail" class="technical-message">
+              {{ systemLogPresentation(entry).detail }}
+            </small>
+          </template>
           <small
-            >{{ entry.logger
+            >{{ operationalLoggerLabel(entry.logger)
             }}<template v-if="entry.exception"> · exception={{ entry.exception }}</template></small
           >
           <small v-if="entry.source === 'TASK_EVENT'" class="log-links">
@@ -230,7 +231,9 @@ onMounted(() => {
             <template v-if="entry.execution_id"> · execution={{ entry.execution_id }}</template>
             <template v-if="entry.trace_id"> · trace={{ entry.trace_id }}</template>
           </small>
-          <small v-if="formatFields(entry)" class="log-fields">{{ formatFields(entry) }}</small>
+          <small v-if="formatOperationalLogFields(entry)" class="log-fields">
+            {{ formatOperationalLogFields(entry) }}
+          </small>
         </div>
       </article>
       <el-empty

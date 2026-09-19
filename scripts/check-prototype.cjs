@@ -684,7 +684,7 @@ const path = require('node:path');
     upgradeStatusDelayMs=2000;
     const overviewStartedAt=Date.now();
     await page.goto('http://127.0.0.1:5173/',{waitUntil:'domcontentloaded'});
-    await page.getByRole('heading',{name:'总览',exact:true,level:1}).waitFor();
+    await page.getByRole('heading',{name:'PackBreaker 总览',exact:true,level:1}).waitFor();
     const overviewFirstPaintMs=Date.now()-overviewStartedAt;
     assert.ok(overviewFirstPaintMs<1500,`总览首屏不应等待慢速 Release 查询，实际 ${overviewFirstPaintMs}ms`);
     const overviewViewports=[
@@ -697,72 +697,52 @@ const path = require('node:path');
       await page.setViewportSize({width:viewport.width,height:viewport.height});
       await page.waitForTimeout(80);
       const metrics=await page.evaluate(()=>{
-        const rect=selector=>{
-          const element=document.querySelector(selector);
-          if(!element)return null;
+        const cards=[...document.querySelectorAll('.overview-monitor-grid > .monitor-card')].map(element=>{
           const box=element.getBoundingClientRect();
-          return {left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:box.width,height:box.height};
-        };
-        const stages=[...document.querySelectorAll('.pipeline-orbit-stage')].map(element=>{
-          const box=element.getBoundingClientRect();
-          return {left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:box.width,height:box.height};
+          return {left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height};
         });
-        const serviceTiles=[...document.querySelectorAll('.service-tile')].map(element=>{
-          const box=element.getBoundingClientRect();
-          const visual=element.querySelector('.service-visual')?.getBoundingClientRect();
-          return {
-            left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:box.width,height:box.height,
-            visual:visual?{left:visual.left,top:visual.top,right:visual.right,bottom:visual.bottom}:null,
-          };
-        });
-        let overlaps=0;
-        for(let i=0;i<stages.length;i+=1)for(let j=i+1;j<stages.length;j+=1){
-          const a=stages[i],b=stages[j];
-          if(a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top)overlaps+=1;
-        }
-        const hub=document.querySelector('.pipeline-hub');
-        return {
-          innerWidth:window.innerWidth,
-          scrollWidth:document.documentElement.scrollWidth,
-          pipeline:rect('.pipeline-card'),
-          services:rect('.services-card'),
-          serviceGrid:rect('.service-grid'),
-          hubVisible:Boolean(hub&&getComputedStyle(hub).display!=='none'&&hub.getBoundingClientRect().width>0),
-          stageOverlaps:overlaps,
-          serviceTiles,
-        };
+        const lifecycle=document.querySelector('.lifecycle')?.getBoundingClientRect();
+        return {innerWidth:window.innerWidth,scrollWidth:document.documentElement.scrollWidth,
+          cardCount:cards.length,cards,lifeTop:lifecycle?.top??0,lifeWidth:lifecycle?.width??0,
+          headingPresent:Boolean(document.querySelector('.overview-monitor-grid h2'))};
       });
       assert.ok(metrics.scrollWidth<=metrics.innerWidth+1,`${viewport.name} 不应横向溢出`);
-      assert.equal(metrics.serviceTiles.length,4,`${viewport.name} 应展示四个系统服务卡`);
-      for(const tile of metrics.serviceTiles){
-        assert.ok(tile.width>0&&tile.height>0,`${viewport.name} 系统服务卡必须可见`);
-        if(tile.visual){
-          assert.ok(tile.visual.left>=tile.left-2&&tile.visual.right<=tile.right+2,`${viewport.name} 服务装饰图形不得横向溢出卡片`);
-          assert.ok(tile.visual.top>=tile.top-2&&tile.visual.bottom<=tile.bottom+2,`${viewport.name} 服务装饰图形不得纵向溢出卡片`);
-        }
+      assert.equal(metrics.cardCount,6,`${viewport.name} 必须有六张独立系统状态卡`);
+      assert.ok(metrics.headingPresent,`${viewport.name} 独立卡片应包含各自标题`);
+      assert.ok(metrics.lifeWidth>0,`${viewport.name} 应展示生命周期`);
+      for(const card of metrics.cards){
+        assert.ok(card.width>0&&card.height>0,`${viewport.name} 状态卡必须可见`);
+        assert.ok(card.bottom<=metrics.lifeTop+1,`${viewport.name} 生命周期必须位于六张状态卡下方`);
       }
       if(viewport.width>=1440){
-        assert.ok(metrics.pipeline&&metrics.services&&Math.abs(metrics.pipeline.height-metrics.services.height)<3,`${viewport.name} 主卡片高度应对齐`);
-        assert.ok(metrics.serviceGrid&&metrics.services&&metrics.services.bottom-metrics.serviceGrid.bottom<22,`${viewport.name} 系统服务卡底部不应留大块空白`);
-        assert.equal(metrics.hubVisible,true,`${viewport.name} 应展示中心流转图`);
-        assert.equal(metrics.stageOverlaps,0,`${viewport.name} 流水线节点不应互相遮挡`);
-        const [serviceA,serviceB,serviceC,serviceD]=metrics.serviceTiles;
-        assert.ok(Math.abs(serviceA.top-serviceB.top)<3&&Math.abs(serviceC.top-serviceD.top)<3,`${viewport.name} 系统服务应保持 2×2 行对齐`);
-        assert.ok(serviceC.top>=serviceA.bottom-1&&serviceD.top>=serviceB.bottom-1,`${viewport.name} 系统服务上下两行不得重叠`);
-      }
-      if(viewport.width===1280){
-        assert.ok(metrics.pipeline&&metrics.services&&metrics.services.top>=metrics.pipeline.bottom-1,'1280 宽度应切换为上下布局');
+        for(let i=1;i<3;i+=1)assert.ok(Math.abs(metrics.cards[i].top-metrics.cards[0].top)<3,`${viewport.name} 第一行三列应对齐`);
+        for(let i=4;i<6;i+=1)assert.ok(Math.abs(metrics.cards[i].top-metrics.cards[3].top)<3,`${viewport.name} 第二行三列应对齐`);
       }
       if(viewport.width===390){
-        assert.equal(metrics.hubVisible,false,'移动端应降级为卡片式流水线');
-        for(let index=1;index<metrics.serviceTiles.length;index+=1){
-          assert.ok(metrics.serviceTiles[index].top>=metrics.serviceTiles[index-1].bottom-1,'移动端系统服务应单列顺序排列');
-        }
+        for(let i=1;i<6;i+=1)assert.ok(metrics.cards[i].top>=metrics.cards[i-1].bottom-1,'390px 状态卡应单列');
       }
+      assert.equal(await page.getByText('最近动态',{exact:true}).count(),0,'总览不再展示最近动态卡');
+      assert.equal(await page.getByText('快捷操作',{exact:true}).count(),0,'总览不再展示快捷操作卡');
       await page.screenshot({path:path.join(output,`${viewport.name}.png`),fullPage:true});
     }
     upgradeStatusDelayMs=0;
     await page.setViewportSize({width:1440,height:900});
+    // 顶栏状态使用现有只读健康快照；搜索是页面/功能快捷导航，通知复用已有管理员通知抽屉。
+    await page.getByRole('button',{name:'系统运行正常',exact:true}).waitFor();
+    await page.getByRole('button',{name:'查看通知',exact:true}).click();
+    await page.locator('.user-menu-drawer').waitFor({state:'visible'});
+    await page.keyboard.press('Escape');
+    await page.locator('.user-menu-drawer').waitFor({state:'hidden'});
+    const globalSearch=page.getByRole('searchbox',{name:'搜索页面或功能',exact:true});
+    await globalSearch.fill('日志');
+    await page.getByRole('listbox',{name:'可前往的功能'}).getByRole('option',{name:'日志',exact:true}).click();
+    await page.getByRole('heading',{name:'运行日志',exact:true,level:2}).waitFor();
+    await globalSearch.fill('站点');
+    await globalSearch.press('Enter');
+    await page.locator('.site-toolbar').waitFor();
+    assert.equal(await globalSearch.inputValue(),'','快捷跳转后应清空搜索框');
+    await page.locator('nav').getByRole('button',{name:'总览',exact:true}).click();
+    await page.getByRole('heading',{name:'PackBreaker 总览',exact:true,level:1}).waitFor();
     assert.equal(await page.locator('nav').getByRole('button',{name:'升级中心',exact:true}).count(),0,'主导航不应再展示升级中心');
     assert.equal(await page.getByText('本地工作空间',{exact:true}).count(),0,'侧边栏不应再展示本地工作空间组件');
     const versionTrigger=page.getByRole('button',{name:'当前版本 v0.1.4',exact:true});
@@ -804,67 +784,28 @@ const path = require('node:path');
     const userDrawer=page.locator('.user-menu-drawer');
     await userDrawer.getByText('深色',{exact:true}).click();
     await page.keyboard.press('Escape');
-    const darkServiceStyle=await page.locator('.service-tile').first().evaluate(element=>({
-      backgroundImage:getComputedStyle(element).backgroundImage,
-      visualOpacity:Number(getComputedStyle(element.querySelector('.service-visual')).opacity),
-    }));
-    assert.notEqual(darkServiceStyle.backgroundImage,'none','深色主题系统服务卡需要明确渐变背景');
-    assert.ok(darkServiceStyle.visualOpacity<=0.2,'深色主题装饰图形需要保持低干扰');
+    const darkCards=page.locator('.overview-monitor-grid > .monitor-card');
+    assert.equal(await darkCards.count(),6,'深色主题仍需展示六张独立状态卡');
+    assert.ok((await darkCards.first().evaluate(el=>getComputedStyle(el).backgroundColor))!=='rgba(0, 0, 0, 0)','深色状态卡背景须可见');
     await page.screenshot({path:path.join(output,'overview-dark-1440.png'),fullPage:true});
     await userMenuTrigger.click();
     await userDrawer.getByText('浅色',{exact:true}).click();
     await page.keyboard.press('Escape');
-    console.log(`总览首屏 ${overviewFirstPaintMs}ms；已检查 1920/1440/1280/390 四档布局与深色系统服务卡`);
-    const showLegacyRuns=async()=>{
-      await page.getByText('现有执行引擎任务（兼容区）',{exact:true}).click();
-      const loadButton=page.getByRole('button',{name:'加载现有 Run 列表',exact:true});
-      if(await loadButton.count())await loadButton.click();
-      await page.getByPlaceholder('搜索 UUID、source hash、unit key…').waitFor();
-    };
+    console.log(`总览首屏 ${overviewFirstPaintMs}ms；已检查 1920/1440/1280/390 四档布局与深色六张独立状态卡`);
     await page.getByRole('button',{name:'任务中心',exact:true}).click();
-    await page.getByRole('heading',{name:'任务中心',exact:true,level:1}).waitFor();
+    await page.getByRole('heading',{name:'任务中心',exact:true,level:2}).waitFor();
     await page.getByText('手动拆包 E2E',{exact:true}).waitFor();
     await page.getByText('监控拆包任务',{exact:true}).click();
     await page.getByText('监控拆包 E2E',{exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'立即扫描',exact:true}).count(),1,'监控拆包任务应提供立即扫描入口');
     await page.getByText('手动拆包任务',{exact:true}).click();
-    await showLegacyRuns();
-    await page.getByPlaceholder('搜索 UUID、source hash、unit key…').fill('不存在');
-    await page.getByText('暂无任务').waitFor();
-    await page.getByPlaceholder('搜索 UUID、source hash、unit key…').fill('');
-    await page.getByText('task-e2e-execute',{exact:true}).waitFor();
-
-    // 零副作用取消：PENDING 不要求 execution plan，首次响应丢失后 SSE 已 CANCELLED 仍必须复用同一 key 确认 receipt。
-    const preCancelRow=page.locator('.el-table__row').filter({hasText:'task-e2e-pre-cancel'});
-    await preCancelRow.getByRole('button',{name:'分析',exact:true}).click();
-    await page.getByRole('button',{name:'取消未执行任务',exact:true}).click();
-    await page.locator('.el-message-box').getByRole('button',{name:'取消未执行任务',exact:true}).click();
-    await page.getByText(/API_UNAVAILABLE/).waitFor();
-    await page.getByText('CANCELLATION_COMPLETED',{exact:true}).waitFor({timeout:7000});
-    await page.getByRole('button',{name:'重试确认取消结果',exact:true}).click();
-    await page.getByText(/取消结果已确认：CANCELLED/).waitFor();
-    assert.equal(preCancelKeys.length,2,'零副作用取消响应丢失后应重试一次');
-    assert.equal(preCancelKeys[0],preCancelKeys[1],'零副作用取消必须复用相同 Idempotency-Key');
-    assert.equal(preCancelBodies[0].remove_downloader_task,false);
-    assert.equal(preCancelBodies[0].rollback_created_resources,false);
-    await page.keyboard.press('Escape');
-
-    // 协作式分析取消：SEARCHING 不抢改终态，公开动作先返回 CANCELLING，再由原分析流的 SSE 收敛到 CANCELLED。
-    const analysisCancelRow=page.locator('.el-table__row').filter({hasText:'task-e2e-analysis-cancel'});
-    await analysisCancelRow.getByRole('button',{name:'分析',exact:true}).click();
-    await page.getByRole('button',{name:'请求停止只读分析',exact:true}).click();
-    await page.locator('.el-message-box').getByRole('button',{name:'请求停止只读分析',exact:true}).click();
-    await page.getByText(/取消请求已登记：CANCELLING/).waitFor();
-    assert.equal(analysisCancelKeys.length,1,'协作式分析取消只应提交一次');
-    assert.equal(analysisCancelBodies[0].remove_downloader_task,false);
-    assert.equal(analysisCancelBodies[0].rollback_created_resources,false);
-    await page.getByText('CANCELLATION_COMPLETED',{exact:true}).waitFor({timeout:7000});
-    await page.keyboard.press('Escape');
 
     // v0.1.8 已移除独立“预演与确认 / 清理与对账”入口；审核、执行、对账和收尾都必须从任务中心当前 Run 进入。
     assert.equal(await page.locator('nav').getByRole('button',{name:'预演与确认',exact:true}).count(),0,'旧“预演与确认”导航必须删除');
     assert.equal(await page.locator('nav').getByRole('button',{name:'清理与对账',exact:true}).count(),0,'旧“清理与对账”导航必须删除');
-    await page.getByRole('heading',{name:'任务中心',exact:true,level:1}).waitFor();
+    assert.equal(await page.getByText('现有执行引擎任务（兼容区）',{exact:true}).count(),0,'兼容区不应继续暴露为独立页面区块');
+    assert.equal(await page.getByRole('button',{name:'新增',exact:true}).count(),0,'手动/监控列表不得重复提供新增入口');
+    await page.getByRole('heading',{name:'任务中心',exact:true,level:2}).waitFor();
 
     // 真实动作 UI：从统一“任务执行详情 → 审核 / 对账”进入；首次 execute 响应丢失后必须复用同一幂等键，随后由 TaskEvent SSE 自动收敛到 DONE。
     const definitionRow=page.locator('.el-table__row').filter({hasText:'手动拆包 E2E'}).first();
@@ -960,7 +901,7 @@ const path = require('node:path');
 
     // 真实站点管理：health 不伪造、reset 仅重置熔断器、启用使用当前强版本，保存凭证不回显。
     await page.locator('nav').getByRole('button',{name:'站点管理',exact:true}).click();
-    await page.getByRole('heading',{name:'站点管理',exact:true,level:1}).waitFor();
+    await page.locator('.site-toolbar').waitFor();
     const siteCard=page.locator('.connection-card').filter({hasText:'M-Team E2E'});
     await siteCard.getByText('熔断 已打开',{exact:true}).waitFor();
     assert.equal(await page.getByText(siteCanary,{exact:true}).count(),0,'站点页不得回显已保存凭证明文');
@@ -983,7 +924,8 @@ const path = require('node:path');
 
     for(const name of ['总览','任务中心','站点管理','下载器','日志','系统设置','关于']){
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
-      await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
+      await page.waitForTimeout(50);
+      if(name!=='总览')assert.equal(await page.locator('.page-hero').count(),0,`${name} 不应继续显示顶部说明卡片`);
       assert.equal(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`${name} 桌面溢出`);
     }
     await page.locator('nav').getByRole('button',{name:'系统设置',exact:true}).click();
@@ -1001,7 +943,7 @@ const path = require('node:path');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'移动页横向溢出');
     await page.getByRole('button',{name:'展开导航',exact:true}).click();
     await page.locator('nav').getByRole('button',{name:'站点管理',exact:true}).click();
-    await page.getByRole('heading',{name:'站点管理',exact:true}).waitFor();
+    await page.locator('.site-toolbar').waitFor();
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'移动配置页横向溢出');
     await userMenuTrigger.click();
     await userDrawer.getByText('深色',{exact:true}).click();
@@ -1010,7 +952,7 @@ const path = require('node:path');
     for(const name of ['总览','任务中心','站点管理','下载器','日志','系统设置','关于']){
       await page.getByRole('button',{name:'展开导航',exact:true}).click();
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
-      await page.getByRole('heading',{name,exact:true,level:1}).waitFor();
+      await page.waitForTimeout(50);
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,`${name} 移动页溢出`);
     }
     assert.deepEqual(unmockedApiCalls,[],'浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端');

@@ -10,12 +10,16 @@ import {
   Settings,
   Info,
   ChevronRight,
+  ChevronDown,
+  Bell,
+  Search,
+  CheckCircle2,
+  CircleAlert,
   Menu,
-  Sparkles,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import TaskDefinitionCenter from './components/TaskDefinitionCenter.vue';
-import OperationalOverview from './components/OperationalOverview.vue';
+import OverviewDashboard from './components/OverviewDashboard.vue';
 import WorkspaceManagement from './components/WorkspaceManagement.vue';
 import AuthGate from './components/AuthGate.vue';
 import PasswordChangeGate from './components/PasswordChangeGate.vue';
@@ -24,6 +28,7 @@ import VersionPopover from './components/VersionPopover.vue';
 import AboutPage from './components/AboutPage.vue';
 import { AUTH_REQUIRED_EVENT } from './api/client';
 import { getAdminInboxUnreadCount } from './api/notifications';
+import { getSystemHealth, type SystemHealth } from './api/system';
 import { normalizePrimaryRoute, type PrimaryRoute } from './navigation';
 import { useAuthStore } from './stores/auth';
 
@@ -33,6 +38,10 @@ const auth = useAuthStore();
 const versionPopover = ref<InstanceType<typeof VersionPopover> | null>(null);
 const userDrawerVisible = ref(false);
 const unreadCount = ref(0);
+const headerHealth = ref<SystemHealth | null>(null);
+const headerHealthError = ref(false);
+const searchQuery = ref('');
+const searchOpen = ref(false);
 const systemDark = ref(window.matchMedia('(prefers-color-scheme: dark)').matches);
 const storedTheme = localStorage.getItem('pb-theme-mode');
 const legacyTheme = localStorage.getItem('pb-theme');
@@ -49,6 +58,7 @@ const dark = computed(
 );
 const avatarInitial = computed(() => auth.username?.trim().charAt(0).toUpperCase() || 'A');
 let unreadTimer: ReturnType<typeof setInterval> | undefined;
+let healthTimer: ReturnType<typeof setInterval> | undefined;
 
 function handleAuthRequired(): void {
   auth.markUnauthenticated();
@@ -63,6 +73,7 @@ onUnmounted(() => {
   window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
   mediaQuery.removeEventListener('change', handleSystemThemeChange);
   if (unreadTimer) clearInterval(unreadTimer);
+  if (healthTimer) clearInterval(healthTimer);
 });
 
 function handleSystemThemeChange(event: MediaQueryListEvent): void {
@@ -78,41 +89,36 @@ const nav: Array<{ name: PrimaryRoute; icon: typeof LayoutDashboard }> = [
   { name: '系统设置', icon: Settings },
   { name: '关于', icon: Info },
 ];
-const pageCopy: Record<string, { eyebrow: string; description: string }> = {
-  总览: {
-    eyebrow: '运行态势',
-    description: '聚合健康、任务、备份与依赖状态，快速定位需要关注的系统信号。',
-  },
-  任务中心: {
-    eyebrow: '自动化工作流',
-    description: '查看任务状态、分析进度与安全操作入口，保持处理链路清晰可追踪。',
-  },
-  站点管理: {
-    eyebrow: '连接与规则',
-    description: '管理 PT 站点连接、凭证状态、能力探测与可靠性保护。',
-  },
-  下载器: {
-    eyebrow: '连接与规则',
-    description: '统一管理下载器实例、路径映射、连接探测与运行边界。',
-  },
-  日志: {
-    eyebrow: '可观测性',
-    description: '检索脱敏运行日志并导出受控窗口，辅助定位任务与依赖异常。',
-  },
-  系统设置: {
-    eyebrow: '系统配置',
-    description: '管理通知、AI 助手与数据库备份恢复策略。',
-  },
-  关于: {
-    eyebrow: '项目信息',
-    description: '查看版本、项目定位、安全原则、许可证与更新入口。',
-  },
-};
+const searchResults = computed(() => {
+  const query = searchQuery.value.trim().toLocaleLowerCase();
+  const aliases: Partial<Record<PrimaryRoute, string>> = {
+    总览: '仪表盘 dashboard 状态',
+    任务中心: '任务 审批 执行 计划 重试',
+    站点管理: '站点 pt cookie api',
+    下载器: '下载 qb transmission',
+    日志: '日志 记录 查询 log',
+    系统设置: '通知 备份 ai 设置',
+    关于: '版本 帮助',
+  };
+  return nav.filter(
+    (item) =>
+      !query || (item.name + ' ' + (aliases[item.name] ?? '')).toLocaleLowerCase().includes(query),
+  );
+});
+const healthLabel = computed(() =>
+  !headerHealth.value || headerHealthError.value
+    ? '状态暂不可用'
+    : headerHealth.value.status === 'ok'
+      ? '系统运行正常'
+      : headerHealth.value.status === 'warning'
+        ? '系统需要关注'
+        : '系统运行异常',
+);
+const healthLevel = computed(() =>
+  !headerHealth.value || headerHealthError.value ? 'unknown' : headerHealth.value.status,
+);
 const initialRoute = location.hash.slice(1) ? decodeURIComponent(location.hash.slice(1)) : '总览';
 const route = ref<PrimaryRoute>(normalizePrimaryRoute(initialRoute));
-const currentPageCopy = computed(
-  () => pageCopy[route.value] ?? { eyebrow: '工作空间', description: '' },
-);
 const mobile = ref(false);
 watch(route, (v) => {
   location.hash = encodeURIComponent(v);
@@ -145,13 +151,21 @@ watch(
       clearInterval(unreadTimer);
       unreadTimer = undefined;
     }
+    if (healthTimer) {
+      clearInterval(healthTimer);
+      healthTimer = undefined;
+    }
     if (!ready) {
       unreadCount.value = 0;
+      headerHealth.value = null;
+      headerHealthError.value = false;
       userDrawerVisible.value = false;
       return;
     }
     void refreshUnreadCount();
+    void refreshHeaderHealth();
     unreadTimer = setInterval(() => void refreshUnreadCount(), 30_000);
+    healthTimer = setInterval(() => void refreshHeaderHealth(), 60_000);
   },
   { immediate: true },
 );
@@ -162,6 +176,23 @@ async function refreshUnreadCount(): Promise<void> {
   } catch {
     // 顶栏未读红点读取失败不能阻断主界面。
   }
+}
+async function refreshHeaderHealth(): Promise<void> {
+  try {
+    headerHealth.value = await getSystemHealth();
+    headerHealthError.value = false;
+  } catch {
+    headerHealthError.value = true;
+  }
+}
+function selectSearchRoute(target: PrimaryRoute): void {
+  route.value = target;
+  searchQuery.value = '';
+  searchOpen.value = false;
+}
+function searchOnEnter(): void {
+  const first = searchResults.value[0];
+  if (first) selectSearchRoute(first.name);
 }
 async function logout(): Promise<void> {
   try {
@@ -195,7 +226,7 @@ function openVersionPopover(): void {
           <VersionPopover ref="versionPopover" />
         </span>
       </div>
-      <nav>
+      <nav aria-label="主导航">
         <button
           v-for="item in nav"
           :key="item.name"
@@ -205,6 +236,11 @@ function openVersionPopover(): void {
           <component :is="item.icon" :size="19" /><span>{{ item.name }}</span>
         </button>
       </nav>
+      <div class="sidebar-slogan">
+        <strong>更自动，更自由</strong>
+        <small>PACK MORE POSSIBILITIES</small>
+        <span aria-hidden="true"></span>
+      </div>
     </aside>
     <div class="main-shell">
       <header class="topbar">
@@ -213,42 +249,79 @@ function openVersionPopover(): void {
             <Menu :size="20" /></button
           ><span>工作空间</span><ChevronRight :size="15" /><b>{{ route }}</b>
         </div>
+        <div class="topbar-search" @focusin="searchOpen = true" @focusout="searchOpen = false">
+          <Search :size="19" aria-hidden="true" />
+          <input
+            v-model="searchQuery"
+            aria-label="搜索页面或功能"
+            placeholder="搜索任务、站点或日志..."
+            type="search"
+            autocomplete="off"
+            @keydown.enter.prevent="searchOnEnter"
+            @keydown.esc="searchOpen = false"
+          />
+          <div
+            v-if="searchOpen"
+            class="topbar-search-results"
+            role="listbox"
+            aria-label="可前往的功能"
+          >
+            <button
+              v-for="item in searchResults"
+              :key="item.name"
+              type="button"
+              role="option"
+              :aria-selected="route === item.name"
+              @mousedown.prevent="selectSearchRoute(item.name)"
+            >
+              <component :is="item.icon" :size="17" /><span>{{ item.name }}</span>
+              <ChevronRight :size="15" />
+            </button>
+            <span v-if="!searchResults.length" class="search-no-result">未找到对应功能</span>
+          </div>
+        </div>
         <div class="top-actions">
+          <button
+            type="button"
+            class="header-health"
+            :class="healthLevel"
+            :title="headerHealthError ? '系统状态读取失败，请进入总览刷新' : '查看系统状态'"
+            @click="route = '总览'"
+          >
+            <CheckCircle2 v-if="healthLevel === 'ok'" :size="15" />
+            <CircleAlert v-else :size="15" />
+            {{ healthLabel }}
+          </button>
+          <button
+            type="button"
+            class="header-bell"
+            aria-label="查看通知"
+            @click="userDrawerVisible = true"
+          >
+            <Bell :size="20" />
+            <span v-if="unreadCount > 0" class="header-unread-dot"></span>
+          </button>
           <button
             class="top-user user-menu-trigger"
             aria-label="打开管理员菜单"
             @click="userDrawerVisible = true"
           >
-            <el-badge :is-dot="unreadCount > 0" class="user-avatar-badge">
-              <span class="avatar">{{ avatarInitial }}</span>
-            </el-badge>
+            <span class="avatar">{{ avatarInitial }}</span>
             <div class="top-user-copy">
               <strong>{{ auth.username || 'admin' }}</strong>
-              <small>{{ unreadCount ? `${unreadCount} 条未读` : '本地安全会话' }}</small>
             </div>
+            <ChevronDown :size="16" class="user-chevron" />
           </button>
         </div>
       </header>
       <main>
-        <div v-if="route !== '总览'" class="page-heading page-hero">
-          <div class="page-title-copy">
-            <div class="page-eyebrow"><Sparkles :size="14" />{{ currentPageCopy.eyebrow }}</div>
-            <h1>{{ route }}</h1>
-            <p>{{ currentPageCopy.description }}</p>
-          </div>
-          <div class="page-context">
-            <span><i class="dot"></i> 服务在线</span>
-            <span>安全模式</span>
-          </div>
-        </div>
         <TaskDefinitionCenter
           v-if="route === '任务中心'"
           @navigate="route = normalizePrimaryRoute($event)"
         />
-        <OperationalOverview
+        <OverviewDashboard
           v-else-if="route === '总览'"
           @navigate="route = normalizePrimaryRoute($event)"
-          @open-version="openVersionPopover"
         />
         <AboutPage v-else-if="route === '关于'" @open-version="openVersionPopover" />
         <WorkspaceManagement v-show="!['任务中心', '总览', '关于'].includes(route)" :page="route" />

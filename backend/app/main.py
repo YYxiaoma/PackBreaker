@@ -81,6 +81,39 @@ from backend.app.versioning import app_version
 _request_logger = logging.getLogger("packbreaker.http")
 _recovery_logger = logging.getLogger("packbreaker.recovery")
 
+_HTTP_EXACT_RESOURCE_LABELS: dict[str, str] = {
+    "/": "管理页面",
+    "/api/v1/notification-channels": "通知渠道列表",
+    "/api/v1/notifications/inbox/unread-count": "站内通知未读数量",
+    "/api/v1/system/health": "系统健康状态",
+    "/api/v1/system/logs": "运行日志列表",
+    "/api/v1/downloaders": "下载器列表",
+    "/api/v1/sites": "站点列表",
+    "/api/v1/task-definitions": "任务定义列表",
+}
+
+_HTTP_RESOURCE_LABELS: tuple[tuple[str, str], ...] = (
+    ("/api/v1/notifications/inbox", "站内通知"),
+    ("/api/v1/notification-channels", "通知渠道"),
+    ("/api/v1/system/health", "系统健康状态"),
+    ("/api/v1/system/logs/export", "运行日志导出"),
+    ("/api/v1/system/logs", "运行日志"),
+    ("/api/v1/system/backups", "备份配置"),
+    ("/api/v1/system/upgrade", "系统升级"),
+    ("/api/v1/health/live", "服务存活状态"),
+    ("/api/v1/health/ready", "服务就绪状态"),
+    ("/api/v1/task-definitions", "任务定义"),
+    ("/api/v1/tasks", "执行引擎任务"),
+    ("/api/v1/downloaders", "下载器"),
+    ("/api/v1/sites", "站点"),
+    ("/api/v1/ai-agent", "AI 助手"),
+    ("/api/v1/auth/me", "管理员会话状态"),
+    ("/api/v1/auth/login", "管理员登录"),
+    ("/api/v1/auth/logout", "管理员退出"),
+    ("/api/v1/auth/password", "管理员密码"),
+    ("/assets", "前端静态资源"),
+)
+
 
 def _trace_id(value: str | None) -> UUID:
     if value:
@@ -89,6 +122,35 @@ def _trace_id(value: str | None) -> UUID:
         except ValueError:
             return uuid4()
     return uuid4()
+
+
+def _http_resource_label(path: str) -> str:
+    exact = _HTTP_EXACT_RESOURCE_LABELS.get(path)
+    if exact is not None:
+        return exact
+    for prefix, label in _HTTP_RESOURCE_LABELS:
+        if path == prefix or path.startswith(f"{prefix}/"):
+            return label
+    return f"接口 {path}"
+
+
+def _http_request_message(method: str, path: str, status_code: int) -> str:
+    resource = _http_resource_label(path)
+    if method == "GET":
+        action = f"获取{resource}"
+    elif method == "DELETE":
+        action = f"删除{resource}"
+    elif method in {"PUT", "PATCH"}:
+        action = f"更新{resource}"
+    elif method == "POST" and path.endswith("/test"):
+        action = f"测试{resource}连接"
+    elif method == "POST" and "/actions" in path:
+        action = f"执行{resource}操作"
+    elif method == "POST":
+        action = f"提交{resource}操作"
+    else:
+        action = f"{method} {resource}"
+    return f"{action}{'失败' if status_code >= 400 else '完成'}"
 
 
 def _attach_frontend(app: FastAPI, settings: AppSettings) -> None:
@@ -484,7 +546,7 @@ def create_app(
             path=request.url.path, scheme=network.scheme, headers=response.headers
         )
         _request_logger.info(
-            "请求处理完成",
+            _http_request_message(request.method, request.url.path, response.status_code),
             extra={
                 "fields": {
                     "trace_id": str(trace_id),

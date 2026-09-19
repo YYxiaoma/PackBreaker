@@ -281,7 +281,7 @@ def test_downloader_canary_never_appears_in_logs_api_or_database(
         assert failure.status_code == 502
         assert canary not in failure.text
         rendered_logs = "\n".join(JsonLogFormatter().format(record) for record in caplog.records)
-        assert "请求处理完成" in rendered_logs
+        assert "测试下载器连接失败" in rendered_logs
         assert canary not in rendered_logs
 
         for state_file in app.state.settings.config_dir.iterdir():

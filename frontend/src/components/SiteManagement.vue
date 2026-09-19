@@ -754,7 +754,6 @@ async function remove(item: Site) {
           @click="testDraftConnection"
           >测试当前表单</el-button
         >
-        <el-button @click="dialog = false">取消</el-button>
         <el-button
           type="primary"
           :loading="saving"

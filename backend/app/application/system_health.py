@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -112,6 +113,7 @@ class SystemHealthService:
         checks = [
             self._runtime_check(),
             self._storage_check(),
+            self._resources_check(),
             self._backup_check(database, now=timestamp),
             self._task_check(database),
             self._operation_check(database),
@@ -226,6 +228,33 @@ class SystemHealthService:
             },
         )
 
+    def _resources_check(self) -> SystemHealthCheck:
+        """只读系统计数；不可读取时不生成虚假的 CPU / 内存值。"""
+        memory = _memory_metrics()
+        try:
+            # 1 分钟平均可运行队列长度 / 逻辑 CPU 数，不等于 CPU 使用率。
+            cpu_count = os.cpu_count()
+            cpu_load = os.getloadavg()[0]
+            normalized_load = (
+                round(cpu_load / cpu_count * 100, 1)
+                if cpu_count is not None and cpu_count > 0
+                else None
+            )
+        except OSError:
+            normalized_load = None
+        available = memory is not None or normalized_load is not None
+        return SystemHealthCheck(
+            "resources",
+            "ok" if available else "warning",
+            "RESOURCES_READABLE" if available else "RESOURCES_UNAVAILABLE",
+            "本地系统资源只读快照" if available else "无法读取本地系统资源计数",
+            {
+                "memory_total_bytes": memory[0] if memory else None,
+                "memory_available_bytes": memory[1] if memory else None,
+                "cpu_load_percent": normalized_load,
+            },
+        )
+
     def _backup_check(self, database: dict[str, object], *, now: datetime) -> SystemHealthCheck:
         backup_dir = self._settings.config_dir / "backups"
         try:
@@ -325,6 +354,22 @@ class SystemHealthService:
             {
                 "total": sum(by_status.values()),
                 "active": active_count,
+                "running": sum(
+                    by_status.get(status.value, 0)
+                    for status in (
+                        TaskStatus.ANALYZING,
+                        TaskStatus.SEARCHING,
+                        TaskStatus.MATCHING,
+                        TaskStatus.VERIFYING,
+                        TaskStatus.PREFLIGHT,
+                        TaskStatus.LINKING,
+                        TaskStatus.ADDING,
+                        TaskStatus.CLIENT_VERIFYING,
+                        TaskStatus.SEEDING,
+                        TaskStatus.CANCELLING,
+                        TaskStatus.ROLLING_BACK,
+                    )
+                ),
                 "retry": retry_count,
                 "stale_active": stale_count,
                 "awaiting_confirmation": by_status.get(TaskStatus.AWAITING_CONFIRMATION.value, 0),
@@ -377,6 +422,7 @@ class SystemHealthService:
             {
                 "configured": len(sites),
                 "enabled": len(enabled),
+                "connection_ok": sum(site.connection_status == "OK" for site in enabled),
                 "connection_failed": failed,
                 "connection_untested": untested,
                 "circuit_open": open_circuits,
@@ -402,6 +448,9 @@ class SystemHealthService:
             {
                 "configured": len(downloaders),
                 "enabled": len(enabled),
+                "connection_ok": sum(
+                    downloader.connection_status == "OK" for downloader in enabled
+                ),
                 "connection_failed": connection_failed,
                 "connection_untested": connection_untested,
                 "path_mapping_failed": mapping_failed,
@@ -481,6 +530,28 @@ def _disk_metrics(path: Path) -> dict[str, int | float | bool]:
         "free_ratio": round(ratio, 6),
         "low_space": usage.free < _LOW_DISK_BYTES or ratio < _LOW_DISK_RATIO,
     }
+
+
+def _memory_metrics() -> tuple[int, int] | None:
+    """优先使用容器 cgroup 限额；否则读取 Linux MemAvailable。"""
+    try:
+        values: dict[str, int] = {}
+        for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+            key, _, raw = line.partition(":")
+            if key in {"MemTotal", "MemAvailable"}:
+                values[key] = int(raw.strip().split()[0]) * 1024
+        total = values["MemTotal"]
+        available = values["MemAvailable"]
+        cgroup = Path("/sys/fs/cgroup")
+        limit_raw = (cgroup / "memory.max").read_text(encoding="ascii").strip()
+        if limit_raw != "max":
+            limit = int(limit_raw)
+            if 0 < limit < total:
+                current = int((cgroup / "memory.current").read_text(encoding="ascii").strip())
+                return limit, max(0, limit - min(limit, current))
+        return total, max(0, min(total, available))
+    except (OSError, ValueError, KeyError, IndexError):
+        return None
 
 
 def _integer(value: object, *, label: str) -> int:

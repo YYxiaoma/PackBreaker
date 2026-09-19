@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Clock3, FolderSearch, Plus, RefreshCw, RotateCcw, Settings2 } from '@lucide/vue';
+import { Clock3, FolderSearch, Plus, RefreshCw, RotateCcw } from '@lucide/vue';
 
 import { toApiProblem } from '../api/client';
 import {
@@ -46,7 +46,6 @@ import {
 } from '../api/taskDefinitions';
 import { taskEventTranslation } from '../taskExecutionEvents';
 import { taskLifecycleAdvanceFeedback } from '../taskLifecycleFeedback';
-import LegacyTaskCenter from './TaskCenter.vue';
 import TaskExecutionEvidencePanel from './TaskExecutionEvidencePanel.vue';
 
 const emit = defineEmits<{ navigate: [page: string] }>();
@@ -107,7 +106,6 @@ const advancingExecution = ref(false);
 const decidingApproval = ref<Record<string, boolean>>({});
 const togglingPause = ref<Record<string, boolean>>({});
 const dialogVisible = ref(false);
-const legacyVisible = ref(false);
 const definitionDrawerVisible = ref(false);
 const detailDefinition = ref<TaskDefinition | null>(null);
 const detailTab = ref('overview');
@@ -1340,7 +1338,6 @@ async function decideApproval(
           <b>{{ kindLabel(activeKind) }}</b>
           <span>{{ visibleDefinitions.length }} 个任务定义</span>
         </div>
-        <el-button size="small" @click="openCreate(activeKind)"><Plus :size="14" />新增</el-button>
       </div>
       <el-empty v-if="!loading && !visibleDefinitions.length" description="暂无任务定义" />
       <el-table v-else :data="visibleDefinitions" class="definition-table">
@@ -1462,27 +1459,6 @@ async function decideApproval(
         </el-table-column>
       </el-table>
     </div>
-
-    <el-alert
-      title="当前研发切片说明"
-      type="info"
-      :closable="false"
-      show-icon
-      description="监控任务已接入 Cron 后台调度、立即扫描、增量水位、目录稳定检测、暂停/恢复、重叠策略与 1/5/15 分钟自动重试；所有新对象仍统一物化为既有安全 Run，不绕过 Preflight 与人工确认边界。"
-      class="phase-note"
-    />
-
-    <el-collapse class="legacy-collapse">
-      <el-collapse-item name="legacy">
-        <template #title>
-          <span class="legacy-title"><Settings2 :size="15" />现有执行引擎任务（兼容区）</span>
-        </template>
-        <div v-if="!legacyVisible" class="legacy-loader">
-          <el-button @click="legacyVisible = true">加载现有 Run 列表</el-button>
-        </div>
-        <LegacyTaskCenter v-else />
-      </el-collapse-item>
-    </el-collapse>
 
     <el-dialog
       v-model="dialogVisible"
@@ -2305,15 +2281,6 @@ async function decideApproval(
           >
             重试失败对象
           </el-button>
-          <el-button
-            type="primary"
-            @click="
-              legacyVisible = true;
-              executionDrawerVisible = false;
-            "
-          >
-            打开现有执行引擎兼容区
-          </el-button>
         </div>
       </template>
     </el-drawer>
@@ -2607,19 +2574,6 @@ async function decideApproval(
 }
 .primary-cell code {
   font-size: 11px;
-}
-.phase-note {
-  margin-top: -2px;
-}
-.legacy-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-weight: 650;
-}
-.legacy-loader {
-  padding: 20px;
-  text-align: center;
 }
 .create-form {
   max-height: 70vh;
