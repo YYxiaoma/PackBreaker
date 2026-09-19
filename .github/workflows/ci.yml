@@ -23,6 +23,16 @@ jobs:
           uv sync --frozen --all-groups
       - name: Run backend tests on native ARM64
         run: uv run python scripts/ci_pytest.py
+      - name: Exercise ARM64 task journal and simulated downloader business chains
+        run: |
+          uv run python -m pytest -q \
+            tests/application/test_analysis.py \
+            tests/application/test_task_linking.py \
+            tests/application/test_task_adding.py \
+            tests/application/test_downloader_operations.py \
+            tests/application/test_transmission_operations.py \
+            tests/unit/test_piece_verifier.py \
+            tests/unit/test_v2_piece_verifier.py
       - name: Build native ARM64 runtime image
         run: |
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
@@ -56,6 +66,8 @@ jobs:
             python -c 'import os; from pathlib import Path; src=Path("/data/.packbreaker-arm64-smoke-source"); dest=Path("/data/.packbreaker-arm64-smoke-link"); src.write_bytes(b"synthetic"); os.link(src,dest); assert src.stat().st_ino == dest.stat().st_ino; os.setxattr(dest,"user.packbreaker.arm64_probe",b"ok"); assert os.getxattr(dest,"user.packbreaker.arm64_probe") == b"ok"; dest.unlink(); src.unlink()'
           docker exec --user "$(id -u):$(id -g)" packbreaker-ci-arm64 \
             python -m backend.app.maintenance backup
+          docker exec --user "$(id -u):$(id -g)" --interactive packbreaker-ci-arm64 \
+            python - --data-root /data < scripts/check_arm64_business_e2e.py
           mapfile -t backups < <(find .ci-arm64-config/backups -maxdepth 1 -type f -name 'packbreaker-*.db' -printf '%f\n')
           test "${#backups[@]}" -eq 1
           backup_name="${backups[0]}"

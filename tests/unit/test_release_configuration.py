@@ -50,6 +50,10 @@ def test_ci_container_gate_exercises_immutable_previous_release() -> None:
     assert "docker build --platform linux/arm64" in workflow
     assert "python -m backend.app.maintenance backup" in workflow
     assert "user.packbreaker.arm64_probe" in workflow
+    assert "scripts/check_arm64_business_e2e.py" in workflow
+    assert "tests/application/test_task_linking.py" in workflow
+    assert "tests/application/test_task_adding.py" in workflow
+    assert "tests/application/test_transmission_operations.py" in workflow
     assert "restore-backup" in workflow
     assert "--synthetic-arm64-baseline" in workflow
     assert '--build-arg VERSION="$version"' in workflow
