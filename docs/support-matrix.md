@@ -22,7 +22,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **已批准计划 → LINKING → 真实下载器门禁已通过**：GitHub CI run `35443372973` 在原生 ARM64 环境中，从 CI 合成的已批准 Execution Plan 交给正式 LINKING 协调器创建 Hardlink 与文件操作 journal，接续 qBittorrent / Transmission 的隔离真实客户端添加、校验、做种和幂等恢复；前置分析、审批动作和执行计划生成过程尚未在同一个真实客户端任务中贯通，不据此宣称全生命周期或正式 ARM64 支持。
 
-**新增前置生命周期门禁（待新 CI 验收）**：在独立合成任务中调用正式分析、审核、执行门、计划生成与 LINKING 服务，验证候选 FULL_VERIFIED、审批越权拒绝、无副作用计划及 Hardlink journal 幂等；站点、审批主体和目标下载器配置均为测试合成对象，并非真实 Web 人工操作或真实站点/下载器。与上述两种真实下载器后置切片尚未合并为同一任务的完整端到端验收。
+**前置生命周期门禁已通过**：GitHub CI run `35446449569` 在原生 ARM64 Runner 上使用独立合成任务调用正式分析、审核、执行门、计划生成与 LINKING 服务，验证候选 FULL_VERIFIED、审批越权拒绝、无副作用计划及 Hardlink journal 幂等；站点、审批主体和目标下载器配置均为测试合成对象，并非真实 Web 人工操作或真实站点/下载器。与上述两种真实下载器后置切片尚未合并为同一任务的完整端到端验收。
 
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 

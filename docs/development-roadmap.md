@@ -188,7 +188,7 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **已批准计划 → LINKING → 真实下载器（GitHub CI run `35443372973` 成功）**：以 CI 沙箱中已有审批记录和 Execution Plan 的合成任务为起点，撤销仅由夹具创建的目标 Hardlink，然后由正式 `TaskLinkingCoordinator` 生成 CREATE_HARDLINK journal 和新的 ADDING checkpoint，再继续原生 ARM64 qBittorrent / Transmission 真实下载器任务链；检查 LINKING 幂等重放、所有操作 journal 均 APPLIED、源文件 inode/mtime 与 Hardlink 不变量。本地模拟适配器回归与原生 ARM64 隔离真实下载器门禁均已通过；该切片仍不涵盖同一任务的 ANALYZING、人工审批动作与 Execution Plan 生成过程，也不触碰真实 PT 或生产数据。
 
-**前置分析 → 审批 → Execution Plan → LINKING（新门禁，待 GitHub CI 验收）**：在新建的独立合成任务中运行正式 `TaskAnalysisService` 完成只读文件清单扫描、模拟站点搜索/取种、全文内容证据、人工审核 revision、当前 Execution Gate 与只读 Execution Plan，随后使用正式 `TaskLinkingCoordinator` 创建并重放 Hardlink journal；测试未审批与越权候选失败关闭、计划生成前源文件/目录/journal 不变、链接后的 inode/mtime 不变量。该切片仅用本地模拟站点和未连接的目标下载器配置，不冒充真实 Web 人工点击或实际客户端下载器；后置真实 qBittorrent/Transmission 链路仍由上述独立原生 ARM64 门禁覆盖，尚未把两个切片串成同一真实客户端任务，也未完成正式 ARM64 跨版本升级及 GHCR 双架构发行验收。
+**前置分析 → 审批 → Execution Plan → LINKING（GitHub CI run `35446449569` 成功）**：在新建的独立合成任务中运行正式 `TaskAnalysisService` 完成只读文件清单扫描、模拟站点搜索/取种、全文内容证据、模拟管理员提交审核 revision、当前 Execution Gate 与只读 Execution Plan，随后使用正式 `TaskLinkingCoordinator` 创建并重放 Hardlink journal；测试未审批与越权候选失败关闭、计划生成前源文件/目录/journal 不变、链接后的 inode/mtime 不变量。原生 ARM64 CI `35446449569` 的该专项和全部 5 项 CI job 已通过。该切片仅用本地模拟站点和未连接的目标下载器配置，不冒充真实 Web 人工点击或实际客户端下载器；后置真实 qBittorrent/Transmission 链路仍由上述独立原生 ARM64 门禁覆盖，尚未把两个切片串成同一真实客户端任务，也未完成正式 ARM64 跨版本升级及 GHCR 双架构发行验收。
 
 ## 9. 工作项拆分模板
 
