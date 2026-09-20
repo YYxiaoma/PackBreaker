@@ -121,3 +121,14 @@ def test_candidate_ci_proves_index_digest_template_against_existing_published_ba
     assert candidate.index("Read-only verify published baseline version tag") < candidate.index(
         "Build current main as local candidate"
     )
+
+
+def test_candidate_ci_verifies_amd64_only_and_multiarch_formal_baselines() -> None:
+    candidate = (ROOT / ".github" / "workflows" / "candidate-docker-e2e.yml").read_text(
+        encoding="utf-8"
+    )
+    assert 'platform not in ("linux/amd64", "multi")' in candidate
+    assert '["--multiarch"] if platform == "multi" else []' in candidate
+    assert "*platform_args," in candidate
+    assert "expected published AMD64-only baseline" not in candidate
+    assert "scripts/verify_release_platforms.py" in candidate

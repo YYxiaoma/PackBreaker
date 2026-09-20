@@ -59,7 +59,7 @@ jobs:
             --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test "$actual" = "${baseline_fields[2]}"
 
-      - name: Verify actual published AMD64 baseline index, child manifest, and image config
+      - name: Verify actual published baseline index, child manifests, and image configs
         shell: bash
         run: |
           set -euo pipefail
@@ -72,13 +72,16 @@ jobs:
                   ["python3", "scripts/validate_release_baseline.py", "--json"], text=True
               )
           )
-          if baseline["platform"] != "linux/amd64":
-              raise SystemExit("expected published AMD64-only baseline")
+          platform = baseline["platform"]
+          if platform not in ("linux/amd64", "multi"):
+              raise SystemExit(f"unsupported formal baseline platform: {platform}")
+          platform_args = ["--multiarch"] if platform == "multi" else []
           result = subprocess.run(
               [
                   "python3", "scripts/verify_release_platforms.py",
                   "--image", baseline["immutable_image"],
                   "--tag", baseline["tag"], "--commit", baseline["commit"],
+                  *platform_args,
               ],
               capture_output=True,
               text=True,
