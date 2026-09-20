@@ -210,7 +210,7 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **不可变 GHCR 镜像运行门禁（新增，待新 CI）**：新增 `check-immutable-image-runtime.sh`，仅接受完整 `ghcr.io/...@sha256:<digest>`、显式平台、独立 release tag 与提交 SHA。Candidate Docker E2E 将先按已正式发布的 v0.1.9 AMD64 基线 digest 拉取镜像，在完全独立的临时 `/config`、`/data` 中进行无宿主机端口的启动、真实镜像平台、OCI version/revision、内置 Python 版本与 CPU、健康状态、维护预检及数据库备份验收。Release workflow 在已推送候选索引配置身份核对之后、SBOM 与 GitHub Release 资产上传之前，对同一不可变 digest 分别进行 AMD64 原生与 QEMU ARM64 隔离运行。该门禁不触碰真实 PT、下载器或用户媒体；QEMU 运行仍不足以证明正式 v1.0.0 镜像在**原生 ARM64** 主机按 digest 运行，也不是不存在的上一正式 ARM64 跨版本升级证据。本次不创建 v1.0.0 Release。
 
-**同一发布 digest 的原生 ARM64 上线前运行阻断（新增，待 CI）**：已有 Candidate Docker E2E run `35480067748` 对正式 v0.1.9 不可变 AMD64 digest 的隔离运行检查成功，修复 transient ARM64 CI 测试镜像拉取重试后的 run `35480586206` 五项 Job 成功；这些是历史基线及本地原生候选证据，不是 v1.0.0 发布验收。新拆分 Release workflow 为镜像 index 构建/AMD64 原生与 QEMU ARM64 验证、独立原生 ARM64 对**相同已推送不可变 index digest** 的隔离运行、最后才生成/发布资产三阶段。未通过原生 ARM64 的正式 digest、版本 tag 重新核对或发布清单检查，GitHub Release 与 stable/latest 均不得发布。离线 YAML DAG 回归测试保证产物 Job 必须同时等待前两阶段；真实 v1.0.0 双平台不可变 digest 运行仍须在未来正式构建后单独验证，尚未创建 v1.0.0 Tag/Release/GHCR 镜像。
+**同一发布 digest 的原生 ARM64 上线前运行阻断（提交 `cc3618e`，CI run `35490479646` 五项通过）**：已有 Candidate Docker E2E run `35480067748` 对正式 v0.1.9 不可变 AMD64 digest 的隔离运行检查成功，修复 transient ARM64 CI 测试镜像拉取重试后的 run `35480586206` 五项 Job 成功；这些是历史基线及本地原生候选证据，不是 v1.0.0 发布验收。新拆分 Release workflow 为镜像 index 构建/AMD64 原生与 QEMU ARM64 验证、独立原生 ARM64 对**相同已推送不可变 index digest** 的隔离运行、最后才生成/发布资产三阶段。未通过原生 ARM64 的正式 digest、版本 tag 重新核对或发布清单检查，GitHub Release 与 stable/latest 均不得发布。离线 YAML DAG 回归测试保证产物 Job 必须同时等待前两阶段；真实 v1.0.0 双平台不可变 digest 运行仍须在未来正式构建后单独验证，尚未创建 v1.0.0 Tag/Release/GHCR 镜像。
 
 ## 9. 工作项拆分模板
 
