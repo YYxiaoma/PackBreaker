@@ -312,11 +312,39 @@ jobs:
             --verify-tag \
             --title "PackBreaker $GITHUB_REF_NAME" \
             --generate-notes
-      - name: Advance stable and latest channels only after release evidence is published
+      - name: Read back published Release assets before advancing image channels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
+          uv run python scripts/verify_published_release_assets.py \
+            --tag "$GITHUB_REF_NAME" \
+            --repository "$GITHUB_REPOSITORY" \
+            --image "${{ needs.release.outputs.image }}" \
+            --image-digest "${{ needs.release.outputs.digest }}" \
+            --commit "$GITHUB_SHA"
+      - name: Advance stable and latest channels only after release evidence is published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          if [ "$latest_tag" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::latest published release $latest_tag differs from $GITHUB_REF_NAME; refusing channel rollback"
+            exit 1
+          fi
           docker buildx imagetools create \
             --tag "${{ needs.release.outputs.image }}:stable" \
             --tag "${{ needs.release.outputs.image }}:latest" \
             "${{ needs.release.outputs.image }}@${{ needs.release.outputs.digest }}"
+          for channel in stable latest; do
+            actual="$(docker buildx imagetools inspect \
+              "${{ needs.release.outputs.image }}:$channel" \
+              --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            if [ "$actual" != "${{ needs.release.outputs.digest }}" ]; then
+              echo "::error::$channel channel digest mismatch; manual reconciliation required"
+              exit 1
+            fi
+          done

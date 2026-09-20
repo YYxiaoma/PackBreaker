@@ -64,6 +64,23 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
     assert "check-release-upgrade.sh packbreaker:release-candidate" in workflow
 
 
+def test_published_release_readback_blocks_mutable_channel_update() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert workflow.index("Publish GitHub release assets") < workflow.index(
+        "scripts/verify_published_release_assets.py"
+    )
+    assert workflow.index("scripts/verify_published_release_assets.py") < workflow.index(
+        "Advance stable and latest channels"
+    )
+    assert (
+        'latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"'
+        in workflow
+    )
+    assert 'if [ "$latest_tag" != "$GITHUB_REF_NAME" ]; then' in workflow
+    assert "for channel in stable latest; do" in workflow
+    assert "channel digest mismatch; manual reconciliation required" in workflow
+
+
 def test_candidate_e2e_reads_real_published_baseline_image_config_without_publishing() -> None:
     candidate = (ROOT / ".github" / "workflows" / "candidate-docker-e2e.yml").read_text(
         encoding="utf-8"
