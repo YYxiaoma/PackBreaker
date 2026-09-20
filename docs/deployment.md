@@ -2,7 +2,7 @@
 
 ## 1. 部署目标
 
-v1.0 以单个 `linux/amd64` Docker 镜像发布，单容器内运行 FastAPI、前端静态资源、调度器和单进程 worker。SQLite、日志、密钥与备份保存在 `/config`，媒体和硬链接目标通过 `/data` 暴露。
+v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linux/arm64`（aarch64）两种 Linux Docker 平台；单容器内运行 FastAPI、前端静态资源、调度器和单进程 worker。SQLite、日志、密钥与备份保存在 `/config`，媒体和硬链接目标通过 `/data` 暴露。v0.1.9 及更早正式版本仅有 AMD64 镜像，ARM64 没有旧版本可用于跨架构回滚；部署须选择主机对应的平台并记录完整正式 digest。
 
 首版不支持 Kubernetes、多副本或共享数据库。容器必须使用 init/锁机制确保同一 `/config` 只有一个活动 worker。
 

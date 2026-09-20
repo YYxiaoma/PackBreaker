@@ -12,9 +12,9 @@ baseline_image="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["immut
 baseline_version="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' <<<"$baseline_payload")"
 candidate_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
 if [[ "$baseline_mode" == --synthetic-arm64-baseline ]]; then
-  # There is no published ARM64 baseline yet; this is a container replacement/rollback
+  # This explicitly synthetic mode is a same-version container replacement/rollback
   # exercise using two distinct locally built ARM64 image identities, NOT an upgrade
-  # from the published v0.1.9 release and NOT a cross-version migration claim.
+  # from the published formal release baseline and NOT a cross-version migration claim.
   baseline_version="$candidate_version"
 fi
 runtime_uid="$(id -u)"

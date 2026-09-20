@@ -33,11 +33,13 @@ def test_release_candidate_version_surfaces_match() -> None:
     assert docker_versions == [project_version]
 
 
-def test_release_baseline_remains_older_formal_release() -> None:
+def test_release_baseline_is_not_newer_than_project_version() -> None:
     candidate = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
         "version"
     ]
     baseline = json.loads((ROOT / "release-baseline.json").read_text(encoding="utf-8"))
     assert baseline["tag"] == f"v{baseline['version']}"
-    assert tuple(map(int, baseline["version"].split("."))) < tuple(map(int, candidate.split(".")))
+    # Immediately after publishing, project and formal baseline share the release
+    # version. Once development advances, the project version may be newer.
+    assert tuple(map(int, baseline["version"].split("."))) <= tuple(map(int, candidate.split(".")))
     assert baseline["immutable_image"] == f"{baseline['image']}@{baseline['image_digest']}"

@@ -6,11 +6,12 @@
 
 | 项目 | 当前状态 | 说明 |
 | --- | --- | --- |
-| Linux `amd64` 容器 | 当前已发布目标 | v0.1.9 正式镜像仅包含 `linux/amd64`；正式发布身份必须使用完整 image digest。 |
-| Linux 其他架构 | 未声明支持 | 尚无构建、恢复和性能验收矩阵。 |
+| Linux `amd64` 容器 | v1.0.0 正式发布 | 正式镜像含 `linux/amd64`；保留上一正式 v0.1.9 不可变摘要的升级/回滚与备份恢复证据。 |
+| Linux `arm64` / aarch64 容器 | v1.0.0 正式发布 | 正式镜像含 `linux/arm64`，已通过原生 ARM64 与隔离 QEMU 的**同一已发布不可变摘要**启动、预检及数据库备份；真实生产 PT/下载器现场接管另需用户环境验收。 |
+| Linux 其他架构（含 ARMv7） | 未声明支持 | 尚无正式镜像及相应构建、恢复验收矩阵。 |
 | Windows / macOS 原生生产运行 | 未声明支持 | 可用于开发，但 v1.0 生产部署以 Linux 容器为边界。 |
 
-**v1.0.0 研发中（尚未正式支持）**：源码已增加 `linux/arm64`（aarch64）双架构发布契约、原生 ARM64 CI 构建/测试任务、发布 manifest 平台验证及 Web 升级跨架构阻断。GitHub CI run `35433684405` 已通过原生 ARM64 后端测试、Docker 构建、启动/健康、隔离 hardlink/xattr、数据库备份验证/恢复，以及基于合成 ARM64 基线的真实 Docker updater 成功替换、故障回滚和一次性 helper E2E；独立 Candidate Docker E2E run `35433684406` 亦通过。run `35436525382` 已通过隔离真实 ARM64 下载器 API 测试，run `35440660113` 已通过两种下载器的已授权连续任务链，run `35447763395` 与 `35448894436` 已分别通过 qBittorrent/Transmission 单条合成任务从分析到 DONE 的真实 ARM64 客户端门禁。由于 v0.1.9 正式镜像仅含 AMD64，合成基线门禁不是 ARM64 正式跨版本升级或 Web UI 点击验收证据；真实 PT、浏览器人工审批和正式多平台镜像尚待验收。取得全部必要证据并发布 v1.0.0 后才能调整正式支持声明。ARMv7 不包含在本次目标中，详细退出条件见 [研发路线图](./development-roadmap.md)。
+**v1.0.0 正式双架构发布证据**：[受控恢复发布 run `35507181886`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35507181886) 已在三个独立 Runner 上完成相同 GHCR index digest 的 AMD64 相邻升级/回滚、原生 ARM64 及 QEMU ARM64 运行，并经 GitHub Release 资产上传/下载回读及 `stable/latest` 摘要检查。正式 index 为 `sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4`；v0.1.9 没有发布 ARM64 镜像，因此不存在 `v0.1.9 ARM64 → v1.0.0 ARM64` 的正式跨版本升级证据。ARM64 合成数据和隔离客户端下载器链路的研发测试结果保留如下；**不代表已连接用户真实 PT 或生产下载器完成 ARM64 现场验收**。ARMv7 不包含在正式支持范围内，详见 [研发路线图](./development-roadmap.md)。
 
 ARM64 业务测试范围：GitHub CI run `35434318531` 的原生 ARM64 job 已通过真实 ARM64 Docker 容器的隔离 v1/v2/hybrid 媒体读取、映射、FULL_VERIFIED 与损坏降级、合成文件 Hardlink 及只读源不变量检查；原生 ARM64 Runner 的 qBittorrent/Transmission **模拟适配器**、任务 journal 和 linking 回归也已通过。此证据不代表真实 qBittorrent/Transmission 服务在 ARM64 环境下完成端到端验收，亦不代表正式 ARM64 跨版本升级或发行镜像验收。
 
@@ -46,7 +47,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **GitHub Release 上传后回读一致性门禁（提交 `0c31045`，CI run `35501276565` 离线回归通过）**：Release workflow 在上传后读回正式 Release 元数据及实际下载的三份资产，再与独立 tag/commit/不可变镜像 digest、SBOM 和 SHA256SUMS 交叉核验；失败不会推进 stable/latest。移动通道前再次确认 GitHub 最新正式 tag 仍为当前版本。新增单元测试以模拟 CLI/合成资产验证失败关闭，不等于正式 v1.0.0 资产已发布或真实双架构运行。
 
-当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码为 v1.0.0 **待发布候选**，尚未取得新版本真实双架构 GHCR 摘要、发布资产及正式相邻版本升级/回滚证据；历史 v0.1.9 的 Docker 验收不能替代这些新版本证据。
+当前开发 Runner 没有 Docker daemon，真实容器验收由 GitHub Actions 独立 Runner 承担。当前最新正式 Release 为 [v1.0.0](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.0)，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4`。它的双架构运行、AMD64 相邻升级/回滚与发布资产回读证据详见 [恢复发布 run `35507181886`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35507181886)；首次失败的 Release run 保留原始失败记录。
 
 ## 2. 下载器
 
@@ -85,7 +86,7 @@ v0.1.6 Profile Registry 另外列出以下**待适配**类型，但它们当前�
 - 数据库升级先创建 `pre-upgrade` 一致性快照，在同文件系统临时副本完成迁移与验证后再原子切换。
 - 生产回滚不依赖 Alembic 原地 downgrade；旧镜像不能读取新 schema 时必须恢复兼容的升级前/离线备份。
 - `v0.1.2` Release workflow run `34937718889` 已真实跑绿 `v0.1.1` 基线启动/备份 → `v0.1.2` 候选接管/readiness → 用 `v0.1.1` 镜像恢复旧备份 → `v0.1.1` 再次 readiness，并额外通过独立 updater helper 的真实成功升级与故障候选自动数据库/容器回滚。
-- `release-baseline.json` 当前固定正式 `v0.1.9` digest；后续候选版本必须以该最新 published baseline 做相邻版本升级/回滚门禁后才允许进入正式发布。
+- `release-baseline.json` 当前固定正式 `v1.0.0` 双架构 digest；后续候选版本必须以该最新 published baseline 做相邻版本升级/回滚门禁后才允许进入正式发布。若目标 ARM64 上不存在对应旧版镜像，不能虚构历史跨架构升级路径。
 - `v0.1.2` 正式提供独立 updater helper 的 Web 一键升级链路；`v0.1.7` 起正式支持显式挂载 docker.sock 的 Compose 单容器使用同一 Web 升级链，并保留 Compose labels。自动容器替换仍只承诺单个 PackBreaker 容器、唯一可写 `/config`、官方 GHCR 镜像、可安全重建的端口/环境/挂载/restart policy 和单网络配置。复杂 namespace、多网络、显式静态 IP/MAC 或 AutoRemove 容器继续失败关闭。
 
 ## 6. 兼容承诺原则

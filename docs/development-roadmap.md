@@ -166,9 +166,9 @@ qBittorrent 写侧现已落地 5.2.3/WebAPI 2.15.1 内部主链切片：executio
 - linux/amd64 镜像可从空配置安装、升级、回滚和恢复备份。
 - 已知限制、支持版本、升级兼容矩阵和后续计划已发布。
 
-### v1.0.0 扩展目标：正式支持 Linux ARM64 / aarch64（计划）
+### v1.0.0 扩展目标：正式支持 Linux ARM64 / aarch64（已发布）
 
-v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通过同一官方版本标签和多平台 OCI manifest 发布双架构镜像；`arm64` 与 `aarch64` 指同一 64 位 ARM 架构。本目标不追溯扩大 v0.1.9 及以前版本的正式支持声明，未通过下列门禁前仍按 [支持矩阵](./support-matrix.md) 标记为未支持。
+v1.0.0 已在此前 `linux/amd64` 基础上增加 `linux/arm64`，通过同一官方版本标签和多平台 OCI manifest 发布双架构镜像；`arm64` 与 `aarch64` 指同一 64 位 ARM 架构。本目标不追溯扩大 v0.1.9 及以前版本的正式支持声明。2026-09-20 已通过原生 ARM64、隔离 QEMU、AMD64 正式升级/回滚及同一 digest 的发行资产校验，[成功恢复发布 run `35507181886`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35507181886) 已完成 [v1.0.0 Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.0)，详见 [支持矩阵](./support-matrix.md) 和 [发布证据](./release-process.md)。
 
 - 构建与依赖：审查全部 Docker 基础镜像、Python 锁定依赖及原生扩展、前端构建依赖的 ARM64 可用性；CI 对 `linux/amd64` 和 `linux/arm64` 分别构建，并在原生 ARM64 Runner 上执行测试，不以 QEMU 构建成功冒充原生运行验收。
 - 发布与供应链：Release workflow 推送包含两个架构的 manifest，核对平台清单及每架构镜像可运行；release manifest、不可变 digest、SBOM 和校验资产绑定多平台发布身份，同时保留现有 AMD64 的发布/回滚保证。
@@ -176,7 +176,7 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 - 外部链路与升级：在 ARM64 真实环境验证 qBittorrent / Transmission 的受控端到端链路，分别演练 ARM64 上的版本升级、Web updater、失败回滚和旧备份恢复；平台/架构校验不得让 ARM64 主机拉取或替换为 AMD64 镜像。
 - 退出条件：两种架构的构建与自动化门禁通过，原生 ARM64 真实 Docker 运行及必要业务链/升级恢复取得可追溯证据，更新支持矩阵、部署说明和已知限制后，方可在 v1.0.0 Release 中宣布 `linux/arm64` 正式支持。ARMv7 / 32 位 ARM 不在本版范围内。
 
-**研发进度（尚未满足正式支持退出条件）**：已实现双架构发布清单/发布基线解析、CI 原生 ARM64 Runner 和 Release Buildx 双平台配置、镜像 index 核验、Web 升级的运行平台判断，以及 Docker helper 停止旧容器前的 Linux CPU 架构一致性检查。GitHub CI run `35433684405` 已通过原生 ARM64 后端测试、Docker 构建与健康检查、隔离 hardlink/xattr、数据库备份验证/恢复，以及基于两个不同本地 ARM64 镜像身份的 Docker updater 成功替换、故障回滚和一次性 helper E2E；同次 run 的 AMD64、浏览器与 updater 门禁及独立 Candidate Docker E2E run `35433684406` 也已通过。后续原生 ARM64 CI run `35436525382` 已通过隔离真实下载器协议门禁，run `35440660113` 已通过两种下载器的已授权任务连续链路，run `35447763395` 和 `35448894436` 分别通过 qBittorrent/Transmission 单条合成任务从分析到 DONE 的真实客户端链路；由于 v0.1.9 正式镜像仅有 AMD64，合成基线不代表 ARM64 正式跨版本升级，模拟管理员审批也不代表真实 Web UI 点击验收；真实 PT、正式发布多平台 digest 和正式支持退出条件仍待验收，正式支持状态保持不变。
+**研发阶段历史进度（已完成正式双架构发布，以下保留此前 CI 证据）**：已实现双架构发布清单/发布基线解析、CI 原生 ARM64 Runner 和 Release Buildx 双平台配置、镜像 index 核验、Web 升级的运行平台判断，以及 Docker helper 停止旧容器前的 Linux CPU 架构一致性检查。GitHub CI run `35433684405` 已通过原生 ARM64 后端测试、Docker 构建与健康检查、隔离 hardlink/xattr、数据库备份验证/恢复，以及基于两个不同本地 ARM64 镜像身份的 Docker updater 成功替换、故障回滚和一次性 helper E2E；同次 run 的 AMD64、浏览器与 updater 门禁及独立 Candidate Docker E2E run `35433684406` 也已通过。后续原生 ARM64 CI run `35436525382` 已通过隔离真实下载器协议门禁，run `35440660113` 已通过两种下载器的已授权任务连续链路，run `35447763395` 和 `35448894436` 分别通过 qBittorrent/Transmission 单条合成任务从分析到 DONE 的真实客户端链路；由于 v0.1.9 正式镜像仅有 AMD64，合成基线不代表 ARM64 正式跨版本升级，模拟管理员审批也不代表真实 Web UI 点击验收；真实 PT 和用户生产下载器 ARM64 接管仍须单独现场验收。
 
 **ARM64 业务链门禁（GitHub CI run `35434318531` 的原生 ARM64 job 成功）**：在原生 ARM64 Runner 单独完成任务分析、task linking/journal、task adding 与 qBittorrent/Transmission 模拟协议适配器、v1/v2/hybrid piece 校验回归；在原生 ARM64 Docker 容器的独立临时数据卷完成合成 v1/v2/hybrid torrent 与媒体的真实文件读取、稳定映射、完整内容校验、源 inode/mtime 不变检查、合成文件 Hardlink 建立与清理，以及损坏内容不得 FULL_VERIFIED 的失败关闭测试。容器业务探针不添加下载器任务，也不连接真实下载器或 PT 站点；模拟适配器测试不等于 ARM64 上 qBittorrent/Transmission 的真实服务 E2E。现有证据也不包含真实 ARM64 文件上的 repair inode isolation/journal 崩溃恢复和正式多架构 GHCR 镜像验收。
 

@@ -10,12 +10,12 @@
 
 ## 2. 发布与容器证据
 
-- 正式发布目标当前只有 `linux/amd64`。
+- v1.0.0 正式镜像支持 `linux/amd64` 和 `linux/arm64`（aarch64）；ARMv7 和其他平台不在正式支持范围内。ARM64 正式摘要已通过原生和隔离 QEMU 运行、预检与备份；用户真实 PT/生产下载器环境仍需单独现场验收。
 - 当前开发 Runner 无 Docker daemon；GitHub Actions 持续承担容器、备份/恢复和 updater 的真实 Docker 门禁。Release workflow run `35429394091` 已为 `v0.1.9` 提供真实 Docker 构建、`v0.1.8 → v0.1.9 → v0.1.8` 升级/回滚与 updater helper E2E 证据，并继续覆盖既有 Compose labels 与 docker.sock 保留要求。
-- 当前最新正式 Release 为 `v0.1.9`，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。
-- 已发布版本继续由跨版本 Docker 升级/恢复门禁与 updater helper E2E 提供正式证据；当前 `release-baseline.json` 已推进到正式 `v0.1.9`，作为下一候选版本的相邻兼容输入。
-- `v1.0.0` Tag 与双架构 GHCR index 已推送，但 2026-09-20 的 [正式 Release run `35504683200`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35504683200) 在已推送不可变摘要的 ARM64 QEMU 运行检查处失败，原生 ARM64 同摘要验收与 GitHub Release 资产发布被跳过。该镜像**不是已完成正式验收的版本**；`stable/latest` 仍固定 v0.1.9。故障根因尚待失败步骤原始日志确认；不得绕过门禁或覆盖已占用的 v1.0.0 版本镜像。详见 [发布流程与中断记录](./release-process.md)。
-- [独立诊断 run `35506113046`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506113046) 已在原生 ARM64 与 QEMU 上使用相同正式 index digest 通过完整启动/备份门禁，首次 QEMU 失败未稳定复现，仍无权推断具体根因。后续恢复只能使用原已推送不可变摘要，经独立、完整、失败关闭的发布门禁获取新的正式验收证据，不能将诊断成功视为发布资产已生成。
+- 当前最新正式 Release 为 [v1.0.0](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.0)，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4`。上一正式 v0.1.9 的 AMD64-only 镜像继续保留其原 digest。
+- [正式恢复发布 run `35507181886`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35507181886) 已用原已推送镜像在独立 AMD64、QEMU ARM64 与原生 ARM64 Runner 完成运行验证，AMD64 v0.1.9→v1.0.0→v0.1.9 正式相邻升级/回滚通过，Release 资产上传回读和 `stable/latest` 与原不可变摘要一致。后续版本的 `release-baseline.json` 已推进到 v1.0.0 双架构镜像。
+- **历史失败记录（已恢复）**：2026-09-20 的首次 [Release run `35504683200`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35504683200) 在 QEMU ARM64 运行检查处失败，原生 ARM64 摘要运行及 GitHub Release 资产发布当时被跳过。后续恢复单独完成全部门禁，没有事后更改该失败记录，亦未覆盖已推送的版本镜像。首次失败根因仍无完整原始错误日志，不能断言已确诊；详见 [发布流程与恢复记录](./release-process.md)。
+- [独立诊断 run `35506113046`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506113046) 已在原生 ARM64 与 QEMU 上使用相同正式 index digest 通过完整启动/备份门禁，首次 QEMU 失败未稳定复现，仍无权推断具体根因。独立诊断只是恢复发布的前置证据，不应与正式发布资产成功混淆。
 - [首次恢复 run `35506579423`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506579423) 的同一 AMD64 Runner 在完成 AMD64 摘要运行及正式相邻升级回滚后，ARM64 QEMU 脚本仍失败；独立原生 ARM64 通过，发布资产继续被阻断。后续将 QEMU 与 AMD64 拆分到不同 Runner 后重新复验，不得根据独立诊断单次成功跳过 QEMU 门禁。
 
 ## 3. 升级与 Docker 权限

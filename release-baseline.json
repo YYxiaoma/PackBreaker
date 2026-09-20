@@ -1,12 +1,13 @@
 {
-  "format_version": 1,
-  "version": "0.1.9",
-  "tag": "v0.1.9",
-  "commit": "cc70391cb42adc8755637d1cf23d407902e30dfe",
-  "platform": "linux/amd64",
+  "format_version": 2,
+  "version": "1.0.0",
+  "tag": "v1.0.0",
+  "commit": "ce86939224301315092b27621830560bf8438d58",
+  "platform": "multi",
+  "platforms": ["linux/amd64", "linux/arm64"],
   "image": "ghcr.io/yyxiaoma/packbreaker",
-  "image_digest": "sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d",
-  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d",
+  "image_digest": "sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4",
+  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4",
   "alembic_revision": "0029_v018_compatibility",
-  "release_workflow_run_id": 35429394091
+  "release_workflow_run_id": 35507181886
 }

@@ -9,9 +9,9 @@
 <p>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11"></a>
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
-  <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64"></a>
-  <img src="https://img.shields.io/badge/latest_release-v0.1.9-2563EB" alt="latest release v0.1.9">
-  <img src="https://img.shields.io/badge/main-v1.0.0_candidate-F59E0B" alt="main v1.0.0 release candidate">
+  <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64%20%7C%20linux%2Farm64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64 and linux/arm64"></a>
+  <img src="https://img.shields.io/badge/latest_release-v1.0.0-2563EB" alt="latest release v1.0.0">
+  <img src="https://img.shields.io/badge/main-v1.0.0_released-16A34A" alt="main v1.0.0 released">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 
@@ -43,7 +43,7 @@ PackBreaker 是一个面向 PT 场景的**自动拆包辅种系统**。它从 qB
   </tr>
 </table>
 
-| **885** 后端测试（v1.0.0 候选） | **85** 前端测试（v1.0.0 候选） | **qB 真实写链路** | **Transmission 真实写链路** |
+| **887** 后端测试（含发布收口回归） | **85** 前端测试（v1.0.0） | **qB 真实写链路** | **Transmission 真实写链路** |
 | ---: | ---: | ---: | ---: |
 | 全量通过 | 全量通过 | add / verify / start / remove 通过 | add / verify / start / remove 通过 |
 
@@ -432,13 +432,14 @@ uv run python scripts/test.py
 
 ## 📊 当前状态
 
-**main 分支当前为 v1.0.0 待发布候选**，以正式 v0.1.9 为相邻版本升级/回滚基线；双架构 GHCR 镜像、已发布资产和正式 AMD64 升级/回滚必须在真实 CI 验收完成后才能声明为正式发布。下述最新正式版本及其 digest 在 v1.0.0 发布前保持不变。
+**最新正式版本为 v1.0.0**，支持单个 Docker 镜像在 `linux/amd64` 和 `linux/arm64`（aarch64）上运行。[v1.0.0 GitHub Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.0) 已发布，使用以下完整不可变 digest 安装和升级，不能把可移动的 `stable/latest` 当作生产镜像身份。
 
-**最新正式版本为 v0.1.9。** 本版聚焦总览页重构、系统资源只读监控、日志中文化以及任务中心和导航交互精简。正式 Release workflow run [`35429394091`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35429394091) 已成功完成全量质量门、`v0.1.8 → v0.1.9 → v0.1.8` 真实 Docker 升级/回滚、真实 updater helper 升级与自动回滚 E2E，并发布 `linux/amd64` 镜像、SPDX SBOM、release manifest 和校验和。正式部署使用 [v0.1.9 Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v0.1.9) 中的不可变 digest，不能用可移动 tag 代替。
+- 发布源代码 Tag 指向 commit：`ce86939224301315092b27621830560bf8438d58`。
+- 正式镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4`。
+- [正式恢复发布流水线 `35507181886`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35507181886) 已使用**同一已推送镜像摘要**通过原生 AMD64 的 v0.1.9 → v1.0.0 → v0.1.9 升级/回滚、原生 ARM64 和隔离 QEMU ARM64 的启动/备份门禁，并完成 GitHub Release 资产上传后回读。
+- 已独立下载并校验三份 Release 资产；GHCR `1.0.0`、`stable`、`latest` 均指向同一 v1.0.0 digest，旧版 `0.1.9` 标签仍保留原 digest。先前失败的首次发布和恢复尝试保留原始运行记录，详见 [发布流程](./docs/release-process.md)。
 
-- v0.1.9 发布 commit：`cc70391cb42adc8755637d1cf23d407902e30dfe`
-- v0.1.9 正式镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`
-- GHCR `0.1.9`、`stable`、`latest` 已核验均指向该 digest；正式 Release 的 manifest / SBOM / SHA256SUMS 校验通过。
+**上一正式版本 v0.1.9 的历史发布证据**：[Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v0.1.9) / [Actions run `35429394091`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35429394091)；AMD64 不可变 digest 为 `sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。
 
 此前 v0.1.8 的正式发布证据包括：
 
