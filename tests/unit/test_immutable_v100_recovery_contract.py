@@ -86,6 +86,12 @@ def test_recovery_fails_closed_before_release_or_channel_mutation() -> None:
     assert names.index("Download and verify the actually published Release assets") < names.index(
         "Advance channels only after identical digest and asset readback"
     )
+    manifest_step = next(
+        step
+        for step in asset_steps
+        if step.get("name") == "Generate release manifest and checksums for the original tag"
+    )
+    assert '--generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"' in manifest_step["run"]
     all_runs = "\n".join(step.get("run", "") for job in jobs.values() for step in job["steps"])
     assert all_runs.count("docker buildx imagetools create") == 1
     assert "docker build --" not in all_runs

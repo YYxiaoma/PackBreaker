@@ -71,3 +71,5 @@ release manifest 不保存凭证、数据库或真实环境路径。SBOM 从已�
 首次 [受控恢复 run `35506579423`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506579423) 在一个 AMD64 Runner 上依次运行 AMD64 原始摘要启动、v0.1.9→原始摘要→v0.1.9 升级回滚、ARM64 QEMU 原始运行脚本：前两项成功，QEMU 随后约 6 秒内失败；另一个独立原生 ARM64 Job 成功，资产 Job 依赖失败而跳过。与此前在独立干净 QEMU Runner 上通过的诊断相比较，**共享同一 Docker Runner 先执行 AMD64 再执行 QEMU** 是可疑的环境差异；目前没有原始完整报错，不得将其断言为已确诊的缓存故障。
 
 恢复工作流已改为三个独立 Runner（AMD64 正式相邻升级/回滚、仅使用 ARM64 的干净 QEMU、原生 ARM64），三者均检查原始 index digest，并由资产 Job 同时依赖三个结果。该隔离消除不同架构的本地镜像引用/缓存相互影响这一潜在干扰，不省略任何正式运行或回滚校验；第一次失败的恢复记录仍保留。
+
+[隔离恢复 run `35506873333`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506873333) 的三个独立运行 Job 均成功，资产 Job 在上传前的本地一致性核对失败，未创建 GitHub Release 或推进通道。原因已用独立临时资产复现：恢复工作流未给 `release_manifest.py` 指定 `--generated-at`，生成的 UTC 时间含微秒，而 `verify_release_evidence.py` 要求到秒的 `YYYY-MM-DDTHH:MM:SSZ`。恢复工作流现与原正式发布流水线一致，显式传入 `date -u +%Y-%m-%dT%H:%M:%SZ`；修正后的相同生成与校验流程已在临时目录回归通过，不修改发布校验器或已有镜像。

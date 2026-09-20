@@ -197,7 +197,8 @@ jobs:
             --tag "$RELEASE_TAG" --image "$IMAGE_REPO" \
             --image-digest "$IMAGE_DIGEST" --commit "$RELEASE_COMMIT" \
             --sbom release/packbreaker-1.0.0.spdx.json \
-            --output release/packbreaker-1.0.0.release.json
+            --output release/packbreaker-1.0.0.release.json \
+            --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           (cd release && sha256sum *.json > SHA256SUMS)
       - name: Verify all local Release assets before publishing
         run: |
