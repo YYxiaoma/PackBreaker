@@ -62,14 +62,26 @@ jobs:
           )["baseline"]
           if baseline["platform"] != "linux/amd64":
               raise SystemExit("expected published AMD64-only baseline")
-          subprocess.run(
+          result = subprocess.run(
               [
                   "python3", "scripts/verify_release_platforms.py",
                   "--image", baseline["immutable_image"],
                   "--tag", baseline["tag"], "--commit", baseline["commit"],
               ],
-              check=True,
+              capture_output=True,
+              text=True,
           )
+          if result.returncode:
+              # GitHub's public job view exposes annotations even when raw
+              # step logs are unavailable to anonymous CI observers.
+              message = (result.stderr or result.stdout).strip().splitlines()
+              print(
+                  "::error title=Published baseline platform gate::"
+                  + (message[-1] if message else f"exit {result.returncode}"),
+                  flush=True,
+              )
+              result.check_returncode()
+          print(result.stdout, end="")
           PY
 
       - name: Build current main as local candidate
