@@ -31,7 +31,20 @@ trap cleanup EXIT
 
 check_image() {
   local image="$1"
-  docker pull --platform linux/arm64 "$image" >/dev/null
+  local attempt
+  # Public test-image registries can temporarily fail before the business E2E
+  # starts. Retry only this idempotent image read, never a downloader write or
+  # a failed test assertion. Exhaustion must still fail the native ARM64 job.
+  for attempt in 1 2 3; do
+    if docker pull --platform linux/arm64 "$image" >/dev/null; then
+      break
+    fi
+    if [ "$attempt" -eq 3 ]; then
+      echo "::error::isolated ARM64 test image pull failed after 3 attempts: $image" >&2
+      return 1
+    fi
+    sleep "$((attempt * 10))"
+  done
   test "$(docker image inspect "$image" --format '{{.Os}}/{{.Architecture}}')" = linux/arm64
 }
 
