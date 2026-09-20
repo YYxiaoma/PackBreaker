@@ -61,7 +61,7 @@ def test_immutable_runtime_gate_uses_temporary_data_and_no_host_ports() -> None:
 def test_release_workflow_requires_immutable_runtime_for_both_platforms_before_assets() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     script_name = "check-immutable-image-runtime.sh"
-    assert workflow.count(script_name) == 2
+    assert workflow.count(script_name) == 3
     assert workflow.index("scripts/verify_release_platforms.py") < workflow.index(script_name)
     assert workflow.index(script_name) < workflow.index(
         "Generate SPDX SBOM from immutable image digest"

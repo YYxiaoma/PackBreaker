@@ -25,10 +25,10 @@ Dockerfile 的三个 `FROM` 都使用“精确补丁版本 + sha256 digest”固
 3. 运行 `scripts/check.py` 和 `scripts/test.py` 全量质量门禁。
 4. 本地构建 release candidate，先执行“上一正式 release 不可变 digest → 当前候选 → 恢复升级前备份并回滚上一正式 digest”的兼容门禁，再执行独立 updater helper 的真实 Docker 成功升级与故障候选自动数据库/容器回滚 E2E；两条门禁都通过前不推送新正式镜像。
 5. v0.x 继续构建单平台 `linux/amd64`；v1.0.0 起在原生 ARM64 验证通过后使用 Buildx 构建双架构镜像并推送 GHCR。按 registry 返回的不可变 index digest 检查实际平台列表，并逐个按索引子 digest 读取 `linux/amd64`、`linux/arm64` 子镜像 manifest，验证各子清单的格式、配置和层 descriptor 均有效；再按同一子 digest 通过 Buildx `.Image` 读取实际 image config，要求 OS/CPU 架构与 index 声明一致、rootfs 层数与 manifest 一致、OCI version/revision 标签与 workflow 独立传入的 Git Tag/Git SHA 一致。缺失、错误格式、重复 digest、无法读取子清单或 config 均失败关闭。此验证发生在生成 SBOM / GitHub Release 资产之前；本地离线测试只能证明检查逻辑，正式镜像尚需真实 GHCR index 读取和双宿主机运行验收。
-6. 按正式候选 `image@sha256:<index-digest>` 在独立临时 `/config`、`/data` 中分别启动 AMD64 原生容器与 QEMU ARM64 容器，检查实际镜像平台、版本/提交标签、内置版本与 CPU、服务就绪、维护预检和数据库备份；无宿主机端口、PT 站点或生产下载器。原生 ARM64 候选镜像已由独立 Runner 测试，但 QEMU 下正式 index 的 ARM64 镜像运行不等于该 index 在原生 ARM64 主机上验证通过。
+6. 按已推送的 `image@sha256:<index-digest>` 在独立临时 `/config`、`/data` 中先启动 AMD64 原生容器与 QEMU ARM64 容器。构建任务结束后，将同一个不可变 index digest 作为跨 Job 输出交给**原生 ARM64 Runner**，在独立临时卷、`--network none`、无宿主机端口条件下再次拉取并启动相同 digest 的 ARM64 子镜像，核对实际 CPU、镜像平台、版本/提交标签、内置版本、服务就绪、维护预检和数据库备份。原生 ARM64 结果未通过时，后续资产发布 Job 不得启动。v0.x 已发布版本仅为 AMD64，原生 ARM64 Job 仍成功执行空操作，而不是被整体跳过从而阻断 AMD64-only 历史发布。只有两项运行门禁全部成功才重新核对版本 tag 的 index digest、生成 SBOM 并发布资产；如候选 digest 已推送但验收失败，须保留其失败状态且不得把它当作已发布版本或推进 stable/latest。
 7. 只按 `<image>@<digest>` 扫描镜像并生成 SPDX JSON SBOM。
 8. 生成 `packbreaker-<version>.release.json`，绑定 version/tag/commit/platform（v1.0.0 起为 platforms）/image digest/SBOM 文件名与 SBOM SHA-256，并为 release JSON 与 SBOM 生成 `SHA256SUMS`。在任何资产上传之前运行 `scripts/verify_release_evidence.py`，以独立的 workflow 输入交叉核对完整不可变镜像身份、commit、tag、双平台声明、SPDX 版本、文件名与三份资产的校验和；缺失、重复、额外资产或符号链接均失败关闭。该本地一致性检查不能证明镜像已在两架构真实运行或 SBOM 内容由其正确生成，实际镜像平台仍以 GHCR index 检查和原生 ARM64 门禁为准。
-9. 本地资产检查通过后上传 GitHub Actions evidence artifact，创建同 tag 的 GitHub Release，并发布 SBOM、release manifest、checksums 与自动 release notes。
+9. 本地资产检查通过、原生 ARM64 对相同不可变 digest 的运行检查成功后，才上传 GitHub Actions evidence artifact，创建同 tag 的 GitHub Release，并发布 SBOM、release manifest、checksums 与自动 release notes。
 10. 只有 Release 资产全部发布成功后，才把 `stable` 与兼容 Docker 默认习惯的 `latest` 通道一起移动到本次已经记录的不可变 image digest；中途失败不会推进这两个可移动通道。
 
 Buildx 同时开启 provenance 元数据，但当前 M6 不把它表述为独立签名或 artifact attestation；若后续启用签名/attestation，必须另行定义密钥、身份与验证策略。

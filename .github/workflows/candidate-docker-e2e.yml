@@ -48,6 +48,17 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      - name: Read-only verify published baseline version tag resolves to immutable digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t baseline_fields < <(python3 scripts/validate_release_baseline.py --json | python3 -c 'import json,sys; b=json.load(sys.stdin); print(b["image"]); print(b["version"]); print(b["image_digest"])')
+          test "${#baseline_fields[@]}" -eq 3
+          actual="$(docker buildx imagetools inspect \
+            "${baseline_fields[0]}:${baseline_fields[1]}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$actual" = "${baseline_fields[2]}"
+
       - name: Verify actual published AMD64 baseline index, child manifest, and image config
         shell: bash
         run: |
