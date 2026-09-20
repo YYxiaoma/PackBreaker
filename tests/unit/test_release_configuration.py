@@ -91,7 +91,7 @@ def test_candidate_e2e_reads_real_published_baseline_image_config_without_publis
     assert '"--tag", baseline["tag"]' in candidate
     assert '"--commit", baseline["commit"]' in candidate
     assert ')["baseline"]' not in candidate
-    assert candidate.index("Verify actual published AMD64 baseline") < candidate.index(
+    assert candidate.index("Verify actual published baseline index") < candidate.index(
         "Build current main as local candidate"
     )
 

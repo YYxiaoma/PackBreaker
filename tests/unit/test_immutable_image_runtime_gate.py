@@ -72,7 +72,7 @@ def test_release_workflow_requires_immutable_runtime_for_both_platforms_before_a
     assert "docker/setup-qemu-action@v3" in workflow
 
 
-def test_candidate_workflow_smokes_real_published_amd64_baseline_without_republishing() -> None:
+def test_candidate_workflow_smokes_published_baseline_without_republishing() -> None:
     workflow = (ROOT / ".github" / "workflows" / "candidate-docker-e2e.yml").read_text(
         encoding="utf-8"
     )
@@ -81,7 +81,7 @@ def test_candidate_workflow_smokes_real_published_amd64_baseline_without_republi
         '"${baseline_fields[0]}" linux/amd64 "${baseline_fields[1]}" "${baseline_fields[2]}"'
         in workflow
     )
-    assert workflow.index("Verify actual published AMD64 baseline") < workflow.index(
+    assert workflow.index("Verify actual published baseline index") < workflow.index(
         "Exercise immutable published AMD64 baseline startup"
     )
     assert workflow.index("Exercise immutable published AMD64 baseline startup") < workflow.index(
