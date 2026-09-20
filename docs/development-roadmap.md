@@ -206,7 +206,7 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **发布索引子镜像清单完整性门禁（提交 `75122ed`，GitHub CI run `35476485411` 成功）**：扩展 Release workflow 已调用的 `verify_release_platforms.py`，不再仅检查 GHCR index 中标注的两个平台，还会按各自不可变 child digest 读取真实 registry 的子镜像 manifest，拒绝重复或无效 digest、错误 mediaType/size、缺失 image config 或运行层，以及不能解析为镜像的子清单。离线单元测试涵盖 v0.x 单平台兼容、v1.0.0 双平台、provenance unknown/unknown 排除及多种损坏场景。此切片尚未触发正式 Release 或读取不存在的 v1.0.0 镜像；index 的平台标签与子清单存在性不证明 config CPU 架构、OCI labels、真实宿主机启动成功，发布资产和跨版本 ARM64 仍为独立门禁。
 
-**发布子镜像实际配置与版本身份门禁（新增，待 CI）**：Release workflow 在索引与子 manifest 检查之后，以子镜像的不可变 digest 读取 Docker Buildx `.Image` 配置，校验实际 OS/架构与平台声明一致、rootfs 层数与子 manifest 一致，且 OCI image.version/image.revision 分别精确匹配 GitHub Release tag 和 workflow 提交 SHA；不匹配即在 SBOM/GitHub Release 资产发布前失败关闭。新增独立的离线异常回归及 CLI 参数契约测试；Candidate Docker E2E 另对已正式发布的 v0.1.9 不可变 AMD64 baseline 执行同一套 registry 只读检查，以验证真实 GHCR 与 Buildx 读取链路。两项测试都不能取代真正发布后的 v1.0.0 双平台在线配置检查、按正式 digest 的 AMD64/ARM64 宿主机运行及正式相邻版本升级/回滚验收；本轮没有创建正式 v1.0.0 Tag、Release 或 GHCR 镜像。
+**发布子镜像实际配置与版本身份门禁（代码 `8b82032`，GitHub CI run `35477811583`、Candidate Docker E2E run `35477811590` 通过）**：Release workflow 在索引与子 manifest 检查之后，以子镜像的不可变 digest 读取 Docker Buildx `.Image` 配置，校验实际 OS/架构与平台声明一致、rootfs 层数与子 manifest 一致，且 OCI image.version/image.revision 分别精确匹配 GitHub Release tag 和 workflow 提交 SHA；不匹配即在 SBOM/GitHub Release 资产发布前失败关闭。新增独立的离线异常回归及 CLI 参数契约测试；Candidate Docker E2E run `35477811590` 已对正式发布的 v0.1.9 不可变 AMD64 baseline 完成同一套 registry 只读检查，验证真实 GHCR 与 Buildx 读取链路；先前首次接入时因测试脚本误解析 baseline JSON 而失败，提交 `abb2953` 修正后重跑通过。两项测试都不能取代真正发布后的 v1.0.0 双平台在线配置检查、按正式 digest 的 AMD64/ARM64 宿主机运行及正式相邻版本升级/回滚验收；本轮没有创建正式 v1.0.0 Tag、Release 或 GHCR 镜像。
 
 ## 9. 工作项拆分模板
 
