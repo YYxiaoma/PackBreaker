@@ -23,12 +23,22 @@ def test_recovery_reuses_the_original_tag_and_diagnostic_digest() -> None:
     assert recovery["env"]["PREVIOUS_TAG"] == "v0.1.9"
 
     jobs = recovery["jobs"]
-    assert set(jobs) == {"immutable-amd64-qemu", "immutable-native-arm64", "release-assets"}
+    assert set(jobs) == {
+        "immutable-amd64",
+        "immutable-qemu-arm64",
+        "immutable-native-arm64",
+        "release-assets",
+    }
     assert set(jobs["release-assets"]["needs"]) == {
-        "immutable-amd64-qemu",
+        "immutable-amd64",
+        "immutable-qemu-arm64",
         "immutable-native-arm64",
     }
-    assert jobs["immutable-amd64-qemu"]["permissions"] == {
+    assert jobs["immutable-amd64"]["permissions"] == {
+        "contents": "read",
+        "packages": "read",
+    }
+    assert jobs["immutable-qemu-arm64"]["permissions"] == {
         "contents": "read",
         "packages": "read",
     }
@@ -50,11 +60,13 @@ def test_recovery_reuses_the_original_tag_and_diagnostic_digest() -> None:
 def test_recovery_fails_closed_before_release_or_channel_mutation() -> None:
     recovery = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     jobs = recovery["jobs"]
-    amd64_runs = "\n".join(step.get("run", "") for step in jobs["immutable-amd64-qemu"]["steps"])
+    amd64_runs = "\n".join(step.get("run", "") for step in jobs["immutable-amd64"]["steps"])
+    qemu_runs = "\n".join(step.get("run", "") for step in jobs["immutable-qemu-arm64"]["steps"])
     arm64_runs = "\n".join(step.get("run", "") for step in jobs["immutable-native-arm64"]["steps"])
     assert 'check-release-upgrade.sh "$IMAGE"' in amd64_runs
     assert 'check-immutable-image-runtime.sh "$IMAGE" linux/amd64' in amd64_runs
-    assert 'check-immutable-image-runtime.sh "$IMAGE" linux/arm64' in amd64_runs
+    assert 'check-immutable-image-runtime.sh "$IMAGE" linux/arm64' not in amd64_runs
+    assert 'check-immutable-image-runtime.sh "$IMAGE" linux/arm64' in qemu_runs
     assert 'check-immutable-image-runtime.sh "$IMAGE" linux/arm64' in arm64_runs
     assert "refs/tags/$RELEASE_TAG^{}" in amd64_runs
     assert 'gh release view "$RELEASE_TAG"' in amd64_runs
@@ -80,4 +92,5 @@ def test_recovery_fails_closed_before_release_or_channel_mutation() -> None:
     assert "git push" not in all_runs
     assert "gh release edit" not in all_runs
     assert "docker buildx imagetools create \\n" not in amd64_runs
+    assert "docker buildx imagetools create \\n" not in qemu_runs
     assert "docker buildx imagetools create \\n" not in arm64_runs

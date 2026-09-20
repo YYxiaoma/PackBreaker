@@ -26,8 +26,8 @@ env:
   PREVIOUS_DIGEST: sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d
 
 jobs:
-  immutable-amd64-qemu:
-    name: Verify existing digest and formal AMD64 upgrade plus QEMU
+  immutable-amd64:
+    name: Verify existing digest and formal AMD64 adjacent upgrade
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -40,7 +40,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -74,6 +73,30 @@ jobs:
         run: bash scripts/check-immutable-image-runtime.sh "$IMAGE" linux/amd64 "$RELEASE_TAG" "$RELEASE_COMMIT"
       - name: Repeat formal v0.1.9 to the published AMD64 digest and rollback
         run: bash scripts/check-release-upgrade.sh "$IMAGE"
+
+  immutable-qemu-arm64:
+    name: Verify original ARM64 index digest under QEMU on an isolated runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1.0.0
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate original release identity on isolated QEMU runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          test "$(uname -m)" = x86_64
       - name: Repeat original published ARM64 runtime gate under QEMU
         run: bash scripts/check-immutable-image-runtime.sh "$IMAGE" linux/arm64 "$RELEASE_TAG" "$RELEASE_COMMIT"
 
@@ -104,7 +127,7 @@ jobs:
 
   release-assets:
     name: Publish validated immutable image evidence, then channels
-    needs: [immutable-amd64-qemu, immutable-native-arm64]
+    needs: [immutable-amd64, immutable-qemu-arm64, immutable-native-arm64]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

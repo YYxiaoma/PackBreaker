@@ -16,6 +16,7 @@
 - 已发布版本继续由跨版本 Docker 升级/恢复门禁与 updater helper E2E 提供正式证据；当前 `release-baseline.json` 已推进到正式 `v0.1.9`，作为下一候选版本的相邻兼容输入。
 - `v1.0.0` Tag 与双架构 GHCR index 已推送，但 2026-09-20 的 [正式 Release run `35504683200`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35504683200) 在已推送不可变摘要的 ARM64 QEMU 运行检查处失败，原生 ARM64 同摘要验收与 GitHub Release 资产发布被跳过。该镜像**不是已完成正式验收的版本**；`stable/latest` 仍固定 v0.1.9。故障根因尚待失败步骤原始日志确认；不得绕过门禁或覆盖已占用的 v1.0.0 版本镜像。详见 [发布流程与中断记录](./release-process.md)。
 - [独立诊断 run `35506113046`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506113046) 已在原生 ARM64 与 QEMU 上使用相同正式 index digest 通过完整启动/备份门禁，首次 QEMU 失败未稳定复现，仍无权推断具体根因。后续恢复只能使用原已推送不可变摘要，经独立、完整、失败关闭的发布门禁获取新的正式验收证据，不能将诊断成功视为发布资产已生成。
+- [首次恢复 run `35506579423`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506579423) 的同一 AMD64 Runner 在完成 AMD64 摘要运行及正式相邻升级回滚后，ARM64 QEMU 脚本仍失败；独立原生 ARM64 通过，发布资产继续被阻断。后续将 QEMU 与 AMD64 拆分到不同 Runner 后重新复验，不得根据独立诊断单次成功跳过 QEMU 门禁。
 
 ## 3. 升级与 Docker 权限
 

@@ -66,4 +66,8 @@ release manifest 不保存凭证、数据库或真实环境路径。SBOM 从已�
 
 [Immutable ARM64 Diagnostics run `35506113046`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506113046) 已对原索引 digest 在**原生 ARM64 和 QEMU** 两个独立 Runner 上完成隔离复测，两个 Job 均通过；QEMU 的镜像拉取、Python 执行、创建/启动、readiness、预检、备份和原始 `check-immutable-image-runtime.sh` 全部通过。该证据确认原摘要具备两架构运行能力，但无法从退出码 1 推导首次失败根因，亦不能把失败的原 Release run 事后改记为通过。
 
-专用 `.github/workflows/immutable-v100-recovery.yml` 以**已存在的 Tag `v1.0.0` 和 index digest** 为只读镜像输入，重新验证远端 Tag 指向、版本身份、上一正式基线、实际双架构子配置、AMD64 正式摘要运行与相邻升级/回滚、QEMU 和原生 ARM64 正式摘要运行。仅当上述两个独立 Job 均通过且 GitHub Release 仍不存在时，资产 Job 才可针对**同一个 digest、同一 Tag、同一原始提交**生成 SBOM/manifest/SHA256SUMS、上传 Release、下载回读校验并最终推进 `stable/latest`。其代码不得构建、覆盖 `:1.0.0` 或移动 `v1.0.0` Tag；任何验证失败均停止资产发布。原始失败和恢复运行必须分别留档，不混写为同一次成功的 Release run。
+专用 `.github/workflows/immutable-v100-recovery.yml` 以**已存在的 Tag `v1.0.0` 和 index digest** 为只读镜像输入，重新验证远端 Tag 指向、版本身份、上一正式基线、实际双架构子配置、AMD64 正式摘要运行与相邻升级/回滚、QEMU 和原生 ARM64 正式摘要运行。仅当上述三个独立 Job 均通过且 GitHub Release 仍不存在时，资产 Job 才可针对**同一个 digest、同一 Tag、同一原始提交**生成 SBOM/manifest/SHA256SUMS、上传 Release、下载回读校验并最终推进 `stable/latest`。其代码不得构建、覆盖 `:1.0.0` 或移动 `v1.0.0` Tag；任何验证失败均停止资产发布。原始失败和恢复运行必须分别留档，不混写为同一次成功的 Release run。
+
+首次 [受控恢复 run `35506579423`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506579423) 在一个 AMD64 Runner 上依次运行 AMD64 原始摘要启动、v0.1.9→原始摘要→v0.1.9 升级回滚、ARM64 QEMU 原始运行脚本：前两项成功，QEMU 随后约 6 秒内失败；另一个独立原生 ARM64 Job 成功，资产 Job 依赖失败而跳过。与此前在独立干净 QEMU Runner 上通过的诊断相比较，**共享同一 Docker Runner 先执行 AMD64 再执行 QEMU** 是可疑的环境差异；目前没有原始完整报错，不得将其断言为已确诊的缓存故障。
+
+恢复工作流已改为三个独立 Runner（AMD64 正式相邻升级/回滚、仅使用 ARM64 的干净 QEMU、原生 ARM64），三者均检查原始 index digest，并由资产 Job 同时依赖三个结果。该隔离消除不同架构的本地镜像引用/缓存相互影响这一潜在干扰，不省略任何正式运行或回滚校验；第一次失败的恢复记录仍保留。
