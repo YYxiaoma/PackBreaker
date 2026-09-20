@@ -61,3 +61,9 @@ release manifest 不保存凭证、数据库或真实环境路径。SBOM 从已�
 - 已只读回读公开 GHCR：`ghcr.io/yyxiaoma/packbreaker:1.0.0` 的 OCI index digest 为 `sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4`，存在 `linux/amd64` 子镜像 `sha256:a3c39fe8a34e6f4dd9501410a74e21a62f606ee85b6f9cf318f39d8b91af7de2` 与 `linux/arm64` 子镜像 `sha256:faa23abe3009b1c2f770677e7effeb7a1e3424f5182d0d0ad492ce3ecb9ee8ec`。两项配置 blob 的实际 OS/CPU、版本 1.0.0、修订标签均与索引及提交一致；**配置正确不等于 ARM64 正式运行通过**。
 - GitHub API 没有 `v1.0.0` Release，最新正式 Release 仍为 `v0.1.9`；公开 GHCR `stable`、`latest` 和 `0.1.9` 仍指向上一正式 digest `sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。禁止把已推送但验收失败的 v1.0.0 index 作为生产部署身份或自动升级目标；`release-baseline.json` 继续固定 v0.1.9。
 - 恢复发布前先取得 run `35504683200` / job `106062685717` 的失败步骤原始日志，在受控 CI 中复现并修复；再以**新的不可变版本身份**重新执行完整发行门禁，或另行制定经审查且不覆盖既有版本的恢复流程。不能简单重跑原工作流：它会拒绝已存在的 `:1.0.0` 镜像。
+
+## 7. 相同不可变摘要的独立诊断与受控恢复
+
+[Immutable ARM64 Diagnostics run `35506113046`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506113046) 已对原索引 digest 在**原生 ARM64 和 QEMU** 两个独立 Runner 上完成隔离复测，两个 Job 均通过；QEMU 的镜像拉取、Python 执行、创建/启动、readiness、预检、备份和原始 `check-immutable-image-runtime.sh` 全部通过。该证据确认原摘要具备两架构运行能力，但无法从退出码 1 推导首次失败根因，亦不能把失败的原 Release run 事后改记为通过。
+
+专用 `.github/workflows/immutable-v100-recovery.yml` 以**已存在的 Tag `v1.0.0` 和 index digest** 为只读镜像输入，重新验证远端 Tag 指向、版本身份、上一正式基线、实际双架构子配置、AMD64 正式摘要运行与相邻升级/回滚、QEMU 和原生 ARM64 正式摘要运行。仅当上述两个独立 Job 均通过且 GitHub Release 仍不存在时，资产 Job 才可针对**同一个 digest、同一 Tag、同一原始提交**生成 SBOM/manifest/SHA256SUMS、上传 Release、下载回读校验并最终推进 `stable/latest`。其代码不得构建、覆盖 `:1.0.0` 或移动 `v1.0.0` Tag；任何验证失败均停止资产发布。原始失败和恢复运行必须分别留档，不混写为同一次成功的 Release run。

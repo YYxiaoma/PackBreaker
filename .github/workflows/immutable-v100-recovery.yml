@@ -1,0 +1,223 @@
+name: v1.0.0 Published Digest Release Recovery
+
+# Recover a failed, partly published release from the same immutable index.
+# NEVER build or repush :1.0.0 and NEVER move the existing v1.0.0 git tag.
+# The only mutable GHCR channel writes are after all immutable runtime,
+# adjacent-upgrade, and uploaded Release asset readback checks have passed.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/immutable-v100-recovery.yml"
+
+concurrency:
+  group: packbreaker-v100-published-digest-recovery
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: v1.0.0
+  RELEASE_VERSION: 1.0.0
+  RELEASE_COMMIT: ce86939224301315092b27621830560bf8438d58
+  IMAGE_REPO: ghcr.io/yyxiaoma/packbreaker
+  IMAGE_DIGEST: sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4
+  IMAGE: ghcr.io/yyxiaoma/packbreaker@sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4
+  PREVIOUS_TAG: v0.1.9
+  PREVIOUS_DIGEST: sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d
+
+jobs:
+  immutable-amd64-qemu:
+    name: Verify existing digest and formal AMD64 upgrade plus QEMU
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1.0.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse changed tag, existing Release, or changed published image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          remote="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG^{}" | awk '{print $1}')"
+          test "$remote" = "$RELEASE_COMMIT"
+          python scripts/release_manifest.py --tag "$RELEASE_TAG" --validate-tag-only
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::The v1.0.0 Release already exists; do not republish it."
+            exit 1
+          fi
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          test "$latest" = "$PREVIOUS_TAG"
+          baseline="$(python scripts/validate_release_baseline.py --json)"
+          test "$(python -c 'import json,sys; print(json.load(sys.stdin)["image_digest"])' <<<"$baseline")" = "$PREVIOUS_DIGEST"
+          actual="$(docker buildx imagetools inspect "$IMAGE_REPO:$RELEASE_VERSION" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$actual" = "$IMAGE_DIGEST"
+          python scripts/verify_release_platforms.py --image "$IMAGE" \
+            --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --multiarch
+      - name: Verify unchanged AMD64 image through the original release runtime gate
+        run: bash scripts/check-immutable-image-runtime.sh "$IMAGE" linux/amd64 "$RELEASE_TAG" "$RELEASE_COMMIT"
+      - name: Repeat formal v0.1.9 to the published AMD64 digest and rollback
+        run: bash scripts/check-release-upgrade.sh "$IMAGE"
+      - name: Repeat original published ARM64 runtime gate under QEMU
+        run: bash scripts/check-immutable-image-runtime.sh "$IMAGE" linux/arm64 "$RELEASE_TAG" "$RELEASE_COMMIT"
+
+  immutable-native-arm64:
+    name: Verify the exact existing index digest on native ARM64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1.0.0
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate the native host and original release commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+      - name: Repeat the published immutable ARM64 runtime gate natively
+        run: bash scripts/check-immutable-image-runtime.sh "$IMAGE" linux/arm64 "$RELEASE_TAG" "$RELEASE_COMMIT"
+
+  release-assets:
+    name: Publish validated immutable image evidence, then channels
+    needs: [immutable-amd64-qemu, immutable-native-arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1.0.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned uv and frozen release dependencies
+        run: |
+          python -m pip install "uv==0.12.11"
+          uv sync --frozen --all-groups
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fail closed if tagged commit, release baseline or immutable image changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          remote="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG^{}" | awk '{print $1}')"
+          test "$remote" = "$RELEASE_COMMIT"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::An existing v1.0.0 Release must not be overwritten."
+            exit 1
+          fi
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$PREVIOUS_TAG"
+          baseline="$(python scripts/validate_release_baseline.py --json)"
+          test "$(python -c 'import json,sys; print(json.load(sys.stdin)["image_digest"])' <<<"$baseline")" = "$PREVIOUS_DIGEST"
+          actual="$(docker buildx imagetools inspect "$IMAGE_REPO:$RELEASE_VERSION" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$actual" = "$IMAGE_DIGEST"
+          python scripts/verify_release_platforms.py --image "$IMAGE" \
+            --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --multiarch
+          for channel in stable latest; do
+            previous="$(docker buildx imagetools inspect "$IMAGE_REPO:$channel" \
+              --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            test "$previous" = "$PREVIOUS_DIGEST"
+          done
+      - name: Prepare isolated Release evidence directory
+        run: mkdir -p release
+      - name: Generate SPDX SBOM from the unchanged published digest
+        uses: anchore/sbom-action@v0.24.2
+        with:
+          image: ${{ env.IMAGE }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: spdx-json
+          output-file: release/packbreaker-1.0.0.spdx.json
+          artifact-name: packbreaker-1.0.0.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate release manifest and checksums for the original tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python scripts/release_manifest.py \
+            --tag "$RELEASE_TAG" --image "$IMAGE_REPO" \
+            --image-digest "$IMAGE_DIGEST" --commit "$RELEASE_COMMIT" \
+            --sbom release/packbreaker-1.0.0.spdx.json \
+            --output release/packbreaker-1.0.0.release.json
+          (cd release && sha256sum *.json > SHA256SUMS)
+      - name: Verify all local Release assets before publishing
+        run: |
+          uv run python scripts/verify_release_evidence.py \
+            --release-dir release --tag "$RELEASE_TAG" --image "$IMAGE_REPO" \
+            --image-digest "$IMAGE_DIGEST" --commit "$RELEASE_COMMIT"
+      - name: Preserve evidence as a CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packbreaker-1.0.0-immutable-recovery-evidence
+          path: release/
+          if-no-files-found: error
+      - name: Publish the original tag's Release without rebuilding the image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          gh release create "$RELEASE_TAG" release/* --verify-tag \
+            --title "PackBreaker $RELEASE_TAG" --generate-notes
+      - name: Download and verify the actually published Release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          uv run python scripts/verify_published_release_assets.py \
+            --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" \
+            --image "$IMAGE_REPO" --image-digest "$IMAGE_DIGEST" \
+            --commit "$RELEASE_COMMIT"
+      - name: Advance channels only after identical digest and asset readback
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
+          version_digest="$(docker buildx imagetools inspect "$IMAGE_REPO:$RELEASE_VERSION" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$version_digest" = "$IMAGE_DIGEST"
+          docker buildx imagetools create \
+            --tag "$IMAGE_REPO:stable" --tag "$IMAGE_REPO:latest" "$IMAGE"
+          for channel in stable latest; do
+            actual="$(docker buildx imagetools inspect "$IMAGE_REPO:$channel" \
+              --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            test "$actual" = "$IMAGE_DIGEST"
+          done

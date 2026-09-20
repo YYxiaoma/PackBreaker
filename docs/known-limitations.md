@@ -15,6 +15,7 @@
 - 当前最新正式 Release 为 `v0.1.9`，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。
 - 已发布版本继续由跨版本 Docker 升级/恢复门禁与 updater helper E2E 提供正式证据；当前 `release-baseline.json` 已推进到正式 `v0.1.9`，作为下一候选版本的相邻兼容输入。
 - `v1.0.0` Tag 与双架构 GHCR index 已推送，但 2026-09-20 的 [正式 Release run `35504683200`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35504683200) 在已推送不可变摘要的 ARM64 QEMU 运行检查处失败，原生 ARM64 同摘要验收与 GitHub Release 资产发布被跳过。该镜像**不是已完成正式验收的版本**；`stable/latest` 仍固定 v0.1.9。故障根因尚待失败步骤原始日志确认；不得绕过门禁或覆盖已占用的 v1.0.0 版本镜像。详见 [发布流程与中断记录](./release-process.md)。
+- [独立诊断 run `35506113046`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506113046) 已在原生 ARM64 与 QEMU 上使用相同正式 index digest 通过完整启动/备份门禁，首次 QEMU 失败未稳定复现，仍无权推断具体根因。后续恢复只能使用原已推送不可变摘要，经独立、完整、失败关闭的发布门禁获取新的正式验收证据，不能将诊断成功视为发布资产已生成。
 
 ## 3. 升级与 Docker 权限
 
