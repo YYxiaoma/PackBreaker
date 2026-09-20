@@ -59,7 +59,7 @@ jobs:
               subprocess.check_output(
                   ["python3", "scripts/validate_release_baseline.py", "--json"], text=True
               )
-          )["baseline"]
+          )
           if baseline["platform"] != "linux/amd64":
               raise SystemExit("expected published AMD64-only baseline")
           result = subprocess.run(
