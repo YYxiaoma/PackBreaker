@@ -44,7 +44,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **不可变 GHCR 镜像隔离运行门禁（CI run `35490479646`、Candidate Docker E2E `35490479645` 通过；v1.0.0 正式 digest 待验收）**：Candidate Docker E2E run `35480067748` 已对正式 v0.1.9 AMD64 基线不可变 digest 完成隔离启动、版本/架构身份、数据库预检与备份；原生 ARM64 CI run `35480586206` 已通过本地候选运行与下载器链路。正式 Release workflow 改为：镜像 index 推送后完成 AMD64 原生和 QEMU ARM64 运行，再由另一原生 ARM64 Job 拉取**相同不可变 index digest** 运行；最后一个资产发布 Job 必须等待这两阶段通过并重新核对版本 tag digest。原生 ARM64 的本地候选或 QEMU 测试均不能替代正式 v1.0.0 GHCR 不可变 digest 的原生运行验收；该版本尚未发布。
 
-**GitHub Release 上传后回读一致性门禁（新增，待 CI）**：Release workflow 在上传后读回正式 Release 元数据及实际下载的三份资产，再与独立 tag/commit/不可变镜像 digest、SBOM 和 SHA256SUMS 交叉核验；失败不会推进 stable/latest。移动通道前再次确认 GitHub 最新正式 tag 仍为当前版本。新增单元测试以模拟 CLI/合成资产验证失败关闭，不等于正式 v1.0.0 资产已发布或真实双架构运行。
+**GitHub Release 上传后回读一致性门禁（提交 `0c31045`，CI run `35501276565` 离线回归通过）**：Release workflow 在上传后读回正式 Release 元数据及实际下载的三份资产，再与独立 tag/commit/不可变镜像 digest、SBOM 和 SHA256SUMS 交叉核验；失败不会推进 stable/latest。移动通道前再次确认 GitHub 最新正式 tag 仍为当前版本。新增单元测试以模拟 CLI/合成资产验证失败关闭，不等于正式 v1.0.0 资产已发布或真实双架构运行。
 
 当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
 

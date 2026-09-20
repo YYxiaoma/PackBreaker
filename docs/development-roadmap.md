@@ -212,7 +212,7 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **同一发布 digest 的原生 ARM64 上线前运行阻断（提交 `cc3618e`，CI run `35490479646` 五项通过）**：已有 Candidate Docker E2E run `35480067748` 对正式 v0.1.9 不可变 AMD64 digest 的隔离运行检查成功，修复 transient ARM64 CI 测试镜像拉取重试后的 run `35480586206` 五项 Job 成功；这些是历史基线及本地原生候选证据，不是 v1.0.0 发布验收。新拆分 Release workflow 为镜像 index 构建/AMD64 原生与 QEMU ARM64 验证、独立原生 ARM64 对**相同已推送不可变 index digest** 的隔离运行、最后才生成/发布资产三阶段。未通过原生 ARM64 的正式 digest、版本 tag 重新核对或发布清单检查，GitHub Release 与 stable/latest 均不得发布。离线 YAML DAG 回归测试保证产物 Job 必须同时等待前两阶段；真实 v1.0.0 双平台不可变 digest 运行仍须在未来正式构建后单独验证，尚未创建 v1.0.0 Tag/Release/GHCR 镜像。
 
-**GitHub Release 已上传资产只读回读门禁（新增，待 CI 验收）**：Release workflow 在发布三份资产后、不移动 stable/latest 前，通过 GitHub API 精确检查正式 tag 与资产集合及大小，重新下载实际公开的 SBOM、发布清单、SHA256SUMS，交叉核验独立 tag/commit/不可变 index digest、文件内容与校验和，缺失、重复、下载失败或上传后内容漂移均失败关闭；同时要求当前 tag 仍是 GitHub 最新正式 Release，防止较旧流程回退通道。本地单测仅模拟 GitHub CLI 的只读返回和下载，不能冒充 v1.0.0 已正式发布或 GHCR 双架构真实运行验收；不创建 tag、Release 或 GHCR 镜像。
+**GitHub Release 已上传资产只读回读门禁（提交 `0c31045`，GitHub CI run `35501276565` 五项通过）**：Release workflow 在发布三份资产后、不移动 stable/latest 前，通过 GitHub API 精确检查正式 tag 与资产集合及大小，重新下载实际公开的 SBOM、发布清单、SHA256SUMS，交叉核验独立 tag/commit/不可变 index digest、文件内容与校验和，缺失、重复、下载失败或上传后内容漂移均失败关闭；同时要求当前 tag 仍是 GitHub 最新正式 Release，防止较旧流程回退通道。本地单测仅模拟 GitHub CLI 的只读返回和下载，不能冒充 v1.0.0 已正式发布或 GHCR 双架构真实运行验收；不创建 tag、Release 或 GHCR 镜像。
 
 ## 9. 工作项拆分模板
 
