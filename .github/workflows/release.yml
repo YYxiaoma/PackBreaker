@@ -173,6 +173,19 @@ jobs:
             --tag "$GITHUB_REF_NAME" \
             --commit "$GITHUB_SHA" \
             "${platform_args[@]}"
+      - name: Exercise immutable published AMD64 image in isolated runtime
+        shell: bash
+        run: |
+          bash scripts/check-immutable-image-runtime.sh \
+            "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}" \
+            linux/amd64 "$GITHUB_REF_NAME" "$GITHUB_SHA"
+      - name: Exercise immutable published ARM64 image under QEMU in isolated runtime
+        if: ${{ !startsWith(github.ref_name, 'v0.') }}
+        shell: bash
+        run: |
+          bash scripts/check-immutable-image-runtime.sh \
+            "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}" \
+            linux/arm64 "$GITHUB_REF_NAME" "$GITHUB_SHA"
       - name: Generate SPDX SBOM from immutable image digest
         uses: anchore/sbom-action@v0.24.2
         with:

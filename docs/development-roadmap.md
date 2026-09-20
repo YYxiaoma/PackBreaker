@@ -208,6 +208,8 @@ v1.0.0 在当前已发布的 `linux/amd64` 基础上增加 `linux/arm64`，通�
 
 **发布子镜像实际配置与版本身份门禁（代码 `8b82032`，GitHub CI run `35477811583`、Candidate Docker E2E run `35477811590` 通过）**：Release workflow 在索引与子 manifest 检查之后，以子镜像的不可变 digest 读取 Docker Buildx `.Image` 配置，校验实际 OS/架构与平台声明一致、rootfs 层数与子 manifest 一致，且 OCI image.version/image.revision 分别精确匹配 GitHub Release tag 和 workflow 提交 SHA；不匹配即在 SBOM/GitHub Release 资产发布前失败关闭。新增独立的离线异常回归及 CLI 参数契约测试；Candidate Docker E2E run `35477811590` 已对正式发布的 v0.1.9 不可变 AMD64 baseline 完成同一套 registry 只读检查，验证真实 GHCR 与 Buildx 读取链路；先前首次接入时因测试脚本误解析 baseline JSON 而失败，提交 `abb2953` 修正后重跑通过。两项测试都不能取代真正发布后的 v1.0.0 双平台在线配置检查、按正式 digest 的 AMD64/ARM64 宿主机运行及正式相邻版本升级/回滚验收；本轮没有创建正式 v1.0.0 Tag、Release 或 GHCR 镜像。
 
+**不可变 GHCR 镜像运行门禁（新增，待新 CI）**：新增 `check-immutable-image-runtime.sh`，仅接受完整 `ghcr.io/...@sha256:<digest>`、显式平台、独立 release tag 与提交 SHA。Candidate Docker E2E 将先按已正式发布的 v0.1.9 AMD64 基线 digest 拉取镜像，在完全独立的临时 `/config`、`/data` 中进行无宿主机端口的启动、真实镜像平台、OCI version/revision、内置 Python 版本与 CPU、健康状态、维护预检及数据库备份验收。Release workflow 在已推送候选索引配置身份核对之后、SBOM 与 GitHub Release 资产上传之前，对同一不可变 digest 分别进行 AMD64 原生与 QEMU ARM64 隔离运行。该门禁不触碰真实 PT、下载器或用户媒体；QEMU 运行仍不足以证明正式 v1.0.0 镜像在**原生 ARM64** 主机按 digest 运行，也不是不存在的上一正式 ARM64 跨版本升级证据。本次不创建 v1.0.0 Release。
+
 ## 9. 工作项拆分模板
 
 每个 Issue 至少包含：

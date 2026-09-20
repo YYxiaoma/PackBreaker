@@ -14,6 +14,7 @@ on:
       - "backend/app/**"
       - "scripts/check-updater-e2e.sh"
       - "scripts/check-release-upgrade.sh"
+      - "scripts/check-immutable-image-runtime.sh"
       - "scripts/verify_release_platforms.py"
       - "scripts/validate_release_baseline.py"
       - "release-baseline.json"
@@ -83,6 +84,15 @@ jobs:
               result.check_returncode()
           print(result.stdout, end="")
           PY
+
+      - name: Exercise immutable published AMD64 baseline startup in isolated runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t baseline_fields < <(python3 scripts/validate_release_baseline.py --json | python3 -c 'import json,sys; b=json.load(sys.stdin); print(b["immutable_image"]); print(b["tag"]); print(b["commit"])')
+          test "${#baseline_fields[@]}" -eq 3
+          bash scripts/check-immutable-image-runtime.sh \
+            "${baseline_fields[0]}" linux/amd64 "${baseline_fields[1]}" "${baseline_fields[2]}"
 
       - name: Build current main as local candidate
         shell: bash
