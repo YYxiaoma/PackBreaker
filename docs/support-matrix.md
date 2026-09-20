@@ -46,7 +46,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **GitHub Release 上传后回读一致性门禁（提交 `0c31045`，CI run `35501276565` 离线回归通过）**：Release workflow 在上传后读回正式 Release 元数据及实际下载的三份资产，再与独立 tag/commit/不可变镜像 digest、SBOM 和 SHA256SUMS 交叉核验；失败不会推进 stable/latest。移动通道前再次确认 GitHub 最新正式 tag 仍为当前版本。新增单元测试以模拟 CLI/合成资产验证失败关闭，不等于正式 v1.0.0 资产已发布或真实双架构运行。
 
-当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码保持 v0.1.9 版本线；真实 Docker 跨版本升级/回滚与 updater helper E2E 均已由正式 Release workflow 验证；浏览器 E2E 由发布前独立门禁完成。
+当前开发 Runner 没有 Docker daemon，但 GitHub Actions 已持续承担真实容器门禁。当前最新正式 Release 为 `v0.1.9`，Release workflow run `35429394091` 已成功完成正式发布，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。当前源码为 v1.0.0 **待发布候选**，尚未取得新版本真实双架构 GHCR 摘要、发布资产及正式相邻版本升级/回滚证据；历史 v0.1.9 的 Docker 验收不能替代这些新版本证据。
 
 ## 2. 下载器
 

@@ -11,7 +11,7 @@
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64"></a>
   <img src="https://img.shields.io/badge/latest_release-v0.1.9-2563EB" alt="latest release v0.1.9">
-  <img src="https://img.shields.io/badge/main-v0.1.9_released-16A34A" alt="main v0.1.9 released">
+  <img src="https://img.shields.io/badge/main-v1.0.0_candidate-F59E0B" alt="main v1.0.0 release candidate">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 
@@ -43,7 +43,7 @@ PackBreaker 是一个面向 PT 场景的**自动拆包辅种系统**。它从 qB
   </tr>
 </table>
 
-| **759** 后端测试 | **81** 前端测试 | **qB 真实写链路** | **Transmission 真实写链路** |
+| **885** 后端测试（v1.0.0 候选） | **85** 前端测试（v1.0.0 候选） | **qB 真实写链路** | **Transmission 真实写链路** |
 | ---: | ---: | ---: | ---: |
 | 全量通过 | 全量通过 | add / verify / start / remove 通过 | add / verify / start / remove 通过 |
 
@@ -431,6 +431,8 @@ uv run python scripts/test.py
 ---
 
 ## 📊 当前状态
+
+**main 分支当前为 v1.0.0 待发布候选**，以正式 v0.1.9 为相邻版本升级/回滚基线；双架构 GHCR 镜像、已发布资产和正式 AMD64 升级/回滚必须在真实 CI 验收完成后才能声明为正式发布。下述最新正式版本及其 digest 在 v1.0.0 发布前保持不变。
 
 **最新正式版本为 v0.1.9。** 本版聚焦总览页重构、系统资源只读监控、日志中文化以及任务中心和导航交互精简。正式 Release workflow run [`35429394091`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35429394091) 已成功完成全量质量门、`v0.1.8 → v0.1.9 → v0.1.8` 真实 Docker 升级/回滚、真实 updater helper 升级与自动回滚 E2E，并发布 `linux/amd64` 镜像、SPDX SBOM、release manifest 和校验和。正式部署使用 [v0.1.9 Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v0.1.9) 中的不可变 digest，不能用可移动 tag 代替。
 

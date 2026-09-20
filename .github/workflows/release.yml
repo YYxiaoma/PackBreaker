@@ -188,6 +188,12 @@ jobs:
           bash scripts/check-immutable-image-runtime.sh \
             "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}" \
             linux/amd64 "$GITHUB_REF_NAME" "$GITHUB_SHA"
+      - name: Exercise formal AMD64 adjacent upgrade and rollback with published immutable digest
+        if: ${{ !startsWith(github.ref_name, 'v0.') }}
+        shell: bash
+        run: |
+          bash scripts/check-release-upgrade.sh \
+            "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"
       - name: Exercise immutable published ARM64 image under QEMU in isolated runtime
         if: ${{ !startsWith(github.ref_name, 'v0.') }}
         shell: bash

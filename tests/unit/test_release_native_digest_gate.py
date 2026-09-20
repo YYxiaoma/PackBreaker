@@ -44,6 +44,28 @@ def test_release_assets_wait_for_native_arm64_same_immutable_digest() -> None:
 
     assert "docker/build-push-action@v7.3.0" in build_steps
     assert "Exercise immutable published ARM64 image under QEMU" in build_steps
+    published_upgrade_steps = [
+        (index, step)
+        for index, step in enumerate(build["steps"])
+        if step.get("name")
+        == "Exercise formal AMD64 adjacent upgrade and rollback with published immutable digest"
+    ]
+    assert len(published_upgrade_steps) == 1
+    upgrade_index, upgrade_step = published_upgrade_steps[0]
+    assert upgrade_step["if"] == "${{ !startsWith(github.ref_name, 'v0.') }}"
+    assert upgrade_step["run"].strip() == (
+        "bash scripts/check-release-upgrade.sh \\\n"
+        '  "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"'
+    )
+    step_names = [step.get("name") for step in build["steps"]]
+    assert step_names.index("Build and publish target architecture image index") < upgrade_index
+    assert (
+        step_names.index("Exercise immutable published AMD64 image in isolated runtime")
+        < upgrade_index
+    )
+    assert upgrade_index < step_names.index(
+        "Exercise immutable published ARM64 image under QEMU in isolated runtime"
+    )
     assert "gh release create" not in build_steps
     assert "actions/upload-artifact" not in build_steps
     assert ":stable" not in build_steps and ":latest" not in build_steps

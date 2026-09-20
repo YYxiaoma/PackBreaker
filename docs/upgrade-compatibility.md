@@ -2,15 +2,15 @@
 
 ## 1. 当前基线
 
-当前项目候选版本为 `0.1.2`，Alembic head 为 `0023_backup_policy`。升级兼容性以数据库 revision 和可恢复证据为准，不以镜像标签名称猜测。
+当前项目候选版本为 `1.0.0`，Alembic head 为 `0029_v018_compatibility`；上一正式版本基线为 `v0.1.9`。升级兼容性以数据库 revision 和可恢复证据为准，不以镜像标签名称猜测。
 
 ## 2. 自动化兼容矩阵
 
 | 来源状态 | 目标 | 自动化结论 | 回滚边界 |
 | --- | --- | --- | --- |
 | 空配置、无数据库 | 当前 head | 支持；先在同文件系统临时数据库执行全量迁移，通过完整性/head 校验后原子安装 | 首装迁移失败时不创建/不保留半成品目标数据库 |
-| `0001_m1_core` ～ `0022_history_scan_cancelled` 任一历史 revision | `0023_backup_policy` | 支持；22 个历史 revision 全量参数化矩阵均执行真实 Alembic upgrade 并验证业务探针保留 | 切换前创建一致性 `pre-upgrade` 快照；临时迁移失败不切换，切换后验证失败自动恢复快照 |
-| 已是 `0023_backup_policy` | 同一 head | 支持；启动时 no-op，不额外制造升级快照 | 无需回滚 |
+| `0001_m1_core` ～ `0028_telegram_approval_v018` 任一历史 revision | `0029_v018_compatibility` | 支持；历史 revision 全量参数化矩阵均执行真实 Alembic upgrade 并验证业务探针保留 | 切换前创建一致性 `pre-upgrade` 快照；临时迁移失败不切换，切换后验证失败自动恢复快照 |
+| 已是 `0029_v018_compatibility` | 同一 head | 支持；启动时 no-op，不额外制造升级快照 | 无需回滚 |
 | 未来、未知、分叉或损坏 revision | 当前 head | 未声明支持；完整性/revision/临时迁移任一失败均失败关闭 | 不允许直接修改当前数据库；已有数据库保留原状态 |
 | 当前数据库降级给旧镜像读取 | 旧 revision | 不支持原地 downgrade 作为生产回滚手段 | 必须恢复升级前备份，再启动与该备份兼容的旧镜像 |
 
