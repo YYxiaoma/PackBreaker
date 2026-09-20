@@ -1,0 +1,136 @@
+name: v1.0.0 Immutable ARM64 Diagnostics
+
+# This is a read-only recovery diagnostic for the already-pushed, immutable
+# v1.0.0 index. It never builds, pushes, retags, or creates a GitHub Release.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/immutable-v100-diagnostics.yml"
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: immutable-v100-diagnostics
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/yyxiaoma/packbreaker@sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4
+  RELEASE_TAG: v1.0.0
+  RELEASE_COMMIT: ce86939224301315092b27621830560bf8438d58
+
+jobs:
+  qemu-arm64:
+    name: QEMU ARM64 immutable index diagnostics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull the exact ARM64 digest through QEMU
+        run: docker pull --platform linux/arm64 "$IMAGE"
+      - name: Run ARM64 Python under QEMU without network or mounts
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/arm64 --network none \
+            --entrypoint python "$IMAGE" \
+            -c 'import platform; assert platform.machine() == "aarch64"'
+      - name: Create isolated QEMU runtime config and data
+        shell: bash
+        run: |
+          set -euo pipefail
+          sandbox="$(mktemp -d "$RUNNER_TEMP/packbreaker-v100-qemu.XXXXXXXX")"
+          chmod 700 "$sandbox"
+          mkdir -m 700 "$sandbox/config" "$sandbox/data"
+          echo "DIAG_ROOT=$sandbox" >> "$GITHUB_ENV"
+          echo "DIAG_CONTAINER=packbreaker-v100-qemu-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+      - name: Create the actual ARM64 container with no network or published ports
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker create --name "$DIAG_CONTAINER" --platform linux/arm64 \
+            --network none --user "$(id -u):$(id -g)" \
+            --volume "$DIAG_ROOT/config:/config" \
+            --volume "$DIAG_ROOT/data:/data" "$IMAGE"
+          image_id="$(docker inspect "$DIAG_CONTAINER" --format '{{.Image}}')"
+          test "$(docker image inspect "$image_id" --format '{{.Os}}/{{.Architecture}}')" = linux/arm64
+          test "$(docker image inspect "$image_id" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = 1.0.0
+          test "$(docker image inspect "$image_id" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$RELEASE_COMMIT"
+      - name: Start the ARM64 container under QEMU
+        run: docker start "$DIAG_CONTAINER"
+      - name: Wait for ARM64 application readiness under QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            if docker exec --user "$(id -u):$(id -g)" "$DIAG_CONTAINER" \
+              python -m backend.app.healthcheck; then
+              exit 0
+            fi
+            if [[ "$(docker inspect "$DIAG_CONTAINER" --format '{{.State.Running}}')" != true ]]; then
+              docker logs "$DIAG_CONTAINER"
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs "$DIAG_CONTAINER"
+          exit 1
+      - name: Run ARM64 preflight and verify runtime identity under QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec --user "$(id -u):$(id -g)" "$DIAG_CONTAINER" \
+            python -m backend.app.maintenance preflight
+          docker exec --user "$(id -u):$(id -g)" "$DIAG_CONTAINER" \
+            python -c 'from backend.app.versioning import app_version; import platform; assert app_version() == "1.0.0"; assert platform.machine() == "aarch64"'
+      - name: Back up the isolated ARM64 database under QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec --user "$(id -u):$(id -g)" "$DIAG_CONTAINER" \
+            python -m backend.app.maintenance backup
+          test "$(find "$DIAG_ROOT/config/backups" -maxdepth 1 -type f -name 'packbreaker-*.db' | wc -l)" -eq 1
+      - name: Re-run the original release ARM64 immutable runtime gate
+        shell: bash
+        run: |
+          bash scripts/check-immutable-image-runtime.sh \
+            "$IMAGE" linux/arm64 "$RELEASE_TAG" "$RELEASE_COMMIT"
+      - name: Remove only this job's isolated diagnostic runtime
+        if: always()
+        shell: bash
+        run: |
+          docker rm --force "${DIAG_CONTAINER:-unused-v100-diag}" >/dev/null 2>&1 || true
+          if [[ "${DIAG_ROOT:-}" == "$RUNNER_TEMP"/packbreaker-v100-qemu.* && \
+                -d "${DIAG_ROOT:-}" && ! -L "${DIAG_ROOT:-}" ]]; then
+            rm -rf -- "$DIAG_ROOT"
+          fi
+
+  native-arm64:
+    name: Native ARM64 immutable index verification
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Confirm native ARM64 host CPU
+        run: test "$(uname -m)" = aarch64
+      - name: Pull the same published immutable ARM64 digest natively
+        run: docker pull --platform linux/arm64 "$IMAGE"
+      - name: Run the original immutable ARM64 runtime gate natively
+        shell: bash
+        run: |
+          bash scripts/check-immutable-image-runtime.sh \
+            "$IMAGE" linux/arm64 "$RELEASE_TAG" "$RELEASE_COMMIT"

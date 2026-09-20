@@ -14,6 +14,7 @@
 - 当前开发 Runner 无 Docker daemon；GitHub Actions 持续承担容器、备份/恢复和 updater 的真实 Docker 门禁。Release workflow run `35429394091` 已为 `v0.1.9` 提供真实 Docker 构建、`v0.1.8 → v0.1.9 → v0.1.8` 升级/回滚与 updater helper E2E 证据，并继续覆盖既有 Compose labels 与 docker.sock 保留要求。
 - 当前最新正式 Release 为 `v0.1.9`，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。
 - 已发布版本继续由跨版本 Docker 升级/恢复门禁与 updater helper E2E 提供正式证据；当前 `release-baseline.json` 已推进到正式 `v0.1.9`，作为下一候选版本的相邻兼容输入。
+- `v1.0.0` Tag 与双架构 GHCR index 已推送，但 2026-09-20 的 [正式 Release run `35504683200`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35504683200) 在已推送不可变摘要的 ARM64 QEMU 运行检查处失败，原生 ARM64 同摘要验收与 GitHub Release 资产发布被跳过。该镜像**不是已完成正式验收的版本**；`stable/latest` 仍固定 v0.1.9。故障根因尚待失败步骤原始日志确认；不得绕过门禁或覆盖已占用的 v1.0.0 版本镜像。详见 [发布流程与中断记录](./release-process.md)。
 
 ## 3. 升级与 Docker 权限
 
