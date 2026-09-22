@@ -594,6 +594,13 @@ class SiteService:
                 title="站点用户详情身份不匹配",
                 detail="站点适配器返回了意外的站点身份",
             )
+        # A remote read may finish after another client replaces the site's
+        # credentials, switches its type, or deletes it. Never return personal
+        # statistics captured under an obsolete connection snapshot.
+        with self._session_factory() as session:
+            current = self._require_record(SiteRepository(session), site_id)
+            if current.version != snapshot.version or current.secret_id != snapshot.secret_id:
+                raise self._version_conflict()
         return profile
 
     def _connection_snapshot(self, site_id: str) -> _SiteConnectionSnapshot:

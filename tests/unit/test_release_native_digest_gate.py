@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,73 @@ import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+
+
+def test_native_arm64_candidate_smoke_is_ephemeral_and_network_isolated() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["arm64-validation"]["steps"]
+    smoke = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Build and smoke test native ARM64 release candidate"
+    )
+    assert 'mktemp -d "${TMPDIR:-/tmp}/.packbreaker-arm64-candidate.XXXXXXXX"' in smoke
+    assert "trap cleanup EXIT" in smoke
+    assert '"$sandbox/config:/config"' in smoke
+    assert '"$sandbox/data:/data"' in smoke
+    assert 'docker run --detach --name "$container"' in smoke
+    assert "--network none" in smoke
+    assert "backend.app.healthcheck" in smoke
+    assert "--publish" not in smoke
+    assert "--network host" not in smoke
+    assert ".ci-release-arm64-config" not in smoke
+    assert ".ci-release-arm64-data" not in smoke
+    assert "docker logs" not in smoke  # May disclose a generated bootstrap password.
+
+
+def test_native_arm64_candidate_failed_start_cleans_only_its_sandbox(tmp_path: Path) -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["arm64-validation"]["steps"]
+    smoke = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Build and smoke test native ARM64 release candidate"
+    )
+    preserved = tmp_path / ".packbreaker-arm64-candidate.preserved"
+    preserved.mkdir()
+    sentinel = preserved / "user-data"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    uname = fake_bin / "uname"
+    uname.write_text("#!/bin/sh\nprintf 'aarch64\\n'\n", encoding="utf-8")
+    uname.chmod(0o755)
+    docker = fake_bin / "docker"
+    docker.write_text(
+        '#!/bin/sh\ncase "$1" in\n  build|rm) exit 0;;\n  run) exit 88;;\n  *) exit 89;;\nesac\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    completed = subprocess.run(
+        ["bash", "-c", smoke],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+            "TMPDIR": str(tmp_path),
+            "GITHUB_REF_NAME": "v1.0.1",
+            "GITHUB_SHA": "a" * 40,
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert completed.returncode == 88
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert list(tmp_path.glob(".packbreaker-arm64-candidate.*")) == [preserved]
 
 
 def _validate_order(jobs: dict[str, object]) -> None:

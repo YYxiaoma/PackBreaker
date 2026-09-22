@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from urllib.parse import SplitResult, parse_qs, urlencode, urljoin, urlsplit
@@ -103,6 +104,7 @@ HHCLUB_PROFILE = NexusPhpProfile(
 @dataclass(slots=True)
 class _Row:
     cells: list[str] = field(default_factory=list)
+    cell_text_parts: list[list[str]] = field(default_factory=list)
     cell_titles: list[list[str]] = field(default_factory=list)
     links: list[tuple[str, str | None, str]] = field(default_factory=list)
     active_cell: int | None = None
@@ -161,6 +163,7 @@ class _NexusHtmlParser(HTMLParser):
         elif tag == "td" and self._row_stack:
             row = self._row_stack[-1]
             row.cells.append("")
+            row.cell_text_parts.append([])
             row.cell_titles.append([])
             row.active_cell = len(row.cells) - 1
         elif tag == "span" and self._row_stack:
@@ -213,6 +216,8 @@ class _NexusHtmlParser(HTMLParser):
         for row in self._row_stack:
             if row.active_cell is not None:
                 row.cells[row.active_cell] += data
+                if cleaned:
+                    row.cell_text_parts[row.active_cell].append(cleaned)
         if self._link_stack:
             self._link_stack[-1][2].append(data)
         if self._heading_depth:
@@ -288,20 +293,148 @@ class NexusPhpWebAdapter:
         if not authenticated:
             raise SiteAdapterError("SITE_AUTH_FAILED", "NexusPHP Cookie 无效或会话已失效")
         profile_link = _user_profile_link(index.all_links)
+        confirmed_from_settings = False
         if profile_link is None:
             parser = _parse_html(await self._get_html(f"/{self._profile.authenticated_href}"))
+            self._reject_login_page(parser)
             uid = None
             username = None
+            # A public homepage can link to many other accounts. The signed-in
+            # user's own settings page may provide a unique ordinary profile
+            # link without requiring us to guess an identity from that homepage.
+            settings_link = _user_profile_link(parser.all_links)
+            if settings_link is not None:
+                href, settings_uid, settings_username = settings_link
+                try:
+                    profile_url = self._same_origin_url(href)
+                except SiteAdapterError:
+                    # Never follow a foreign link or use its UID for AJAX.
+                    pass
+                else:
+                    parser = _parse_html(await self._get_html_url(profile_url))
+                    uid = settings_uid
+                    username = settings_username
+                    confirmed_from_settings = True
         else:
             href, uid, username = profile_link
             parser = _parse_html(await self._get_html_url(self._same_origin_url(href)))
         self._reject_login_page(parser)
-        return _parse_nexus_user_profile(
+        profile = _parse_nexus_user_profile(
             parser,
             site_id=self._profile.site_id,
             uid=uid,
             username=username,
         )
+        if self._profile.site_id == "hhclub" and profile.bonus_per_hour is None:
+            # HHClub displays the hourly rate on its independent bonus page.
+            # Follow only an explicit same-origin profile link to that known read-only page.
+            bonus_href = next(
+                (
+                    href
+                    for href, _, _ in parser.all_links
+                    if urlsplit(href).path.lstrip("/") == "mybonus.php"
+                    and not urlsplit(href).query
+                    and not urlsplit(href).fragment
+                ),
+                None,
+            )
+            if bonus_href is not None:
+                try:
+                    bonus_page = _parse_html(
+                        await self._get_html_url(self._same_origin_url(bonus_href))
+                    )
+                    self._reject_login_page(bonus_page)
+                    hourly = _parse_hhclub_hourly_bonus(bonus_page)
+                    if hourly is not None:
+                        profile = replace(profile, bonus_per_hour=hourly)
+                except SiteAdapterError:
+                    # Optional profile statistics must not hide the valid main profile.
+                    # Never invent a numeric value when the bonus page is inaccessible.
+                    pass
+        if (
+            self._profile.site_id == "hhclub"
+            and uid is not None
+            and profile.torrents_posted is None
+        ):
+            publication_href = _own_published_list_href(parser, uid=uid)
+            if publication_href is not None:
+                try:
+                    published_page = await self._get_html_url(
+                        self._same_origin_url(publication_href)
+                    )
+                    self._reject_login_page(_parse_html(published_page))
+                    # Only the current user's explicitly linked publication page
+                    # may authorize this fixed, read-only, first-page JSON request.
+                    if _hhclub_publication_ajax_confirmed(published_page, uid=uid):
+                        published_json = await self._get_html(
+                            "/getusertorrentlistajax.php",
+                            params={"type": "uploaded", "userid": uid, "ajax": "1", "page": "0"},
+                        )
+                        published_total = _parse_hhclub_published_total(published_json)
+                        if published_total is not None:
+                            profile = replace(profile, torrents_posted=published_total)
+                except SiteAdapterError:
+                    # A missing/invalid optional published list must not hide the
+                    # authenticated user profile or fabricate a zero total.
+                    pass
+        if (
+            self._profile.site_id == "hdtime"
+            and uid is not None
+            and (profile.seeding_count is None or profile.seeding_size_bytes is None)
+        ):
+            # Follow only the logged-in user's explicitly linked seeding summary,
+            # never an arbitrary URL or a page belonging to another account.
+            seeding_href = _own_seeding_summary_href(parser, uid=uid)
+            # HDTime's authenticated settings page can identify the current
+            # user's profile even when the homepage has other-user links. The
+            # real profile displays a plain "当前做种" field without an action=2
+            # anchor; in that narrowly verified case the fixed read-only AJAX
+            # endpoint may be used directly for this current account.
+            ajax_authorized = (
+                seeding_href is None
+                and confirmed_from_settings
+                and any(_clean_text(part).rstrip(":：") == "当前做种" for part in parser.text_parts)
+            )
+            summary = None
+            if seeding_href is not None:
+                try:
+                    seeding_url = self._same_origin_url(seeding_href)
+                except SiteAdapterError:
+                    # An untrusted/cross-origin link must not authorize an AJAX request.
+                    pass
+                else:
+                    ajax_authorized = True
+                    try:
+                        seeding_page = _parse_html(await self._get_html_url(seeding_url))
+                        self._reject_login_page(seeding_page)
+                        summary = _parse_explicit_seeding_summary(seeding_page)
+                    except SiteAdapterError:
+                        # A failed optional page must not mask the main profile.
+                        pass
+            if ajax_authorized and summary is None:
+                try:
+                    # HDTime loads the current user's full seeding aggregate
+                    # from a known read-only HTML fragment, not the paginated rows.
+                    ajax_page = _parse_html(
+                        await self._get_html(
+                            "/getusertorrentlistajax.php",
+                            params={"userid": uid, "type": "seeding"},
+                        )
+                    )
+                    self._reject_login_page(ajax_page)
+                    summary = _parse_hdtime_ajax_seeding_summary(ajax_page)
+                except SiteAdapterError:
+                    pass
+            if summary is not None:
+                count, size = summary
+                profile = replace(
+                    profile,
+                    # The two numbers describe one aggregate snapshot;
+                    # never combine a stale partial profile with a newer total.
+                    seeding_count=count,
+                    seeding_size_bytes=size,
+                )
+        return profile
 
     async def search(self, query: SearchQuery) -> SearchPage:
         params = {
@@ -637,16 +770,28 @@ def _details_link(links: list[tuple[str, str | None, str]]) -> tuple[str, str] |
 def _user_profile_link(
     links: list[tuple[str, str | None, str]],
 ) -> tuple[str, str, str | None] | None:
+    candidate: tuple[str, str, str | None] | None = None
     for href, _, text in links:
         parsed = urlsplit(href)
-        if _script_name(parsed.path) != "userdetails.php":
+        if parsed.path.lstrip("/") != "userdetails.php" or parsed.fragment:
             continue
-        values = parse_qs(parsed.query).get("id")
-        if not values or not values[0].isdigit():
+        params = parse_qs(parsed.query)
+        if set(params) != {"id"}:
+            # Seeding/action links are not evidence of the current user's
+            # identity, even when the homepage links to no other user.
+            continue
+        values = params["id"]
+        if not values or len(values) != 1 or not values[0].isdigit():
             continue
         username = _clean_text(text) or None
-        return href, values[0], username
-    return None
+        if candidate is not None:
+            if candidate[1] != values[0]:
+                # A homepage may link to other users. Never infer which of
+                # multiple IDs belongs to the authenticated account.
+                return None
+            continue
+        candidate = (href, values[0], username)
+    return candidate
 
 
 def _parse_nexus_user_profile(
@@ -666,19 +811,168 @@ def _parse_nexus_user_profile(
         site_id=site_id,
         uid=uid,
         username=username or _profile_text(text, "用户名", "Username", max_length=256),
-        user_level=_profile_text(text, "用户等级", "等级", "Class", max_length=256),
+        user_level=_profile_named_level(parser),
         real_uploaded_bytes=_profile_size(text, "真实上传量", "Real Uploaded"),
         real_downloaded_bytes=_profile_size(text, "真实下载量", "Real Downloaded"),
         uploaded_bytes=uploaded,
         downloaded_bytes=downloaded,
         ratio=ratio,
-        torrents_posted=_profile_int(text, "发种数", "发布种子", "Torrents Posted"),
-        seeding_count=_profile_int(text, "做种数", "当前做种", "Seeding"),
-        seeding_size_bytes=_profile_size(text, "做种量", "Seeding Size"),
+        torrents_posted=_profile_int(text, "发种数", "发布种子", "发布数", "Torrents Posted"),
+        seeding_count=_profile_int(text, "做种数", "当前做种", "正在做种", "Seeding"),
+        seeding_size_bytes=_profile_size(text, "做种量", "当前做种量", "Seeding Size"),
         bonus=_profile_float(text, "魔力值", "Bonus"),
         seeding_points=_profile_float(text, "做种积分", "Seeding Points"),
-        bonus_per_hour=_profile_float(text, "每小时魔力值", "Bonus per hour"),
+        bonus_per_hour=_profile_float(text, "每小时魔力值", "每小时魔力", "Bonus per hour"),
     )
+
+
+def _profile_named_level(parser: _NexusHtmlParser) -> str | None:
+    # Some sites split official names (e.g. "INSANE" + "USER") across nested
+    # elements inside the same grade cell. Do not join unrelated profile fields.
+    for row in parser.rows:
+        for index, cell in enumerate(row.cells[:-1]):
+            if _clean_text(cell).rstrip(":：") not in {
+                "等级",
+                "等級",
+                "用户等级",
+                "用戶等級",
+                "Class",
+            }:
+                continue
+            parts = row.cell_text_parts[index + 1]
+            name = _clean_text(" ".join(parts))
+            if name and len(name) <= 256 and not name.isdecimal():
+                return name
+    text = "|".join(parser.text_parts)
+    fallback_name = _profile_text(text, "用户等级", "等级", "等級", "Class", max_length=256)
+    return fallback_name if fallback_name is not None and not fallback_name.isdecimal() else None
+
+
+def _own_seeding_summary_href(parser: _NexusHtmlParser, *, uid: str) -> str | None:
+    for href, title, label in parser.all_links:
+        if not any(
+            key in _clean_text(f"{title or ''} {label}")
+            for key in ("当前做种", "目前做種", "目前做种", "正在做种")
+        ):
+            continue
+        parsed = urlsplit(href)
+        if parsed.path.lstrip("/") != "userdetails.php" or parsed.fragment:
+            continue
+        params = parse_qs(parsed.query)
+        if set(params) != {"id", "action"}:
+            continue
+        if params["id"] != [uid] or params["action"] != ["2"]:
+            continue
+        return href
+    return None
+
+
+def _own_published_list_href(parser: _NexusHtmlParser, *, uid: str) -> str | None:
+    candidates: set[str] = set()
+    for href, title, label in parser.all_links:
+        if not any(
+            term in _clean_text(f"{title or ''} {label}") for term in ("发种", "发布", "發布")
+        ):
+            continue
+        parsed = urlsplit(href)
+        if parsed.path.lstrip("/") != "userdetails.php" or parsed.fragment:
+            continue
+        params = parse_qs(parsed.query)
+        if set(params) == {"id", "action"} and params["id"] == [uid] and params["action"] == ["1"]:
+            candidates.add(href)
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def _hhclub_publication_ajax_confirmed(page_html: str, *, uid: str) -> bool:
+    # Verified on HHClub's own "发布种子" page. The page supplies a GET query
+    # with type=uploaded, ajax=1 and a page parameter; do not guess variants.
+    return (
+        "getusertorrentlistajax.php" in page_html
+        and "ajax=1" in page_html
+        and "page=" in page_html
+        and (f"userid={uid}&ajax=1" in page_html or f"userid={uid}&amp;ajax=1" in page_html)
+        and re.search(r"\b[A-Za-z_][A-Za-z_0-9]*\s*\(\s*['\"]uploaded['\"]\s*[,)]", page_html)
+        is not None
+        and "合计" in page_html
+        and "发种数量" in page_html
+    )
+
+
+def _parse_hhclub_published_total(response_text: str) -> int | None:
+    try:
+        payload = json.loads(response_text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    total = payload.get("total_count")
+    rows = payload.get("data")
+    page_num = payload.get("page_num")
+    count = payload.get("count")
+    if (
+        type(total) is not int
+        or total < 0
+        or not isinstance(rows, list)
+        or len(rows) > total
+        or type(page_num) is not int
+        or page_num < 0
+        or not isinstance(count, str)
+        or not count.isascii()
+        or not count.isdecimal()
+        or int(count) > total
+    ):
+        return None
+    # total_offical_count is a separate class of torrents; never add it to
+    # total_count or infer a full total from the first page's data/count.
+    return total
+
+
+def _parse_explicit_seeding_summary(
+    parser: _NexusHtmlParser, *, require_leading: bool = False
+) -> tuple[int, int] | None:
+    # An explicit row-count/total-size pair is distinct from a visible list page,
+    # from its pagination bounds, and from incentive-eligible seeding categories.
+    content = "|".join(parser.text_parts)
+    pattern = re.compile(
+        r"(?:^|\|)\s*([0-9][0-9,]*)\s*(?:\|\s*)?条记录\s*(?:\|\s*)?"
+        r"(?:[/／｜]\s*(?:\|\s*)?)?"
+        r"总大小\s*[:：]?\s*(?:\|\s*)?([0-9]+(?:\.[0-9]+)?\s*[KMGTPE]?i?B)"
+        r"(?=\s*(?:\||$))"
+    )
+    matches = list(pattern.finditer(content))
+    if len(matches) != 1 or (require_leading and matches[0].start() != 0):
+        return None
+    count = _parse_nonnegative_int(matches[0].group(1))
+    size = _parse_size(matches[0].group(2))
+    return (count, size) if count is not None and size is not None else None
+
+
+def _parse_hdtime_ajax_seeding_summary(parser: _NexusHtmlParser) -> tuple[int, int] | None:
+    # The independently verified AJAX fragment starts with its full aggregate.
+    # Its following table, pagination and per-torrent values are not totals.
+    leading_text = "|".join(parser.text_parts[:3])
+    if not re.match(r"^\s*[0-9][0-9,]*\s*(?:\|\s*)?条记录\s*(?:\|\s*)?", leading_text):
+        return None
+    return _parse_explicit_seeding_summary(parser, require_leading=True)
+
+
+def _parse_hhclub_hourly_bonus(parser: _NexusHtmlParser) -> float | None:
+    # Avoid using the formula's A/B coefficients or bonus history as the hourly rate.
+    # Only the site's explicit current-hour reward sentence is authoritative here.
+    pattern = re.compile(
+        r"你当前每小时能获取\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*个?(?:积分|魔力值|憨豆)"
+    )
+    for part in parser.text_parts:
+        match = pattern.search(part)
+        if match is None:
+            continue
+        try:
+            value = float(match.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if 0 <= value < float("inf"):
+            return value
+    return None
 
 
 def _profile_value(text: str, labels: tuple[str, ...], value_pattern: str) -> str | None:

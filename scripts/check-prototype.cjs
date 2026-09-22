@@ -63,6 +63,7 @@ const path = require('node:path');
     let siteResetCalls=0;
     let siteEnableCalls=0;
     let siteTestCalls=0;
+    let siteProfileReads=0;
     const taskEvents={
       'task-e2e-execute':[{id:'event-execute-1',task_id:'task-e2e-execute',from_status:'PREFLIGHT',to_status:'AWAITING_CONFIRMATION',event_type:'REVIEW_OPENED',reason:'E2E 初始审核已确认',created_at:now()}],
       'task-e2e-cancel':[{id:'event-cancel-1',task_id:'task-e2e-cancel',from_status:'AWAITING_CONFIRMATION',to_status:'LINKING',event_type:'LINKING_STARTED',reason:'E2E 初始链接阶段',created_at:now()}],
@@ -529,16 +530,27 @@ const path = require('node:path');
       config_version:1,circuit_state:'OPEN',failure_count:3,retry_after_seconds:15,half_open_probe_in_flight:false,rate_limit_wait_seconds:0,
       cache_entries:2,cache_hits:3,cache_misses:1,cache_evictions:0,requests_started:4,requests_succeeded:1,requests_failed:3,retries_scheduled:2,last_error_code:'SITE_TEMPORARY_FAILURE',
     };
+    let e2eHourlyBonus=null;
     await page.route('**/api/v1/sites**',async route=>{
       const request=route.request();
       const url=new URL(request.url());
       if(url.pathname==='/api/v1/sites'&&request.method()==='GET')return fulfillJson(route,{items:[e2eSite]});
       if(url.pathname==='/api/v1/sites/profiles'&&request.method()==='GET')return fulfillJson(route,{items:e2eSiteProfiles});
-      const match=url.pathname.match(/\/api\/v1\/sites\/site-e2e-mteam(?:\/(health|test|actions))?$/);
+      const match=url.pathname.match(/\/api\/v1\/sites\/site-e2e-mteam(?:\/(health|test|actions|profile))?$/);
       if(!match)return route.fallback();
       const tail=match[1]||'';
       if(request.method()==='GET'&&!tail)return fulfillJson(route,e2eSite);
       if(request.method()==='GET'&&tail==='health')return fulfillJson(route,e2eSiteHealth);
+      if(request.method()==='GET'&&tail==='profile'){
+        siteProfileReads+=1;
+        assert.equal(request.postData(),null,'只读用户详情不得提交已保存凭证');
+        return fulfillJson(route,{
+          site_id:'mteam',uid:'99',username:'SyntheticUser',user_level:'Elite Member',
+          real_uploaded_bytes:null,real_downloaded_bytes:null,uploaded_bytes:null,downloaded_bytes:null,ratio:null,
+          torrents_posted:0,seeding_count:37,seeding_size_bytes:5*1024**4,
+          bonus:null,seeding_points:0,bonus_per_hour:e2eHourlyBonus,fetched_at:now(),
+        });
+      }
       if(request.method()==='POST'&&tail==='test'){
         siteTestCalls+=1;
         assert.equal(request.postData(),null,'只读连接测试不应从浏览器提交已保存站点凭证');
@@ -967,6 +979,47 @@ const path = require('node:path');
     await page.locator('.site-toolbar').waitFor();
     const siteCard=page.locator('.connection-card').filter({hasText:'M-Team E2E'});
     await siteCard.getByText('熔断 已打开',{exact:true}).waitFor();
+    assert.equal(siteProfileReads,0,'打开站点列表不得自动请求用户个人资料');
+    await siteCard.getByRole('button',{name:'详情',exact:true}).click();
+    const siteProfileDialog=page.locator('.el-dialog').filter({hasText:'M-Team E2E · 用户详情'});
+    await siteProfileDialog.getByText('Elite Member',{exact:true}).waitFor();
+    assert.equal(siteProfileReads,1,'只有主动打开站点详情时才请求用户资料');
+    const profileValue=async label=>siteProfileDialog.getByText(label,{exact:true}).evaluate(element=>{
+      const cell=element.closest('td,th');
+      if(!cell||!cell.nextElementSibling)throw Error('站点详情缺少统计标签对应值');
+      return cell.nextElementSibling?.textContent?.trim()??'';
+    });
+    assert.equal(await profileValue('做种数'),'37','做种数应使用服务端已确认的完整汇总');
+    assert.equal(await profileValue('做种量'),'5 TiB','做种量应按二进制单位展示');
+    assert.equal(await profileValue('发种数'),'0','已确认零值不能展示为暂无数据');
+    assert.equal(await profileValue('做种积分'),'0','已确认积分零值不能展示为暂无数据');
+    assert.equal(await profileValue('每小时魔力值'),'暂无数据','未证实字段不得伪造为零');
+    // Clipboard is mocked only inside this browser E2E; no real user clipboard
+    // or third-party site data is touched. Explicit click must not fetch again.
+    await page.evaluate(()=>{
+      Object.defineProperty(navigator,'clipboard',{
+        configurable:true,
+        value:{writeText:async text=>{window.__sanitizedAcceptanceCopy=text;}},
+      });
+    });
+    await siteProfileDialog.getByRole('button',{name:'复制脱敏验收结果',exact:true}).click();
+    const acceptanceText=await page.evaluate(()=>window.__sanitizedAcceptanceCopy||'');
+    assert.match(acceptanceText,/站点类型：MTEAM/);
+    assert.match(acceptanceText,/发种数：真实零值/);
+    assert.match(acceptanceText,/做种数：已取得/);
+    assert.match(acceptanceText,/每小时魔力值：缺失/);
+    for(const privateText of ['Elite Member','37','5 TiB',siteCanary]){
+      assert.equal(acceptanceText.includes(privateText),false,'脱敏验收复制不得包含个人数值、等级名称或凭据');
+    }
+    assert.equal(siteProfileReads,1,'复制脱敏结果不得再次请求站点资料');
+    e2eHourlyBonus=0.0004;
+    await siteProfileDialog.getByRole('button',{name:'刷新详情',exact:true}).click();
+    await siteProfileDialog.getByText('0.0004',{exact:true}).waitFor();
+    assert.equal(await profileValue('每小时魔力值'),'0.0004','已知微小正值不得被三位小数舍入为假零');
+    await siteProfileDialog.getByText('Elite Member',{exact:true}).waitFor();
+    assert.equal(siteProfileReads,2,'刷新详情才可重新发起只读用户资料请求');
+    await siteProfileDialog.locator('.el-dialog__headerbtn').click();
+    await siteProfileDialog.waitFor({state:'hidden'});
     assert.equal(await page.getByText(siteCanary,{exact:true}).count(),0,'站点页不得回显已保存凭证明文');
     assert.equal(await page.getByRole('button',{name:/HHClub/}).count(),0,'HHClub 未确认前不得出现可执行创建动作');
     await page.getByRole('button',{name:'重置熔断',exact:true}).click();

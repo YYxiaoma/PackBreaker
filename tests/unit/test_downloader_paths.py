@@ -71,6 +71,31 @@ def test_mapping_rejects_traversal_and_container_escape(tmp_path: Path) -> None:
     assert escape.value.code is ErrorCode.PATH_MAPPING_INVALID
 
 
+def test_remote_downloads_and_downloads2_map_into_explicit_data_root(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    (root / "downloads").mkdir(parents=True)
+    (root / "downloads2").mkdir()
+    rules = normalize_path_mappings(
+        [
+            PathMappingRule("/downloads", str(root / "downloads")),
+            PathMappingRule("/downloads2", str(root / "downloads2")),
+        ],
+        allowed_root=root,
+    )
+    for i, name in enumerate(("downloads", "downloads2")):
+        matched = map_remote_path(f"/{name}/example.mkv", rules, allowed_root=root)
+        assert matched.rule_index == i
+        assert matched.container_path == root / name / "example.mkv"
+
+    # 容器路径不能直接填下载器的 /downloads：必须挂载到数据根目录内。
+    with pytest.raises(DomainViolation) as failure:
+        normalize_path_mappings(
+            [PathMappingRule("/downloads", str(tmp_path / "downloads"))],
+            allowed_root=root,
+        )
+    assert failure.value.code is ErrorCode.PATH_MAPPING_INVALID
+
+
 def test_equal_length_mapping_ambiguity_is_blocked(tmp_path: Path) -> None:
     root = (tmp_path / "data").resolve()
     rules = normalize_path_mappings(

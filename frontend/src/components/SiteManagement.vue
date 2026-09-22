@@ -16,6 +16,7 @@ import type {
   SiteTemporaryProbeInput,
   SiteUserProfile,
 } from '../api/sites';
+import { siteProfileAcceptanceReport } from '../siteProfileAcceptance';
 import { useSiteStore } from '../stores/sites';
 
 interface SiteDraft {
@@ -67,7 +68,7 @@ const draft = reactive<SiteDraft>({
   proxyPassword: '',
   clearProxyPassword: false,
   proxyCredentialConfigured: false,
-  enableAfterSave: false,
+  enableAfterSave: true,
 });
 
 const editing = computed(() => draft.id !== null);
@@ -121,8 +122,12 @@ function statusTag(status: Site['connection_status']): 'success' | 'danger' | 'i
 
 function statusState(item: Site): 'ok' | 'degraded' | 'failed' | 'idle' {
   if (!item.enabled || item.connection_status === 'UNTESTED') return 'idle';
+  if (item.connection_status === 'FAILED') return 'failed';
   const siteHealth = health.value[item.id];
-  if (item.connection_status === 'FAILED' || siteHealth?.circuit_state === 'OPEN') return 'failed';
+  // A successful connection test does not prove the current config's runtime
+  // reliability if health is missing or still belongs to the older version.
+  if (!siteHealth || siteHealth.config_version !== item.version) return 'degraded';
+  if (siteHealth.circuit_state === 'OPEN') return 'failed';
   if (
     siteHealth?.circuit_state === 'HALF_OPEN' ||
     (siteHealth?.rate_limit_wait_seconds ?? 0) > 0 ||
@@ -138,6 +143,8 @@ function statusText(item: Site): string {
   if (!item.enabled) return '已停用';
   if (item.connection_status === 'UNTESTED') return '未测试';
   if (statusState(item) === 'failed') return '连接失败或熔断';
+  if (!health.value[item.id] || health.value[item.id]?.config_version !== item.version)
+    return '连接已验证 · 可靠性待确认';
   if (statusState(item) === 'degraded') return '暂时降级';
   return '连接正常';
 }
@@ -167,7 +174,7 @@ function problemText(problem: ApiProblem): string {
 }
 
 function formatBytes(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '--';
+  if (value === null || value === undefined) return '暂无数据';
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
   let amount = value;
   let unit = 0;
@@ -179,13 +186,24 @@ function formatBytes(value: number | null | undefined): string {
 }
 
 function formatNumber(value: number | null | undefined): string {
-  return value === null || value === undefined ? '--' : value.toLocaleString();
+  return value === null || value === undefined ? '暂无数据' : value.toLocaleString();
 }
 
 function formatDecimal(value: number | null | undefined): string {
-  return value === null || value === undefined
-    ? '--'
-    : value.toLocaleString(undefined, { maximumFractionDigits: 3 });
+  if (value === null || value === undefined) return '暂无数据';
+  if (value > 0 && value < 0.001) {
+    // A verified tiny positive hourly rate / point balance must never be
+    // rounded into an apparently verified zero by the normal 3-place view.
+    return value < 1e-9
+      ? value.toExponential(3)
+      : value.toLocaleString(undefined, { maximumSignificantDigits: 12 });
+  }
+  return value.toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+function formatUserLevel(value: string | null | undefined): string {
+  const normalized = value?.trim();
+  return normalized && !/^\d+$/.test(normalized) ? normalized : '等级名称暂不可用';
 }
 
 async function refresh(notify = true) {
@@ -217,7 +235,7 @@ function resetDraft() {
     proxyPassword: '',
     clearProxyPassword: false,
     proxyCredentialConfigured: false,
-    enableAfterSave: false,
+    enableAfterSave: true,
   });
 }
 
@@ -291,6 +309,10 @@ function validateDraft(requireCredential = false): boolean {
   }
   if (requireCredential && !credentialPayload()) {
     ElMessage.warning('测试未保存配置前需要填写站点凭证');
+    return false;
+  }
+  if (!editing.value && draft.enableAfterSave && !credentialPayload()) {
+    ElMessage.warning('启用站点必须提供凭证，保存后将先执行只读连接测试；也可以选择停用后保存。');
     return false;
   }
   if (draft.proxyEnabled && (!draft.proxyHost.trim() || draft.proxyPort === null)) {
@@ -492,6 +514,23 @@ function openDetails(item: Site) {
 async function refreshDetails() {
   if (!detailSite.value) return;
   await loadDetails(detailSite.value);
+}
+
+async function copySanitizedAcceptance() {
+  const site = detailSite.value;
+  if (!site || isBusy(site, 'profile') || (!detailProfile.value && !detailError.value)) return;
+  const report = siteProfileAcceptanceReport(
+    site.type,
+    detailProfile.value,
+    detailError.value?.code,
+  );
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
+    await navigator.clipboard.writeText(report);
+    ElMessage.success('已复制脱敏字段状态；未包含账号或统计数值');
+  } catch {
+    ElMessage.warning('无法复制，请检查浏览器的剪贴板权限');
+  }
 }
 
 async function toggleEnabled(item: Site, enabled: boolean) {
@@ -742,8 +781,11 @@ async function remove(item: Site) {
           >
         </template>
 
-        <el-form-item v-if="!editing">
-          <el-checkbox v-model="draft.enableAfterSave">保存后自动测试连接并启用</el-checkbox>
+        <el-form-item v-if="!editing" label="是否启用">
+          <el-radio-group v-model="draft.enableAfterSave">
+            <el-radio :value="true">启用（保存后先测试连接）</el-radio>
+            <el-radio :value="false">停用</el-radio>
+          </el-radio-group>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -790,7 +832,7 @@ async function remove(item: Site) {
           detailProfile.username ?? '--'
         }}</el-descriptions-item>
         <el-descriptions-item label="用户等级">{{
-          detailProfile.user_level ?? '--'
+          formatUserLevel(detailProfile.user_level)
         }}</el-descriptions-item>
         <el-descriptions-item label="分享率">{{
           formatDecimal(detailProfile.ratio)
@@ -831,6 +873,12 @@ async function remove(item: Site) {
       </el-descriptions>
       <el-empty v-else-if="!detailError" description="暂无用户详情" />
       <template #footer>
+        <el-button
+          v-if="detailSite && (detailProfile || detailError)"
+          :disabled="isBusy(detailSite, 'profile')"
+          @click="copySanitizedAcceptance"
+          >复制脱敏验收结果</el-button
+        >
         <el-button
           v-if="detailSite"
           :loading="isBusy(detailSite, 'profile')"

@@ -13,18 +13,25 @@ baseline_revision="$(python -c 'import json,sys; print(json.load(sys.stdin)["ale
 baseline_version="$(python -c 'import json,sys; print(json.load(sys.stdin)["version"])' <<<"$baseline_payload")"
 
 runtime_user="$(id -u):$(id -g)"
-suffix="${GITHUB_RUN_ID:-local}-$$"
+# Never assume ownership of a predictable working-tree path during cleanup.
+sandbox="$(mktemp -d "${TMPDIR:-/tmp}/.packbreaker-release-upgrade.XXXXXXXX")"
+chmod 700 "$sandbox"
+suffix="${GITHUB_RUN_ID:-local}-$$-${RANDOM}"
 baseline_container="packbreaker-upgrade-baseline-$suffix"
 candidate_container="packbreaker-upgrade-candidate-$suffix"
 rollback_container="packbreaker-upgrade-rollback-$suffix"
-config_dir="$PWD/.ci-release-upgrade-$suffix-config"
-data_dir="$PWD/.ci-release-upgrade-$suffix-data"
-baseline_build_dir="$PWD/.ci-release-upgrade-$suffix-synthetic-baseline-build"
+config_dir="$sandbox/config"
+data_dir="$sandbox/data"
+baseline_build_dir="$sandbox/synthetic-baseline-build"
 probe_value="baseline:$baseline_version"
 
 cleanup() {
   docker rm --force "$baseline_container" "$candidate_container" "$rollback_container" >/dev/null 2>&1 || true
-  rm -rf "$config_dir" "$data_dir" "$baseline_build_dir"
+  if [[ -d "$sandbox" && ! -L "$sandbox" && \
+        "$(basename "$sandbox")" == .packbreaker-release-upgrade.* && \
+        "$sandbox" != / ]]; then
+    rm -rf -- "$sandbox"
+  fi
 }
 trap cleanup EXIT
 
@@ -35,7 +42,9 @@ wait_ready() {
       return 0
     fi
     if [ "$attempt" -eq 60 ]; then
-      docker logs "$container" || true
+      # Startup logs can contain the one-time administrator password. Never
+      # print raw container output in a release CI failure path.
+      echo "Isolated upgrade container readiness failed; inspect the disposable test environment without publishing bootstrap logs" >&2
       return 1
     fi
     sleep 1
@@ -68,14 +77,22 @@ DOCKERFILE
   test "$(docker image inspect "$baseline_image" --format '{{.Os}}/{{.Architecture}}')" = linux/arm64
   test "$(docker image inspect "$baseline_image" --format '{{.Id}}')" != \
     "$(docker image inspect "$candidate_image" --format '{{.Id}}')"
-  baseline_version="$(docker run --rm "$baseline_image" python -c 'from backend.app.versioning import app_version; print(app_version())')"
-  candidate_version="$(docker run --rm "$candidate_image" python -c 'from backend.app.versioning import app_version; print(app_version())')"
+  baseline_version="$(docker run --rm --network none "$baseline_image" python -c 'from backend.app.versioning import app_version; print(app_version())')"
+  candidate_version="$(docker run --rm --network none "$candidate_image" python -c 'from backend.app.versioning import app_version; print(app_version())')"
   test "$baseline_version" = "$candidate_version"
   probe_value="synthetic-arm64-same-version:$baseline_version"
   echo "Synthetic ARM64 baseline: two different local image identities at the same version (NOT a published ARM64 upgrade)"
 else
   echo "Pull immutable formal baseline: $baseline_image"
   docker pull "$baseline_image"
+  # Check the running package identity before starting containers or touching
+  # the ephemeral database. A stale baseline-version image is not an upgrade.
+  expected_candidate_version="$(python -c 'from scripts.validate_release_baseline import project_version; print(project_version())')"
+  candidate_version="$(docker run --rm --network none "$candidate_image" python -c 'from backend.app.versioning import app_version; print(app_version())')"
+  if [[ "$candidate_version" != "$expected_candidate_version" || "$candidate_version" == "$baseline_version" ]]; then
+    echo "Invalid candidate version: expected a newer project release, not the baseline" >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$config_dir" "$data_dir"
@@ -85,6 +102,7 @@ chmod 755 "$data_dir"
 echo "Start baseline release and create synthetic compatibility state"
 docker run --detach \
   --name "$baseline_container" \
+  --network none \
   --user "$runtime_user" \
   --volume "$config_dir:/config" \
   --volume "$data_dir:/data" \
@@ -109,6 +127,7 @@ docker rm "$baseline_container" >/dev/null
 echo "Start current candidate against baseline config"
 docker run --detach \
   --name "$candidate_container" \
+  --network none \
   --user "$runtime_user" \
   --volume "$config_dir:/config" \
   --volume "$data_dir:/data" \
@@ -116,7 +135,7 @@ docker run --detach \
 wait_ready "$candidate_container"
 assert_probe "$candidate_container"
 docker exec --user "$runtime_user" "$candidate_container" \
-  python -c 'import sqlite3; c=sqlite3.connect("/config/packbreaker.db"); print("candidate_revision=" + c.execute("SELECT version_num FROM alembic_version").fetchone()[0])'
+  python -c 'import sqlite3; from alembic.script import ScriptDirectory; from backend.app.infrastructure.runtime import make_migration_config; head=ScriptDirectory.from_config(make_migration_config("sqlite:////config/packbreaker.db")).get_current_head(); c=sqlite3.connect("file:/config/packbreaker.db?mode=ro",uri=True); row=c.execute("SELECT version_num FROM alembic_version").fetchone(); assert row == (head,), (row,head); print("candidate_revision="+head)'
 if [[ "$baseline_mode" == --synthetic-arm64-baseline ]]; then
   docker exec --user "$runtime_user" -e PB_BASELINE_REVISION="$baseline_revision" "$candidate_container" \
     python -c 'import os,sqlite3; c=sqlite3.connect("/config/packbreaker.db"); row=c.execute("SELECT version_num FROM alembic_version").fetchone(); assert row == (os.environ["PB_BASELINE_REVISION"],), row'
@@ -126,12 +145,14 @@ docker rm "$candidate_container" >/dev/null
 
 echo "Restore baseline backup with the baseline image, then prove rollback readiness"
 docker run --rm \
+  --network none \
   --user "$runtime_user" \
   --volume "$config_dir:/config" \
   --volume "$data_dir:/data" \
   "$baseline_image" \
   python -m backend.app.maintenance verify-backup "/config/backups/$baseline_backup" >/dev/null
 docker run --rm \
+  --network none \
   --user "$runtime_user" \
   --volume "$config_dir:/config" \
   --volume "$data_dir:/data" \
@@ -140,6 +161,7 @@ docker run --rm \
   --confirm-replace-current-database >/dev/null
 docker run --detach \
   --name "$rollback_container" \
+  --network none \
   --user "$runtime_user" \
   --volume "$config_dir:/config" \
   --volume "$data_dir:/data" \

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import cast
 
 import httpx2
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -354,6 +355,139 @@ def test_site_user_profile_is_fetched_only_when_detail_endpoint_is_requested(
         assert body["real_uploaded_bytes"] is None
         assert body["bonus_per_hour"] is None
         assert api_key not in profile.text
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_status", "expected_code"),
+    [
+        ("update", 412, "SITE_VERSION_CONFLICT"),
+        ("delete", 404, "SITE_NOT_FOUND"),
+    ],
+)
+def test_site_profile_does_not_return_old_account_after_config_changes_during_fetch(
+    tmp_path: Path, mutation: str, expected_status: int, expected_code: str
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    canary = "SYNTHETIC-OLD-ACCOUNT-PROFILE-CANARY"
+    api_key = "SYNTHETIC-OLD-CREDENTIAL-CANARY"
+    try:
+        created = _create_site(client, api_key)
+        site_id = cast(str, created["id"])
+        requests = 0
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            nonlocal requests
+            requests += 1
+            assert requests == 1
+            assert request.url.path == "/api/member/profile"
+            assert request.headers.get("x-api-key") == api_key
+            # Simulates another authorized client changing the site's config
+            # while the previous credential's remote request is in progress.
+            with app.state.runtime.session_factory() as session:
+                current = session.get(Site, site_id)
+                assert current is not None and current.version == 1
+                if mutation == "update":
+                    current.version += 1
+                    current.name = "新配置"
+                else:
+                    session.delete(current)
+                session.commit()
+            return httpx2.Response(
+                200,
+                json={"code": "0", "data": {"id": "99", "username": canary}},
+            )
+
+        app.state.site_service._adapter_factory = SiteAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(handler)
+        )
+        response = client.get(f"/api/v1/sites/{site_id}/profile")
+        assert requests == 1
+        assert response.status_code == expected_status
+        assert response.json()["code"] == expected_code
+        assert canary not in response.text
+        assert api_key not in response.text
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_hdtime_profile_endpoint_returns_own_ajax_aggregate_without_leaking_cookie(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    synthetic_cookie = "uid=synthetic; pass=synthetic-private-value"
+    requested: list[tuple[str, dict[str, str]]] = []
+    try:
+        created_response = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={
+                "name": "HDTime 隔离测试",
+                "type": "HDTIME",
+                "credential": {"kind": "COOKIE", "value": synthetic_cookie},
+            },
+        )
+        assert created_response.status_code == 201
+        site_id = created_response.json()["id"]
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            assert request.method == "GET"
+            assert request.url.host == "hdtime.org"
+            assert request.headers.get("cookie") == synthetic_cookie
+            requested.append((request.url.path, dict(request.url.params)))
+            if request.url.path == "/index.php":
+                return httpx2.Response(
+                    200,
+                    text=(
+                        '<a href="usercp.php">profile</a>'
+                        '<a href="userdetails.php?id=99">SyntheticUser</a>'
+                    ),
+                )
+            if request.url.path == "/userdetails.php" and not request.url.params.get("action"):
+                return httpx2.Response(
+                    200,
+                    text=(
+                        '<a href="usercp.php">profile</a>'
+                        '<a href="userdetails.php?id=99&amp;action=2">当前做种</a>'
+                    ),
+                )
+            if request.url.path == "/userdetails.php":
+                assert dict(request.url.params) == {"id": "99", "action": "2"}
+                return httpx2.Response(200, text="<p>动态加载</p>")
+            assert request.url.path == "/getusertorrentlistajax.php"
+            assert dict(request.url.params) == {"userid": "99", "type": "seeding"}
+            return httpx2.Response(
+                200,
+                text=(
+                    "<div><b>37</b> 条记录 | 总大小：4.500 TB</div>"
+                    '<p class="nexus-pagination">1 - 10 | 11 - 20</p>'
+                    "<table><tr><td>合成种子行</td><td>1 GB</td></tr></table>"
+                ),
+            )
+
+        app.state.site_service._adapter_factory = SiteAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(handler)
+        )
+        assert client.get("/api/v1/sites").status_code == 200
+        assert requested == []
+
+        response = client.get(f"/api/v1/sites/{site_id}/profile")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["site_id"] == "hdtime"
+        assert body["uid"] == "99"
+        assert body["seeding_count"] == 37
+        assert body["seeding_size_bytes"] == int(4.5 * 1024**4)
+        assert body["torrents_posted"] is None
+        assert requested == [
+            ("/index.php", {}),
+            ("/userdetails.php", {"id": "99"}),
+            ("/userdetails.php", {"id": "99", "action": "2"}),
+            ("/getusertorrentlistajax.php", {"userid": "99", "type": "seeding"}),
+        ]
+        assert synthetic_cookie not in response.text
+        assert "合成种子行" not in response.text
     finally:
         client.__exit__(None, None, None)
 

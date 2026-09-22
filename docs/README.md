@@ -35,6 +35,7 @@
 | [v0.1.7 开发与发布记录](./v0.1.7-development.md) | 记录 Compose Web 升级能力、Candidate Docker E2E、正式 Release 身份与供应链证据 | v0.1.7 |
 | [v0.1.8 研发文档](./v0.1.8-development.md) | 定义任务生命周期收口、风险授权、Telegram 高风险审批、自动校验与 Stage A 现状梳理 | v0.1.8 |
 | [v0.1.9 发布说明与验收范围](./v0.1.9-release.md) | 总览重构、资源状态、任务中心/导航精简和运行日志可读性；跟踪正式发布证据 | v0.1.9 |
+| [v1.0.1 研发记录](./v1.0.1-development.md) | 已确认五项优化、代码实现边界与尚待的站点/路径真实验收 | v1.0.1 |
 | [部署、运维与安全](./deployment.md) | 约定容器、卷、备份、升级和密钥管理 | M1/M6 |
 | [本地开发指南](./local-development.md) | 统一工具链、命令、配置和日常工作流 | M1 |
 | [研发路线图](./development-roadmap.md) | 将 M0-M6 拆成可交付工作包与退出条件 | 全阶段 |

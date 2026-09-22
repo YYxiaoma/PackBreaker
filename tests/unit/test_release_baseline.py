@@ -102,7 +102,7 @@ def test_native_arm64_updater_gate_keeps_formal_amd64_baseline_unchanged() -> No
     assert 'LABEL org.packbreaker.ci.synthetic-arm64-baseline="true"' in script
 
 
-def test_native_arm64_release_backup_restore_gate_is_same_version_and_keeps_formal_baseline() -> (
+def test_native_arm64_release_backup_restore_keeps_synthetic_mode_but_ci_uses_formal_baseline() -> (
     None
 ):
     script = (ROOT / "scripts" / "check-release-upgrade.sh").read_text(encoding="utf-8")
@@ -123,7 +123,9 @@ def test_native_arm64_release_backup_restore_gate_is_same_version_and_keeps_form
     assert "backend.app.maintenance restore-backup" in script
     assert 'assert_probe "$candidate_container"' in script
     assert 'assert_probe "$rollback_container"' in script
-    assert "check-release-upgrade.sh packbreaker:ci-arm64 --synthetic-arm64-baseline" in ci
+    assert "check-release-upgrade.sh packbreaker:ci-arm64 --synthetic-arm64-baseline" not in ci
+    assert "check-release-upgrade.sh packbreaker:ci-arm64" in ci
+    assert "check-immutable-image-runtime.sh" in ci
     assert "check-release-upgrade.sh packbreaker:release-candidate" in release
     assert "--synthetic-arm64-baseline" not in release
 

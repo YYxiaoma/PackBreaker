@@ -11,10 +11,15 @@ on:
       - "Dockerfile"
       - "pyproject.toml"
       - "uv.lock"
-      - "backend/app/**"
+      - "backend/**"
+      - "frontend/**"
+      - "docs/**"
+      - "README.md"
+      - "LICENSE"
       - "scripts/check-updater-e2e.sh"
       - "scripts/check-release-upgrade.sh"
       - "scripts/check-immutable-image-runtime.sh"
+      - "scripts/check_candidate_image_identity.py"
       - "scripts/verify_release_platforms.py"
       - "scripts/validate_release_baseline.py"
       - "release-baseline.json"
@@ -119,6 +124,12 @@ jobs:
             --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --tag packbreaker:candidate-docker-e2e \
             .
+
+      - name: Verify candidate image identity
+        run: |
+          python3 scripts/check_candidate_image_identity.py \
+            --image packbreaker:candidate-docker-e2e \
+            --platform linux/amd64 --commit "$GITHUB_SHA"
 
       - name: Exercise previous-release upgrade and rollback
         run: bash scripts/check-release-upgrade.sh packbreaker:candidate-docker-e2e

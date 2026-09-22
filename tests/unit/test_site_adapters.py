@@ -55,6 +55,33 @@ class FakeSiteAdapter:
         return TorrentPayload("fake", torrent_id, _TORRENT_BYTES, datetime.now(UTC))
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("torrents_posted", 1.5),
+        ("seeding_count", 2.25),
+        ("seeding_size_bytes", 1024.5),
+        ("uploaded_bytes", float("nan")),
+        ("downloaded_bytes", float("inf")),
+        ("real_uploaded_bytes", True),
+        ("real_downloaded_bytes", -1),
+    ],
+)
+def test_site_user_profile_shared_integer_statistics_reject_invalid_types(
+    field: str, invalid: object
+) -> None:
+    with pytest.raises(ValueError, match="必须是非负整数"):
+        SiteUserProfile("synthetic", **{field: invalid})  # type: ignore[arg-type]
+
+
+def test_site_user_profile_shared_integer_statistics_accept_zero_and_large_int() -> None:
+    value = SiteUserProfile(
+        "synthetic", torrents_posted=0, seeding_count=3, seeding_size_bytes=2**58
+    )
+    assert value.torrents_posted == 0
+    assert value.seeding_size_bytes == 2**58
+
+
 @pytest.mark.asyncio
 async def test_fake_site_adapter_satisfies_shared_read_only_contract() -> None:
     await assert_read_only_site_adapter_contract(
@@ -213,11 +240,150 @@ async def test_mteam_user_profile_supports_current_member_count_shape() -> None:
     assert profile.site_id == "mteam"
     assert profile.uid == "42"
     assert profile.username == "SyntheticUser"
-    assert profile.user_level == "USER"
+    assert profile.user_level is None  # 身份角色不是站点用户等级
     assert profile.uploaded_bytes == 1099511627776
     assert profile.downloaded_bytes == 549755813888
     assert profile.ratio == 2.0
     assert profile.bonus == 56.75
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bad_count", "bad_size"),
+    [(1.75, 2.5), (-1, -2), (True, False), ("1.5", "2.5")],
+)
+async def test_mteam_profile_does_not_truncate_invalid_integer_statistics(
+    bad_count: object, bad_size: object
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200,
+            json={
+                "code": "0",
+                "data": {
+                    "id": "42",
+                    "memberStatus": {"vip": True, "role": "USER", "level": 7},
+                    "memberCount": {
+                        "uploaded": "1099511627776",
+                        "bonus": "56.75",
+                        "seedingCount": bad_count,
+                        "seedingSizeBytes": bad_size,
+                    },
+                },
+            },
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+    assert profile.user_level is None  # VIP/role/level ID cannot prove a named grade.
+    assert profile.uploaded_bytes == 1099511627776
+    assert profile.bonus == 56.75
+    assert profile.seeding_count is None
+    assert profile.seeding_size_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_mteam_profile_uses_named_grade_and_nested_member_statistics() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200,
+            json={
+                "code": "0",
+                "data": {
+                    "level": "7",
+                    "userClassName": "Elite",
+                    "memberCount": {
+                        "stats": {
+                            "seedingCount": 24,
+                            "torrentCount": 5,
+                            "seedingSizeBytes": 4294967296,
+                            "seedingPoints": 12.5,
+                            "bonusPerHour": 1.25,
+                        }
+                    },
+                },
+            },
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+    assert profile.user_level == "Elite"
+    assert profile.seeding_count == 24
+    assert profile.torrents_posted == 5
+    assert profile.seeding_size_bytes == 4294967296
+    assert profile.seeding_points == 12.5
+    assert profile.bonus_per_hour == 1.25
+
+
+@pytest.mark.asyncio
+async def test_mteam_numeric_grade_without_official_name_is_unknown() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200, json={"code": "0", "data": {"level": 7, "userClass": "7", "role": "USER"}}
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+    assert profile.user_level is None
+
+
+@pytest.mark.asyncio
+async def test_mteam_numeric_outer_grade_does_not_mask_nested_official_name() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200,
+            json={
+                "code": "0",
+                "data": {
+                    "userClassName": "7",
+                    "profile": {"userClassName": "Elite Member"},
+                },
+            },
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+    assert profile.user_level == "Elite Member"
+
+
+@pytest.mark.asyncio
+async def test_mteam_profile_reads_bounded_nested_profile_envelopes() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200,
+            json={
+                "code": "0",
+                "data": {
+                    "member": {
+                        "user": {
+                            "profile": {
+                                "userLevelName": "Elite",
+                                "seedingCount": 23,
+                                "seedingSizeBytes": 4294967296,
+                            }
+                        }
+                    },
+                    "untrustedSearchResults": [{"seedingCount": 9999}],
+                },
+            },
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+    assert profile.user_level == "Elite"
+    assert profile.seeding_count == 23
+    assert profile.seeding_size_bytes == 4294967296
+    assert profile.torrents_posted is None
 
 
 @pytest.mark.asyncio

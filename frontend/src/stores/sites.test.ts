@@ -7,7 +7,10 @@ import {
   getSiteUserProfile,
   listSiteProfiles,
   listSites,
+  deleteSite,
+  resetSiteCircuit,
   setSiteEnabled,
+  updateSite,
   type Site,
   type SiteUserProfile,
 } from '../api/sites';
@@ -129,6 +132,75 @@ describe('站点 store', () => {
     expect(store.health[site.id]).toBeUndefined();
   });
 
+  it('旧版健康状态请求迟到时不得覆盖新版健康状态', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    const store = useSiteStore();
+    await store.refresh();
+
+    let resolveOld!: (value: typeof health) => void;
+    vi.mocked(getSiteHealth).mockImplementationOnce(
+      () => new Promise<typeof health>((resolve) => (resolveOld = resolve)),
+    );
+    const oldHealth = store.refreshHealth(store.items[0]!);
+    vi.mocked(updateSite).mockResolvedValueOnce({ ...site, version: 5 });
+    vi.mocked(getSiteHealth).mockResolvedValueOnce({
+      ...health,
+      config_version: 5,
+      circuit_state: 'OPEN',
+    });
+    await store.update(store.items[0]!, { name: '新版配置', clear_credential: false });
+    resolveOld({ ...health, config_version: 4, circuit_state: 'CLOSED' });
+    await oldHealth;
+    expect(store.health[site.id]).toMatchObject({ config_version: 5, circuit_state: 'OPEN' });
+  });
+
+  it('已删除站点的迟到健康结果不能恢复健康缓存', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    const store = useSiteStore();
+    await store.refresh();
+
+    let resolveOld!: (value: typeof health) => void;
+    vi.mocked(getSiteHealth).mockImplementationOnce(
+      () => new Promise<typeof health>((resolve) => (resolveOld = resolve)),
+    );
+    const oldHealth = store.refreshHealth(store.items[0]!);
+    vi.mocked(deleteSite).mockResolvedValueOnce(undefined);
+    await store.remove(store.items[0]!);
+    resolveOld(health);
+    await oldHealth;
+    expect(store.health[site.id]).toBeUndefined();
+  });
+
+  it('健康接口返回的配置版本与当前站点版本不一致时不能标记为当前状态', async () => {
+    vi.mocked(listSites).mockResolvedValue([{ ...site, version: 5 }]);
+    vi.mocked(getSiteHealth).mockResolvedValue({ ...health, config_version: 4 });
+    const store = useSiteStore();
+    await store.refresh();
+    expect(store.health[site.id]).toBeUndefined();
+  });
+
+  it('旧版熔断重置的迟到响应不得覆盖新版健康状态', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    const store = useSiteStore();
+    await store.refresh();
+
+    let resolveOld!: (value: typeof health) => void;
+    vi.mocked(resetSiteCircuit).mockImplementationOnce(
+      () => new Promise<typeof health>((resolve) => (resolveOld = resolve)),
+    );
+    const oldReset = store.resetCircuit(store.items[0]!);
+    vi.mocked(updateSite).mockResolvedValueOnce({ ...site, version: 5 });
+    vi.mocked(getSiteHealth).mockResolvedValueOnce({
+      ...health,
+      config_version: 5,
+      circuit_state: 'OPEN',
+    });
+    await store.update(store.items[0]!, { name: '新配置', clear_credential: false });
+    resolveOld({ ...health, config_version: 4, circuit_state: 'CLOSED' });
+    await oldReset;
+    expect(store.health[site.id]).toMatchObject({ config_version: 5, circuit_state: 'OPEN' });
+  });
+
   it('列表刷新不抓用户详情，只有显式打开详情时才请求 profile', async () => {
     vi.mocked(listSites).mockResolvedValue([site]);
     vi.mocked(getSiteUserProfile).mockResolvedValue(userProfile);
@@ -140,6 +212,103 @@ describe('站点 store', () => {
     await store.loadUserProfile(store.items[0]!);
     expect(getSiteUserProfile).toHaveBeenCalledWith(site.id);
     expect(store.userProfiles[site.id]).toEqual(userProfile);
+  });
+
+  it('刷新资料时不继续展示旧统计，失败后只显示错误', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    vi.mocked(getSiteUserProfile).mockResolvedValueOnce(userProfile);
+    const store = useSiteStore();
+    await store.refresh();
+    await store.loadUserProfile(store.items[0]!);
+    expect(store.userProfiles[site.id]).toEqual(userProfile);
+
+    vi.mocked(getSiteUserProfile).mockRejectedValueOnce(
+      new ApiProblem('资料暂不可用', { status: 503, code: 'SITE_UNAVAILABLE' }),
+    );
+    const refreshing = store.loadUserProfile(store.items[0]!);
+    expect(store.userProfiles[site.id]).toBeUndefined();
+    await expect(refreshing).rejects.toMatchObject({ status: 503 });
+    expect(store.userProfiles[site.id]).toBeUndefined();
+    expect(store.userProfileErrors[site.id]?.code).toBe('SITE_UNAVAILABLE');
+  });
+
+  it('配置更新立即失效旧资料，旧版本的未完成请求不能覆盖新版本', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    const store = useSiteStore();
+    await store.refresh();
+
+    let resolveOld!: (profile: SiteUserProfile) => void;
+    vi.mocked(getSiteUserProfile).mockImplementationOnce(
+      () => new Promise<SiteUserProfile>((resolve) => (resolveOld = resolve)),
+    );
+    const oldRequest = store.loadUserProfile(store.items[0]!);
+    vi.mocked(updateSite).mockResolvedValueOnce({ ...site, name: '更新后的站点', version: 5 });
+    await store.update(store.items[0]!, { name: '更新后的站点', clear_credential: false });
+    expect(store.userProfiles[site.id]).toBeUndefined();
+
+    const currentProfile = { ...userProfile, username: 'CurrentSyntheticUser' };
+    vi.mocked(getSiteUserProfile).mockResolvedValueOnce(currentProfile);
+    await store.loadUserProfile(store.items[0]!);
+    expect(store.userProfiles[site.id]).toEqual(currentProfile);
+    resolveOld(userProfile);
+    await oldRequest;
+    expect(store.userProfiles[site.id]).toEqual(currentProfile);
+    expect(store.busy[`profile:${site.id}`]).toBeUndefined();
+  });
+
+  it('删除站点后旧资料请求返回也不能恢复已删除用户信息', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    const store = useSiteStore();
+    await store.refresh();
+
+    let resolveOld!: (profile: SiteUserProfile) => void;
+    vi.mocked(getSiteUserProfile).mockImplementationOnce(
+      () => new Promise<SiteUserProfile>((resolve) => (resolveOld = resolve)),
+    );
+    const pending = store.loadUserProfile(store.items[0]!);
+    vi.mocked(deleteSite).mockResolvedValueOnce(undefined);
+    await store.remove(store.items[0]!);
+    resolveOld(userProfile);
+    await pending;
+    expect(store.items).toEqual([]);
+    expect(store.userProfiles[site.id]).toBeUndefined();
+    expect(store.userProfileErrors[site.id]).toBeUndefined();
+  });
+
+  it('旧配置的迟到 401 不得清空新配置已经成功读取的资料', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    const store = useSiteStore();
+    await store.refresh();
+
+    let rejectOld!: (reason: unknown) => void;
+    vi.mocked(getSiteUserProfile).mockImplementationOnce(
+      () => new Promise<SiteUserProfile>((_resolve, reject) => (rejectOld = reject)),
+    );
+    const staleResult = store.loadUserProfile(store.items[0]!).catch((caught: unknown) => caught);
+    vi.mocked(updateSite).mockResolvedValueOnce({ ...site, version: 5 });
+    await store.update(store.items[0]!, { name: '已更新配置', clear_credential: false });
+    const currentProfile = { ...userProfile, username: 'NewSyntheticUser' };
+    vi.mocked(getSiteUserProfile).mockResolvedValueOnce(currentProfile);
+    await store.loadUserProfile(store.items[0]!);
+
+    rejectOld(new ApiProblem('旧凭据已失效', { status: 401, code: 'AUTH_SESSION_INVALID' }));
+    expect(await staleResult).toMatchObject({ status: 401 });
+    expect(store.items).toHaveLength(1);
+    expect(store.userProfiles[site.id]).toEqual(currentProfile);
+    expect(store.userProfileErrors[site.id]).toBeUndefined();
+  });
+
+  it('列表同步发现配置版本变化时清除之前缓存的站点资料', async () => {
+    vi.mocked(listSites).mockResolvedValueOnce([site]);
+    vi.mocked(getSiteUserProfile).mockResolvedValueOnce(userProfile);
+    const store = useSiteStore();
+    await store.refresh();
+    await store.loadUserProfile(store.items[0]!);
+    expect(store.userProfiles[site.id]).toEqual(userProfile);
+
+    vi.mocked(listSites).mockResolvedValueOnce([{ ...site, version: 5 }]);
+    await store.refresh();
+    expect(store.userProfiles[site.id]).toBeUndefined();
   });
 
   it('会话失效时清空先前加载的站点和健康状态', async () => {

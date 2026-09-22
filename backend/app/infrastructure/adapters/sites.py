@@ -155,9 +155,7 @@ class MTeamAdapter:
             site_id=_MTEAM_SITE_ID,
             uid=_first_text(sources, "id", "uid", "userId", max_length=128),
             username=_first_text(sources, "username", "name", "userName", max_length=256),
-            user_level=_first_text(
-                sources, "level", "userClass", "className", "role", max_length=256
-            ),
+            user_level=_first_named_level(sources),
             real_uploaded_bytes=_first_nonnegative_int(
                 sources, "realUploaded", "realUpload", "realUploadedBytes"
             ),
@@ -493,11 +491,19 @@ def _optional_text(value: object, *, max_length: int) -> str | None:
 def _optional_nonnegative_int(value: object) -> int | None:
     if value is None or isinstance(value, bool):
         return None
-    try:
-        parsed = int(cast(Any, value))
-    except (TypeError, ValueError, OverflowError):
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if not isinstance(value, str):
+        # int(1.75) silently becomes 1; a fractional count/byte size is not
+        # a verified integer statistic, even when the JSON parser accepts it.
         return None
-    return parsed if parsed >= 0 else None
+    normalized = value.strip()
+    if not normalized.isascii() or not normalized.isdecimal():
+        return None
+    try:
+        return int(normalized)
+    except ValueError:
+        return None
 
 
 def _optional_nonnegative_float(value: object) -> float | None:
@@ -511,12 +517,44 @@ def _optional_nonnegative_float(value: object) -> float | None:
 
 
 def _mteam_profile_sources(value: Mapping[object, object]) -> tuple[Mapping[object, object], ...]:
-    sources: list[Mapping[object, object]] = [value]
-    for key in ("member", "user", "profile", "status", "stats", "memberCount"):
-        nested = value.get(key)
-        if isinstance(nested, Mapping):
-            sources.append(nested)
+    # Profile metadata and statistics may be nested under more than one
+    # documented profile/status envelope. Never recurse into arbitrary JSON
+    # fields such as search results, user-generated records, or lists.
+    keys = ("member", "user", "profile", "status", "stats", "memberCount")
+    sources: list[Mapping[object, object]] = []
+    pending: list[tuple[Mapping[object, object], int]] = [(value, 0)]
+    seen: set[int] = set()
+    while pending and len(sources) < 24:
+        source, depth = pending.pop(0)
+        if id(source) in seen:
+            continue
+        seen.add(id(source))
+        sources.append(source)
+        if depth < 3:
+            for key in keys:
+                nested = source.get(key)
+                if isinstance(nested, Mapping):
+                    pending.append((nested, depth + 1))
     return tuple(sources)
+
+
+def _first_named_level(sources: tuple[Mapping[object, object], ...]) -> str | None:
+    # 等级 ID 不等于站点等级名称。没有官方名称时保持未知，不猜测各站点等级表。
+    for key in (
+        "userClassName",
+        "userLevelName",
+        "levelName",
+        "className",
+        "groupName",
+        "userGroupName",
+        "userClass",
+        "level",
+    ):
+        for source in sources:
+            name = _optional_text(source.get(key), max_length=256)
+            if name is not None and not name.isdecimal():
+                return name
+    return None
 
 
 def _first_text(

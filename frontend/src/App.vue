@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
-  Box,
   LayoutDashboard,
   ListChecks,
   Globe,
@@ -25,6 +24,7 @@ import AuthGate from './components/AuthGate.vue';
 import PasswordChangeGate from './components/PasswordChangeGate.vue';
 import UserMenuDrawer from './components/UserMenuDrawer.vue';
 import VersionPopover from './components/VersionPopover.vue';
+import packBreakerIcon from './assets/packbreaker-icon.png';
 import AboutPage from './components/AboutPage.vue';
 import { AUTH_REQUIRED_EVENT } from './api/client';
 import { getAdminInboxUnreadCount } from './api/notifications';
@@ -219,7 +219,9 @@ function openVersionPopover(): void {
     <aside class="sidebar" :class="{ visible: mobile }">
       <div class="brand">
         <a class="brand-home" href="#总览" aria-label="返回总览" @click="route = '总览'">
-          <span class="brand-icon"><Box :size="25" /></span>
+          <span class="brand-icon"
+            ><img :src="packBreakerIcon" alt="" width="36" height="36"
+          /></span>
         </a>
         <span class="brand-copy">
           <a class="brand-title" href="#总览" @click="route = '总览'">PackBreaker</a>

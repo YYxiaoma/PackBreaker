@@ -36,6 +36,40 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 
 应用启动和保存下载器配置时执行路径诊断：容器可见性、device ID、普通文件、权限、符号链接、创建临时硬链接和清理测试。诊断未通过的映射不能启用自动执行。
 
+### 下载器使用 `/downloads`、`/downloads2` 时的路径映射
+
+下载器的保存路径（远程路径）与 **PackBreaker 容器内**可访问的文件路径不是同一个字段。默认 `PACKBREAKER_DATA_DIR=/data` 时，下载器配置表单应填写：
+
+| 下载器路径（左侧） | PackBreaker 容器路径（右侧） |
+| --- | --- |
+| `/downloads` | `/data/downloads` |
+| `/downloads2` | `/data/downloads2` |
+
+前提是相应文件**已经**在 PackBreaker 容器的 `/data/downloads`、`/data/downloads2` 可见。仓库的 Compose 默认将主机 `${PACKBREAKER_DATA_PATH:-./runtime/data}` 整体挂载到 `/data`；若主机下载目录不在该父目录下，应在部署时调整公共父目录挂载，并确认容器内路径；修改挂载通常需要重建容器。不要为了使保存通过而将数据根目录改为 `/`，也不要简单绕过容器路径边界校验。旧映射变更后，原有执行计划必须重新进行路径诊断与授权。
+
+例如：左侧写 `/downloads`、右侧也写 `/downloads` 会被拒绝，因为后者不在 `/data` 下；这与下载器是否真正连接成功无关。若只挂载 `/downloads` 而未挂载到 `/data/downloads`，请先修正 Docker 挂载。通过保存校验也不代表已通过启用所需的文件、目录、权限和硬链接诊断。
+
+#### Synology Container Manager：保留现有 `/data` 卷的增量挂载方案
+
+在一种已经确认的真实部署中，`/volume2/videos/downloads` → `/downloads`、`/volume3/videos2/downloads` → `/downloads2`；`/data` 是已有独立 Docker 数据卷，`/config` 另有持久挂载。此时不需要更改下载器原有路径，**不能仅凭原有两个挂载就把右侧配置为 `/downloads`**。拟重建后的卷清单应在保留原有所有卷及其身份的前提下追加：
+
+| Synology 主机目录 | 追加的 PackBreaker 容器目录 |
+| --- | --- |
+| `/volume2/videos/downloads` | `/data/downloads` |
+| `/volume3/videos2/downloads` | `/data/downloads2` |
+
+`/config` 原宿主机路径与 `/data` **原 Docker 卷的精确名称/来源**必须保持不变，不应创建一个空白 `/data` 新卷；`/downloads`、`/downloads2` 原挂载可保留供旧配置使用。应用原有 `/data` 文件不会因为增加子目录挂载而自动迁移；如果原卷已有同名目录，新的子挂载会暂时遮挡其内容，必须先只读核对并处理冲突，不能直接覆盖。重建前先按既有备份流程获得一致性配置备份，并记录旧镜像不可变摘要、网络、端口、环境变量名（不要导出秘密值）、卷及权限。Container Manager 不同版本的「编辑/复制设置」行为不同，**不能假定复制设置会自动复用匿名 `/data` 卷**；若不能指定旧卷，先停止操作并改用能准确重挂旧卷的明确方案。生产容器的停止、重建和存储调整必须由管理员另行确认执行；本示例并未对生产容器作任何更改。
+
+仅供核对卷身份的**只读**命令（不会展示容器环境变量与凭据）：
+
+```bash
+docker inspect packbreaker --format '{{range .Mounts}}{{if or (eq .Destination "/data") (eq .Destination "/config")}}{{printf "%s type=%s name=%s source=%s\n" .Destination .Type .Name .Source}}{{end}}{{end}}'
+```
+
+原宿主目录分别位于 `/volume2`、`/volume3`，不能假定两个目录间允许硬链接。即使在同一个宿主文件系统，Docker 不同 bind mount 之间也可能遇到 `EXDEV`；必须在目标所处的真实路径执行现有受控路径诊断，不可据「目录存在」断言硬链接可用。只读排查阶段不对真实文件执行创建/删除试验。
+
+**不强制 `/data` 是否可选？** 在当前版本中，数据根目录是任务扫描、执行计划、硬链接、清理/回滚和文件系统安全网关共同依赖的单一授权边界，并非下载器表单的孤立输入限制。可以单独设计「管理员明确授权的多个数据根目录」作为未来功能，但必须逐一证明所有任务与写入/回滚链路对跨根路径、挂载点、软链接、device ID 及历史计划的失败关闭；不能通过直接删除 `is_relative_to(root)`、将 `PACKBREAKER_DATA_DIR` 设置为 `/` 或创建指向根目录外的软链接实现。
+
 ## 4. 启动配置
 
 仅保留无法安全放入数据库或启动前必须知道的环境变量：

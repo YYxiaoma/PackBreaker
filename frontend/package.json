@@ -1,7 +1,7 @@
 {
   "name": "packbreaker-frontend",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "packageManager": "pnpm@10.34.5",
   "engines": {
@@ -16,7 +16,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 5173 --strictPort",
     "format": "prettier --write src vite.config.ts package.json tsconfig.json",
     "lint": "prettier --check src vite.config.ts package.json tsconfig.json",
-    "test:e2e": "node ../scripts/check-prototype.cjs"
+    "test:e2e": "vue-tsc --noEmit && vite build && node ../scripts/check-prototype-preview.cjs"
   },
   "dependencies": {
     "@lucide/vue": "1.41.0",
