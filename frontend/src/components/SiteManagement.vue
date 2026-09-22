@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Activity, Globe, Info, Plus, RefreshCw, Settings2 } from '@lucide/vue';
+import { Activity, Globe, Plus, RefreshCw, Settings2 } from '@lucide/vue';
 
 import { ApiProblem, toApiProblem } from '../api/client';
 import type {
@@ -14,9 +14,7 @@ import type {
   SitePatchInput,
   SiteProfile,
   SiteTemporaryProbeInput,
-  SiteUserProfile,
 } from '../api/sites';
-import { siteProfileAcceptanceReport } from '../siteProfileAcceptance';
 import { useSiteStore } from '../stores/sites';
 
 interface SiteDraft {
@@ -27,6 +25,9 @@ interface SiteDraft {
   credential: string;
   clearCredential: boolean;
   credentialConfigured: boolean;
+  downloadCookie: string;
+  clearDownloadCookie: boolean;
+  downloadCredentialConfigured: boolean;
   requestTimeoutSeconds: number;
   searchIntervalSeconds: number;
   userAgent: string;
@@ -42,11 +43,8 @@ interface SiteDraft {
 }
 
 const store = useSiteStore();
-const { items, profiles, health, userProfiles, userProfileErrors, loading, error, busy } =
-  storeToRefs(store);
+const { items, profiles, health, loading, error, busy } = storeToRefs(store);
 const dialog = ref(false);
-const detailDialog = ref(false);
-const detailSiteId = ref<string | null>(null);
 const saving = ref(false);
 const probingDraft = ref(false);
 const draft = reactive<SiteDraft>({
@@ -57,6 +55,9 @@ const draft = reactive<SiteDraft>({
   credential: '',
   clearCredential: false,
   credentialConfigured: false,
+  downloadCookie: '',
+  clearDownloadCookie: false,
+  downloadCredentialConfigured: false,
   requestTimeoutSeconds: 15,
   searchIntervalSeconds: 0,
   userAgent: '',
@@ -73,15 +74,6 @@ const draft = reactive<SiteDraft>({
 
 const editing = computed(() => draft.id !== null);
 const selectedProfile = computed<SiteProfile | undefined>(() => profileFor(draft.type));
-const detailSite = computed<Site | undefined>(() =>
-  detailSiteId.value ? items.value.find((item) => item.id === detailSiteId.value) : undefined,
-);
-const detailProfile = computed<SiteUserProfile | undefined>(() =>
-  detailSiteId.value ? userProfiles.value[detailSiteId.value] : undefined,
-);
-const detailError = computed<ApiProblem | undefined>(() =>
-  detailSiteId.value ? userProfileErrors.value[detailSiteId.value] : undefined,
-);
 
 onMounted(() => {
   void refresh(false);
@@ -173,39 +165,6 @@ function problemText(problem: ApiProblem): string {
   return problem.traceId ? `${problem.message} · trace_id ${problem.traceId}` : problem.message;
 }
 
-function formatBytes(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '暂无数据';
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
-  let amount = value;
-  let unit = 0;
-  while (amount >= 1024 && unit < units.length - 1) {
-    amount /= 1024;
-    unit += 1;
-  }
-  return `${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${units[unit]}`;
-}
-
-function formatNumber(value: number | null | undefined): string {
-  return value === null || value === undefined ? '暂无数据' : value.toLocaleString();
-}
-
-function formatDecimal(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '暂无数据';
-  if (value > 0 && value < 0.001) {
-    // A verified tiny positive hourly rate / point balance must never be
-    // rounded into an apparently verified zero by the normal 3-place view.
-    return value < 1e-9
-      ? value.toExponential(3)
-      : value.toLocaleString(undefined, { maximumSignificantDigits: 12 });
-  }
-  return value.toLocaleString(undefined, { maximumFractionDigits: 3 });
-}
-
-function formatUserLevel(value: string | null | undefined): string {
-  const normalized = value?.trim();
-  return normalized && !/^\d+$/.test(normalized) ? normalized : '等级名称暂不可用';
-}
-
 async function refresh(notify = true) {
   try {
     await store.refresh();
@@ -224,6 +183,9 @@ function resetDraft() {
     credential: '',
     clearCredential: false,
     credentialConfigured: false,
+    downloadCookie: '',
+    clearDownloadCookie: false,
+    downloadCredentialConfigured: false,
     requestTimeoutSeconds: 15,
     searchIntervalSeconds: 0,
     userAgent: '',
@@ -246,6 +208,8 @@ function applyProfileDefaults() {
   draft.searchIntervalSeconds = Math.round(profile.search_interval_seconds);
   draft.userAgent = '';
   draft.browserEmulationEnabled = false;
+  draft.downloadCookie = '';
+  draft.clearDownloadCookie = false;
   if (!profile.supports_proxy) draft.proxyEnabled = false;
 }
 
@@ -263,6 +227,7 @@ function openEdit(item: Site) {
     name: item.name,
     type: item.type,
     credentialConfigured: item.credential_configured,
+    downloadCredentialConfigured: item.download_credential_configured,
     requestTimeoutSeconds: item.request_timeout_seconds,
     searchIntervalSeconds: item.search_interval_seconds,
     userAgent: item.user_agent ?? '',
@@ -307,6 +272,23 @@ function validateDraft(requireCredential = false): boolean {
     ElMessage.warning('凭证和 User-Agent 不能包含换行或 NUL');
     return false;
   }
+  if (/\r|\n|\0/.test(draft.downloadCookie)) {
+    ElMessage.warning('下载 Cookie 不能包含换行或 NUL');
+    return false;
+  }
+  if (draft.type === 'ROUSI_PRO' && requireCredential && !draft.downloadCookie) {
+    ElMessage.warning('测试当前表单时必须填写下载 Cookie，不能借用已保存的旧凭证');
+    return false;
+  }
+  if (
+    draft.type === 'ROUSI_PRO' &&
+    !editing.value &&
+    draft.enableAfterSave &&
+    !draft.downloadCookie
+  ) {
+    ElMessage.warning('Rousi Pro 必须分别配置搜索 API Key 和下载 Cookie');
+    return false;
+  }
   if (requireCredential && !credentialPayload()) {
     ElMessage.warning('测试未保存配置前需要填写站点凭证');
     return false;
@@ -342,6 +324,9 @@ function temporaryProbePayload(): SiteTemporaryProbeInput | null {
   return {
     type: draft.type,
     credential,
+    ...(draft.type === 'ROUSI_PRO' && draft.downloadCookie
+      ? { download_cookie: draft.downloadCookie }
+      : {}),
     request_timeout_seconds: draft.requestTimeoutSeconds,
     search_interval_seconds: draft.searchIntervalSeconds,
     user_agent: draft.userAgent.trim() || null,
@@ -357,7 +342,11 @@ async function testDraftConnection() {
   probingDraft.value = true;
   try {
     await store.probeTemporary(payload);
-    ElMessage.success('当前表单只读连接测试通过；配置尚未保存');
+    ElMessage.success(
+      draft.type === 'ROUSI_PRO'
+        ? 'API Key 只读认证通过；下载 Cookie 仍须通过受控取种验收，配置尚未保存'
+        : '当前表单只读连接测试通过；配置尚未保存',
+    );
   } catch (caught) {
     await handleWriteProblem(caught);
   } finally {
@@ -397,6 +386,16 @@ async function save() {
   const credential = credentialPayload();
   const current = draft.id ? items.value.find((item) => item.id === draft.id) : undefined;
   if (
+    current?.type === 'ROUSI_PRO' &&
+    draft.credential &&
+    current.download_credential_configured &&
+    !draft.downloadCookie &&
+    !draft.clearDownloadCookie
+  ) {
+    ElMessage.warning('更换 API Key 会清除旧下载 Cookie，请同时设置新 Cookie 或勾选清除');
+    return;
+  }
+  if (
     current &&
     draft.type !== draft.originalType &&
     current.credential_configured &&
@@ -410,7 +409,10 @@ async function save() {
   saving.value = true;
   try {
     if (current) {
-      const patch: SitePatchInput = { clear_credential: false };
+      const patch: SitePatchInput = {
+        clear_credential: false,
+        clear_download_cookie: false,
+      };
       if (draft.name.trim() !== current.name) patch.name = draft.name.trim();
       if (draft.type !== current.type) {
         patch.type = draft.type;
@@ -419,6 +421,13 @@ async function save() {
         patch.clear_credential = true;
       } else if (credential) {
         patch.credential = credential;
+      }
+      if (draft.type === 'ROUSI_PRO') {
+        if (draft.clearDownloadCookie) {
+          patch.clear_download_cookie = true;
+        } else if (draft.downloadCookie) {
+          patch.download_cookie = draft.downloadCookie;
+        }
       }
       if (runtimeChanged(current) || draft.type !== current.type) {
         patch.request_timeout_seconds = draft.requestTimeoutSeconds;
@@ -455,6 +464,9 @@ async function save() {
         name: draft.name.trim(),
         type: draft.type,
         ...(credential ? { credential } : {}),
+        ...(draft.type === 'ROUSI_PRO' && draft.downloadCookie
+          ? { download_cookie: draft.downloadCookie }
+          : {}),
         request_timeout_seconds: draft.requestTimeoutSeconds,
         search_interval_seconds: draft.searchIntervalSeconds,
         user_agent: draft.userAgent.trim() || null,
@@ -491,45 +503,13 @@ async function save() {
 async function testConnection(item: Site) {
   try {
     await store.testConnection(item);
-    ElMessage.success(`${item.name} 只读连接测试通过`);
+    ElMessage.success(
+      item.type === 'ROUSI_PRO'
+        ? `${item.name} API Key 只读认证通过；下载 Cookie 仍须单独验收`
+        : `${item.name} 只读连接测试通过`,
+    );
   } catch (caught) {
     await handleWriteProblem(caught);
-  }
-}
-
-async function loadDetails(item: Site, notifyError = true) {
-  try {
-    await store.loadUserProfile(item);
-  } catch (caught) {
-    if (notifyError) ElMessage.error(problemText(toApiProblem(caught)));
-  }
-}
-
-function openDetails(item: Site) {
-  detailSiteId.value = item.id;
-  detailDialog.value = true;
-  void loadDetails(item, false);
-}
-
-async function refreshDetails() {
-  if (!detailSite.value) return;
-  await loadDetails(detailSite.value);
-}
-
-async function copySanitizedAcceptance() {
-  const site = detailSite.value;
-  if (!site || isBusy(site, 'profile') || (!detailProfile.value && !detailError.value)) return;
-  const report = siteProfileAcceptanceReport(
-    site.type,
-    detailProfile.value,
-    detailError.value?.code,
-  );
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
-    await navigator.clipboard.writeText(report);
-    ElMessage.success('已复制脱敏字段状态；未包含账号或统计数值');
-  } catch {
-    ElMessage.warning('无法复制，请检查浏览器的剪贴板权限');
   }
 }
 
@@ -627,6 +607,12 @@ async function remove(item: Site) {
           <el-tag :type="item.credential_configured ? 'success' : 'info'">
             {{ item.credential_configured ? `${credentialLabel(item.type)} 已配置` : '未配置凭证' }}
           </el-tag>
+          <el-tag
+            v-if="item.type === 'ROUSI_PRO'"
+            :type="item.download_credential_configured ? 'success' : 'info'"
+          >
+            {{ item.download_credential_configured ? '下载 Cookie 已配置' : '下载 Cookie 未配置' }}
+          </el-tag>
           <el-tag :type="circuitTag(health[item.id]?.circuit_state)">
             熔断 {{ circuitLabel(health[item.id]?.circuit_state) }}
           </el-tag>
@@ -651,9 +637,6 @@ async function remove(item: Site) {
           <dd>{{ health[item.id]?.last_error_code ?? '—' }}</dd>
         </dl>
         <div class="card-actions">
-          <el-button size="small" :loading="isBusy(item, 'profile')" @click="openDetails(item)">
-            <Info :size="14" />详情
-          </el-button>
           <el-button size="small" :loading="isBusy(item, 'test')" @click="testConnection(item)">
             <Activity :size="14" />测试连接
           </el-button>
@@ -725,6 +708,36 @@ async function remove(item: Site) {
             :placeholder="editing && draft.credentialConfigured ? '留空保持原凭证' : '请输入凭证'"
           />
         </el-form-item>
+
+        <template v-if="draft.type === 'ROUSI_PRO'">
+          <el-alert
+            title="搜索使用 API Key，获取 Torrent 使用独立 Cookie；两项凭证分开加密存储。"
+            type="info"
+            :closable="false"
+            class="form-alert"
+          />
+          <el-form-item label="下载 Cookie">
+            <el-input
+              v-model="draft.downloadCookie"
+              type="password"
+              show-password
+              autocomplete="new-password"
+              :disabled="
+                draft.clearDownloadCookie || selectedProfile?.support_status !== 'SUPPORTED'
+              "
+              :placeholder="
+                editing && draft.downloadCredentialConfigured
+                  ? '留空保留原下载 Cookie'
+                  : '请输入独立下载 Cookie'
+              "
+            />
+          </el-form-item>
+          <el-checkbox
+            v-if="editing && draft.downloadCredentialConfigured"
+            v-model="draft.clearDownloadCookie"
+            >清除现有下载 Cookie 并保持站点停用</el-checkbox
+          >
+        </template>
 
         <div class="form-grid">
           <el-form-item label="请求超时（秒）">
@@ -803,89 +816,6 @@ async function remove(item: Site) {
           @click="save"
           >保存配置</el-button
         >
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="detailDialog"
-      :title="detailSite ? `${detailSite.name} · 用户详情` : '站点用户详情'"
-      width="min(820px, 94vw)"
-      @closed="detailSiteId = null"
-    >
-      <el-alert
-        v-if="detailError"
-        title="站点用户详情暂不可用"
-        :description="problemText(detailError)"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="form-alert"
-      />
-      <el-skeleton
-        v-if="detailSite && isBusy(detailSite, 'profile') && !detailProfile"
-        :rows="6"
-        animated
-      />
-      <el-descriptions v-else-if="detailProfile" :column="2" border>
-        <el-descriptions-item label="UID">{{ detailProfile.uid ?? '--' }}</el-descriptions-item>
-        <el-descriptions-item label="用户名">{{
-          detailProfile.username ?? '--'
-        }}</el-descriptions-item>
-        <el-descriptions-item label="用户等级">{{
-          formatUserLevel(detailProfile.user_level)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="分享率">{{
-          formatDecimal(detailProfile.ratio)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="真实上传量">{{
-          formatBytes(detailProfile.real_uploaded_bytes)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="真实下载量">{{
-          formatBytes(detailProfile.real_downloaded_bytes)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="上传量">{{
-          formatBytes(detailProfile.uploaded_bytes)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="下载量">{{
-          formatBytes(detailProfile.downloaded_bytes)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="发种数">{{
-          formatNumber(detailProfile.torrents_posted)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="做种数">{{
-          formatNumber(detailProfile.seeding_count)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="做种量">{{
-          formatBytes(detailProfile.seeding_size_bytes)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="魔力值">{{
-          formatDecimal(detailProfile.bonus)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="做种积分">{{
-          formatDecimal(detailProfile.seeding_points)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="每小时魔力值">{{
-          formatDecimal(detailProfile.bonus_per_hour)
-        }}</el-descriptions-item>
-        <el-descriptions-item label="数据更新时间" :span="2">
-          {{ new Date(detailProfile.fetched_at).toLocaleString() }}
-        </el-descriptions-item>
-      </el-descriptions>
-      <el-empty v-else-if="!detailError" description="暂无用户详情" />
-      <template #footer>
-        <el-button
-          v-if="detailSite && (detailProfile || detailError)"
-          :disabled="isBusy(detailSite, 'profile')"
-          @click="copySanitizedAcceptance"
-          >复制脱敏验收结果</el-button
-        >
-        <el-button
-          v-if="detailSite"
-          :loading="isBusy(detailSite, 'profile')"
-          @click="refreshDetails"
-          ><RefreshCw :size="14" />刷新详情</el-button
-        >
-        <el-button @click="detailDialog = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>

@@ -41,6 +41,7 @@ class SiteRepository:
         proxy_port: int | None,
         proxy_username: str | None,
         proxy_secret_id: str | None,
+        download_secret_id: str | None = None,
     ) -> Site:
         now = utc_now()
         record = Site(
@@ -50,6 +51,7 @@ class SiteRepository:
             base_url=base_url,
             credential_kind=credential_kind,
             secret_id=secret_id,
+            download_secret_id=download_secret_id,
             request_timeout_seconds=request_timeout_seconds,
             search_interval_seconds=search_interval_seconds,
             user_agent=user_agent,

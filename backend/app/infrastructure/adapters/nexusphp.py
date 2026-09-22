@@ -9,6 +9,7 @@ from urllib.parse import SplitResult, parse_qs, urlencode, urljoin, urlsplit
 
 import httpx2
 
+from backend.app.domain.errors import DomainViolation
 from backend.app.domain.media_matching import ExternalMediaId
 from backend.app.domain.site_adapter import (
     SiteConnectionResult,
@@ -25,6 +26,7 @@ from backend.app.domain.site_search import (
     normalize_candidate_meta,
 )
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
+from backend.app.infrastructure.torrent_parser import parse_torrent
 
 _DEFAULT_HTML_LIMIT_BYTES = 5 * 1024 * 1024
 _DEFAULT_TORRENT_LIMIT_BYTES = 20 * 1024 * 1024
@@ -50,6 +52,7 @@ class NexusPhpProfile:
     seeders_cell_from_end: int = 4
     leechers_cell_from_end: int = 3
     min_request_interval_seconds: float = 2.0
+    require_valid_torrent_metainfo: bool = False
 
     def __post_init__(self) -> None:
         if not self.site_id.strip():
@@ -454,7 +457,12 @@ class NexusPhpWebAdapter:
             self._profile.site_id,
             query.page,
             _parse_search_rows(parser, self._profile),
-            _has_next_page(parser, query.page),
+            _has_next_page(
+                parser,
+                query.page,
+                search_path=self._profile.search_path,
+                site_origin=self._base_url,
+            ),
         )
 
     async def fetch_details(self, torrent_id: str) -> TorrentDetails:
@@ -494,6 +502,16 @@ class NexusPhpWebAdapter:
             raise SiteAdapterError(
                 "SITE_INVALID_RESPONSE", "NexusPHP torrent 响应不是 bencode 字典"
             )
+        if self._profile.require_valid_torrent_metainfo:
+            # Candidate sites must reject HTML or truncated bencode that happens
+            # to begin with 'd'. Never include the original payload or tracker
+            # announce URL in an adapter error.
+            try:
+                parse_torrent(content)
+            except DomainViolation:
+                raise SiteAdapterError(
+                    "SITE_INVALID_RESPONSE", "NexusPHP torrent 内容校验未通过"
+                ) from None
         return TorrentPayload(self._profile.site_id, normalized_id, content)
 
     async def _get_html(self, path: str, *, params: dict[str, str] | None = None) -> str:
@@ -1045,10 +1063,28 @@ def _sort_value(sort: SearchSortHint) -> str:
     return "1"
 
 
-def _has_next_page(parser: _NexusHtmlParser, current_page: int) -> bool:
+def _has_next_page(
+    parser: _NexusHtmlParser,
+    current_page: int,
+    *,
+    search_path: str,
+    site_origin: str,
+) -> bool:
     for href, _, _ in parser.all_links:
-        pages = parse_qs(urlsplit(href).query).get("page")
-        if pages and pages[0].isdigit() and int(pages[0]) == current_page:
+        parsed = urlsplit(href)
+        # Any link on the page might have a "page" argument (comments,
+        # profiles, external URLs). Only an actual torrent-search pager can
+        # signal that the next search page exists.
+        if parsed.path not in ("", search_path, search_path.lstrip("/")):
+            continue
+        if parsed.scheme or parsed.netloc:
+            try:
+                if _origin_tuple(parsed) != _origin_tuple(urlsplit(site_origin)):
+                    continue
+            except ValueError:
+                continue
+        pages = parse_qs(parsed.query).get("page")
+        if pages and len(pages) == 1 and pages[0].isdigit() and int(pages[0]) == current_page:
             return True
     return False
 

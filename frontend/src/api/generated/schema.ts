@@ -649,23 +649,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/v1/sites/{site_id}/profile': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Get Site User Profile */
-    get: operations['get_site_user_profile_api_v1_sites__site_id__profile_get'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/v1/sites/{site_id}/test': {
     parameters: {
       query?: never;
@@ -2650,6 +2633,8 @@ export interface components {
        */
       browser_emulation_enabled: boolean;
       credential?: components['schemas']['SiteCredentialInput'] | null;
+      /** Download Cookie */
+      download_cookie?: string | null;
       /** Name */
       name: string;
       proxy?: components['schemas']['SiteProxyCreateInput'];
@@ -2731,7 +2716,8 @@ export interface components {
       | 'HDFANS'
       | 'BTSCHOOL'
       | 'PTTIME'
-      | 'ROUSI_PRO';
+      | 'ROUSI_PRO'
+      | 'LINGYIN_CLUB';
     /** SiteListResponse */
     SiteListResponse: {
       /** Items */
@@ -2746,7 +2732,14 @@ export interface components {
        * @default false
        */
       clear_credential: boolean;
+      /**
+       * Clear Download Cookie
+       * @default false
+       */
+      clear_download_cookie: boolean;
       credential?: components['schemas']['SiteCredentialInput'] | null;
+      /** Download Cookie */
+      download_cookie?: string | null;
       /** Name */
       name?: string | null;
       proxy?: components['schemas']['SiteProxyPatchInput'] | null;
@@ -2847,6 +2840,8 @@ export interface components {
        */
       browser_emulation_enabled: boolean;
       credential: components['schemas']['SiteCredentialInput'];
+      /** Download Cookie */
+      download_cookie?: string | null;
       proxy?: components['schemas']['SiteProxyCreateInput'];
       /**
        * Request Timeout Seconds
@@ -2861,44 +2856,6 @@ export interface components {
       type: components['schemas']['SiteKind'];
       /** User Agent */
       user_agent?: string | null;
-    };
-    /** SiteUserProfileResponse */
-    SiteUserProfileResponse: {
-      /** Bonus */
-      bonus: number | null;
-      /** Bonus Per Hour */
-      bonus_per_hour: number | null;
-      /** Downloaded Bytes */
-      downloaded_bytes: number | null;
-      /**
-       * Fetched At
-       * Format: date-time
-       */
-      fetched_at: string;
-      /** Ratio */
-      ratio: number | null;
-      /** Real Downloaded Bytes */
-      real_downloaded_bytes: number | null;
-      /** Real Uploaded Bytes */
-      real_uploaded_bytes: number | null;
-      /** Seeding Count */
-      seeding_count: number | null;
-      /** Seeding Points */
-      seeding_points: number | null;
-      /** Seeding Size Bytes */
-      seeding_size_bytes: number | null;
-      /** Site Id */
-      site_id: string;
-      /** Torrents Posted */
-      torrents_posted: number | null;
-      /** Uid */
-      uid: string | null;
-      /** Uploaded Bytes */
-      uploaded_bytes: number | null;
-      /** User Level */
-      user_level: string | null;
-      /** Username */
-      username: string | null;
     };
     /** SiteViewResponse */
     SiteViewResponse: {
@@ -2919,6 +2876,8 @@ export interface components {
       /** Credential Configured */
       credential_configured: boolean;
       credential_kind: components['schemas']['SiteCredentialKind'];
+      /** Download Credential Configured */
+      download_credential_configured: boolean;
       /** Enabled */
       enabled: boolean;
       /** Id */
@@ -5790,39 +5749,6 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['SiteHealthResponse'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  get_site_user_profile_api_v1_sites__site_id__profile_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        site_id: string;
-      };
-      cookie?: {
-        packbreaker_session?: string | null;
-      };
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['SiteUserProfileResponse'];
         };
       };
       /** @description Validation Error */

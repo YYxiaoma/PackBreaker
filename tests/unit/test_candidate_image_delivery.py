@@ -1,23 +1,23 @@
-"""Candidate GHCR delivery must be independent of formal release channels."""
+"""Explicit candidate GHCR delivery must pin reviewed source and leave formal tags untouched."""
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "candidate-image-delivery.yml"
-CANDIDATE_SHA = "47ec58c30ad521ebf00b2646d544556715d275b3"
-TAG = "candidate-v1.0.1-47ec58c"
 
 
-def test_candidate_delivery_is_push_only_and_never_touches_formal_channels() -> None:
+def test_candidate_delivery_requires_explicit_dispatch_and_never_touches_formal_channels() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     triggers = workflow.get("on", workflow.get(True))
-    assert triggers["push"]["branches"] == ["candidate/v1.0.1"]
-    assert triggers["push"]["paths"] == [".github/workflows/candidate-image-delivery.yml"]
-    assert "release" not in triggers and "workflow_dispatch" not in triggers
+    assert set(triggers) == {"workflow_dispatch"}
+    candidate_input = triggers["workflow_dispatch"]["inputs"]["candidate_sha"]
+    assert candidate_input["required"] is True
+    assert candidate_input["type"] == "string"
     assert set(workflow["jobs"]) == {"publish-candidate", "native-arm64-candidate"}
 
     publish = workflow["jobs"]["publish-candidate"]
@@ -35,8 +35,15 @@ def test_candidate_delivery_is_push_only_and_never_touches_formal_channels() -> 
     assert "scripts/verify_release_platforms.py" in script
     assert "scripts/check-immutable-image-runtime.sh" in script
     assert "--multiarch" in script
-    assert CANDIDATE_SHA in script and TAG in script
-    assert "ref: ${{ env.CANDIDATE_SHA }}" in script
+    assert "CANDIDATE_SHA: ${{ inputs.candidate_sha }}" in script
+    assert '[[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]' in script
+    assert 'git merge-base --is-ancestor "$CANDIDATE_SHA" origin/candidate/v1.0.1' in script
+    assert 'git checkout --detach "$CANDIDATE_SHA"' in script
+    assert 'test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"' in script
+    assert "CANDIDATE_TAG=candidate-v1.0.1-${CANDIDATE_SHA:0:12}" in script
+    assert "BUILD_DATE=${{ steps.identity.outputs.build_date }}" in script
+    assert "github.event.head_commit.timestamp" not in script
+    assert "47ec58c30ad521ebf00b2646d544556715d275b3" not in script
     for forbidden in (
         "gh release create",
         "imagetools create",
@@ -51,6 +58,9 @@ def test_candidate_delivery_rejects_existing_tag_and_checks_published_digest() -
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = workflow["jobs"]["publish-candidate"]["steps"]
     names = [step.get("name", "") for step in steps]
+    assert names.index("Verify candidate source identity and version") < names.index(
+        "Refuse existing candidate image"
+    )
     assert names.index("Refuse existing candidate image") < names.index(
         "Build and push candidate index"
     )
@@ -68,3 +78,16 @@ def test_candidate_delivery_rejects_existing_tag_and_checks_published_digest() -
     )
     assert "needs.publish-candidate.outputs.digest" in native_script
     assert "linux/arm64" in native_script
+    assert "ref: ${{ inputs.candidate_sha }}" in WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_candidate_delivery_inline_shell_is_valid_and_native_checks_exact_commit() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    for job in workflow["jobs"].values():
+        for step in job["steps"]:
+            if "run" not in step:
+                continue
+            subprocess.run(["bash", "-n"], input=step["run"], text=True, check=True)
+    native_steps = workflow["jobs"]["native-arm64-candidate"]["steps"]
+    native_script = "\n".join(step.get("run", "") for step in native_steps)
+    assert 'test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"' in native_script

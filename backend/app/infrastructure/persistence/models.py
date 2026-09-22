@@ -23,8 +23,8 @@ from backend.app.domain.notification import (
 )
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.site_config import (
+    DATABASE_SITE_KINDS,
     PERSISTED_SITE_CREDENTIAL_KINDS,
-    PERSISTED_SITE_KINDS,
 )
 from backend.app.domain.task_approval import TaskApprovalDecisionSource, TaskApprovalState
 from backend.app.domain.task_definition import (
@@ -56,7 +56,7 @@ def new_uuid() -> str:
 _TASK_STATUS_SQL = ", ".join(f"'{status.value}'" for status in TaskStatus)
 _OPERATION_STATUS_SQL = ", ".join(f"'{status.value}'" for status in OperationStatus)
 _DOWNLOADER_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in DownloaderKind)
-_SITE_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in sorted(PERSISTED_SITE_KINDS))
+_SITE_KIND_SQL = ", ".join(f"'{kind.value}'" for kind in sorted(DATABASE_SITE_KINDS))
 _SITE_CREDENTIAL_KIND_SQL = ", ".join(
     f"'{kind.value}'" for kind in sorted(PERSISTED_SITE_CREDENTIAL_KINDS)
 )
@@ -351,6 +351,11 @@ class Site(Base):
     secret_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("secret.id", ondelete="SET NULL"), nullable=True
     )
+    # Independent encrypted Cookie for sites that authenticate searches and
+    # torrent downloads differently. As with proxy_secret_id, the secret
+    # lifecycle is managed in SiteService without rebuilding SQLite's parent
+    # site table to add a foreign-key constraint.
+    download_secret_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     request_timeout_seconds: Mapped[int] = mapped_column(nullable=False, default=15)
     search_interval_seconds: Mapped[int] = mapped_column(nullable=False, default=0)
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)

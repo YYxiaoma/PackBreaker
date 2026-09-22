@@ -1,11 +1,14 @@
 name: Candidate Image Delivery
 
-# This workflow publishes *only* an isolated pre-release test image. It cannot
-# publish a formal Git tag/Release, update latest/stable, or deploy Synology.
+# Explicit dispatch publishes *only* an isolated pre-release test image. It
+# cannot publish a formal Git tag/Release, update latest/stable, or deploy Synology.
 on:
-  push:
-    branches: [candidate/v1.0.1]
-    paths: [.github/workflows/candidate-image-delivery.yml]
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Full 40-character SHA of a reviewed candidate/v1.0.1 commit"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,8 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CANDIDATE_SHA: 47ec58c30ad521ebf00b2646d544556715d275b3
-  CANDIDATE_TAG: candidate-v1.0.1-47ec58c
+  CANDIDATE_SHA: ${{ inputs.candidate_sha }}
   CANDIDATE_VERSION: 1.0.1
   IMAGE: ghcr.io/yyxiaoma/packbreaker
 
@@ -31,17 +33,26 @@ jobs:
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
-      - name: Check out exact previously validated candidate commit
+      - name: Check out candidate branch for source verification
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.CANDIDATE_SHA }}
+          ref: candidate/v1.0.1
+          fetch-depth: 0
           persist-credentials: false
       - name: Verify candidate source identity and version
+        id: identity
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$CANDIDATE_SHA^{commit}"
+          git merge-base --is-ancestor "$CANDIDATE_SHA" origin/candidate/v1.0.1
+          git checkout --detach "$CANDIDATE_SHA"
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           test "$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" = "$CANDIDATE_VERSION"
+          echo "CANDIDATE_TAG=candidate-v1.0.1-${CANDIDATE_SHA:0:12}" >> "$GITHUB_ENV"
+          echo "tag=candidate-v1.0.1-${CANDIDATE_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(git show -s --format=%cI "$CANDIDATE_SHA")" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -65,11 +76,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: mode=max
-          tags: ${{ env.IMAGE }}:${{ env.CANDIDATE_TAG }}
+          tags: ${{ env.IMAGE }}:${{ steps.identity.outputs.tag }}
           build-args: |
             VERSION=${{ env.CANDIDATE_VERSION }}
             VCS_REF=${{ env.CANDIDATE_SHA }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            BUILD_DATE=${{ steps.identity.outputs.build_date }}
       - name: Verify published candidate image
         shell: bash
         run: |
@@ -95,8 +106,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.CANDIDATE_SHA }}
+          ref: ${{ inputs.candidate_sha }}
           persist-credentials: false
+      - name: Verify native test checkout matches requested candidate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io

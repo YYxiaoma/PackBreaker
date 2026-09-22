@@ -7,7 +7,6 @@ import {
   deleteSite,
   getSite,
   getSiteHealth,
-  getSiteUserProfile,
   listSiteProfiles,
   listSites,
   probeSite,
@@ -21,57 +20,23 @@ import {
   type SitePatchInput,
   type SiteProfile,
   type SiteTemporaryProbeInput,
-  type SiteUserProfile,
 } from '../api/sites';
 
 export const useSiteStore = defineStore('sites', () => {
   const items = ref<Site[]>([]);
   const profiles = ref<SiteProfile[]>([]);
   const health = ref<Record<string, SiteHealth>>({});
-  const userProfiles = ref<Record<string, SiteUserProfile>>({});
-  const userProfileErrors = ref<Record<string, ApiProblem>>({});
   const loading = ref(false);
   const error = ref<ApiProblem | null>(null);
   const busy = ref<Record<string, boolean>>({});
 
-  // A response started under an earlier configuration may not restore private
-  // profile data after the site has been updated, removed, or refreshed.
-  const profileRequestTokens = new Map<string, number>();
-  let nextProfileToken = 0;
   const healthRequestTokens = new Map<string, number>();
   let nextHealthToken = 0;
-
-  function eraseProfileDisplay(id: string) {
-    const nextProfiles = { ...userProfiles.value };
-    delete nextProfiles[id];
-    userProfiles.value = nextProfiles;
-    const nextErrors = { ...userProfileErrors.value };
-    delete nextErrors[id];
-    userProfileErrors.value = nextErrors;
-  }
-
-  function invalidateProfile(id: string) {
-    profileRequestTokens.set(id, ++nextProfileToken);
-    eraseProfileDisplay(id);
-    const nextBusy = { ...busy.value };
-    delete nextBusy[`profile:${id}`];
-    busy.value = nextBusy;
-  }
-
-  function resetPrivateProfileState() {
-    for (const id of profileRequestTokens.keys()) profileRequestTokens.set(id, ++nextProfileToken);
-    userProfiles.value = {};
-    userProfileErrors.value = {};
-    busy.value = Object.fromEntries(
-      Object.entries(busy.value).filter(([key]) => !key.startsWith('profile:')),
-    );
-  }
 
   function replace(item: Site) {
     const index = items.value.findIndex((current) => current.id === item.id);
     if (index >= 0) {
       if (items.value[index]?.version !== item.version) {
-        invalidateProfile(item.id);
         invalidateHealth(item.id);
       }
       items.value[index] = item;
@@ -91,7 +56,6 @@ export const useSiteStore = defineStore('sites', () => {
 
   function clearSiteState(id: string) {
     invalidateHealth(id);
-    invalidateProfile(id);
   }
 
   async function guarded<T>(key: string, action: () => Promise<T>): Promise<T> {
@@ -107,7 +71,6 @@ export const useSiteStore = defineStore('sites', () => {
         items.value = [];
         profiles.value = [];
         health.value = {};
-        resetPrivateProfileState();
       }
       throw problem;
     } finally {
@@ -148,7 +111,6 @@ export const useSiteStore = defineStore('sites', () => {
       for (const previous of items.value) {
         const current = siteItems.find((item) => item.id === previous.id);
         if (!current || current.version !== previous.version) {
-          invalidateProfile(previous.id);
           invalidateHealth(previous.id);
         }
       }
@@ -159,12 +121,6 @@ export const useSiteStore = defineStore('sites', () => {
       health.value = Object.fromEntries(
         Object.entries(health.value).filter(([siteId]) => knownIds.has(siteId)),
       );
-      userProfiles.value = Object.fromEntries(
-        Object.entries(userProfiles.value).filter(([siteId]) => knownIds.has(siteId)),
-      );
-      userProfileErrors.value = Object.fromEntries(
-        Object.entries(userProfileErrors.value).filter(([siteId]) => knownIds.has(siteId)),
-      );
       await Promise.all(items.value.map((item) => refreshHealth(item)));
     } catch (caught) {
       const problem = toApiProblem(caught);
@@ -173,7 +129,6 @@ export const useSiteStore = defineStore('sites', () => {
         items.value = [];
         profiles.value = [];
         health.value = {};
-        resetPrivateProfileState();
       }
       throw problem;
     } finally {
@@ -226,40 +181,6 @@ export const useSiteStore = defineStore('sites', () => {
     return guarded('probe', () => probeSite(payload));
   }
 
-  async function loadUserProfile(item: Site): Promise<SiteUserProfile> {
-    const key = `profile:${item.id}`;
-    const token = ++nextProfileToken;
-    profileRequestTokens.set(item.id, token);
-    // Explicit refresh is a new read: never display stale personal statistics
-    // as if they were the result of the current request.
-    eraseProfileDisplay(item.id);
-    busy.value = { ...busy.value, [key]: true };
-    const isCurrent = () =>
-      profileRequestTokens.get(item.id) === token &&
-      items.value.some((current) => current.id === item.id && current.version === item.version);
-    try {
-      const result = await getSiteUserProfile(item.id);
-      if (isCurrent()) userProfiles.value = { ...userProfiles.value, [item.id]: result };
-      return result;
-    } catch (caught) {
-      const problem = toApiProblem(caught);
-      if (isCurrent()) userProfileErrors.value = { ...userProfileErrors.value, [item.id]: problem };
-      if (problem.status === 401 && isCurrent()) {
-        items.value = [];
-        profiles.value = [];
-        health.value = {};
-        resetPrivateProfileState();
-      }
-      throw problem;
-    } finally {
-      if (profileRequestTokens.get(item.id) === token) {
-        const next = { ...busy.value };
-        delete next[key];
-        busy.value = next;
-      }
-    }
-  }
-
   async function setEnabled(item: Site, enabled: boolean) {
     return guarded(`enable:${item.id}`, async () => {
       const updated = await setSiteEnabled(item.id, item.version, enabled);
@@ -287,8 +208,6 @@ export const useSiteStore = defineStore('sites', () => {
     items,
     profiles,
     health,
-    userProfiles,
-    userProfileErrors,
     loading,
     error,
     busy,
@@ -299,7 +218,6 @@ export const useSiteStore = defineStore('sites', () => {
     remove,
     testConnection,
     probeTemporary,
-    loadUserProfile,
     setEnabled,
     resetCircuit,
   };

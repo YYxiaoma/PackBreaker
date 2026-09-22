@@ -34,6 +34,7 @@ class SiteViewResponse(BaseModel):
     base_url: str
     credential_kind: SiteCredentialKind
     credential_configured: bool
+    download_credential_configured: bool
     request_timeout_seconds: int
     search_interval_seconds: int
     user_agent: str | None
@@ -92,6 +93,7 @@ class SiteCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     type: SiteKind
     credential: SiteCredentialInput | None = None
+    download_cookie: SecretStr | None = Field(default=None, min_length=1, max_length=8192)
     request_timeout_seconds: int = Field(default=15, ge=1, le=120)
     search_interval_seconds: int = Field(default=0, ge=0, le=3600)
     user_agent: str | None = Field(default=None, max_length=512)
@@ -106,6 +108,8 @@ class SitePatchRequest(BaseModel):
     type: SiteKind | None = None
     credential: SiteCredentialInput | None = None
     clear_credential: bool = False
+    download_cookie: SecretStr | None = Field(default=None, min_length=1, max_length=8192)
+    clear_download_cookie: bool = False
     request_timeout_seconds: int | None = Field(default=None, ge=1, le=120)
     search_interval_seconds: int | None = Field(default=None, ge=0, le=3600)
     user_agent: str | None = Field(default=None, max_length=512)
@@ -118,6 +122,7 @@ class SiteTemporaryProbeRequest(BaseModel):
 
     type: SiteKind
     credential: SiteCredentialInput
+    download_cookie: SecretStr | None = Field(default=None, min_length=1, max_length=8192)
     request_timeout_seconds: int = Field(default=15, ge=1, le=120)
     search_interval_seconds: int = Field(default=0, ge=0, le=3600)
     user_agent: str | None = Field(default=None, max_length=512)
@@ -151,25 +156,6 @@ class SiteProbeResponse(BaseModel):
     capabilities: dict[str, Any]
 
 
-class SiteUserProfileResponse(BaseModel):
-    site_id: str
-    uid: str | None
-    username: str | None
-    user_level: str | None
-    real_uploaded_bytes: int | None
-    real_downloaded_bytes: int | None
-    uploaded_bytes: int | None
-    downloaded_bytes: int | None
-    ratio: float | None
-    torrents_posted: int | None
-    seeding_count: int | None
-    seeding_size_bytes: int | None
-    bonus: float | None
-    seeding_points: float | None
-    bonus_per_hour: float | None
-    fetched_at: datetime
-
-
 class SiteHealthResponse(BaseModel):
     config_version: int
     circuit_state: Literal["CLOSED", "OPEN", "HALF_OPEN"]
@@ -196,6 +182,7 @@ def _view(record: SiteView) -> SiteViewResponse:
         base_url=record.base_url,
         credential_kind=record.credential_kind,
         credential_configured=record.credential_configured,
+        download_credential_configured=record.download_credential_configured,
         request_timeout_seconds=record.request_timeout_seconds,
         search_interval_seconds=record.search_interval_seconds,
         user_agent=record.user_agent,
@@ -355,6 +342,11 @@ async def probe_site(
         kind=payload.type,
         credential_kind=payload.credential.kind,
         credential=payload.credential.value.get_secret_value(),
+        download_cookie=(
+            payload.download_cookie.get_secret_value()
+            if payload.download_cookie is not None
+            else None
+        ),
         request_timeout_seconds=payload.request_timeout_seconds,
         search_interval_seconds=payload.search_interval_seconds,
         user_agent=payload.user_agent,
@@ -379,6 +371,11 @@ async def create_site(
         credential_kind=payload.credential.kind if payload.credential is not None else None,
         credential=(
             payload.credential.value.get_secret_value() if payload.credential is not None else None
+        ),
+        download_cookie=(
+            payload.download_cookie.get_secret_value()
+            if payload.download_cookie is not None
+            else None
         ),
         request_timeout_seconds=payload.request_timeout_seconds,
         search_interval_seconds=payload.search_interval_seconds,
@@ -406,33 +403,6 @@ async def get_site(
     return _json_with_etag(site_service(request).get(site_id))
 
 
-@router.get("/sites/{site_id}/profile", response_model=SiteUserProfileResponse)
-async def get_site_user_profile(
-    site_id: str,
-    request: Request,
-    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
-) -> SiteUserProfileResponse:
-    profile = await site_service(request).user_profile(site_id)
-    return SiteUserProfileResponse(
-        site_id=profile.site_id,
-        uid=profile.uid,
-        username=profile.username,
-        user_level=profile.user_level,
-        real_uploaded_bytes=profile.real_uploaded_bytes,
-        real_downloaded_bytes=profile.real_downloaded_bytes,
-        uploaded_bytes=profile.uploaded_bytes,
-        downloaded_bytes=profile.downloaded_bytes,
-        ratio=profile.ratio,
-        torrents_posted=profile.torrents_posted,
-        seeding_count=profile.seeding_count,
-        seeding_size_bytes=profile.seeding_size_bytes,
-        bonus=profile.bonus,
-        seeding_points=profile.seeding_points,
-        bonus_per_hour=profile.bonus_per_hour,
-        fetched_at=profile.fetched_at,
-    )
-
-
 @router.patch("/sites/{site_id}", response_model=SiteViewResponse)
 async def patch_site(
     site_id: str,
@@ -447,6 +417,13 @@ async def patch_site(
             status=422,
             title="站点凭证操作冲突",
             detail="credential 与 clear_credential 不能同时使用",
+        )
+    if payload.clear_download_cookie and payload.download_cookie is not None:
+        raise ApplicationError(
+            code="SITE_CREDENTIAL_INVALID",
+            status=422,
+            title="下载凭证操作冲突",
+            detail="download_cookie 与 clear_download_cookie 不能同时使用",
         )
     action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
     if payload.clear_credential:
@@ -465,6 +442,18 @@ async def patch_site(
             credential=(
                 payload.credential.value.get_secret_value()
                 if payload.credential is not None
+                else None
+            ),
+            download_cookie_action=(
+                "CLEAR"
+                if payload.clear_download_cookie
+                else "SET"
+                if payload.download_cookie is not None
+                else "KEEP"
+            ),
+            download_cookie=(
+                payload.download_cookie.get_secret_value()
+                if payload.download_cookie is not None
                 else None
             ),
             runtime_config=_runtime_patch(payload),

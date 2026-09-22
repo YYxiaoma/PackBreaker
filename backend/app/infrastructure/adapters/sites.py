@@ -19,7 +19,9 @@ from backend.app.domain.site_adapter import (
 from backend.app.domain.site_config import (
     SiteCredentialKind,
     SiteKind,
+    normalize_site_base_url,
     required_site_credential_kind,
+    trusted_site_base_url,
 )
 from backend.app.domain.site_search import (
     CandidateMeta,
@@ -29,7 +31,13 @@ from backend.app.domain.site_search import (
     SiteSearchCapabilities,
     normalize_candidate_meta,
 )
-from backend.app.infrastructure.adapters.nexusphp import HDTimeAdapter, HHClubAdapter
+from backend.app.infrastructure.adapters.nexusphp import (
+    HDTimeAdapter,
+    HHClubAdapter,
+    NexusPhpProfile,
+    NexusPhpWebAdapter,
+)
+from backend.app.infrastructure.adapters.rousi_pro import RousiProCandidateAdapter
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError as SiteAdapterError
 
 _MTEAM_SITE_ID = "mteam"
@@ -40,6 +48,33 @@ _MTEAM_MAX_DOWNLOAD_REDIRECTS = 3
 _MTEAM_DOWNLOAD_REDIRECT_HOST_SUFFIXES = ("m-team.cc", "halomt.com", "groueta.cc")
 _IMDB_ID_RE = re.compile(r"tt\d{5,10}", re.IGNORECASE)
 _DOUBAN_ID_RE = re.compile(r"\d{3,12}")
+
+# New NexusPHP profiles are intentionally still PENDING_ADAPTER in the public
+# registry. This factory wiring permits isolated contract/real read-only checks;
+# persistence and site tasks remain blocked until site-specific search and
+# torrent-download contracts have been validated separately.
+_CANDIDATE_NEXUS_KINDS = frozenset(
+    {
+        SiteKind.HDHOME,
+        SiteKind.KEEPFRDS,
+        SiteKind.UBITS,
+        SiteKind.HDFANS,
+        SiteKind.BTSCHOOL,
+        SiteKind.PTTIME,
+        SiteKind.LINGYIN_CLUB,
+    }
+)
+
+# Positions are counted from the rightmost torrent-table cell. These three
+# candidate sites include extra columns compared with the NexusPHP baseline.
+# Verify every field using site-specific synthetic fixtures before enabling
+# persistent site configuration; do not apply these offsets to existing sites.
+_CANDIDATE_NEXUS_COLUMNS: dict[SiteKind, tuple[int, int, int, int]] = {
+    # date, size, seeders, leechers
+    SiteKind.HDHOME: (7, 6, 5, 4),
+    SiteKind.UBITS: (7, 6, 5, 4),
+    SiteKind.PTTIME: (8, 7, 6, 5),
+}
 
 
 class SiteAdapterFactory:
@@ -53,6 +88,7 @@ class SiteAdapterFactory:
         base_url: str,
         credential_kind: SiteCredentialKind,
         credential: str,
+        download_cookie: str | None = None,
         timeout_seconds: float = 15.0,
         user_agent: str | None = None,
         browser_emulation_enabled: bool = False,
@@ -60,6 +96,8 @@ class SiteAdapterFactory:
     ) -> SiteAdapter:
         if credential_kind is not required_site_credential_kind(kind):
             raise ValueError("站点类型与凭证类型不匹配")
+        if download_cookie is not None and kind is not SiteKind.ROUSI_PRO:
+            raise ValueError("该站点不支持独立下载 Cookie")
         if kind is SiteKind.MTEAM:
             return MTeamAdapter(
                 credential,
@@ -82,6 +120,42 @@ class SiteAdapterFactory:
             return HHClubAdapter(
                 credential,
                 base_url=base_url,
+                transport=self._transport,
+                timeout_seconds=timeout_seconds,
+                user_agent=user_agent,
+                browser_emulation_enabled=browser_emulation_enabled,
+                proxy_url=proxy_url,
+            )
+        if kind is SiteKind.ROUSI_PRO:
+            return RousiProCandidateAdapter(
+                credential,
+                base_url=normalize_site_base_url(kind, base_url),
+                transport=self._transport,
+                timeout_seconds=timeout_seconds,
+                proxy_url=proxy_url,
+                download_cookie=download_cookie,
+            )
+        if kind in _CANDIDATE_NEXUS_KINDS:
+            # Fail closed for direct factory callers too: never send a Cookie
+            # to a host supplied outside the reviewed SiteProfileRegistry.
+            origin = normalize_site_base_url(kind, base_url)
+            date_offset, size_offset, seeders_offset, leechers_offset = (
+                _CANDIDATE_NEXUS_COLUMNS.get(kind, (6, 5, 4, 3))
+            )
+            return NexusPhpWebAdapter(
+                credential,
+                profile=NexusPhpProfile(
+                    site_id=kind.value.lower(),
+                    default_base_url=trusted_site_base_url(kind),
+                    timezone_offset_minutes=8 * 60,
+                    date_cell_from_end=date_offset,
+                    size_cell_from_end=size_offset,
+                    seeders_cell_from_end=seeders_offset,
+                    leechers_cell_from_end=leechers_offset,
+                    min_request_interval_seconds=2.0,
+                    require_valid_torrent_metainfo=True,
+                ),
+                base_url=origin,
                 transport=self._transport,
                 timeout_seconds=timeout_seconds,
                 user_agent=user_agent,

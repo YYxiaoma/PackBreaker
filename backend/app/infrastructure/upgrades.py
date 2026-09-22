@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -75,6 +78,21 @@ def upgrade_database_safely(
         except Exception as exc:
             raise BackupError("数据库升级副本迁移失败，当前数据库未切换") from exc
         _normalize_sqlite_database(upgrade_temp)
+        # SQLite can silently apply ON DELETE SET NULL to task_definition
+        # when a migration rebuilds the site parent table. foreign_key_check
+        # alone cannot detect lost links: NULL is a valid foreign key.
+        # Inspect only IDs, site kinds, secret *references*, and versions;
+        # never read/decrypt credential values or media paths.
+        if safety_backup is not None and _site_relationship_fingerprints(
+            safety_backup.database_path,
+            reference_path=safety_backup.database_path,
+        ) != (
+            _site_relationship_fingerprints(
+                upgrade_temp,
+                reference_path=safety_backup.database_path,
+            )
+        ):
+            raise BackupError("升级副本改变了历史站点或任务站点关联，当前数据库未切换")
         migrated_revision = validate_sqlite_database(upgrade_temp)
         if migrated_revision != target_revision:
             raise BackupError("数据库升级副本 revision 与代码 head 不一致")
@@ -117,6 +135,55 @@ def upgrade_database_safely(
         rollback_temp.unlink(missing_ok=True)
         _remove_sqlite_sidecars(upgrade_temp)
         _remove_sqlite_sidecars(rollback_temp)
+
+
+def _site_relationship_fingerprints(
+    path: Path,
+    *,
+    reference_path: Path,
+) -> tuple[tuple[str, int, str] | None, ...]:
+    """Read-only, streaming snapshot of existing site identities and references.
+
+    Earlier schema revisions may not have a site or task_definition table.
+    Missing tables are represented by None; later migrations must not remove
+    an existing table or silently change the tracked historic relationships.
+    """
+    checks = (
+        (
+            "site",
+            ("id", "type", "secret_id", "download_secret_id", "proxy_secret_id", "version"),
+        ),
+        ("task_definition", ("id", "site_id")),
+    )
+    reference_uri = f"file:{reference_path.resolve(strict=True).as_posix()}?mode=ro"
+    uri = f"file:{path.resolve(strict=True).as_posix()}?mode=ro"
+    with (
+        closing(sqlite3.connect(reference_uri, uri=True, timeout=5.0)) as reference,
+        closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as connection,
+    ):
+        reference.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA query_only=ON")
+        historic_tables = {
+            row[0] for row in reference.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        fingerprints: list[tuple[str, int, str] | None] = []
+        for table, desired_columns in checks:
+            if table not in historic_tables:
+                fingerprints.append(None)
+                continue
+            columns = {row[1] for row in reference.execute(f"PRAGMA table_info({table})")}
+            # Only compare columns actually present in an older revision.
+            selected = tuple(column for column in desired_columns if column in columns)
+            if "id" not in selected:
+                raise BackupError("历史站点关系表缺少 ID，拒绝自动迁移")
+            digest = hashlib.sha256()
+            count = 0
+            for row in connection.execute(f"SELECT {', '.join(selected)} FROM {table} ORDER BY id"):
+                digest.update(json.dumps(row, ensure_ascii=True, separators=(",", ":")).encode())
+                digest.update(b"\n")
+                count += 1
+            fingerprints.append((", ".join(selected), count, digest.hexdigest()))
+        return tuple(fingerprints)
 
 
 def _copy_database_file(source: Path, destination: Path) -> None:
