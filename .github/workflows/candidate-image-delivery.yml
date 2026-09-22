@@ -1,0 +1,114 @@
+name: Candidate Image Delivery
+
+# This workflow publishes *only* an isolated pre-release test image. It cannot
+# publish a formal Git tag/Release, update latest/stable, or deploy Synology.
+on:
+  push:
+    branches: [candidate/v1.0.1]
+    paths: [.github/workflows/candidate-image-delivery.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packbreaker-candidate-v101-image-delivery
+  cancel-in-progress: false
+
+env:
+  CANDIDATE_SHA: 47ec58c30ad521ebf00b2646d544556715d275b3
+  CANDIDATE_TAG: candidate-v1.0.1-47ec58c
+  CANDIDATE_VERSION: 1.0.1
+  IMAGE: ghcr.io/yyxiaoma/packbreaker
+
+jobs:
+  publish-candidate:
+    if: github.repository == 'YYxiaoma/PackBreaker' && github.ref == 'refs/heads/candidate/v1.0.1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check out exact previously validated candidate commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+      - name: Verify candidate source identity and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" = "$CANDIDATE_VERSION"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse existing candidate image
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "$IMAGE:$CANDIDATE_TAG" >/dev/null 2>&1; then
+            echo '::error::Candidate image already exists; never overwrite a test image tag' >&2
+            exit 1
+          fi
+      - name: Build and push candidate index
+        id: build
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          tags: ${{ env.IMAGE }}:${{ env.CANDIDATE_TAG }}
+          build-args: |
+            VERSION=${{ env.CANDIDATE_VERSION }}
+            VCS_REF=${{ env.CANDIDATE_SHA }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+      - name: Verify published candidate image
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest='${{ steps.build.outputs.digest }}'
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          tag_digest="$(docker buildx imagetools inspect "$IMAGE:$CANDIDATE_TAG" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$tag_digest" = "$digest"
+          python3 scripts/verify_release_platforms.py \
+            --image "$IMAGE@$digest" --tag v1.0.1 --commit "$CANDIDATE_SHA" --multiarch
+          bash scripts/check-immutable-image-runtime.sh \
+            "$IMAGE@$digest" linux/amd64 v1.0.1 "$CANDIDATE_SHA"
+          echo "Candidate immutable image: $IMAGE@$digest" >> "$GITHUB_STEP_SUMMARY"
+          echo "Architectures verified: linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"
+  native-arm64-candidate:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    needs: publish-candidate
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify exact published candidate index on native ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          digest='${{ needs.publish-candidate.outputs.digest }}'
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          bash scripts/check-immutable-image-runtime.sh \
+            "$IMAGE@$digest" linux/arm64 v1.0.1 "$CANDIDATE_SHA"
+          echo "Native ARM64 candidate verified: $IMAGE@$digest" >> "$GITHUB_STEP_SUMMARY"
