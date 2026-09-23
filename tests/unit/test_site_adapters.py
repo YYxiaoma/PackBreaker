@@ -12,6 +12,7 @@ from backend.app.domain.site_adapter import (
     TorrentDetails,
     TorrentPayload,
 )
+from backend.app.domain.site_config import SiteCredentialKind, SiteKind, site_profile
 from backend.app.domain.site_search import (
     SearchMediaType,
     SearchPage,
@@ -19,13 +20,20 @@ from backend.app.domain.site_search import (
     SiteSearchCapabilities,
     normalize_candidate_meta,
 )
-from backend.app.infrastructure.adapters.sites import MTeamAdapter, SiteAdapterError
+from backend.app.infrastructure.adapters.sites import (
+    MTeamAdapter,
+    SiteAdapterError,
+    SiteAdapterFactory,
+)
 from tests.contract.site_adapter_contract import (
     SiteAdapterContractCase,
     assert_read_only_site_adapter_contract,
 )
 
 _TORRENT_BYTES = b"d4:infod4:name9:syntheticee"
+_VALID_TORRENT_BYTES = (
+    b"d4:infod6:lengthi1e4:name9:synthetic12:piece lengthi16384e6:pieces20:01234567890123456789ee"
+)
 
 
 class FakeSiteAdapter:
@@ -53,6 +61,317 @@ class FakeSiteAdapter:
 
     async def fetch_torrent(self, torrent_id: str) -> TorrentPayload:
         return TorrentPayload("fake", torrent_id, _TORRENT_BYTES, datetime.now(UTC))
+
+
+_CANDIDATE_NEXUS_KINDS = (
+    SiteKind.HDHOME,
+    SiteKind.KEEPFRDS,
+    SiteKind.UBITS,
+    SiteKind.HDFANS,
+    SiteKind.BTSCHOOL,
+    SiteKind.PTTIME,
+    SiteKind.LINGYIN_CLUB,
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", _CANDIDATE_NEXUS_KINDS)
+async def test_candidate_nexus_factory_uses_only_reviewed_origin_and_cookie(
+    kind: SiteKind,
+) -> None:
+    origin = site_profile(kind).base_url
+    host = httpx2.URL(origin).host
+    cookie = "synthetic-cookie-not-a-passkey"
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request.url.path)
+        assert request.url.host == host
+        assert request.headers.get("cookie") == cookie
+        assert request.headers.get("x-api-key") is None
+        assert request.url.path == "/index.php"
+        return httpx2.Response(200, text='<a href="usercp.php">账号设置</a>')
+
+    factory = SiteAdapterFactory(transport=httpx2.MockTransport(handler))
+    adapter = factory.create(
+        kind=kind,
+        base_url=origin,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential=cookie,
+    )
+    result = await adapter.test_connection()
+    assert result.site_id == kind.value.lower()
+    assert seen == ["/index.php"]
+    assert (await adapter.capabilities()).min_request_interval_seconds == 2.0
+
+    # Reject a direct factory caller overriding the trusted target or
+    # treating a Cookie as an API key while these profiles remain pending.
+    with pytest.raises(ValueError, match="固定地址"):
+        factory.create(
+            kind=kind,
+            base_url="https://outside.example",
+            credential_kind=SiteCredentialKind.COOKIE,
+            credential=cookie,
+        )
+    with pytest.raises(ValueError, match="凭证类型不匹配"):
+        factory.create(
+            kind=kind,
+            base_url=origin,
+            credential_kind=SiteCredentialKind.API_KEY,
+            credential=cookie,
+        )
+    assert seen == ["/index.php"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", _CANDIDATE_NEXUS_KINDS)
+async def test_candidate_nexus_site_specific_search_columns_are_not_misclassified(
+    kind: SiteKind,
+) -> None:
+    # Each synthetic row mirrors the observed column counts and offsets, not
+    # any real site's search-result body, torrent name, ID or private URL.
+    columns = {
+        SiteKind.HDHOME: (10, 7, 6, 5, 4),
+        SiteKind.UBITS: (10, 7, 6, 5, 4),
+        SiteKind.PTTIME: (12, 8, 7, 6, 5),
+    }
+    count, date_offset, size_offset, seeders_offset, leechers_offset = columns.get(
+        kind, (9, 6, 5, 4, 3)
+    )
+    cells = ["placeholder"] * count
+    cells[0] = '<a href="details.php?id=123" title="Synthetic Movie 2026">Synthetic Movie</a>'
+    cells[-date_offset] = "2026-09-09 12:00:00"
+    cells[-size_offset] = "4.00 GiB"
+    cells[-seeders_offset] = "8"
+    cells[-leechers_offset] = "2"
+    html = "<table><tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr></table>"
+    paths: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        paths.append(request.url.path)
+        assert request.url.host == httpx2.URL(site_profile(kind).base_url).host
+        assert request.headers.get("cookie") == "synthetic-cookie"
+        assert request.url.path == "/torrents.php"
+        return httpx2.Response(200, text=html)
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=kind,
+        base_url=site_profile(kind).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+    )
+    page = await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.MOVIE))
+    assert paths == ["/torrents.php"]
+    assert len(page.items) == 1
+    candidate = page.items[0]
+    assert candidate.total_size == 4 * 1024**3
+    assert candidate.seeders == 8
+    assert candidate.leechers == 2
+    assert candidate.published_at is not None
+    assert candidate.published_at.isoformat() == "2026-09-09T04:00:00+00:00"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", _CANDIDATE_NEXUS_KINDS)
+async def test_candidate_nexus_remote_page_size_mismatch_preserves_all_candidates(
+    kind: SiteKind,
+) -> None:
+    # page_size is a local hint: a NexusPHP site may return a larger fixed
+    # remote page. Truncating results before advancing the remote page would
+    # permanently lose candidates.
+    origin = site_profile(kind).base_url
+    observed_pages: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.host == httpx2.URL(origin).host
+        assert request.headers.get("cookie") == "synthetic-cookie"
+        assert request.url.path == "/torrents.php"
+        remote_page = request.url.params["page"]
+        observed_pages.append(remote_page)
+        numbers = range(100, 125) if remote_page == "0" else range(125, 127)
+        rows = "".join(
+            (
+                '<tr><td><a href="details.php?id='
+                f'{number}" title="Synthetic Movie {number}">Synthetic</a></td>'
+                + "<td>placeholder</td>" * 11
+                + "</tr>"
+            )
+            for number in numbers
+        )
+        valid_next = (
+            '<a href="/torrents.php?search=Synthetic&amp;page=1">next</a>'
+            if remote_page == "0"
+            else ""
+        )
+        return httpx2.Response(
+            200,
+            text=(
+                "<table>"
+                + rows
+                + "</table>"
+                + valid_next
+                + '<a href="/comments.php?page=1">unrelated pagination</a>'
+                + '<a href="https://outside.invalid/torrents.php?page=1">external</a>'
+            ),
+        )
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=kind,
+        base_url=origin,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+    )
+    first = await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.MOVIE, page_size=20))
+    second = await adapter.search(
+        SearchQuery(("Synthetic",), SearchMediaType.MOVIE, page=2, page_size=20)
+    )
+    assert len(first.items) == 25
+    assert first.has_more
+    assert len(second.items) == 2
+    assert not second.has_more
+    assert len({item.identity for item in (*first.items, *second.items)}) == 27
+    assert observed_pages == ["0", "1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", _CANDIDATE_NEXUS_KINDS)
+async def test_candidate_nexus_torrent_link_uses_same_origin_without_separate_passkey(
+    kind: SiteKind,
+) -> None:
+    # Synthetic only. PTTime's observed detail link contains an account-specific
+    # passkey parameter, but the link is supplied by the authenticated site
+    # itself; do not require a separate credential or log the private URL.
+    origin = site_profile(kind).base_url
+    secret = "synthetic-download-secret"
+    suffix = f"&passkey={secret}" if kind is SiteKind.PTTIME else ""
+    requested: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requested.append(request.url.path)
+        assert request.url.host == httpx2.URL(origin).host
+        assert request.headers.get("cookie") == "synthetic-cookie"
+        if request.url.path == "/details.php":
+            assert request.url.params["id"] == "123"
+            return httpx2.Response(
+                200,
+                text=f'<a href="/download.php?id=123{suffix}">Synthetic download</a>',
+            )
+        assert request.url.path == "/download.php"
+        assert request.url.params["id"] == "123"
+        if kind is SiteKind.PTTIME:
+            assert request.url.params["passkey"] == secret
+        else:
+            assert "passkey" not in request.url.params
+        return httpx2.Response(200, content=_VALID_TORRENT_BYTES)
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=kind,
+        base_url=origin,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+    )
+    result = await adapter.fetch_torrent("123")
+    assert result.content == _VALID_TORRENT_BYTES
+    assert requested == ["/details.php", "/download.php"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", _CANDIDATE_NEXUS_KINDS)
+@pytest.mark.parametrize(
+    "invalid_content",
+    (
+        b"d3:foo3:bare",
+        b"d4:infod4:name9:syntheticee",
+        b"<html>login required</html>",
+    ),
+)
+async def test_candidate_nexus_invalid_metainfo_fails_closed_without_content_leaks(
+    kind: SiteKind, invalid_content: bytes
+) -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requested.append(request.url.path)
+        assert request.url.host == httpx2.URL(site_profile(kind).base_url).host
+        assert request.headers.get("cookie") == "synthetic-cookie"
+        if request.url.path == "/details.php":
+            return httpx2.Response(200, text='<a href="/download.php?id=123">Download</a>')
+        assert request.url.path == "/download.php"
+        return httpx2.Response(200, content=invalid_content)
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=kind,
+        base_url=site_profile(kind).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+    )
+    with pytest.raises(SiteAdapterError) as exc:
+        await adapter.fetch_torrent("123")
+    assert exc.value.code == "SITE_INVALID_RESPONSE"
+    assert "synthetic-cookie" not in str(exc.value)
+    assert "login required" not in str(exc.value)
+    assert requested == ["/details.php", "/download.php"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", _CANDIDATE_NEXUS_KINDS)
+async def test_candidate_nexus_torrent_link_cannot_forward_cookie_or_passkey_off_origin(
+    kind: SiteKind,
+) -> None:
+    # The HTTP client must reject a cross-origin download href before any
+    # network request even if it carries a synthetic passkey-like parameter.
+    requested: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requested.append(request.url.path)
+        assert request.url.host == httpx2.URL(site_profile(kind).base_url).host
+        assert request.url.path == "/details.php"
+        return httpx2.Response(
+            200,
+            text=(
+                '<a href="https://outside.invalid/download.php?id=123'
+                '&passkey=synthetic-private-token">External download</a>'
+            ),
+        )
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=kind,
+        base_url=site_profile(kind).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+    )
+    with pytest.raises(SiteAdapterError) as exc:
+        await adapter.fetch_torrent("123")
+    assert exc.value.code == "SITE_DOWNLOAD_URL_INVALID"
+    assert "synthetic-private-token" not in str(exc.value)
+    assert requested == ["/details.php"]
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("torrents_posted", 1.5),
+        ("seeding_count", 2.25),
+        ("seeding_size_bytes", 1024.5),
+        ("uploaded_bytes", float("nan")),
+        ("downloaded_bytes", float("inf")),
+        ("real_uploaded_bytes", True),
+        ("real_downloaded_bytes", -1),
+    ],
+)
+def test_site_user_profile_shared_integer_statistics_reject_invalid_types(
+    field: str, invalid: object
+) -> None:
+    with pytest.raises(ValueError, match="必须是非负整数"):
+        SiteUserProfile("synthetic", **{field: invalid})  # type: ignore[arg-type]
+
+
+def test_site_user_profile_shared_integer_statistics_accept_zero_and_large_int() -> None:
+    value = SiteUserProfile(
+        "synthetic", torrents_posted=0, seeding_count=3, seeding_size_bytes=2**58
+    )
+    assert value.torrents_posted == 0
+    assert value.seeding_size_bytes == 2**58
 
 
 @pytest.mark.asyncio
@@ -213,11 +532,150 @@ async def test_mteam_user_profile_supports_current_member_count_shape() -> None:
     assert profile.site_id == "mteam"
     assert profile.uid == "42"
     assert profile.username == "SyntheticUser"
-    assert profile.user_level == "USER"
+    assert profile.user_level is None  # 身份角色不是站点用户等级
     assert profile.uploaded_bytes == 1099511627776
     assert profile.downloaded_bytes == 549755813888
     assert profile.ratio == 2.0
     assert profile.bonus == 56.75
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bad_count", "bad_size"),
+    [(1.75, 2.5), (-1, -2), (True, False), ("1.5", "2.5")],
+)
+async def test_mteam_profile_does_not_truncate_invalid_integer_statistics(
+    bad_count: object, bad_size: object
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200,
+            json={
+                "code": "0",
+                "data": {
+                    "id": "42",
+                    "memberStatus": {"vip": True, "role": "USER", "level": 7},
+                    "memberCount": {
+                        "uploaded": "1099511627776",
+                        "bonus": "56.75",
+                        "seedingCount": bad_count,
+                        "seedingSizeBytes": bad_size,
+                    },
+                },
+            },
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+    assert profile.user_level is None  # VIP/role/level ID cannot prove a named grade.
+    assert profile.uploaded_bytes == 1099511627776
+    assert profile.bonus == 56.75
+    assert profile.seeding_count is None
+    assert profile.seeding_size_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_mteam_profile_uses_named_grade_and_nested_member_statistics() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200,
+            json={
+                "code": "0",
+                "data": {
+                    "level": "7",
+                    "userClassName": "Elite",
+                    "memberCount": {
+                        "stats": {
+                            "seedingCount": 24,
+                            "torrentCount": 5,
+                            "seedingSizeBytes": 4294967296,
+                            "seedingPoints": 12.5,
+                            "bonusPerHour": 1.25,
+                        }
+                    },
+                },
+            },
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+    assert profile.user_level == "Elite"
+    assert profile.seeding_count == 24
+    assert profile.torrents_posted == 5
+    assert profile.seeding_size_bytes == 4294967296
+    assert profile.seeding_points == 12.5
+    assert profile.bonus_per_hour == 1.25
+
+
+@pytest.mark.asyncio
+async def test_mteam_numeric_grade_without_official_name_is_unknown() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200, json={"code": "0", "data": {"level": 7, "userClass": "7", "role": "USER"}}
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+    assert profile.user_level is None
+
+
+@pytest.mark.asyncio
+async def test_mteam_numeric_outer_grade_does_not_mask_nested_official_name() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200,
+            json={
+                "code": "0",
+                "data": {
+                    "userClassName": "7",
+                    "profile": {"userClassName": "Elite Member"},
+                },
+            },
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+    assert profile.user_level == "Elite Member"
+
+
+@pytest.mark.asyncio
+async def test_mteam_profile_reads_bounded_nested_profile_envelopes() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/member/profile"
+        return httpx2.Response(
+            200,
+            json={
+                "code": "0",
+                "data": {
+                    "member": {
+                        "user": {
+                            "profile": {
+                                "userLevelName": "Elite",
+                                "seedingCount": 23,
+                                "seedingSizeBytes": 4294967296,
+                            }
+                        }
+                    },
+                    "untrustedSearchResults": [{"seedingCount": 9999}],
+                },
+            },
+        )
+
+    profile = await MTeamAdapter(
+        "synthetic", transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+    assert profile.user_level == "Elite"
+    assert profile.seeding_count == 23
+    assert profile.seeding_size_bytes == 4294967296
+    assert profile.torrents_posted is None
 
 
 @pytest.mark.asyncio

@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
+import httpx2
 import pytest
 from sqlalchemy import select
 
@@ -47,7 +49,8 @@ from backend.app.domain.downloader import (
     ProbeStatus,
     downloader_execution_binding_digest,
 )
-from backend.app.domain.site_adapter import TorrentDetails
+from backend.app.domain.site_adapter import SiteAdapter, TorrentDetails
+from backend.app.domain.site_config import SiteCredentialKind, SiteKind, site_profile
 from backend.app.domain.site_search import (
     CandidateMeta,
     SearchPage,
@@ -63,6 +66,7 @@ from backend.app.infrastructure.adapters.downloaders import (
     TransmissionAdapter,
     TransmissionWriteAdapter,
 )
+from backend.app.infrastructure.adapters.sites import SiteAdapterFactory
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.database import (
     create_session_factory,
@@ -111,6 +115,7 @@ async def _run_full_lifecycle(
     *,
     remote_root: str,
     kind: DownloaderKind = DownloaderKind.QBITTORRENT,
+    site_adapter_factory: Callable[[bytes, int], SiteAdapter] | None = None,
 ) -> None:
     data_root = sandbox / "data"
     source_root = data_root / "source"
@@ -137,8 +142,13 @@ async def _run_full_lifecycle(
     assert not await client.get_torrents((meta.v1_info_hash,)), (
         "single-task CI fixture must use a distinct torrent hash"
     )
-    site_adapter = _SizedSyntheticSite(torrent, len(content))
-    sites = _FakeSiteProvider((EnabledSiteAdapter("synthetic-site", 1, "synthetic", site_adapter),))
+    site_adapter = (
+        site_adapter_factory(torrent, len(content))
+        if site_adapter_factory is not None
+        else _SizedSyntheticSite(torrent, len(content))
+    )
+    site_id = "hdfans" if site_adapter_factory is not None else "synthetic"
+    sites = _FakeSiteProvider((EnabledSiteAdapter("synthetic-site", 1, site_id, site_adapter),))
 
     engine = create_sqlite_engine(sandbox / "full-lifecycle.db")
     Base.metadata.create_all(engine)
@@ -392,6 +402,58 @@ async def _run_full_lifecycle(
 @pytest.mark.asyncio
 async def test_synthetic_single_task_lifecycle_with_fake_client(tmp_path: Path) -> None:
     await _run_full_lifecycle(tmp_path, _FakeQbittorrent(), remote_root="/downloads")
+
+
+@pytest.mark.asyncio
+async def test_pending_hdfans_real_adapter_with_synthetic_full_task_and_fake_client(
+    tmp_path: Path,
+) -> None:
+    """Exercise real candidate site parser and task services, never live endpoints."""
+    cookie = "synthetic-hdfans-only-cookie"
+    requests: list[str] = []
+
+    def site_factory(torrent: bytes, length: int) -> SiteAdapter:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            requests.append(request.url.path)
+            assert request.method == "GET"
+            assert request.url.host == "hdfans.org"
+            assert request.headers.get("cookie") == cookie
+            if request.url.path in {"/torrents.php", "/details.php"}:
+                cells = [
+                    '<a href="details.php?id=42" title="Movie.2026">Movie.2026</a>',
+                    "placeholder",
+                    "placeholder",
+                    "2026-09-01 12:00:00",
+                    f"{length} B",
+                    "1",
+                    "0",
+                    "placeholder",
+                    "placeholder",
+                ]
+                row = "<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
+                link = '<a href="/download.php?id=42">Download torrent</a>'
+                return httpx2.Response(200, text=f"<table>{row}</table>{link}")
+            assert request.url.path == "/download.php"
+            assert request.url.params["id"] == "42"
+            return httpx2.Response(200, content=torrent)
+
+        return SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+            kind=SiteKind.HDFANS,
+            base_url=site_profile(SiteKind.HDFANS).base_url,
+            credential_kind=SiteCredentialKind.COOKIE,
+            credential=cookie,
+        )
+
+    await _run_full_lifecycle(
+        tmp_path,
+        _FakeQbittorrent(),
+        remote_root="/downloads",
+        site_adapter_factory=site_factory,
+    )
+    assert len(requests) == 8
+    assert requests[0] == "/torrents.php"
+    assert set(requests) == {"/torrents.php", "/details.php", "/download.php"}
+    assert requests.count("/download.php") >= 1
 
 
 @pytest.mark.skipif(

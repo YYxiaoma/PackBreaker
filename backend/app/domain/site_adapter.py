@@ -56,8 +56,10 @@ class SiteUserProfile:
             "seeding_size_bytes",
         ):
             value = getattr(self, field_name)
-            if value is not None and (isinstance(value, bool) or value < 0):
-                raise ValueError(f"{field_name} 不能为负数")
+            if value is not None and (type(value) is not int or value < 0):
+                # An adapter must not pass a rounded float, boolean or NaN as
+                # a count or byte size. Enforce this once for all site kinds.
+                raise ValueError(f"{field_name} 必须是非负整数")
         for field_name in ("ratio", "bonus", "seeding_points", "bonus_per_hour"):
             value = getattr(self, field_name)
             if value is not None and (not isfinite(value) or value < 0):

@@ -10,9 +10,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
-from backend.app.application.secrets import SecretStore
+from backend.app.application.secrets import SecretKindMismatch, SecretNotFound, SecretStore
 from backend.app.domain.proxy import ProxyConfig
-from backend.app.domain.site_adapter import SiteAdapter, SiteUserProfile
+from backend.app.domain.site_adapter import SiteAdapter
 from backend.app.domain.site_config import (
     DEFAULT_COOKIE_USER_AGENT,
     SiteCredentialKind,
@@ -42,6 +42,7 @@ class SiteView:
     base_url: str
     credential_kind: SiteCredentialKind
     credential_configured: bool
+    download_credential_configured: bool
     request_timeout_seconds: int
     search_interval_seconds: int
     user_agent: str | None
@@ -68,6 +69,8 @@ class SiteUpdate:
     credential_action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
     credential_kind: SiteCredentialKind | None = None
     credential: str | None = None
+    download_cookie_action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
+    download_cookie: str | None = None
     runtime_config: dict[str, Any] | None = None
     proxy_password_action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
     proxy_password: str | None = None
@@ -81,6 +84,7 @@ class _SiteConnectionSnapshot:
     base_url: str
     credential_kind: SiteCredentialKind
     secret_id: str | None
+    download_secret_id: str | None
     request_timeout_seconds: int
     search_interval_seconds: int
     user_agent: str | None
@@ -145,6 +149,17 @@ class SiteService:
         with self._session_factory() as session:
             records = tuple(SiteRepository(session).list_enabled())
             snapshots = tuple(self._snapshot(record) for record in records)
+        # Validate *all* stored kinds before decrypting even the first secret.
+        # A directly imported pending row must not activate a mixed batch.
+        for snapshot in snapshots:
+            self._require_persistable_kind(snapshot.type)
+            if snapshot.type is SiteKind.ROUSI_PRO and snapshot.download_secret_id is None:
+                raise ApplicationError(
+                    code="SITE_ENABLED_CONFIG_INVALID",
+                    status=500,
+                    title="已启用站点配置无效",
+                    detail="Rousi Pro 已启用配置缺少独立下载 Cookie",
+                )
         result: list[EnabledSiteAdapter] = []
         for snapshot in snapshots:
             if snapshot.secret_id is None:
@@ -154,7 +169,7 @@ class SiteService:
                     title="已启用站点配置无效",
                     detail="已启用站点缺少凭证",
                 )
-            credential = self._secret_store.get(snapshot.secret_id).decode("utf-8")
+            credential = self._read_primary_credential(snapshot)
             result.append(
                 EnabledSiteAdapter(
                     config_id=snapshot.id,
@@ -172,9 +187,10 @@ class SiteService:
 
     def enabled_site_versions(self) -> tuple[tuple[str, int], ...]:
         with self._session_factory() as session:
-            return tuple(
-                (record.id, record.version) for record in SiteRepository(session).list_enabled()
-            )
+            records = tuple(SiteRepository(session).list_enabled())
+            for record in records:
+                self._require_persistable_kind(SiteKind(record.type))
+            return tuple((record.id, record.version) for record in records)
 
     def create(
         self,
@@ -184,6 +200,7 @@ class SiteService:
         base_url: str | None = None,
         credential_kind: SiteCredentialKind | None,
         credential: str | None,
+        download_cookie: str | None = None,
         request_timeout_seconds: int = 15,
         search_interval_seconds: int = 0,
         user_agent: str | None = None,
@@ -216,6 +233,7 @@ class SiteService:
             normalized_credential = self._normalize_credential(required_kind, credential)
         elif credential_kind is not None:
             raise self._credential_invalid("凭证类型不能脱离凭证值单独提交")
+        normalized_download_cookie = self._validate_download_cookie(kind, download_cookie)
         normalized_proxy_password = self._normalize_proxy_password(proxy_password)
         if normalized_proxy_password is not None and not runtime["proxy_username"]:
             raise self._proxy_invalid("配置代理密码时必须同时提供代理账号")
@@ -227,6 +245,15 @@ class SiteService:
                     value=normalized_credential.encode(),
                 )
                 if normalized_credential is not None
+                else None
+            )
+            download_secret_id = (
+                self._secret_store.put_in_session(
+                    session,
+                    kind="SITE_DOWNLOAD_COOKIE",
+                    value=normalized_download_cookie.encode("utf-8"),
+                )
+                if normalized_download_cookie is not None
                 else None
             )
             proxy_secret_id = (
@@ -245,6 +272,7 @@ class SiteService:
                     base_url=normalized_url,
                     credential_kind=required_kind.value,
                     secret_id=secret_id,
+                    download_secret_id=download_secret_id,
                     request_timeout_seconds=runtime["request_timeout_seconds"],
                     search_interval_seconds=runtime["search_interval_seconds"],
                     user_agent=runtime["user_agent"],
@@ -275,6 +303,16 @@ class SiteService:
             current_kind = SiteKind(current.type)
             next_kind = update_request.type or current_kind
             self._require_persistable_kind(next_kind)
+            if update_request.download_cookie_action == "SET":
+                if update_request.download_cookie is None:
+                    raise self._credential_invalid("下载 Cookie 不能为空")
+                normalized_download_cookie = self._validate_download_cookie(
+                    next_kind, update_request.download_cookie
+                )
+            else:
+                normalized_download_cookie = None
+                if update_request.download_cookie is not None:
+                    raise self._credential_invalid("下载 Cookie 操作与值不匹配")
             required_kind = required_site_credential_kind(next_kind)
             if (
                 update_request.type is not None
@@ -358,6 +396,27 @@ class SiteService:
                 values["proxy_secret_id"] = None
                 connection_changed = True
 
+            # A secondary download Cookie belongs to the original site/API
+            # credential. Never carry it over to another kind or API key.
+            old_download_secret_id = current.download_secret_id
+            clear_download_secret = old_download_secret_id is not None and (
+                next_kind is not current_kind
+                or update_request.credential_action in {"SET", "CLEAR"}
+                or update_request.download_cookie_action in {"SET", "CLEAR"}
+            )
+            if clear_download_secret:
+                values["download_secret_id"] = None
+                connection_changed = True
+            if update_request.download_cookie_action == "SET":
+                if normalized_download_cookie is None:
+                    raise self._credential_invalid("下载 Cookie 不能为空")
+                values["download_secret_id"] = self._secret_store.put_in_session(
+                    session,
+                    kind="SITE_DOWNLOAD_COOKIE",
+                    value=normalized_download_cookie.encode("utf-8"),
+                )
+                connection_changed = True
+
             if connection_changed:
                 values.update(
                     connection_status=SiteProbeStatus.UNTESTED.value,
@@ -387,6 +446,8 @@ class SiteService:
                     "CLEAR",
                 }:
                     self._secret_store.delete_in_session(session, old_proxy_secret_id)
+                if clear_download_secret and old_download_secret_id is not None:
+                    self._secret_store.delete_in_session(session, old_download_secret_id)
                 session.commit()
             except IntegrityError as exc:
                 session.rollback()
@@ -406,6 +467,8 @@ class SiteService:
                 self._secret_store.delete_in_session(session, current.secret_id)
             if current.proxy_secret_id is not None:
                 self._secret_store.delete_in_session(session, current.proxy_secret_id)
+            if current.download_secret_id is not None:
+                self._secret_store.delete_in_session(session, current.download_secret_id)
             session.commit()
         self._reliability_registry.discard(site_id)
 
@@ -414,12 +477,22 @@ class SiteService:
             repository = SiteRepository(session)
             current = self._require_record(repository, site_id)
             if enabled:
+                # Defense in depth for imported/legacy rows that may carry a
+                # PENDING_ADAPTER type despite the public create/update gates.
+                self._require_persistable_kind(SiteKind(current.type))
                 if current.secret_id is None:
                     raise ApplicationError(
                         code="SITE_CREDENTIAL_REQUIRED",
                         status=409,
                         title="站点凭证未配置",
                         detail="启用站点前必须绑定对应类型的凭证",
+                    )
+                if current.type == SiteKind.ROUSI_PRO.value and current.download_secret_id is None:
+                    raise ApplicationError(
+                        code="SITE_DOWNLOAD_CREDENTIAL_REQUIRED",
+                        status=409,
+                        title="站点下载凭证未配置",
+                        detail="Rousi Pro 启用前必须单独配置下载 Cookie",
                     )
                 if current.connection_status != SiteProbeStatus.OK.value:
                     raise ApplicationError(
@@ -453,7 +526,7 @@ class SiteService:
                 title="站点凭证未配置",
                 detail="连接测试需要已配置的站点凭证",
             )
-        credential = self._secret_store.get(snapshot.secret_id).decode("utf-8")
+        credential = self._read_primary_credential(snapshot)
         adapter = self._reliability_registry.wrap(
             config_id=snapshot.id,
             config_version=snapshot.version,
@@ -494,6 +567,7 @@ class SiteService:
         kind: SiteKind,
         credential_kind: SiteCredentialKind,
         credential: str,
+        download_cookie: str | None = None,
         request_timeout_seconds: int = 15,
         search_interval_seconds: int = 0,
         user_agent: str | None = None,
@@ -509,6 +583,7 @@ class SiteService:
         if credential_kind is not required_kind:
             raise self._credential_kind_mismatch(required_kind)
         normalized_credential = self._normalize_credential(required_kind, credential)
+        normalized_download_cookie = self._validate_download_cookie(kind, download_cookie)
         runtime = self._normalize_runtime_config(
             kind,
             request_timeout_seconds=request_timeout_seconds,
@@ -530,6 +605,7 @@ class SiteService:
             base_url=trusted_site_base_url(kind),
             credential_kind=required_kind,
             secret_id=None,
+            download_secret_id=None,
             request_timeout_seconds=runtime["request_timeout_seconds"],
             search_interval_seconds=runtime["search_interval_seconds"],
             user_agent=runtime["user_agent"],
@@ -544,6 +620,7 @@ class SiteService:
             snapshot,
             normalized_credential,
             proxy_password=normalized_proxy_password,
+            download_cookie=normalized_download_cookie,
         )
         try:
             result = await adapter.test_connection()
@@ -559,46 +636,12 @@ class SiteService:
             )
         return {"status": "ok", "capabilities": capabilities}
 
-    async def user_profile(self, site_id: str) -> SiteUserProfile:
-        snapshot = self._connection_snapshot(site_id)
-        if snapshot.secret_id is None:
-            raise ApplicationError(
-                code="SITE_CREDENTIAL_REQUIRED",
-                status=409,
-                title="站点凭证未配置",
-                detail="读取站点用户详情需要已配置的站点凭证",
-            )
-        credential = self._secret_store.get(snapshot.secret_id).decode("utf-8")
-        adapter = self._reliability_registry.wrap(
-            config_id=snapshot.id,
-            config_version=snapshot.version,
-            adapter=self._create_adapter(snapshot, credential),
-            min_request_interval_seconds=snapshot.search_interval_seconds,
-        )
-        try:
-            profile = await adapter.fetch_user_profile()
-        except SiteAdapterError as exc:
-            raise ApplicationError(
-                code=exc.code,
-                status=429 if exc.code == "SITE_RATE_LIMITED" else 502,
-                title="站点用户详情获取失败",
-                detail=str(exc),
-                retry_after=(
-                    ceil(exc.retry_after_seconds) if exc.retry_after_seconds is not None else None
-                ),
-            ) from exc
-        if profile.site_id != self._expected_site_id(snapshot.type):
-            raise ApplicationError(
-                code="SITE_IDENTITY_MISMATCH",
-                status=502,
-                title="站点用户详情身份不匹配",
-                detail="站点适配器返回了意外的站点身份",
-            )
-        return profile
-
     def _connection_snapshot(self, site_id: str) -> _SiteConnectionSnapshot:
         with self._session_factory() as session:
             current = self._require_record(SiteRepository(session), site_id)
+            # Database type capacity does not grant permission to test or read
+            # a pending adapter's credentials, including imported legacy rows.
+            self._require_persistable_kind(SiteKind(current.type))
             return self._snapshot(current)
 
     @staticmethod
@@ -610,6 +653,7 @@ class SiteService:
             base_url=trusted_site_base_url(SiteKind(record.type)),
             credential_kind=SiteCredentialKind(record.credential_kind),
             secret_id=record.secret_id,
+            download_secret_id=record.download_secret_id,
             request_timeout_seconds=record.request_timeout_seconds,
             search_interval_seconds=record.search_interval_seconds,
             user_agent=record.user_agent,
@@ -621,18 +665,57 @@ class SiteService:
             proxy_secret_id=record.proxy_secret_id,
         )
 
+    def _read_primary_credential(self, snapshot: _SiteConnectionSnapshot) -> str:
+        if snapshot.secret_id is None:
+            raise ApplicationError(
+                code="SITE_ENABLED_CONFIG_INVALID",
+                status=409,
+                title="站点主凭据引用无效",
+                detail="站点主凭据未正确绑定",
+            )
+        try:
+            return self._secret_store.get(
+                snapshot.secret_id,
+                expected_kind=self._secret_kind(required_site_credential_kind(snapshot.type)),
+            ).decode("utf-8")
+        except (SecretNotFound, SecretKindMismatch, UnicodeDecodeError):
+            raise ApplicationError(
+                code="SITE_ENABLED_CONFIG_INVALID",
+                status=409,
+                title="站点主凭据引用无效",
+                detail="站点主凭据未指向有效的独立加密记录",
+            ) from None
+
     def _create_adapter(
         self,
         snapshot: _SiteConnectionSnapshot,
         credential: str,
         *,
         proxy_password: str | None = None,
+        download_cookie: str | None = None,
     ) -> SiteAdapter:
+        if (
+            snapshot.type is SiteKind.ROUSI_PRO
+            and download_cookie is None
+            and snapshot.download_secret_id is not None
+        ):
+            try:
+                download_cookie = self._secret_store.get(
+                    snapshot.download_secret_id, expected_kind="SITE_DOWNLOAD_COOKIE"
+                ).decode("utf-8")
+            except (SecretNotFound, SecretKindMismatch, UnicodeDecodeError):
+                raise ApplicationError(
+                    code="SITE_ENABLED_CONFIG_INVALID",
+                    status=409,
+                    title="站点下载凭据引用无效",
+                    detail="Rousi Pro 下载凭据未指向有效的独立 Cookie 密文",
+                ) from None
         return self._adapter_factory.create(
             kind=snapshot.type,
             base_url=snapshot.base_url,
             credential_kind=snapshot.credential_kind,
             credential=credential,
+            download_cookie=download_cookie,
             timeout_seconds=snapshot.request_timeout_seconds,
             user_agent=snapshot.user_agent,
             browser_emulation_enabled=snapshot.browser_emulation_enabled,
@@ -659,7 +742,17 @@ class SiteService:
             raise self._proxy_invalid(str(exc)) from exc
         password = proxy_password
         if password is None and snapshot.proxy_secret_id is not None:
-            password = self._secret_store.get(snapshot.proxy_secret_id).decode("utf-8")
+            try:
+                password = self._secret_store.get(
+                    snapshot.proxy_secret_id, expected_kind="SITE_PROXY_PASSWORD"
+                ).decode("utf-8")
+            except (SecretNotFound, SecretKindMismatch, UnicodeDecodeError):
+                raise ApplicationError(
+                    code="SITE_ENABLED_CONFIG_INVALID",
+                    status=409,
+                    title="站点代理凭据引用无效",
+                    detail="站点代理密码未指向有效的独立加密记录",
+                ) from None
         auth = ""
         if proxy.username is not None:
             auth = quote(proxy.username, safe="")
@@ -905,6 +998,19 @@ class SiteService:
         except ValueError as exc:
             raise cls._credential_invalid(str(exc)) from exc
 
+    @classmethod
+    def _validate_download_cookie(cls, kind: SiteKind, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if kind is not SiteKind.ROUSI_PRO:
+            raise ApplicationError(
+                code="SITE_DOWNLOAD_CREDENTIAL_NOT_ALLOWED",
+                status=422,
+                title="该站点不支持独立下载凭证",
+                detail="独立下载 Cookie 仅用于 Rousi Pro",
+            )
+        return cls._normalize_credential(SiteCredentialKind.COOKIE, value)
+
     @staticmethod
     def _credential_invalid(detail: str) -> ApplicationError:
         return ApplicationError(
@@ -953,6 +1059,8 @@ class SiteService:
             return "hdtime"
         if kind is SiteKind.HHCLUB:
             return "hhclub"
+        if kind is SiteKind.ROUSI_PRO:
+            return "rousi_pro"
         raise ValueError("暂不支持该站点类型")
 
     @staticmethod
@@ -994,6 +1102,7 @@ class SiteService:
             base_url=trusted_site_base_url(SiteKind(record.type)),
             credential_kind=SiteCredentialKind(record.credential_kind),
             credential_configured=record.secret_id is not None,
+            download_credential_configured=record.download_secret_id is not None,
             request_timeout_seconds=record.request_timeout_seconds,
             search_interval_seconds=record.search_interval_seconds,
             user_agent=record.user_agent,

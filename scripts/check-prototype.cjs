@@ -63,6 +63,7 @@ const path = require('node:path');
     let siteResetCalls=0;
     let siteEnableCalls=0;
     let siteTestCalls=0;
+    let siteProfileReads=0;
     const taskEvents={
       'task-e2e-execute':[{id:'event-execute-1',task_id:'task-e2e-execute',from_status:'PREFLIGHT',to_status:'AWAITING_CONFIRMATION',event_type:'REVIEW_OPENED',reason:'E2E 初始审核已确认',created_at:now()}],
       'task-e2e-cancel':[{id:'event-cancel-1',task_id:'task-e2e-cancel',from_status:'AWAITING_CONFIRMATION',to_status:'LINKING',event_type:'LINKING_STARTED',reason:'E2E 初始链接阶段',created_at:now()}],
@@ -534,11 +535,15 @@ const path = require('node:path');
       const url=new URL(request.url());
       if(url.pathname==='/api/v1/sites'&&request.method()==='GET')return fulfillJson(route,{items:[e2eSite]});
       if(url.pathname==='/api/v1/sites/profiles'&&request.method()==='GET')return fulfillJson(route,{items:e2eSiteProfiles});
-      const match=url.pathname.match(/\/api\/v1\/sites\/site-e2e-mteam(?:\/(health|test|actions))?$/);
+      const match=url.pathname.match(/\/api\/v1\/sites\/site-e2e-mteam(?:\/(health|test|actions|profile))?$/);
       if(!match)return route.fallback();
       const tail=match[1]||'';
       if(request.method()==='GET'&&!tail)return fulfillJson(route,e2eSite);
       if(request.method()==='GET'&&tail==='health')return fulfillJson(route,e2eSiteHealth);
+      if(request.method()==='GET'&&tail==='profile'){
+        siteProfileReads+=1;
+        return fulfillJson(route,{code:'NOT_FOUND',detail:'站点用户详情功能已取消'},404);
+      }
       if(request.method()==='POST'&&tail==='test'){
         siteTestCalls+=1;
         assert.equal(request.postData(),null,'只读连接测试不应从浏览器提交已保存站点凭证');
@@ -967,6 +972,9 @@ const path = require('node:path');
     await page.locator('.site-toolbar').waitFor();
     const siteCard=page.locator('.connection-card').filter({hasText:'M-Team E2E'});
     await siteCard.getByText('熔断 已打开',{exact:true}).waitFor();
+    assert.equal(await siteCard.getByRole('button',{name:'详情',exact:true}).count(),0,'站点用户详情入口必须已移除');
+    assert.equal(await page.locator('.el-dialog').filter({hasText:'用户详情'}).count(),0,'站点用户详情弹窗必须已移除');
+    assert.equal(siteProfileReads,0,'打开站点列表不得访问已删除的用户个人资料接口');
     assert.equal(await page.getByText(siteCanary,{exact:true}).count(),0,'站点页不得回显已保存凭证明文');
     assert.equal(await page.getByRole('button',{name:/HHClub/}).count(),0,'HHClub 未确认前不得出现可执行创建动作');
     await page.getByRole('button',{name:'重置熔断',exact:true}).click();

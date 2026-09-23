@@ -11,20 +11,20 @@ from scripts.validate_release_baseline import load_release_baseline, project_ver
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_repository_release_baseline_is_immutable_v100_multiarch() -> None:
+def test_repository_release_baseline_is_immutable_v101_multiarch() -> None:
     baseline = load_release_baseline()
 
-    assert baseline.version == "1.0.0"
-    assert baseline.tag == "v1.0.0"
-    assert baseline.commit == "ce86939224301315092b27621830560bf8438d58"
+    assert baseline.version == "1.0.1"
+    assert baseline.tag == "v1.0.1"
+    assert baseline.commit == "9bb009bc335f6a9952025e4a5357fb5bf1517e93"
     assert baseline.format_version == 2
     assert baseline.platform == "multi"
     assert baseline.platforms == ("linux/amd64", "linux/arm64")
-    assert baseline.alembic_revision == "0029_v018_compatibility"
-    assert baseline.release_workflow_run_id == 35507181886
+    assert baseline.alembic_revision == "0031_site_type_capacity_v101"
+    assert baseline.release_workflow_run_id == 35835218877
     assert baseline.immutable_image == (
         "ghcr.io/yyxiaoma/packbreaker@"
-        "sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4"
+        "sha256:3fb0ab8cee39b245d8a2b6fedae1336afa41ff18cf380d5f448a1b1fef832cb2"
     )
 
 
@@ -102,7 +102,7 @@ def test_native_arm64_updater_gate_keeps_formal_amd64_baseline_unchanged() -> No
     assert 'LABEL org.packbreaker.ci.synthetic-arm64-baseline="true"' in script
 
 
-def test_native_arm64_release_backup_restore_gate_is_same_version_and_keeps_formal_baseline() -> (
+def test_native_arm64_release_backup_restore_keeps_synthetic_mode_but_ci_uses_formal_baseline() -> (
     None
 ):
     script = (ROOT / "scripts" / "check-release-upgrade.sh").read_text(encoding="utf-8")
@@ -123,7 +123,9 @@ def test_native_arm64_release_backup_restore_gate_is_same_version_and_keeps_form
     assert "backend.app.maintenance restore-backup" in script
     assert 'assert_probe "$candidate_container"' in script
     assert 'assert_probe "$rollback_container"' in script
-    assert "check-release-upgrade.sh packbreaker:ci-arm64 --synthetic-arm64-baseline" in ci
+    assert "check-release-upgrade.sh packbreaker:ci-arm64 --synthetic-arm64-baseline" not in ci
+    assert "check-release-upgrade.sh packbreaker:ci-arm64" in ci
+    assert "check-immutable-image-runtime.sh" in ci
     assert "check-release-upgrade.sh packbreaker:release-candidate" in release
     assert "--synthetic-arm64-baseline" not in release
 

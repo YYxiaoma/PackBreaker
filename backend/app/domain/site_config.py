@@ -16,6 +16,7 @@ class SiteKind(StrEnum):
     BTSCHOOL = "BTSCHOOL"
     PTTIME = "PTTIME"
     ROUSI_PRO = "ROUSI_PRO"
+    LINGYIN_CLUB = "LINGYIN_CLUB"
 
 
 class SiteCredentialKind(StrEnum):
@@ -147,13 +148,25 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         credential_kind=SiteCredentialKind.API_KEY,
         support_status=SiteSupportStatus.PENDING_ADAPTER,
     ),
+    SiteKind.LINGYIN_CLUB: SiteProfile(
+        kind=SiteKind.LINGYIN_CLUB,
+        display_name="聆音Club",
+        base_url="https://pt.soulvoice.club",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_ADAPTER,
+    ),
 }
 
 
-# Registry kinds may be visible before an adapter is allowed to persist configuration.
-# Keep database checks pinned to the actually supported set until each adapter passes
-# its contract + real read-only validation, avoiding a SQLite parent-table rebuild.
+# Persistability is an explicit application-service security decision, not a
+# consequence of the schema accepting a known enum member.
 PERSISTED_SITE_KINDS = frozenset({SiteKind.MTEAM, SiteKind.HDTIME, SiteKind.HHCLUB})
+# Schema capacity is independent from the production create/enable allowlist.
+# Merely accepting a type at the database layer must never enable its adapter.
+DATABASE_SITE_KINDS = frozenset(SiteKind)
 PERSISTED_SITE_CREDENTIAL_KINDS = frozenset({SiteCredentialKind.API_KEY, SiteCredentialKind.COOKIE})
 
 

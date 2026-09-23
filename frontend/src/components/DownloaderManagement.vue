@@ -148,7 +148,7 @@ function resetDraft() {
 
 function openCreate() {
   resetDraft();
-  draft.mappings.push({ remote_prefix: '/downloads', container_prefix: '/data' });
+  draft.mappings.push({ remote_prefix: '/downloads', container_prefix: '/data/downloads' });
   dialog.value = true;
 }
 
@@ -167,7 +167,7 @@ function openEdit(item: Downloader) {
 }
 
 function addMapping() {
-  draft.mappings.push({ remote_prefix: '', container_prefix: '/data' });
+  draft.mappings.push({ remote_prefix: '', container_prefix: '/data/downloads2' });
 }
 
 function removeMapping(index: number) {
@@ -201,6 +201,16 @@ function validateDraft(): boolean {
     )
   ) {
     ElMessage.warning('路径映射的两侧都必须填写');
+    return false;
+  }
+  if (
+    draft.mappings.some((mapping) =>
+      /^\/(?:downloads|downloads2)(?:\/|$)/.test(mapping.container_prefix.trim()),
+    )
+  ) {
+    ElMessage.warning(
+      '左侧填写下载器路径 /downloads 或 /downloads2；右侧填写 PackBreaker 数据根目录 /data 下的挂载路径，例如 /data/downloads 或 /data/downloads2。请确保宿主机目录已挂载到对应位置。',
+    );
     return false;
   }
   return true;
@@ -616,6 +626,12 @@ async function remove(item: Downloader) {
           <b>路径映射</b>
           <el-button size="small" @click="addMapping"><Plus :size="14" />添加规则</el-button>
         </div>
+        <el-alert
+          title="左侧是下载器看到的路径（/downloads、/downloads2），右侧是 PackBreaker 容器内的数据路径（/data/downloads、/data/downloads2）。请先将相应目录挂载在 /data 下，不能把右侧直接填写为 /downloads。"
+          type="info"
+          :closable="false"
+          class="section-space"
+        />
         <div v-for="(mapping, index) in draft.mappings" :key="index" class="mapping-editor-row">
           <el-input v-model="mapping.remote_prefix" placeholder="下载器路径，例如 /downloads" />
           <span>→</span>

@@ -36,27 +36,46 @@ jobs:
             --build-arg VCS_REF="$GITHUB_SHA" \
             --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --tag packbreaker:release-arm64-candidate .
-          mkdir -p .ci-release-arm64-config .ci-release-arm64-data
-          chmod 700 .ci-release-arm64-config
-          docker run --detach --name packbreaker-release-arm64 \
+          sandbox="$(mktemp -d "${TMPDIR:-/tmp}/.packbreaker-arm64-candidate.XXXXXXXX")"
+          chmod 700 "$sandbox"
+          container="packbreaker-release-arm64-${GITHUB_RUN_ID:-local}-$$-$RANDOM"
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            if [[ -d "$sandbox" && ! -L "$sandbox" && \
+                  "$(basename "$sandbox")" == .packbreaker-arm64-candidate.* && \
+                  "$sandbox" != / ]]; then
+              rm -rf -- "$sandbox"
+            fi
+          }
+          trap cleanup EXIT
+          mkdir -m 700 "$sandbox/config" "$sandbox/data"
+          docker run --detach --name "$container" \
+            --network none \
             --user "$(id -u):$(id -g)" \
-            --publish 18001:8000 \
-            --volume "$PWD/.ci-release-arm64-config:/config" \
-            --volume "$PWD/.ci-release-arm64-data:/data" \
+            --volume "$sandbox/config:/config" \
+            --volume "$sandbox/data:/data" \
             packbreaker:release-arm64-candidate
-          trap 'docker logs packbreaker-release-arm64 || true; docker rm --force packbreaker-release-arm64 >/dev/null 2>&1 || true' EXIT
+          ready=0
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:18001/api/v1/health/ready >/dev/null; then
+            if docker exec --user "$(id -u):$(id -g)" "$container" \
+                python -m backend.app.healthcheck >/dev/null 2>&1; then
+              ready=1
               break
             fi
-            test "$attempt" -ne 60
+            if [[ "$(docker inspect "$container" --format '{{.State.Running}}')" != true ]]; then
+              break
+            fi
             sleep 1
           done
-          docker exec --user "$(id -u):$(id -g)" packbreaker-release-arm64 \
+          if [[ "$ready" -ne 1 ]]; then
+            echo '::error::Native ARM64 candidate failed isolated readiness' >&2
+            exit 1
+          fi
+          docker exec --user "$(id -u):$(id -g)" "$container" \
             python -m backend.app.maintenance preflight
-          docker exec --user "$(id -u):$(id -g)" packbreaker-release-arm64 \
+          docker exec --user "$(id -u):$(id -g)" "$container" \
             python -c 'import os; from pathlib import Path; src=Path("/data/.packbreaker-arm64-smoke-source"); dest=Path("/data/.packbreaker-arm64-smoke-link"); src.write_bytes(b"synthetic"); os.link(src,dest); assert src.stat().st_ino == dest.stat().st_ino; os.setxattr(dest,"user.packbreaker.arm64_probe",b"ok"); assert os.getxattr(dest,"user.packbreaker.arm64_probe") == b"ok"; dest.unlink(); src.unlink()'
-          docker exec --user "$(id -u):$(id -g)" packbreaker-release-arm64 \
+          docker exec --user "$(id -u):$(id -g)" "$container" \
             python -m backend.app.maintenance backup
 
   release:

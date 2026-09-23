@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # A candidate branch must receive native ARM64 gates before any release tag.
+    branches: [main, "candidate/**"]
   pull_request:
 
 permissions:
@@ -12,6 +13,9 @@ jobs:
   arm64:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,60 +47,114 @@ jobs:
             --build-arg VERSION="$version" \
             --build-arg VCS_REF="$GITHUB_SHA" \
             --tag packbreaker:ci-arm64 .
+      - name: Verify candidate image identity
+        run: |
+          python scripts/check_candidate_image_identity.py \
+            --image packbreaker:ci-arm64 \
+            --platform linux/arm64 --commit "$GITHUB_SHA"
       - name: Exercise native ARM64 container startup and backup
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
-          mkdir -p .ci-arm64-config .ci-arm64-data
-          chmod 700 .ci-arm64-config
-          docker run --detach --name packbreaker-ci-arm64 \
+          sandbox="$(mktemp -d "${TMPDIR:-/tmp}/.packbreaker-arm64-ci.XXXXXXXX")"
+          chmod 700 "$sandbox"
+          container="packbreaker-ci-arm64-${GITHUB_RUN_ID:-local}-$$-$RANDOM"
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            if [[ -d "$sandbox" && ! -L "$sandbox" && \
+                  "$(basename "$sandbox")" == .packbreaker-arm64-ci.* && \
+                  "$sandbox" != / ]]; then
+              rm -rf -- "$sandbox"
+            fi
+          }
+          trap cleanup EXIT
+          mkdir -m 700 "$sandbox/config" "$sandbox/data"
+          docker run --detach --name "$container" \
+            --network none \
             --user "$(id -u):$(id -g)" \
-            --publish 18001:8000 \
-            --volume "$PWD/.ci-arm64-config:/config" \
-            --volume "$PWD/.ci-arm64-data:/data" \
+            --volume "$sandbox/config:/config" \
+            --volume "$sandbox/data:/data" \
             packbreaker:ci-arm64
-          trap 'docker logs packbreaker-ci-arm64 || true; docker rm --force packbreaker-ci-arm64 >/dev/null 2>&1 || true' EXIT
+          ready=0
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:18001/api/v1/health/ready >/dev/null; then
+            if docker exec --user "$(id -u):$(id -g)" "$container" \
+                python -m backend.app.healthcheck >/dev/null 2>&1; then
+              ready=1
               break
             fi
-            test "$attempt" -ne 60
+            if [[ "$(docker inspect "$container" --format '{{.State.Running}}')" != true ]]; then
+              break
+            fi
             sleep 1
           done
-          docker exec --user "$(id -u):$(id -g)" packbreaker-ci-arm64 \
+          if [[ "$ready" -ne 1 ]]; then
+            echo '::error::Native ARM64 CI candidate failed isolated readiness' >&2
+            exit 1
+          fi
+          docker exec --user "$(id -u):$(id -g)" "$container" \
             python -m backend.app.maintenance preflight
-          docker exec --user "$(id -u):$(id -g)" packbreaker-ci-arm64 \
+          docker exec --user "$(id -u):$(id -g)" "$container" \
             python -c 'import os; from pathlib import Path; src=Path("/data/.packbreaker-arm64-smoke-source"); dest=Path("/data/.packbreaker-arm64-smoke-link"); src.write_bytes(b"synthetic"); os.link(src,dest); assert src.stat().st_ino == dest.stat().st_ino; os.setxattr(dest,"user.packbreaker.arm64_probe",b"ok"); assert os.getxattr(dest,"user.packbreaker.arm64_probe") == b"ok"; dest.unlink(); src.unlink()'
-          docker exec --user "$(id -u):$(id -g)" packbreaker-ci-arm64 \
+          docker exec --user "$(id -u):$(id -g)" "$container" \
             python -m backend.app.maintenance backup
-          docker exec --user "$(id -u):$(id -g)" --interactive packbreaker-ci-arm64 \
+          docker exec --user "$(id -u):$(id -g)" --interactive "$container" \
             python - --data-root /data < scripts/check_arm64_business_e2e.py
-          mapfile -t backups < <(find .ci-arm64-config/backups -maxdepth 1 -type f -name 'packbreaker-*.db' -printf '%f\n')
+          mapfile -t backups < <(find "$sandbox/config/backups" -maxdepth 1 -type f -name 'packbreaker-*.db' -printf '%f\n')
           test "${#backups[@]}" -eq 1
           backup_name="${backups[0]}"
-          docker stop packbreaker-ci-arm64 >/dev/null
-          docker run --rm --user "$(id -u):$(id -g)" \
-            --volume "$PWD/.ci-arm64-config:/config" \
-            --volume "$PWD/.ci-arm64-data:/data" packbreaker:ci-arm64 \
+          docker stop "$container" >/dev/null
+          docker run --rm --network none --user "$(id -u):$(id -g)" \
+            --volume "$sandbox/config:/config" \
+            --volume "$sandbox/data:/data" packbreaker:ci-arm64 \
             python -m backend.app.maintenance verify-backup "/config/backups/$backup_name"
-          docker run --rm --user "$(id -u):$(id -g)" \
-            --volume "$PWD/.ci-arm64-config:/config" \
-            --volume "$PWD/.ci-arm64-data:/data" packbreaker:ci-arm64 \
+          docker run --rm --network none --user "$(id -u):$(id -g)" \
+            --volume "$sandbox/config:/config" \
+            --volume "$sandbox/data:/data" packbreaker:ci-arm64 \
             python -m backend.app.maintenance restore-backup "/config/backups/$backup_name" \
             --confirm-replace-current-database
-          docker start packbreaker-ci-arm64 >/dev/null
+          docker start "$container" >/dev/null
+          ready=0
           for attempt in $(seq 1 60); do
-            if docker exec --user "$(id -u):$(id -g)" packbreaker-ci-arm64 \
-              python -m backend.app.healthcheck >/dev/null 2>&1; then
+            if docker exec --user "$(id -u):$(id -g)" "$container" \
+                python -m backend.app.healthcheck >/dev/null 2>&1; then
+              ready=1
               break
             fi
-            test "$attempt" -ne 60
+            if [[ "$(docker inspect "$container" --format '{{.State.Running}}')" != true ]]; then
+              break
+            fi
             sleep 1
           done
-      - name: Exercise native ARM64 Docker updater and failure rollback with synthetic baseline
-        run: bash scripts/check-updater-e2e.sh packbreaker:ci-arm64 --synthetic-arm64-baseline
-      - name: Exercise native ARM64 backup restore across distinct synthetic image identities
-        run: bash scripts/check-release-upgrade.sh packbreaker:ci-arm64 --synthetic-arm64-baseline
+          if [[ "$ready" -ne 1 ]]; then
+            echo '::error::Native ARM64 CI candidate failed isolated post-restore readiness' >&2
+            exit 1
+          fi
+      - name: Authenticate for read-only formal baseline image
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Classify formal release relation
+        id: release_relation
+        run: python scripts/ci_release_relation.py --github-output "$GITHUB_OUTPUT"
+      - name: Exercise immutable formal ARM64 baseline in isolated runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t baseline_fields < <(python scripts/validate_release_baseline.py --json |
+            python -c 'import json,sys; b=json.load(sys.stdin); print(b["immutable_image"]); print(b["tag"]); print(b["commit"]); print(b["platform"]); print(",".join(b["platforms"])); print(b["version"])')
+          test "${#baseline_fields[@]}" -eq 6
+          test "${baseline_fields[3]}" = "multi"
+          [[ ",${baseline_fields[4]}," == *",linux/arm64,"* ]]
+          bash scripts/check-immutable-image-runtime.sh \
+            "${baseline_fields[0]}" linux/arm64 "${baseline_fields[1]}" "${baseline_fields[2]}"
+      - name: Exercise native ARM64 formal adjacent upgrade and rollback
+        if: steps.release_relation.outputs.candidate_newer == 'true'
+        run: bash scripts/check-release-upgrade.sh packbreaker:ci-arm64
+      - name: Exercise native ARM64 formal updater and failure rollback
+        if: steps.release_relation.outputs.candidate_newer == 'true'
+        run: bash scripts/check-updater-e2e.sh packbreaker:ci-arm64
       - name: Exercise isolated native ARM64 qBittorrent and Transmission Docker APIs
         run: bash scripts/check-arm64-real-downloaders-e2e.sh packbreaker:ci-arm64
 
@@ -160,18 +218,9 @@ jobs:
           PB_BROWSER: bundled
         run: |
           set -euo pipefail
-          (cd frontend && corepack pnpm dev) > /tmp/packbreaker-vite.log 2>&1 &
-          vite_pid=$!
-          trap 'kill "$vite_pid" 2>/dev/null || true; cat /tmp/packbreaker-vite.log' EXIT
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:5173/ >/dev/null; then
-              break
-            fi
-            if [ "$attempt" -eq 30 ]; then
-              exit 1
-            fi
-            sleep 1
-          done
+          # test:e2e builds production assets and owns the strict-port
+          # 127.0.0.1:5173 preview lifecycle. Starting Vite dev here first
+          # makes the production browser gate fail or target stale dev assets.
           (cd frontend && corepack pnpm test:e2e)
       - name: Exercise real browser to isolated FastAPI admin approval and Transmission plan
         run: node scripts/check-web-approval-e2e.cjs
@@ -193,16 +242,26 @@ jobs:
       - name: Smoke test image and health endpoint
         run: |
           set -euo pipefail
-          mkdir -p .ci-config .ci-data
-          chmod 700 .ci-config
+          sandbox="$(mktemp -d "${TMPDIR:-/tmp}/.packbreaker-amd64-ci.XXXXXXXX")"
+          chmod 700 "$sandbox"
+          container="packbreaker-ci-${GITHUB_RUN_ID:-local}-$$-$RANDOM"
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            if [[ -d "$sandbox" && ! -L "$sandbox" && \
+                  "$(basename "$sandbox")" == .packbreaker-amd64-ci.* && \
+                  "$sandbox" != / ]]; then
+              rm -rf -- "$sandbox"
+            fi
+          }
+          trap cleanup EXIT
+          mkdir -m 700 "$sandbox/config" "$sandbox/data"
           docker run --detach \
-            --name packbreaker-ci \
+            --name "$container" \
             --user "$(id -u):$(id -g)" \
-            --publish 18000:8000 \
-            --volume "$PWD/.ci-config:/config" \
-            --volume "$PWD/.ci-data:/data" \
+            --publish "127.0.0.1:18000:8000" \
+            --volume "$sandbox/config:/config" \
+            --volume "$sandbox/data:/data" \
             packbreaker:ci
-          trap 'docker logs packbreaker-ci || true; docker rm --force packbreaker-ci >/dev/null 2>&1 || true' EXIT
           for attempt in $(seq 1 40); do
             if curl --fail --silent http://127.0.0.1:18000/api/v1/health/ready >/dev/null; then
               break
@@ -216,31 +275,31 @@ jobs:
           test "$(docker image inspect packbreaker:ci --format '{{.Config.User}}')" = "packbreaker"
 
           runtime_user="$(id -u):$(id -g)"
-          docker exec --user "$runtime_user" packbreaker-ci \
+          docker exec --user "$runtime_user" "$container" \
             python -m backend.app.maintenance preflight
-          docker exec --user "$runtime_user" packbreaker-ci \
+          docker exec --user "$runtime_user" "$container" \
             python -m backend.app.maintenance backup
 
-          mapfile -t backups < <(find .ci-config/backups -maxdepth 1 -type f -name 'packbreaker-*.db' -print)
+          mapfile -t backups < <(find "$sandbox/config/backups" -maxdepth 1 -type f -name 'packbreaker-*.db' -print)
           test "${#backups[@]}" -eq 1
           backup_name="$(basename "${backups[0]}")"
 
-          docker stop packbreaker-ci >/dev/null
-          docker run --rm \
+          docker stop "$container" >/dev/null
+          docker run --rm --network none \
             --user "$runtime_user" \
-            --volume "$PWD/.ci-config:/config" \
-            --volume "$PWD/.ci-data:/data" \
+            --volume "$sandbox/config:/config" \
+            --volume "$sandbox/data:/data" \
             packbreaker:ci \
             python -m backend.app.maintenance verify-backup "/config/backups/$backup_name"
-          docker run --rm \
+          docker run --rm --network none \
             --user "$runtime_user" \
-            --volume "$PWD/.ci-config:/config" \
-            --volume "$PWD/.ci-data:/data" \
+            --volume "$sandbox/config:/config" \
+            --volume "$sandbox/data:/data" \
             packbreaker:ci \
             python -m backend.app.maintenance restore-backup "/config/backups/$backup_name" \
             --confirm-replace-current-database
 
-          docker start packbreaker-ci >/dev/null
+          docker start "$container" >/dev/null
           for attempt in $(seq 1 40); do
             if curl --fail --silent http://127.0.0.1:18000/api/v1/health/ready >/dev/null; then
               break
@@ -251,7 +310,12 @@ jobs:
             sleep 1
           done
 
-          bash scripts/check-release-upgrade.sh packbreaker:ci
+          relation="$(python scripts/ci_release_relation.py)"
+          if [[ "$relation" == newer ]]; then
+            bash scripts/check-release-upgrade.sh packbreaker:ci
+          else
+            echo "Same-version post-release CI: cross-version upgrade does not apply; isolated startup/backup/restore above still enforced"
+          fi
 
   updater-e2e:
     runs-on: ubuntu-latest
@@ -259,7 +323,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Classify formal release relation
+        id: release_relation
+        run: python scripts/ci_release_relation.py --github-output "$GITHUB_OUTPUT"
       - name: Build updater candidate image
+        if: steps.release_relation.outputs.candidate_newer == 'true'
         run: |
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           docker build \
@@ -269,4 +337,5 @@ jobs:
             --tag packbreaker:updater-e2e \
             .
       - name: Run real Docker updater success and rollback E2E
+        if: steps.release_relation.outputs.candidate_newer == 'true'
         run: bash scripts/check-updater-e2e.sh packbreaker:updater-e2e

@@ -11,10 +11,9 @@ export type SiteProbeResult = components['schemas']['SiteProbeResponse'];
 export type SiteHealth = components['schemas']['SiteHealthResponse'];
 export type SiteProfile = components['schemas']['SiteProfileResponse'];
 export type SiteTemporaryProbeInput = components['schemas']['SiteTemporaryProbeRequest'];
-export type SiteUserProfile = components['schemas']['SiteUserProfileResponse'];
 
 export function credentialKindForSite(kind: SiteKind): SiteCredentialKind {
-  return kind === 'MTEAM' ? 'API_KEY' : 'COOKIE';
+  return kind === 'MTEAM' || kind === 'ROUSI_PRO' ? 'API_KEY' : 'COOKIE';
 }
 
 function sitePath(id: string): string {
@@ -40,11 +39,6 @@ export async function probeSite(payload: SiteTemporaryProbeInput): Promise<SiteP
 
 export async function getSite(id: string): Promise<Site> {
   const response = await apiClient.get<Site>(sitePath(id));
-  return response.data;
-}
-
-export async function getSiteUserProfile(id: string): Promise<SiteUserProfile> {
-  const response = await apiClient.get<SiteUserProfile>(`${sitePath(id)}/profile`);
   return response.data;
 }
 

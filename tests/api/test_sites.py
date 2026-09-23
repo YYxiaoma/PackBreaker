@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import cast
 
 import httpx2
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from backend.app.api.dependencies import CSRF_COOKIE
+from backend.app.application import sites as site_application
+from backend.app.application.errors import ApplicationError
+from backend.app.application.secrets import SecretStore
 from backend.app.config import AppSettings
+from backend.app.domain.site_config import SiteKind, site_kind_is_persistable, site_profile
 from backend.app.infrastructure.adapters.sites import SiteAdapterFactory
 from backend.app.infrastructure.persistence.models import SecretRecord, Site
+from backend.app.infrastructure.persistence.site_repositories import SiteRepository
 from backend.app.main import create_app
 
 _PASSWORD = "synthetic correct horse battery staple"
@@ -62,6 +69,17 @@ def _create_site(client: TestClient, api_key: str = "synthetic-mteam-key") -> di
     return cast(dict[str, object], response.json())
 
 
+def test_removed_site_user_profile_has_no_business_entrypoint(tmp_path: Path) -> None:
+    """Deleting the UI/API must also retire the unused service entrypoint."""
+    client, app = _authenticated_client(tmp_path)
+    try:
+        assert not hasattr(app.state.site_service, "user_profile")
+        routes = app.openapi()["paths"]
+        assert all("user-profile" not in path for path in routes)
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
     client, _app = _authenticated_client(tmp_path)
     try:
@@ -79,6 +97,7 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
             "BTSCHOOL",
             "PTTIME",
             "ROUSI_PRO",
+            "LINGYIN_CLUB",
         }
         assert items["MTEAM"]["base_url"] == "https://kp.m-team.cc"
         assert items["HDTIME"]["base_url"] == "https://hdtime.org"
@@ -87,6 +106,9 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
         assert items["HDTIME"]["supports_browser_emulation"] is True
         assert items["KEEPFRDS"]["support_status"] == "PENDING_ADAPTER"
         assert items["ROUSI_PRO"]["credential_kind"] == "API_KEY"
+        assert items["LINGYIN_CLUB"]["base_url"] == "https://pt.soulvoice.club"
+        assert items["LINGYIN_CLUB"]["credential_kind"] == "COOKIE"
+        assert items["LINGYIN_CLUB"]["support_status"] == "PENDING_ADAPTER"
     finally:
         client.__exit__(None, None, None)
 
@@ -94,36 +116,334 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
 def test_pending_site_profiles_cannot_create_or_probe_or_persist_secrets(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
+        pending_kinds = tuple(kind for kind in SiteKind if not site_kind_is_persistable(kind))
+        assert set(pending_kinds) == {
+            SiteKind.HDHOME,
+            SiteKind.KEEPFRDS,
+            SiteKind.UBITS,
+            SiteKind.HDFANS,
+            SiteKind.ROUSI_PRO,
+            SiteKind.BTSCHOOL,
+            SiteKind.PTTIME,
+            SiteKind.LINGYIN_CLUB,
+        }
         with app.state.runtime.session_factory() as session:
             before_sites = len(list(session.scalars(select(Site))))
             before_secrets = len(list(session.scalars(select(SecretRecord))))
 
-        created = client.post(
-            "/api/v1/sites",
-            headers=_csrf(client),
-            json={
-                "name": "KeepFrds 待适配",
-                "type": "KEEPFRDS",
-                "credential": {"kind": "COOKIE", "value": "synthetic-cookie"},
-            },
-        )
-        assert created.status_code == 409
-        assert created.json()["code"] == "SITE_ADAPTER_PENDING"
-
-        probe = client.post(
-            "/api/v1/sites/probe",
-            headers=_csrf(client),
-            json={
-                "type": "ROUSI_PRO",
-                "credential": {"kind": "API_KEY", "value": "synthetic-passkey"},
-            },
-        )
-        assert probe.status_code == 409
-        assert probe.json()["code"] == "SITE_ADAPTER_PENDING"
+        for kind in pending_kinds:
+            profile = site_profile(kind)
+            secret = f"synthetic-secret-for-{kind.value}"
+            payload = {
+                "type": kind.value,
+                "credential": {"kind": profile.credential_kind.value, "value": secret},
+                **(
+                    {"download_cookie": "synthetic-rousi-cookie"}
+                    if kind is SiteKind.ROUSI_PRO
+                    else {}
+                ),
+            }
+            for endpoint, request in (
+                ("/api/v1/sites", {"name": f"Synthetic pending {kind.value}", **payload}),
+                ("/api/v1/sites/probe", payload),
+            ):
+                response = client.post(endpoint, headers=_csrf(client), json=request)
+                assert response.status_code == 409, kind
+                assert response.json()["code"] == "SITE_ADAPTER_PENDING", kind
+                assert secret not in response.text
+                assert "synthetic-rousi-cookie" not in response.text
 
         with app.state.runtime.session_factory() as session:
             assert len(list(session.scalars(select(Site)))) == before_sites
             assert len(list(session.scalars(select(SecretRecord)))) == before_secrets
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_rousi_dual_credential_lifecycle_after_synthetic_only_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Test the future supported path without changing production's PENDING gate.
+    monkeypatch.setattr(
+        site_application,
+        "site_kind_is_persistable",
+        lambda kind: kind is SiteKind.ROUSI_PRO or site_kind_is_persistable(kind),
+    )
+    client, app = _authenticated_client(tmp_path)
+    key = "synthetic-rousi-key-first"
+    cookie = "synthetic-rousi-cookie-first"
+    try:
+        created = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={
+                "name": "Synthetic Rousi",
+                "type": "ROUSI_PRO",
+                "credential": {"kind": "API_KEY", "value": key},
+                "download_cookie": cookie,
+            },
+        )
+        assert created.status_code == 201
+        site_id = created.json()["id"]
+        assert created.json()["download_credential_configured"] is True
+        assert created.json()["enabled"] is False
+        assert key not in created.text and cookie not in created.text
+        assert "download_secret_id" not in created.text
+
+        with app.state.runtime.session_factory() as session:
+            row = session.get(Site, site_id)
+            assert row is not None and row.secret_id is not None
+            assert row.download_secret_id is not None and row.secret_id != row.download_secret_id
+            original_main, original_cookie = row.secret_id, row.download_secret_id
+            main_record = session.get(SecretRecord, original_main)
+            cookie_record = session.get(SecretRecord, original_cookie)
+            assert main_record is not None and main_record.kind == "SITE_API_KEY"
+            assert cookie_record is not None and cookie_record.kind == "SITE_DOWNLOAD_COOKIE"
+            assert key not in main_record.ciphertext
+            assert cookie not in cookie_record.ciphertext
+        store = SecretStore(app.state.runtime.session_factory, app.state.runtime.secret_cipher)
+        assert store.get(original_main) == key.encode()
+        assert store.get(original_cookie) == cookie.encode()
+
+        stale = client.patch(
+            f"/api/v1/sites/{site_id}",
+            headers={**_csrf(client), "If-Match": '"2"'},
+            json={"download_cookie": "synthetic-rousi-cookie-second"},
+        )
+        assert stale.status_code == 412
+        assert stale.json()["code"] == "SITE_VERSION_CONFLICT"
+        with app.state.runtime.session_factory() as session:
+            assert session.get(Site, site_id).download_secret_id == original_cookie
+
+        rotated = client.patch(
+            f"/api/v1/sites/{site_id}",
+            headers={**_csrf(client), "If-Match": '"1"'},
+            json={"download_cookie": "synthetic-rousi-cookie-second"},
+        )
+        assert rotated.status_code == 200
+        assert rotated.json()["download_credential_configured"] is True
+        assert rotated.headers["ETag"] == '"2"'
+        assert cookie not in rotated.text
+        with app.state.runtime.session_factory() as session:
+            row = session.get(Site, site_id)
+            assert row is not None and row.secret_id == original_main
+            assert row.download_secret_id is not None
+            rotated_cookie = row.download_secret_id
+            assert rotated_cookie != original_cookie
+            assert session.get(SecretRecord, original_cookie) is None
+        assert store.get(rotated_cookie) == b"synthetic-rousi-cookie-second"
+        expected_torrent = (
+            b"d4:infod6:lengthi1e4:name9:synthetic12:piece lengthi16384e"
+            b"6:pieces20:01234567890123456789ee"
+        )
+        download_requests: list[str] = []
+
+        def download_handler(request: httpx2.Request) -> httpx2.Response:
+            download_requests.append(str(request.url))
+            assert str(request.url) == "https://rousi.pro/api/v1/torrents/123/download"
+            assert request.headers.get("cookie") == "synthetic-rousi-cookie-second"
+            assert request.headers.get("api-token") is None
+            assert request.headers.get("authorization") is None
+            return httpx2.Response(
+                200,
+                content=expected_torrent,
+                headers={"content-type": "application/x-bittorrent"},
+            )
+
+        app.state.site_service._adapter_factory = SiteAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(download_handler)
+        )
+        adapter = app.state.site_service._create_adapter(  # noqa: SLF001
+            app.state.site_service._connection_snapshot(site_id),  # noqa: SLF001
+            key,
+        )
+        assert asyncio.run(adapter.capabilities()).search_results_are_complete is True
+        assert asyncio.run(adapter.fetch_torrent("123")).content == expected_torrent
+        assert download_requests == ["https://rousi.pro/api/v1/torrents/123/download"]
+
+        rekeyed = client.patch(
+            f"/api/v1/sites/{site_id}",
+            headers={**_csrf(client), "If-Match": '"2"'},
+            json={"credential": {"kind": "API_KEY", "value": "synthetic-rousi-key-second"}},
+        )
+        assert rekeyed.status_code == 200
+        assert rekeyed.json()["download_credential_configured"] is False
+        with app.state.runtime.session_factory() as session:
+            row = session.get(Site, site_id)
+            assert row is not None and row.download_secret_id is None
+            assert session.get(SecretRecord, original_main) is None
+            assert session.get(SecretRecord, rotated_cookie) is None
+        blocked_enable = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={**_csrf(client), "If-Match": '"3"'},
+            json={"action": "enable"},
+        )
+        assert blocked_enable.status_code == 409
+        assert blocked_enable.json()["code"] == "SITE_DOWNLOAD_CREDENTIAL_REQUIRED"
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("wrong_reference", ("primary", "download"))
+def test_imported_rousi_wrong_secret_kind_cannot_activate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wrong_reference: str,
+) -> None:
+    """Wrongly imported primary/secondary secrets must not cross auth headers."""
+    monkeypatch.setattr(
+        site_application,
+        "site_kind_is_persistable",
+        lambda kind: kind is SiteKind.ROUSI_PRO or site_kind_is_persistable(kind),
+    )
+    client, app = _authenticated_client(tmp_path)
+    key = "synthetic-primary-key-not-a-cookie"
+    cookie = "synthetic-independent-download-cookie"
+    try:
+        created = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={
+                "name": "Synthetic wrong reference",
+                "type": "ROUSI_PRO",
+                "credential": {"kind": "API_KEY", "value": key},
+                "download_cookie": cookie,
+            },
+        )
+        assert created.status_code == 201
+        site_id = created.json()["id"]
+        with app.state.runtime.session_factory() as session:
+            imported = session.get(Site, site_id)
+            assert imported is not None and imported.secret_id is not None
+            assert imported.download_secret_id is not None
+            # Simulate imported/corrupted references, not a public API action.
+            if wrong_reference == "download":
+                imported.download_secret_id = imported.secret_id
+            else:
+                imported.secret_id = imported.download_secret_id
+            imported.enabled = True
+            session.commit()
+
+        requests: list[str] = []
+
+        def reject_network(request: httpx2.Request) -> httpx2.Response:
+            requests.append(str(request.url))
+            raise AssertionError("Wrong-type secondary secret must not reach the network")
+
+        app.state.site_service._adapter_factory = SiteAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(reject_network)
+        )
+        with pytest.raises(ApplicationError) as blocked:
+            app.state.site_service.enabled_adapters()
+        assert blocked.value.code == "SITE_ENABLED_CONFIG_INVALID"
+        assert key not in str(blocked.value) and cookie not in str(blocked.value)
+        assert requests == []
+        with app.state.runtime.session_factory() as session:
+            unchanged = session.get(Site, site_id)
+            assert unchanged is not None and unchanged.download_secret_id == unchanged.secret_id
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize(
+    "pending_kind",
+    (
+        SiteKind.KEEPFRDS,
+        SiteKind.HDHOME,
+        SiteKind.UBITS,
+        SiteKind.HDFANS,
+        SiteKind.BTSCHOOL,
+        SiteKind.PTTIME,
+        SiteKind.ROUSI_PRO,
+        SiteKind.LINGYIN_CLUB,
+    ),
+)
+def test_imported_pending_site_api_actions_fail_closed_without_credential_use(
+    tmp_path: Path,
+    pending_kind: SiteKind,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    profile = site_profile(pending_kind)
+    marker = f"synthetic-imported-pending-{pending_kind.value}"
+    requests: list[str] = []
+    try:
+        with app.state.runtime.session_factory() as session:
+            secret_id = SecretStore(
+                app.state.runtime.session_factory,
+                app.state.runtime.secret_cipher,
+            ).put_in_session(
+                session,
+                kind="SITE_API_KEY"
+                if profile.credential_kind.value == "API_KEY"
+                else "SITE_COOKIE",
+                value=marker.encode(),
+            )
+            record = SiteRepository(session).create(
+                name=f"Synthetic imported {pending_kind.value}",
+                kind=pending_kind.value,
+                base_url=profile.base_url,
+                credential_kind=profile.credential_kind.value,
+                secret_id=secret_id,
+                request_timeout_seconds=15,
+                search_interval_seconds=2,
+                user_agent=None,
+                browser_emulation_enabled=False,
+                proxy_enabled=False,
+                proxy_host=None,
+                proxy_port=None,
+                proxy_username=None,
+                proxy_secret_id=None,
+            )
+            site_id = record.id
+            session.commit()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            requests.append(str(request.url))
+            raise AssertionError("pending site must not make network requests")
+
+        app.state.site_service._adapter_factory = SiteAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(handler)
+        )
+        for endpoint, payload in (
+            (f"/api/v1/sites/{site_id}/test", None),
+            (f"/api/v1/sites/{site_id}/actions", {"action": "refresh_capabilities"}),
+        ):
+            response = client.post(endpoint, headers=_csrf(client), json=payload)
+            assert response.status_code == 409
+            assert response.json()["code"] == "SITE_ADAPTER_PENDING"
+            assert marker not in response.text
+        enabled = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={**_csrf(client), "If-Match": '"1"'},
+            json={"action": "enable"},
+        )
+        assert enabled.status_code == 409
+        assert enabled.json()["code"] == "SITE_ADAPTER_PENDING"
+        assert marker not in enabled.text
+        with app.state.runtime.session_factory() as session:
+            unchanged = session.get(Site, site_id)
+            assert unchanged is not None
+            assert unchanged.enabled is False
+            assert unchanged.version == 1
+            assert unchanged.secret_id == secret_id
+            # Legacy/imported rows may already carry enabled=True. This must
+            # not make the pending adapter visible to the task analysis path.
+            unchanged.enabled = True
+            session.commit()
+
+        def forbidden_secret_read(_secret_id: str) -> bytes:
+            raise AssertionError("Pending adapter gate must run before decrypting any secret")
+
+        monkeypatch.setattr(app.state.site_service._secret_store, "get", forbidden_secret_read)
+        with pytest.raises(ApplicationError) as adapters_blocked:
+            app.state.site_service.enabled_adapters()
+        assert adapters_blocked.value.code == "SITE_ADAPTER_PENDING"
+        with pytest.raises(ApplicationError) as versions_blocked:
+            app.state.site_service.enabled_site_versions()
+        assert versions_blocked.value.code == "SITE_ADAPTER_PENDING"
+        assert requests == []
     finally:
         client.__exit__(None, None, None)
 
@@ -211,6 +531,47 @@ def test_site_proxy_password_is_encrypted_and_write_only(tmp_path: Path) -> None
         assert cleared.json()["proxy_credential_configured"] is False
         with app.state.runtime.session_factory() as session:
             assert session.get(SecretRecord, proxy_secret_id) is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_imported_site_wrong_proxy_secret_kind_cannot_activate(tmp_path: Path) -> None:
+    """An imported primary API key must not be reused as a proxy password."""
+    client, app = _authenticated_client(tmp_path)
+    key = "synthetic-key-must-not-become-proxy-password"
+    proxy_password = "synthetic-independent-proxy-password"
+    try:
+        created = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={
+                "name": "Synthetic proxy secret mismatch",
+                "type": "MTEAM",
+                "credential": {"kind": "API_KEY", "value": key},
+                "proxy": {
+                    "enabled": True,
+                    "host": "proxy.invalid",
+                    "port": 8080,
+                    "username": "synthetic-user",
+                    "password": proxy_password,
+                },
+            },
+        )
+        assert created.status_code == 201
+        site_id = created.json()["id"]
+        with app.state.runtime.session_factory() as session:
+            imported = session.get(Site, site_id)
+            assert imported is not None and imported.secret_id is not None
+            assert imported.proxy_secret_id is not None
+            imported.proxy_secret_id = imported.secret_id
+            imported.enabled = True
+            session.commit()
+
+        with pytest.raises(ApplicationError) as blocked:
+            app.state.site_service.enabled_adapters()
+        assert blocked.value.code == "SITE_ENABLED_CONFIG_INVALID"
+        assert key not in str(blocked.value)
+        assert proxy_password not in str(blocked.value)
     finally:
         client.__exit__(None, None, None)
 
@@ -308,52 +669,25 @@ def test_site_connection_probe_enable_gate_and_config_invalidation(tmp_path: Pat
         client.__exit__(None, None, None)
 
 
-def test_site_user_profile_is_fetched_only_when_detail_endpoint_is_requested(
+def test_retired_site_profile_endpoint_is_not_available_and_does_not_access_remote(
     tmp_path: Path,
 ) -> None:
     client, app = _authenticated_client(tmp_path)
-    api_key = "PACKBREAKER-PROFILE-CANARY-c102"
-    requests: list[str] = []
+    calls = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request.url.path)
+        raise AssertionError("已移除的站点用户资料接口不应访问远端")
+
     try:
-        created = _create_site(client, api_key)
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            requests.append(request.url.path)
-            assert request.headers.get("x-api-key") == api_key
-            return httpx2.Response(
-                200,
-                json={
-                    "code": "0",
-                    "data": {
-                        "id": "123",
-                        "username": "SyntheticUser",
-                        "stats": {"uploaded": "200", "downloaded": "100", "seeding": "8"},
-                    },
-                },
-            )
-
+        created = _create_site(client)
         app.state.site_service._adapter_factory = SiteAdapterFactory(  # noqa: SLF001
             transport=httpx2.MockTransport(handler)
         )
-
-        listed = client.get("/api/v1/sites")
-        assert listed.status_code == 200
-        assert requests == []
-
-        profile = client.get(f"/api/v1/sites/{created['id']}/profile")
-        assert profile.status_code == 200
-        body = profile.json()
-        assert requests == ["/api/member/profile"]
-        assert body["site_id"] == "mteam"
-        assert body["uid"] == "123"
-        assert body["username"] == "SyntheticUser"
-        assert body["uploaded_bytes"] == 200
-        assert body["downloaded_bytes"] == 100
-        assert body["ratio"] == 2.0
-        assert body["seeding_count"] == 8
-        assert body["real_uploaded_bytes"] is None
-        assert body["bonus_per_hour"] is None
-        assert api_key not in profile.text
+        response = client.get(f"/api/v1/sites/{created['id']}/profile")
+        assert response.status_code == 404
+        assert calls == []
+        assert client.get("/api/v1/sites").status_code == 200
     finally:
         client.__exit__(None, None, None)
 

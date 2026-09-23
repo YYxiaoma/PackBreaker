@@ -66,9 +66,11 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 | HDTime | Cookie；NexusPHP 搜索、详情与 torrent 获取已有契约/真实验收。 |
 | HHClub | Cookie；仅接受当前主站 `https://hhanclub.net`，新版 div 卡片搜索、`cat[]` 分类、详情与下载链路已有契约/真实验收。 |
 
-v0.1.6 Profile Registry 另外列出以下**待适配**类型，但它们当前不能创建配置、保存凭证或执行临时 probe：KeepFrds（`https://pt.keepfrds.com`）、HDHome（`https://hdhome.org`）、UBits（`https://ubits.club`）、HDFans（`https://hdfans.org`）、BTSCHOOL（`https://pt.btschool.club`）、PTTime（`https://www.pttime.org`）和 Rousi Pro（`https://rousi.pro`）。前六项按 NexusPHP/Cookie profile 建模；Rousi Pro 暂归 `API_KEY` 凭证类型但仍无正式 Adapter。所有这些 profile 的 `support_status` 均为 `PENDING_ADAPTER`，只有完成 PackBreaker Adapter、契约测试与真实只读验收后才可扩大上表的正式支持集合。
+候选 v1.0.1 Profile Registry 另列出以下**待正式放行**类型，但它们当前不能创建正式配置、保存凭证或执行临时 probe：KeepFrds（`https://pt.keepfrds.com`）、HDHome（`https://hdhome.org`）、UBits（`https://ubits.club`）、HDFans（`https://hdfans.org`）、BTSCHOOL（`https://pt.btschool.club`）、PTTime（`https://www.pttime.org`）、Rousi Pro（`https://rousi.pro`）和聆音Club（`https://pt.soulvoice.club`）。前六项及聆音Club按 NexusPHP/Cookie profile 建模，各有**一个**真实 Torrent 读取与元信息解析成功样本；这不是全部种子类型或真实任务验收。Rousi Pro 以 API Key 搜索、独立 Cookie 取种，已有固定同源真实只读认证、搜索及**一次 Cookie-only 取种**的有效 v1 单文件元信息证据，且有合成的双凭据/分析至模拟 Transmission 添加、强制校验、做种与释放链路；独立 `fetch_details()` 仍未验收，完整真实任务与受控下载器现场证据仍不足。其 Cookie 不得冒充 API Key，API Key 也不具有已证实的取种权限。所有这些 profile 的 `support_status` 均为 `PENDING_ADAPTER`，数据库能容纳新站点类型不代表允许启用；只有逐站满足协议、错误归类、权限安全和必要真实任务验收后才能扩大上表的正式支持集合。详见 [v1.0.1 研发记录](./v1.0.1-development.md)。
 
 站点凭证只写入加密 secret store，管理 API/UI 不回显已保存明文。站点临时故障、鉴权失败和限流不会成为放宽 torrent 内容验证的理由。
+
+2026-09-23 七个 NexusPHP 候选站点的一次两页只读搜索抽样中，KeepFrds、HDHome、UBits、BTSCHOOL、PTTime、聆音Club 均取得两页候选、四项字段可解析且跨页没有重复；请求的 `page_size=20` 实际返回 50 或 100 条。HDFans 在第一页返回 `SITE_UNAVAILABLE`，本轮未完成跨页验收，未自动重试。仅此抽样不证明全部分页稳定性，也不能代替受控真实辅种与回滚；正式放行范围保持不变。 2026-09-23 单次独立复核中 HDFans 再次于第一页返回 `SITE_UNAVAILABLE`，仍无跨页证据；未追加请求或推断原因。新增只读验收工具将欠缺大小/日期/做种及下载数的两页结果标记为不完整，并针对后续失败仅提供脱敏分类，不改变正式支持门禁。
 
 ## 4. 数据与文件系统
 

@@ -11,10 +11,16 @@ on:
       - "Dockerfile"
       - "pyproject.toml"
       - "uv.lock"
-      - "backend/app/**"
+      - "backend/**"
+      - "frontend/**"
+      - "docs/**"
+      - "README.md"
+      - "LICENSE"
       - "scripts/check-updater-e2e.sh"
       - "scripts/check-release-upgrade.sh"
       - "scripts/check-immutable-image-runtime.sh"
+      - "scripts/check_candidate_image_identity.py"
+      - "scripts/ci_release_relation.py"
       - "scripts/verify_release_platforms.py"
       - "scripts/validate_release_baseline.py"
       - "release-baseline.json"
@@ -38,6 +44,9 @@ jobs:
 
       - name: Validate published release baseline
         run: python3 scripts/validate_release_baseline.py
+      - name: Classify formal release relation
+        id: release_relation
+        run: python3 scripts/ci_release_relation.py --github-output "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR for baseline image reads
         uses: docker/login-action@v3
@@ -120,8 +129,16 @@ jobs:
             --tag packbreaker:candidate-docker-e2e \
             .
 
+      - name: Verify candidate image identity
+        run: |
+          python3 scripts/check_candidate_image_identity.py \
+            --image packbreaker:candidate-docker-e2e \
+            --platform linux/amd64 --commit "$GITHUB_SHA"
+
       - name: Exercise previous-release upgrade and rollback
+        if: steps.release_relation.outputs.candidate_newer == 'true'
         run: bash scripts/check-release-upgrade.sh packbreaker:candidate-docker-e2e
 
       - name: Exercise real updater, rollback, and Compose-label preservation
+        if: steps.release_relation.outputs.candidate_newer == 'true'
         run: bash scripts/check-updater-e2e.sh packbreaker:candidate-docker-e2e

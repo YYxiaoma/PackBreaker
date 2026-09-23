@@ -3131,6 +3131,21 @@
               }
             ]
           },
+          "download_cookie": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Cookie"
+          },
           "name": {
             "maxLength": 80,
             "minLength": 1,
@@ -3320,7 +3335,8 @@
           "HDFANS",
           "BTSCHOOL",
           "PTTIME",
-          "ROUSI_PRO"
+          "ROUSI_PRO",
+          "LINGYIN_CLUB"
         ],
         "title": "SiteKind",
         "type": "string"
@@ -3359,6 +3375,11 @@
             "title": "Clear Credential",
             "type": "boolean"
           },
+          "clear_download_cookie": {
+            "default": false,
+            "title": "Clear Download Cookie",
+            "type": "boolean"
+          },
           "credential": {
             "anyOf": [
               {
@@ -3368,6 +3389,21 @@
                 "type": "null"
               }
             ]
+          },
+          "download_cookie": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Cookie"
           },
           "name": {
             "anyOf": [
@@ -3706,6 +3742,21 @@
           "credential": {
             "$ref": "#/components/schemas/SiteCredentialInput"
           },
+          "download_cookie": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 8192,
+                "minLength": 1,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Cookie"
+          },
           "proxy": {
             "$ref": "#/components/schemas/SiteProxyCreateInput"
           },
@@ -3746,193 +3797,6 @@
         "title": "SiteTemporaryProbeRequest",
         "type": "object"
       },
-      "SiteUserProfileResponse": {
-        "properties": {
-          "bonus": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Bonus"
-          },
-          "bonus_per_hour": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Bonus Per Hour"
-          },
-          "downloaded_bytes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Downloaded Bytes"
-          },
-          "fetched_at": {
-            "format": "date-time",
-            "title": "Fetched At",
-            "type": "string"
-          },
-          "ratio": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ratio"
-          },
-          "real_downloaded_bytes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Real Downloaded Bytes"
-          },
-          "real_uploaded_bytes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Real Uploaded Bytes"
-          },
-          "seeding_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Seeding Count"
-          },
-          "seeding_points": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Seeding Points"
-          },
-          "seeding_size_bytes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Seeding Size Bytes"
-          },
-          "site_id": {
-            "title": "Site Id",
-            "type": "string"
-          },
-          "torrents_posted": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Torrents Posted"
-          },
-          "uid": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Uid"
-          },
-          "uploaded_bytes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Uploaded Bytes"
-          },
-          "user_level": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "User Level"
-          },
-          "username": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Username"
-          }
-        },
-        "required": [
-          "site_id",
-          "uid",
-          "username",
-          "user_level",
-          "real_uploaded_bytes",
-          "real_downloaded_bytes",
-          "uploaded_bytes",
-          "downloaded_bytes",
-          "ratio",
-          "torrents_posted",
-          "seeding_count",
-          "seeding_size_bytes",
-          "bonus",
-          "seeding_points",
-          "bonus_per_hour",
-          "fetched_at"
-        ],
-        "title": "SiteUserProfileResponse",
-        "type": "object"
-      },
       "SiteViewResponse": {
         "properties": {
           "base_url": {
@@ -3962,6 +3826,10 @@
           },
           "credential_kind": {
             "$ref": "#/components/schemas/SiteCredentialKind"
+          },
+          "download_credential_configured": {
+            "title": "Download Credential Configured",
+            "type": "boolean"
           },
           "enabled": {
             "title": "Enabled",
@@ -4067,6 +3935,7 @@
           "base_url",
           "credential_kind",
           "credential_configured",
+          "download_credential_configured",
           "request_timeout_seconds",
           "search_interval_seconds",
           "user_agent",
@@ -7425,7 +7294,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.0.0"
+    "version": "1.0.1"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11134,64 +11003,6 @@
           }
         },
         "summary": "Get Site Health",
-        "tags": [
-          "sites"
-        ]
-      }
-    },
-    "/api/v1/sites/{site_id}/profile": {
-      "get": {
-        "operationId": "get_site_user_profile_api_v1_sites__site_id__profile_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "site_id",
-            "required": true,
-            "schema": {
-              "title": "Site Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SiteUserProfileResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Site User Profile",
         "tags": [
           "sites"
         ]

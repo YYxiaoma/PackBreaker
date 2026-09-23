@@ -446,7 +446,7 @@ function kindLabel(kind: NotificationChannelKind): string {
       >
         <Activity :size="14" />发送测试消息
       </el-button>
-      <el-button @click="closeDialog">取消</el-button>
+      <el-button v-if="editing" @click="closeDialog">取消</el-button>
       <el-button
         type="primary"
         :loading="busy.create || (editing ? busy[`update:${editing.id}`] : false)"

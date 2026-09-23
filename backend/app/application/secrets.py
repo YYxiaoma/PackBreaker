@@ -9,6 +9,10 @@ class SecretNotFound(KeyError):
     pass
 
 
+class SecretKindMismatch(ValueError):
+    """A stored secret reference points to a different credential purpose."""
+
+
 class SecretStore:
     """业务层只接触明文边界；数据库 repository 永远只看到认证密文。"""
 
@@ -41,11 +45,15 @@ class SecretStore:
         )
         return secret_id
 
-    def get(self, secret_id: str) -> bytes:
+    def get(self, secret_id: str, *, expected_kind: str | None = None) -> bytes:
         with self._session_factory() as session:
             record = SecretRepository(session).get(secret_id)
             if record is None:
                 raise SecretNotFound(secret_id)
+            if expected_kind is not None and record.kind != expected_kind:
+                # Do not decrypt or surface the referenced secret's ID, kind,
+                # ciphertext or plaintext when an imported relation is wrong.
+                raise SecretKindMismatch("加密凭据用途与引用类型不一致")
             return self._cipher.decrypt(
                 secret_id=record.id,
                 kind=record.kind,

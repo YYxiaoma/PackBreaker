@@ -4,12 +4,13 @@ import { createPinia, setActivePinia } from 'pinia';
 import { ApiProblem } from '../api/client';
 import {
   getSiteHealth,
-  getSiteUserProfile,
   listSiteProfiles,
   listSites,
+  deleteSite,
+  resetSiteCircuit,
   setSiteEnabled,
+  updateSite,
   type Site,
-  type SiteUserProfile,
 } from '../api/sites';
 import { useSiteStore } from './sites';
 
@@ -21,7 +22,6 @@ vi.mock('../api/sites', async () => {
     deleteSite: vi.fn(),
     getSite: vi.fn(),
     getSiteHealth: vi.fn(),
-    getSiteUserProfile: vi.fn(),
     listSiteProfiles: vi.fn(),
     listSites: vi.fn(),
     resetSiteCircuit: vi.fn(),
@@ -38,6 +38,7 @@ const site: Site = {
   base_url: 'https://api.m-team.cc',
   credential_kind: 'API_KEY',
   credential_configured: true,
+  download_credential_configured: false,
   request_timeout_seconds: 15,
   search_interval_seconds: 0,
   user_agent: null,
@@ -72,25 +73,6 @@ const health = {
   requests_failed: 0,
   retries_scheduled: 0,
   last_error_code: null,
-};
-
-const userProfile: SiteUserProfile = {
-  site_id: 'mteam',
-  uid: '42',
-  username: 'SyntheticUser',
-  user_level: null,
-  real_uploaded_bytes: null,
-  real_downloaded_bytes: null,
-  uploaded_bytes: 200,
-  downloaded_bytes: 100,
-  ratio: 2,
-  torrents_posted: null,
-  seeding_count: 8,
-  seeding_size_bytes: null,
-  bonus: null,
-  seeding_points: null,
-  bonus_per_hour: null,
-  fetched_at: '2026-09-17T12:00:00Z',
 };
 
 beforeEach(() => {
@@ -129,17 +111,91 @@ describe('站点 store', () => {
     expect(store.health[site.id]).toBeUndefined();
   });
 
-  it('列表刷新不抓用户详情，只有显式打开详情时才请求 profile', async () => {
+  it('旧版健康状态请求迟到时不得覆盖新版健康状态', async () => {
     vi.mocked(listSites).mockResolvedValue([site]);
-    vi.mocked(getSiteUserProfile).mockResolvedValue(userProfile);
     const store = useSiteStore();
-
     await store.refresh();
-    expect(getSiteUserProfile).not.toHaveBeenCalled();
 
-    await store.loadUserProfile(store.items[0]!);
-    expect(getSiteUserProfile).toHaveBeenCalledWith(site.id);
-    expect(store.userProfiles[site.id]).toEqual(userProfile);
+    let resolveOld!: (value: typeof health) => void;
+    vi.mocked(getSiteHealth).mockImplementationOnce(
+      () => new Promise<typeof health>((resolve) => (resolveOld = resolve)),
+    );
+    const oldHealth = store.refreshHealth(store.items[0]!);
+    vi.mocked(updateSite).mockResolvedValueOnce({ ...site, version: 5 });
+    vi.mocked(getSiteHealth).mockResolvedValueOnce({
+      ...health,
+      config_version: 5,
+      circuit_state: 'OPEN',
+    });
+    await store.update(store.items[0]!, {
+      name: '新版配置',
+      clear_credential: false,
+      clear_download_cookie: false,
+    });
+    resolveOld({ ...health, config_version: 4, circuit_state: 'CLOSED' });
+    await oldHealth;
+    expect(store.health[site.id]).toMatchObject({ config_version: 5, circuit_state: 'OPEN' });
+  });
+
+  it('已删除站点的迟到健康结果不能恢复健康缓存', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    const store = useSiteStore();
+    await store.refresh();
+
+    let resolveOld!: (value: typeof health) => void;
+    vi.mocked(getSiteHealth).mockImplementationOnce(
+      () => new Promise<typeof health>((resolve) => (resolveOld = resolve)),
+    );
+    const oldHealth = store.refreshHealth(store.items[0]!);
+    vi.mocked(deleteSite).mockResolvedValueOnce(undefined);
+    await store.remove(store.items[0]!);
+    resolveOld(health);
+    await oldHealth;
+    expect(store.health[site.id]).toBeUndefined();
+  });
+
+  it('健康接口返回的配置版本与当前站点版本不一致时不能标记为当前状态', async () => {
+    vi.mocked(listSites).mockResolvedValue([{ ...site, version: 5 }]);
+    vi.mocked(getSiteHealth).mockResolvedValue({ ...health, config_version: 4 });
+    const store = useSiteStore();
+    await store.refresh();
+    expect(store.health[site.id]).toBeUndefined();
+  });
+
+  it('旧版熔断重置的迟到响应不得覆盖新版健康状态', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    const store = useSiteStore();
+    await store.refresh();
+
+    let resolveOld!: (value: typeof health) => void;
+    vi.mocked(resetSiteCircuit).mockImplementationOnce(
+      () => new Promise<typeof health>((resolve) => (resolveOld = resolve)),
+    );
+    const oldReset = store.resetCircuit(store.items[0]!);
+    vi.mocked(updateSite).mockResolvedValueOnce({ ...site, version: 5 });
+    vi.mocked(getSiteHealth).mockResolvedValueOnce({
+      ...health,
+      config_version: 5,
+      circuit_state: 'OPEN',
+    });
+    await store.update(store.items[0]!, {
+      name: '新配置',
+      clear_credential: false,
+      clear_download_cookie: false,
+    });
+    resolveOld({ ...health, config_version: 4, circuit_state: 'CLOSED' });
+    await oldReset;
+    expect(store.health[site.id]).toMatchObject({ config_version: 5, circuit_state: 'OPEN' });
+  });
+
+  it('站点列表与健康状态刷新不产生用户详情请求或缓存', async () => {
+    vi.mocked(listSites).mockResolvedValue([site]);
+    const store = useSiteStore();
+    await store.refresh();
+    expect(store.items).toHaveLength(1);
+    expect(store.health[site.id]?.config_version).toBe(site.version);
+    expect('loadUserProfile' in store).toBe(false);
+    expect('userProfiles' in store).toBe(false);
   });
 
   it('会话失效时清空先前加载的站点和健康状态', async () => {

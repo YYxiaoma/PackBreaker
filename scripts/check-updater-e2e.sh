@@ -20,20 +20,24 @@ fi
 runtime_uid="$(id -u)"
 runtime_gid="$(id -g)"
 runtime_user="$runtime_uid:$runtime_gid"
-suffix="${GITHUB_RUN_ID:-local}-$$"
+# All mutable test artifacts must live under one freshly created sandbox.
+# Never clean a predictable directory in the checkout using sudo.
+sandbox="$(mktemp -d "${TMPDIR:-/tmp}/.packbreaker-updater-e2e.XXXXXXXX")"
+chmod 700 "$sandbox"
+suffix="${GITHUB_RUN_ID:-local}-$$-$RANDOM"
 registry_port="15000"
 registry_container="packbreaker-updater-registry-$suffix"
 registry_repo="127.0.0.1:${registry_port}/packbreaker"
 local_baseline_tag="$registry_repo:baseline"
 local_candidate_tag="$registry_repo:candidate"
 local_fault_tag="$registry_repo:fault"
-fault_build_dir="$PWD/.ci-updater-e2e-$suffix-fault-build"
-success_config="$PWD/.ci-updater-e2e-$suffix-success-config"
-success_data="$PWD/.ci-updater-e2e-$suffix-success-data"
-rollback_config="$PWD/.ci-updater-e2e-$suffix-rollback-config"
-rollback_data="$PWD/.ci-updater-e2e-$suffix-rollback-data"
-transient_config="$PWD/.ci-updater-e2e-$suffix-transient-config"
-transient_data="$PWD/.ci-updater-e2e-$suffix-transient-data"
+fault_build_dir="$sandbox/fault-build"
+success_config="$sandbox/success-config"
+success_data="$sandbox/success-data"
+rollback_config="$sandbox/rollback-config"
+rollback_data="$sandbox/rollback-data"
+transient_config="$sandbox/transient-config"
+transient_data="$sandbox/transient-data"
 success_main="packbreaker-updater-success-$suffix"
 success_helper="packbreaker-updater-success-helper-$suffix"
 rollback_main="packbreaker-updater-rollback-$suffix"
@@ -45,11 +49,11 @@ transient_request="transient-$suffix"
 
 cleanup() {
   docker ps -aq --filter "name=$suffix" | xargs -r docker rm --force >/dev/null 2>&1 || true
-  sudo rm -rf \
-    "$fault_build_dir" \
-    "$success_config" "$success_data" \
-    "$rollback_config" "$rollback_data" \
-    "$transient_config" "$transient_data" >/dev/null 2>&1 || true
+  if [[ -d "$sandbox" && ! -L "$sandbox" && \
+        "$(basename "$sandbox")" == .packbreaker-updater-e2e.* && \
+        "$sandbox" != / ]]; then
+    sudo rm -rf -- "$sandbox" >/dev/null 2>&1 || true
+  fi
 }
 
 workflow_escape() {
@@ -63,20 +67,10 @@ workflow_escape() {
 report_failure() {
   local exit_code="$?"
   local line="${BASH_LINENO[0]:-0}"
-  local command="${BASH_COMMAND:-unknown}"
-  local state_summary=""
-  local input_summary=""
-  local docker_summary=""
-  local annotation=""
-  set +e
-  if sudo test -f "$transient_config/transient-updater/state.json"; then
-    state_summary="$(sudo python3 -c 'import json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps({"phase":p.get("phase"),"message":p.get("message"),"backup_database_file":p.get("backup_database_file")}, ensure_ascii=False, separators=(",",":")))' "$transient_config/transient-updater/state.json" 2>/dev/null)"
-  fi
-  input_summary="$(python3 -c 'import json,sys; print(json.dumps({"backup_database_file":sys.argv[1],"backup_manifest_file":sys.argv[2]}, ensure_ascii=False, separators=(",",":")))' "${transient_backup_db:-}" "${transient_backup_manifest:-}" 2>/dev/null)"
-  docker_summary="$(docker ps -a --filter "name=$transient_main" --format '{{.Names}}={{.ID}}:{{.Status}}' 2>/dev/null | tr '\n' ';')"
-  annotation="exit=$exit_code command=$command transient_state=$state_summary transient_input=$input_summary docker=$docker_summary"
-  printf '::error file=scripts/check-updater-e2e.sh,line=%s::%s\n' \
-    "$line" "$(workflow_escape "$annotation")"
+  # Dynamic commands, updater state messages and backup paths may contain
+  # credentials or other sensitive data. Emit only stable diagnostic fields.
+  printf '::error file=scripts/check-updater-e2e.sh,line=%s::Isolated updater E2E failed; exit=%s\n' \
+    "$line" "$exit_code"
   exit "$exit_code"
 }
 
@@ -89,7 +83,7 @@ wait_registry() {
       return 0
     fi
     if [ "$attempt" -eq 30 ]; then
-      docker logs "$registry_container" || true
+      echo "Isolated updater registry did not become ready" >&2
       return 1
     fi
     sleep 1
@@ -109,7 +103,7 @@ wait_app_ready() {
       return 1
     fi
     if [ "$attempt" -eq 90 ]; then
-      docker logs "$container" || true
+      echo "Isolated updater app readiness failed" >&2
       return 1
     fi
     sleep 1
@@ -136,8 +130,7 @@ wait_app_ready_after_switch() {
         ;;
     esac
     if [ "$attempt" -eq 180 ]; then
-      docker ps -a --filter "name=$container" || true
-      docker logs "$container" 2>/dev/null || true
+      echo "Isolated updater replacement did not become ready" >&2
       return 1
     fi
     sleep 1
@@ -179,12 +172,12 @@ wait_transient_terminal() {
         return 0
         ;;
       rolled_back|failed|manual_recovery_required)
-        echo "$status_json" >&2
+        echo "Isolated transient updater terminated without success: phase=$phase" >&2
         return 1
         ;;
     esac
     if [ "$attempt" -eq 30 ]; then
-      echo "$status_json" >&2
+      echo "Isolated transient updater did not reach success" >&2
       return 1
     fi
     sleep 1
@@ -200,11 +193,11 @@ wait_docker_healthy() {
       return 0
     fi
     if [ "$status" = "unhealthy" ]; then
-      docker logs "$container" || true
+      echo "Isolated updater container became unhealthy" >&2
       return 1
     fi
     if [ "$attempt" -eq 90 ]; then
-      docker inspect "$container" || true
+      echo "Isolated updater container health check timed out" >&2
       return 1
     fi
     sleep 1
@@ -285,11 +278,11 @@ start_helper() {
       return 0
     fi
     if ! docker inspect "$helper_container" >/dev/null 2>&1 || [ "$(docker inspect "$helper_container" --format '{{.State.Running}}')" != "true" ]; then
-      docker logs "$helper_container" || true
+      echo "Isolated updater helper exited before readiness" >&2
       return 1
     fi
     if [ "$attempt" -eq 30 ]; then
-      docker logs "$helper_container" || true
+      echo "Isolated updater helper readiness timed out" >&2
       return 1
     fi
     sleep 1
@@ -323,14 +316,16 @@ wait_helper_terminal() {
     phase="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["phase"])' <<<"$status_json")"
     case "$phase" in
       succeeded|rolled_back|failed|manual_recovery_required)
-        echo "$status_json"
-        test "$phase" = "$expected_phase"
-        return
+        if [ "$phase" = "$expected_phase" ]; then
+          echo "$status_json"
+          return 0
+        fi
+        echo "Isolated updater helper reached unexpected terminal phase: $phase" >&2
+        return 1
         ;;
     esac
     if [ "$attempt" -eq 180 ]; then
-      echo "$status_json" >&2
-      docker logs "$helper_container" || true
+      echo "Isolated updater helper did not reach its expected terminal phase" >&2
       return 1
     fi
     sleep 1
