@@ -1,13 +1,13 @@
 {
   "format_version": 2,
-  "version": "1.0.1",
-  "tag": "v1.0.1",
-  "commit": "9bb009bc335f6a9952025e4a5357fb5bf1517e93",
+  "version": "1.0.2",
+  "tag": "v1.0.2",
+  "commit": "43be7bf77276f42d1dca45a4b78132d6a7044b30",
   "platform": "multi",
   "platforms": ["linux/amd64", "linux/arm64"],
   "image": "ghcr.io/yyxiaoma/packbreaker",
-  "image_digest": "sha256:3fb0ab8cee39b245d8a2b6fedae1336afa41ff18cf380d5f448a1b1fef832cb2",
-  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:3fb0ab8cee39b245d8a2b6fedae1336afa41ff18cf380d5f448a1b1fef832cb2",
+  "image_digest": "sha256:eb6083864d3a60f0dc926ac58cc27ccb18405df5f766d66cbc533a0252539fd5",
+  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:eb6083864d3a60f0dc926ac58cc27ccb18405df5f766d66cbc533a0252539fd5",
   "alembic_revision": "0031_site_type_capacity_v101",
-  "release_workflow_run_id": 35835218877
+  "release_workflow_run_id": 35877552693
 }

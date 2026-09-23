@@ -35,14 +35,14 @@ def test_release_relation_rejects_older_checkout(candidate: str) -> None:
 def test_same_version_after_release_exports_explicit_false(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ci_release_relation, "project_version", lambda: "1.0.1")
+    monkeypatch.setattr(ci_release_relation, "project_version", lambda: "1.0.2")
     output = tmp_path / "github-output"
     assert main(["--github-output", str(output)]) == 0
     assert output.read_text(encoding="utf-8") == "candidate_newer=false\n"
 
 
 def test_newer_candidate_exports_true(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ci_release_relation, "project_version", lambda: "1.0.2")
+    monkeypatch.setattr(ci_release_relation, "project_version", lambda: "1.0.3")
     output = tmp_path / "github-output"
     assert main(["--github-output", str(output)]) == 0
     assert output.read_text(encoding="utf-8") == "candidate_newer=true\n"

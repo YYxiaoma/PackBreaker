@@ -55,7 +55,7 @@ frontend/src/api/generated/  OpenAPI 生成的 TypeScript 类型
 - FastAPI / SQLAlchemy / Alembic / SQLite WAL
 - Vue 3 / Vite / TypeScript strict / Element Plus / Pinia
 - pytest / Ruff / mypy / Vitest / Playwright
-- Docker 单镜像；当前正式 v1.0.1 发布 `linux/amd64` + `linux/arm64`，v0.1.9 及以前仅承诺 `linux/amd64`。v1.0.1 新增八站仅为 `PENDING_ADAPTER`，不能在正式环境保存或启用；项目负责人豁免了本次真实业务验收，不能将豁免描述成站点能力已通过真实验收
+- Docker 单镜像；当前正式 v1.0.2 发布 `linux/amd64` + `linux/arm64`，v0.1.9 及以前仅承诺 `linux/amd64`。v1.0.2 八个新增站点为 `PENDING_REAL_VALIDATION`：仅允许加密保存配置和只读连接测试，不允许启用正式辅种任务；真实业务验收尚未完成，不能将配置开放描述为已通过真实任务验收
 
 ---
 
@@ -152,12 +152,13 @@ GET API 只能返回 `credential_configured` 等布尔状态，不得回显秘�
 
 - 站点请求目标必须来自受审查的 `SiteProfileRegistry`。
 - 不允许用户输入任意 URL 决定 Cookie / API Key 的发送目标。
-- 当前正式持久化支持范围只由 `PERSISTED_SITE_KINDS` 决定。
+- 生产任务可启用范围只由 `PERSISTED_SITE_KINDS` 决定；仅允许存储配置/连接测试的范围由 `CONFIGURABLE_SITE_KINDS` 及 Profile 状态共同约束，两者不得混为一谈。
 - `PENDING_ADAPTER` 站点可以在 Registry / UI 中展示，但必须：
   - 前端禁用保存/测试；
   - 后端返回稳定的 pending 错误；
   - 不创建 Site；
   - 不创建 Secret。
+- `PENDING_REAL_VALIDATION` 站点可以依固定 Profile origin 保存加密配置并执行只读连接测试，但必须默认停用；Web/API 的启用动作和正式任务适配器加载仍须由服务端拒绝。即使数据库被直接导入 `enabled=1`，也不得解密凭据或进入生产任务执行链路。
 - 新站点从 pending 升级为正式支持前，至少需要：
   1. 认证方式确认；
   2. adapter；
