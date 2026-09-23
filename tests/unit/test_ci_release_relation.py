@@ -44,7 +44,10 @@ def test_ci_retains_version_conditioned_upgrade_and_unconditional_runtime() -> N
     relation = "steps.release_relation.outputs.candidate_newer == 'true'"
     arm_steps = ci["jobs"]["arm64"]["steps"]
     arm_names = {step.get("name"): step for step in arm_steps}
-    assert "scripts/ci_release_relation.py" in arm_names["Classify formal release relation"]["run"]
+    assert (
+        "python -m scripts.ci_release_relation"
+        in arm_names["Classify formal release relation"]["run"]
+    )
     assert (
         "scripts/check-immutable-image-runtime.sh"
         in arm_names["Exercise immutable formal ARM64 baseline in isolated runtime"]["run"]
@@ -60,7 +63,7 @@ def test_ci_retains_version_conditioned_upgrade_and_unconditional_runtime() -> N
         if step.get("name") == "Smoke test image and health endpoint"
     )
     assert "scripts/check-release-upgrade.sh packbreaker:ci" in smoke
-    assert "scripts/ci_release_relation.py" in smoke
+    assert "python -m scripts.ci_release_relation" in smoke
     updater = ci["jobs"]["updater-e2e"]["steps"]
     assert all(
         step["if"] == relation
@@ -88,4 +91,9 @@ def test_ci_retains_version_conditioned_upgrade_and_unconditional_runtime() -> N
     )
     assert "scripts/check-release-upgrade.sh" in release_scripts
     assert "scripts/check-updater-e2e.sh" in release_scripts
-    assert "scripts/ci_release_relation.py" not in release_scripts
+    assert "scripts.ci_release_relation" not in release_scripts
+    assert "python3 -m scripts.ci_release_relation" in next(
+        step["run"]
+        for step in candidate_steps
+        if step.get("name") == "Classify formal release relation"
+    )

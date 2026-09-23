@@ -46,7 +46,7 @@ jobs:
         run: python3 scripts/validate_release_baseline.py
       - name: Classify formal release relation
         id: release_relation
-        run: python3 scripts/ci_release_relation.py --github-output "$GITHUB_OUTPUT"
+        run: python3 -m scripts.ci_release_relation --github-output "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR for baseline image reads
         uses: docker/login-action@v3

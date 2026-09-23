@@ -137,7 +137,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Classify formal release relation
         id: release_relation
-        run: python scripts/ci_release_relation.py --github-output "$GITHUB_OUTPUT"
+        run: python -m scripts.ci_release_relation --github-output "$GITHUB_OUTPUT"
       - name: Exercise immutable formal ARM64 baseline in isolated runtime
         shell: bash
         run: |
@@ -310,7 +310,7 @@ jobs:
             sleep 1
           done
 
-          relation="$(python scripts/ci_release_relation.py)"
+          relation="$(python -m scripts.ci_release_relation)"
           if [[ "$relation" == newer ]]; then
             bash scripts/check-release-upgrade.sh packbreaker:ci
           else
@@ -325,7 +325,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Classify formal release relation
         id: release_relation
-        run: python scripts/ci_release_relation.py --github-output "$GITHUB_OUTPUT"
+        run: python -m scripts.ci_release_relation --github-output "$GITHUB_OUTPUT"
       - name: Build updater candidate image
         if: steps.release_relation.outputs.candidate_newer == 'true'
         run: |
