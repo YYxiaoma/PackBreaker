@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+from scripts import ci_release_relation
 from scripts.ci_release_relation import is_newer_release, main
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,10 +32,20 @@ def test_release_relation_rejects_older_checkout(candidate: str) -> None:
         is_newer_release(candidate, "1.0.1")
 
 
-def test_same_version_after_release_exports_explicit_false(tmp_path: Path) -> None:
+def test_same_version_after_release_exports_explicit_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ci_release_relation, "project_version", lambda: "1.0.1")
     output = tmp_path / "github-output"
     assert main(["--github-output", str(output)]) == 0
     assert output.read_text(encoding="utf-8") == "candidate_newer=false\n"
+
+
+def test_newer_candidate_exports_true(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ci_release_relation, "project_version", lambda: "1.0.2")
+    output = tmp_path / "github-output"
+    assert main(["--github-output", str(output)]) == 0
+    assert output.read_text(encoding="utf-8") == "candidate_newer=true\n"
 
 
 def test_ci_retains_version_conditioned_upgrade_and_unconditional_runtime() -> None:
