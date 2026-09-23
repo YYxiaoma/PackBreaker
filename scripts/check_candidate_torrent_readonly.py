@@ -60,7 +60,7 @@ async def check_one_site(
             dual_credential
             and (not isinstance(entry.get("api_key"), str) or not entry["api_key"].strip())
         )
-        or profile.support_status.value != "PENDING_ADAPTER"
+        or profile.support_status.value not in {"PENDING_ADAPTER", "PENDING_REAL_VALIDATION"}
     ):
         return {"site": site, "status": "CONFIG_BLOCKED"}
     if dual_credential:

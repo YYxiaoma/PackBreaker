@@ -75,7 +75,7 @@ async def check_one_site(
         or entry.get("auth_type") != "cookie"
         or not isinstance(entry.get("cookie"), str)
         or profile.credential_kind is not SiteCredentialKind.COOKIE
-        or profile.support_status.value != "PENDING_ADAPTER"
+        or profile.support_status.value not in {"PENDING_ADAPTER", "PENDING_REAL_VALIDATION"}
     ):
         return {"site": site, "status": "CONFIG_BLOCKED"}
     try:

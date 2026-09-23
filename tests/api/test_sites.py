@@ -104,37 +104,25 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
         assert items["HHCLUB"]["base_url"] == "https://hhanclub.net"
         assert items["HDTIME"]["supports_user_agent"] is True
         assert items["HDTIME"]["supports_browser_emulation"] is True
-        assert items["KEEPFRDS"]["support_status"] == "PENDING_ADAPTER"
+        assert items["KEEPFRDS"]["support_status"] == "PENDING_REAL_VALIDATION"
         assert items["ROUSI_PRO"]["credential_kind"] == "API_KEY"
         assert items["LINGYIN_CLUB"]["base_url"] == "https://pt.soulvoice.club"
         assert items["LINGYIN_CLUB"]["credential_kind"] == "COOKIE"
-        assert items["LINGYIN_CLUB"]["support_status"] == "PENDING_ADAPTER"
+        assert items["LINGYIN_CLUB"]["support_status"] == "PENDING_REAL_VALIDATION"
     finally:
         client.__exit__(None, None, None)
 
 
-def test_pending_site_profiles_cannot_create_or_probe_or_persist_secrets(tmp_path: Path) -> None:
+def test_eight_site_profiles_are_configurable_without_task_activation(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
-        pending_kinds = tuple(kind for kind in SiteKind if not site_kind_is_persistable(kind))
-        assert set(pending_kinds) == {
-            SiteKind.HDHOME,
-            SiteKind.KEEPFRDS,
-            SiteKind.UBITS,
-            SiteKind.HDFANS,
-            SiteKind.ROUSI_PRO,
-            SiteKind.BTSCHOOL,
-            SiteKind.PTTIME,
-            SiteKind.LINGYIN_CLUB,
-        }
-        with app.state.runtime.session_factory() as session:
-            before_sites = len(list(session.scalars(select(Site))))
-            before_secrets = len(list(session.scalars(select(SecretRecord))))
-
-        for kind in pending_kinds:
+        candidate_kinds = tuple(kind for kind in SiteKind if not site_kind_is_persistable(kind))
+        assert len(candidate_kinds) == 8
+        for kind in candidate_kinds:
             profile = site_profile(kind)
             secret = f"synthetic-secret-for-{kind.value}"
             payload = {
+                "name": f"Synthetic configurable {kind.value}",
                 "type": kind.value,
                 "credential": {"kind": profile.credential_kind.value, "value": secret},
                 **(
@@ -143,19 +131,113 @@ def test_pending_site_profiles_cannot_create_or_probe_or_persist_secrets(tmp_pat
                     else {}
                 ),
             }
-            for endpoint, request in (
-                ("/api/v1/sites", {"name": f"Synthetic pending {kind.value}", **payload}),
-                ("/api/v1/sites/probe", payload),
-            ):
-                response = client.post(endpoint, headers=_csrf(client), json=request)
-                assert response.status_code == 409, kind
-                assert response.json()["code"] == "SITE_ADAPTER_PENDING", kind
-                assert secret not in response.text
-                assert "synthetic-rousi-cookie" not in response.text
-
+            created = client.post("/api/v1/sites", headers=_csrf(client), json=payload)
+            assert created.status_code == 201, (kind, created.text)
+            view = created.json()
+            assert view["base_url"] == profile.base_url
+            assert view["enabled"] is False
+            assert secret not in created.text
+            assert "synthetic-rousi-cookie" not in created.text
+            denied = client.post(
+                f"/api/v1/sites/{view['id']}/actions",
+                headers={**_csrf(client), "If-Match": '"1"'},
+                json={"action": "enable"},
+            )
+            assert denied.status_code == 409
+            assert denied.json()["code"] == "SITE_ADAPTER_PENDING"
+            assert secret not in denied.text
         with app.state.runtime.session_factory() as session:
-            assert len(list(session.scalars(select(Site)))) == before_sites
-            assert len(list(session.scalars(select(SecretRecord)))) == before_secrets
+            records = list(session.scalars(select(Site)))
+            assert len(records) == 8
+            assert all(not row.enabled and row.secret_id is not None for row in records)
+            assert len(list(session.scalars(select(SecretRecord)))) == 9
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    tuple(kind for kind in SiteKind if not site_kind_is_persistable(kind)),
+)
+def test_new_site_saved_and_unsaved_connection_probes_stay_read_only(
+    tmp_path: Path,
+    kind: SiteKind,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    profile = site_profile(kind)
+    secret = f"synthetic-credential-{kind.value}"
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.method == "GET"
+        assert str(request.url).startswith(profile.base_url + "/")
+        seen.append(request.url.path)
+        if kind is SiteKind.ROUSI_PRO:
+            assert request.headers.get("api-token") == secret
+            assert request.headers.get("cookie") is None
+            return httpx2.Response(200, json={"code": 0, "data": {"synthetic": True}})
+        assert request.headers.get("cookie") == secret
+        return httpx2.Response(200, text='<a href="usercp.php">My settings</a>')
+
+    try:
+        app.state.site_service._adapter_factory = SiteAdapterFactory(
+            transport=httpx2.MockTransport(handler),
+        )
+        payload = {
+            "type": kind.value,
+            "credential": {"kind": profile.credential_kind.value, "value": secret},
+            **({"download_cookie": "synthetic-only-cookie"} if kind is SiteKind.ROUSI_PRO else {}),
+        }
+        unsaved = client.post("/api/v1/sites/probe", headers=_csrf(client), json=payload)
+        assert unsaved.status_code == 200, (kind, unsaved.text)
+        with app.state.runtime.session_factory() as session:
+            assert session.query(Site).count() == 0
+            assert session.query(SecretRecord).count() == 0
+        created = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={"name": f"Synthetic {kind.value}", **payload},
+        )
+        assert created.status_code == 201, (kind, created.text)
+        view = created.json()
+        assert view["base_url"] == profile.base_url
+        assert view["enabled"] is False
+        tested = client.post(f"/api/v1/sites/{view['id']}/test", headers=_csrf(client))
+        assert tested.status_code == 200, (kind, tested.text)
+        for response in (created, unsaved, tested):
+            assert secret not in response.text
+            assert "synthetic-only-cookie" not in response.text
+        assert len(seen) == 2
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_new_site_ignores_unrecognized_origin_field_and_uses_fixed_registry_url(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        response = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={
+                "name": "Unsafe origin",
+                "type": "KEEPFRDS",
+                "base_url": "https://outside.invalid",
+                "credential": {"kind": "COOKIE", "value": "synthetic-private-cookie"},
+            },
+        )
+        # The public create schema does not accept a custom URL; the unknown
+        # JSON field is ignored rather than ever being sent to the adapter.
+        assert response.status_code == 201
+        assert response.json()["base_url"] == site_profile(SiteKind.KEEPFRDS).base_url
+        assert response.json()["enabled"] is False
+        assert "outside.invalid" not in response.text
+        assert "synthetic-private-cookie" not in response.text
+        with app.state.runtime.session_factory() as session:
+            assert session.query(Site).count() == 1
+            assert session.query(SecretRecord).count() == 1
+            assert session.query(Site).one().base_url == site_profile(SiteKind.KEEPFRDS).base_url
     finally:
         client.__exit__(None, None, None)
 
@@ -348,18 +430,9 @@ def test_imported_rousi_wrong_secret_kind_cannot_activate(
 
 @pytest.mark.parametrize(
     "pending_kind",
-    (
-        SiteKind.KEEPFRDS,
-        SiteKind.HDHOME,
-        SiteKind.UBITS,
-        SiteKind.HDFANS,
-        SiteKind.BTSCHOOL,
-        SiteKind.PTTIME,
-        SiteKind.ROUSI_PRO,
-        SiteKind.LINGYIN_CLUB,
-    ),
+    tuple(kind for kind in SiteKind if not site_kind_is_persistable(kind)),
 )
-def test_imported_pending_site_api_actions_fail_closed_without_credential_use(
+def test_imported_unverified_site_cannot_enable_or_enter_task_adapter_registry(
     tmp_path: Path,
     pending_kind: SiteKind,
     monkeypatch: pytest.MonkeyPatch,
@@ -367,7 +440,6 @@ def test_imported_pending_site_api_actions_fail_closed_without_credential_use(
     client, app = _authenticated_client(tmp_path)
     profile = site_profile(pending_kind)
     marker = f"synthetic-imported-pending-{pending_kind.value}"
-    requests: list[str] = []
     try:
         with app.state.runtime.session_factory() as session:
             secret_id = SecretStore(
@@ -398,52 +470,30 @@ def test_imported_pending_site_api_actions_fail_closed_without_credential_use(
             )
             site_id = record.id
             session.commit()
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            requests.append(str(request.url))
-            raise AssertionError("pending site must not make network requests")
-
-        app.state.site_service._adapter_factory = SiteAdapterFactory(  # noqa: SLF001
-            transport=httpx2.MockTransport(handler)
-        )
-        for endpoint, payload in (
-            (f"/api/v1/sites/{site_id}/test", None),
-            (f"/api/v1/sites/{site_id}/actions", {"action": "refresh_capabilities"}),
-        ):
-            response = client.post(endpoint, headers=_csrf(client), json=payload)
-            assert response.status_code == 409
-            assert response.json()["code"] == "SITE_ADAPTER_PENDING"
-            assert marker not in response.text
-        enabled = client.post(
+        denied = client.post(
             f"/api/v1/sites/{site_id}/actions",
             headers={**_csrf(client), "If-Match": '"1"'},
             json={"action": "enable"},
         )
-        assert enabled.status_code == 409
-        assert enabled.json()["code"] == "SITE_ADAPTER_PENDING"
-        assert marker not in enabled.text
+        assert denied.status_code == 409
+        assert denied.json()["code"] == "SITE_ADAPTER_PENDING"
+        assert marker not in denied.text
         with app.state.runtime.session_factory() as session:
-            unchanged = session.get(Site, site_id)
-            assert unchanged is not None
-            assert unchanged.enabled is False
-            assert unchanged.version == 1
-            assert unchanged.secret_id == secret_id
-            # Legacy/imported rows may already carry enabled=True. This must
-            # not make the pending adapter visible to the task analysis path.
-            unchanged.enabled = True
+            record = session.get(Site, site_id)
+            assert record is not None and record.version == 1
+            record.enabled = True  # hostile direct import must still be rejected
             session.commit()
 
-        def forbidden_secret_read(_secret_id: str) -> bytes:
-            raise AssertionError("Pending adapter gate must run before decrypting any secret")
+        def reject_secret_read(*_args: object, **_kwargs: object) -> bytes:
+            raise AssertionError("Unverified task adapter must not decrypt any secrets")
 
-        monkeypatch.setattr(app.state.site_service._secret_store, "get", forbidden_secret_read)
-        with pytest.raises(ApplicationError) as adapters_blocked:
+        monkeypatch.setattr(app.state.site_service._secret_store, "get", reject_secret_read)
+        with pytest.raises(ApplicationError) as blocked:
             app.state.site_service.enabled_adapters()
-        assert adapters_blocked.value.code == "SITE_ADAPTER_PENDING"
-        with pytest.raises(ApplicationError) as versions_blocked:
+        assert blocked.value.code == "SITE_ADAPTER_PENDING"
+        with pytest.raises(ApplicationError) as blocked:
             app.state.site_service.enabled_site_versions()
-        assert versions_blocked.value.code == "SITE_ADAPTER_PENDING"
-        assert requests == []
+        assert blocked.value.code == "SITE_ADAPTER_PENDING"
     finally:
         client.__exit__(None, None, None)
 

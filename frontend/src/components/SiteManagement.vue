@@ -100,6 +100,14 @@ function supportLabel(profile: SiteProfile | undefined): string {
   return '待适配';
 }
 
+function profileConfigurable(profile: SiteProfile | undefined): boolean {
+  return Boolean(profile && profile.support_status !== 'PENDING_ADAPTER');
+}
+
+const pendingRealValidation = computed(
+  () => selectedProfile.value?.support_status === 'PENDING_REAL_VALIDATION',
+);
+
 function connectionLabel(status: Site['connection_status']): string {
   if (status === 'OK') return '已验证';
   if (status === 'FAILED') return '失败';
@@ -210,6 +218,7 @@ function applyProfileDefaults() {
   draft.browserEmulationEnabled = false;
   draft.downloadCookie = '';
   draft.clearDownloadCookie = false;
+  draft.enableAfterSave = profile.support_status === 'SUPPORTED';
   if (!profile.supports_proxy) draft.proxyEnabled = false;
 }
 
@@ -252,8 +261,8 @@ function credentialPayload(): SiteCredentialInput | undefined {
 }
 
 function validateDraft(requireCredential = false): boolean {
-  if (selectedProfile.value?.support_status !== 'SUPPORTED') {
-    ElMessage.warning('该站点已进入 Registry，但适配器尚未开放，当前版本不能保存或测试');
+  if (!profileConfigurable(selectedProfile.value)) {
+    ElMessage.warning('该站点适配器尚未开放，当前版本不能保存或测试');
     return false;
   }
   if (!draft.name.trim()) {
@@ -594,6 +603,12 @@ async function remove(item: Site) {
           </div>
           <el-switch
             :model-value="item.enabled"
+            :disabled="profileFor(item.type)?.support_status !== 'SUPPORTED'"
+            :title="
+              profileFor(item.type)?.support_status === 'PENDING_REAL_VALIDATION'
+                ? '该站点可配置与测试连接，真实辅种验收完成后才能启用'
+                : undefined
+            "
             :loading="isBusy(item, 'enable')"
             :aria-label="'启用' + item.name"
             @change="toggleEnabled(item, $event === true)"
@@ -678,15 +693,19 @@ async function remove(item: Site) {
                 :key="profile.kind"
                 :label="`${profile.display_name} · ${supportLabel(profile)}`"
                 :value="profile.kind"
-                :disabled="profile.support_status !== 'SUPPORTED'"
+                :disabled="!profileConfigurable(profile)"
               />
             </el-select>
           </el-form-item>
         </div>
 
-        <el-form-item label="站点地址（由 Profile 固定）">
-          <el-input :model-value="selectedProfile?.base_url ?? ''" disabled />
-        </el-form-item>
+        <el-alert
+          v-if="pendingRealValidation"
+          title="该站点支持添加配置及只读连接测试，但尚未完成真实辅种验收；暂不可启用执行任务。站点地址由系统自动绑定。"
+          type="warning"
+          :closable="false"
+          class="form-alert"
+        />
 
         <el-alert
           v-if="editing && draft.credentialConfigured"
@@ -722,9 +741,7 @@ async function remove(item: Site) {
               type="password"
               show-password
               autocomplete="new-password"
-              :disabled="
-                draft.clearDownloadCookie || selectedProfile?.support_status !== 'SUPPORTED'
-              "
+              :disabled="draft.clearDownloadCookie || !profileConfigurable(selectedProfile)"
               :placeholder="
                 editing && draft.downloadCredentialConfigured
                   ? '留空保留原下载 Cookie'
@@ -794,7 +811,7 @@ async function remove(item: Site) {
           >
         </template>
 
-        <el-form-item v-if="!editing" label="是否启用">
+        <el-form-item v-if="!editing && !pendingRealValidation" label="是否启用">
           <el-radio-group v-model="draft.enableAfterSave">
             <el-radio :value="true">启用（保存后先测试连接）</el-radio>
             <el-radio :value="false">停用</el-radio>
@@ -805,14 +822,14 @@ async function remove(item: Site) {
         <el-button
           v-if="!editing || draft.credential"
           :loading="probingDraft"
-          :disabled="selectedProfile?.support_status !== 'SUPPORTED'"
+          :disabled="!profileConfigurable(selectedProfile)"
           @click="testDraftConnection"
           >测试当前表单</el-button
         >
         <el-button
           type="primary"
           :loading="saving"
-          :disabled="selectedProfile?.support_status !== 'SUPPORTED'"
+          :disabled="!profileConfigurable(selectedProfile)"
           @click="save"
           >保存配置</el-button
         >

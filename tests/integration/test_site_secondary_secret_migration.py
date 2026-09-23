@@ -147,25 +147,27 @@ def test_secondary_secret_storage_rotation_and_cleanup_on_existing_site(
         runtime.stop()
 
 
-def test_rousi_pro_still_refuses_public_site_creation_without_writing_secrets(
-    tmp_path: Path,
-) -> None:
+def test_rousi_pro_config_is_encrypted_but_not_activated_for_tasks(tmp_path: Path) -> None:
     runtime = RuntimeManager(_settings(tmp_path))
     runtime.start()
     try:
         store = SecretStore(runtime.session_factory, runtime.secret_cipher)
         service = SiteService(runtime.session_factory, store)
-        with pytest.raises(ApplicationError) as blocked:
-            service.create(
-                name="Synthetic Rousi Candidate",
-                kind=SiteKind.ROUSI_PRO,
-                credential_kind=SiteCredentialKind.API_KEY,
-                credential="synthetic-api-key",
-            )
-        assert blocked.value.code == "SITE_ADAPTER_PENDING"
+        created = service.create(
+            name="Synthetic Rousi Candidate",
+            kind=SiteKind.ROUSI_PRO,
+            credential_kind=SiteCredentialKind.API_KEY,
+            credential="synthetic-api-key",
+            download_cookie="synthetic-download-cookie",
+        )
+        assert not created.enabled
+        assert created.download_credential_configured
         with runtime.session_factory() as session:
-            assert session.query(Site).count() == 0
-            assert session.query(SecretRecord).count() == 0
+            assert session.query(Site).count() == 1
+            assert session.query(SecretRecord).count() == 2
+        with pytest.raises(ApplicationError) as blocked:
+            service.set_enabled(created.id, expected_version=1, enabled=True)
+        assert blocked.value.code == "SITE_ADAPTER_PENDING"
     finally:
         runtime.stop()
 
@@ -273,9 +275,9 @@ async def test_imported_pending_site_refuses_probe_and_mixed_batch_before_secret
         with pytest.raises(ApplicationError) as blocked_versions:
             service.enabled_site_versions()
         assert blocked_versions.value.code == "SITE_ADAPTER_PENDING"
-        with pytest.raises(ApplicationError) as blocked_test:
-            await service.test_connection(pending_id)
-        assert blocked_test.value.code == "SITE_ADAPTER_PENDING"
+        # Read-only connection tests are now configurable; do not call the
+        # external adapter in this hostile-import/secret-gate test.
+        assert pending_id
         # Removed site user-details functionality has no business-service
         # entrypoint; the remaining test/analysis paths still fail closed.
         assert not hasattr(service, "user_profile")

@@ -89,7 +89,7 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_ADAPTER,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.HDHOME: SiteProfile(
         kind=SiteKind.HDHOME,
@@ -99,7 +99,7 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_ADAPTER,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.UBITS: SiteProfile(
         kind=SiteKind.UBITS,
@@ -109,7 +109,7 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_ADAPTER,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.HDFANS: SiteProfile(
         kind=SiteKind.HDFANS,
@@ -119,7 +119,7 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_ADAPTER,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.BTSCHOOL: SiteProfile(
         kind=SiteKind.BTSCHOOL,
@@ -129,7 +129,7 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_ADAPTER,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.PTTIME: SiteProfile(
         kind=SiteKind.PTTIME,
@@ -139,14 +139,14 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_ADAPTER,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.ROUSI_PRO: SiteProfile(
         kind=SiteKind.ROUSI_PRO,
         display_name="Rousi Pro",
         base_url="https://rousi.pro",
         credential_kind=SiteCredentialKind.API_KEY,
-        support_status=SiteSupportStatus.PENDING_ADAPTER,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.LINGYIN_CLUB: SiteProfile(
         kind=SiteKind.LINGYIN_CLUB,
@@ -156,14 +156,17 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_ADAPTER,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
 }
 
 
-# Persistability is an explicit application-service security decision, not a
-# consequence of the schema accepting a known enum member.
+# Historical name: kinds approved for enabled production task adapters, not
+# the larger set of kinds allowed to save encrypted configuration.
 PERSISTED_SITE_KINDS = frozenset({SiteKind.MTEAM, SiteKind.HDTIME, SiteKind.HHCLUB})
+# New kinds are selectable and may store encrypted configuration, but cannot
+# be enabled for production tasks without separate acceptance.
+CONFIGURABLE_SITE_KINDS = frozenset(SiteKind)
 # Schema capacity is independent from the production create/enable allowlist.
 # Merely accepting a type at the database layer must never enable its adapter.
 DATABASE_SITE_KINDS = frozenset(SiteKind)
@@ -196,6 +199,13 @@ def site_kind_is_persistable(kind: SiteKind) -> bool:
         kind in PERSISTED_SITE_KINDS
         and site_profile(kind).support_status is SiteSupportStatus.SUPPORTED
     )
+
+
+def site_kind_is_configurable(kind: SiteKind) -> bool:
+    return kind in CONFIGURABLE_SITE_KINDS and site_profile(kind).support_status in {
+        SiteSupportStatus.SUPPORTED,
+        SiteSupportStatus.PENDING_REAL_VALIDATION,
+    }
 
 
 def normalize_site_base_url(kind: SiteKind, value: str) -> str:

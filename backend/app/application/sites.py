@@ -21,6 +21,7 @@ from backend.app.domain.site_config import (
     normalize_site_base_url,
     normalize_site_credential,
     required_site_credential_kind,
+    site_kind_is_configurable,
     site_kind_is_persistable,
     site_profile,
     trusted_site_base_url,
@@ -211,7 +212,7 @@ class SiteService:
         proxy_username: str | None = None,
         proxy_password: str | None = None,
     ) -> SiteView:
-        self._require_persistable_kind(kind)
+        self._require_configurable_kind(kind)
         normalized_name = self._normalize_name(name)
         normalized_url = self._fixed_base_url(kind, base_url)
         required_kind = required_site_credential_kind(kind)
@@ -302,7 +303,7 @@ class SiteService:
             current = self._require_record(repository, site_id)
             current_kind = SiteKind(current.type)
             next_kind = update_request.type or current_kind
-            self._require_persistable_kind(next_kind)
+            self._require_configurable_kind(next_kind)
             if update_request.download_cookie_action == "SET":
                 if update_request.download_cookie is None:
                     raise self._credential_invalid("下载 Cookie 不能为空")
@@ -578,7 +579,7 @@ class SiteService:
         proxy_username: str | None = None,
         proxy_password: str | None = None,
     ) -> dict[str, object]:
-        self._require_persistable_kind(kind)
+        self._require_configurable_kind(kind)
         required_kind = required_site_credential_kind(kind)
         if credential_kind is not required_kind:
             raise self._credential_kind_mismatch(required_kind)
@@ -639,9 +640,9 @@ class SiteService:
     def _connection_snapshot(self, site_id: str) -> _SiteConnectionSnapshot:
         with self._session_factory() as session:
             current = self._require_record(SiteRepository(session), site_id)
-            # Database type capacity does not grant permission to test or read
-            # a pending adapter's credentials, including imported legacy rows.
-            self._require_persistable_kind(SiteKind(current.type))
+            # A configured pending-real-validation site may run read-only
+            # authentication checks, but not enter enabled task adapters.
+            self._require_configurable_kind(SiteKind(current.type))
             return self._snapshot(current)
 
     @staticmethod
@@ -1038,6 +1039,18 @@ class SiteService:
         raise ValueError("未知站点凭证类型")
 
     @staticmethod
+    def _require_configurable_kind(kind: SiteKind) -> None:
+        if site_kind_is_configurable(kind):
+            return
+        profile = site_profile(kind)
+        raise ApplicationError(
+            code="SITE_ADAPTER_PENDING",
+            status=409,
+            title="站点尚未开放配置",
+            detail=f"{profile.display_name} 当前不能配置或测试",
+        )
+
+    @staticmethod
     def _require_persistable_kind(kind: SiteKind) -> None:
         if site_kind_is_persistable(kind):
             return
@@ -1045,9 +1058,10 @@ class SiteService:
         raise ApplicationError(
             code="SITE_ADAPTER_PENDING",
             status=409,
-            title="站点适配尚未完成",
+            title="站点尚未开放正式任务",
             detail=(
-                f"{profile.display_name} 已进入 Profile Registry，但当前版本尚未开放配置和连接测试"
+                f"{profile.display_name} 尚未完成真实辅种验收；"
+                "可保存配置并测试只读连接，但不能启用正式任务"
             ),
         )
 
@@ -1061,6 +1075,16 @@ class SiteService:
             return "hhclub"
         if kind is SiteKind.ROUSI_PRO:
             return "rousi_pro"
+        if kind in {
+            SiteKind.KEEPFRDS,
+            SiteKind.HDHOME,
+            SiteKind.UBITS,
+            SiteKind.HDFANS,
+            SiteKind.BTSCHOOL,
+            SiteKind.PTTIME,
+            SiteKind.LINGYIN_CLUB,
+        }:
+            return kind.value.lower()
         raise ValueError("暂不支持该站点类型")
 
     @staticmethod
