@@ -155,8 +155,24 @@ class TransientUpdaterLauncher:
             with DockerEngineClient(self._docker_socket) as docker:
                 docker.inspect_container(self._target_container)
         except (DockerUpdaterError, httpx2.HTTPError, OSError) as exc:
+            if (
+                isinstance(exc, DockerUpdaterError)
+                and exc.code == "DOCKER_CONTAINER_INSPECT_FAILED"
+            ):
+                raise UpdaterProtocolError(
+                    "UPDATER_TARGET_CONTAINER_UNAVAILABLE",
+                    "Docker Engine 已连接，但无法读取主容器；"
+                    "请核对 container_name 与 Docker API 权限",
+                ) from exc
+            if isinstance(exc, PermissionError) or not os.access(
+                self._docker_socket, os.R_OK | os.W_OK
+            ):
+                raise UpdaterProtocolError(
+                    "UPDATER_DOCKER_SOCKET_PERMISSION_DENIED",
+                    "已找到 docker.sock，但当前应用进程没有读写权限",
+                ) from exc
             raise UpdaterProtocolError(
-                "UPDATER_DOCKER_UNAVAILABLE", "PackBreaker 无法访问 Docker Engine 或自身容器"
+                "UPDATER_DOCKER_UNAVAILABLE", "PackBreaker 无法连接 Docker Engine"
             ) from exc
 
     def _reconcile_active_status(self, status: UpdaterStatus) -> UpdaterStatus:

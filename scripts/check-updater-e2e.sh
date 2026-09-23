@@ -355,9 +355,10 @@ prepare_transient_case() {
     --name "$transient_main" \
     --restart unless-stopped \
     --user 0:0 \
-    --env PUID=0 \
-    --env PGID=0 \
+    --env PUID=1026 \
+    --env PGID=100 \
     --env PACKBREAKER_TIMEZONE=Asia/Shanghai \
+    --security-opt no-new-privileges:true \
     --label com.docker.compose.project=packbreaker-e2e \
     --label com.docker.compose.service=packbreaker \
     --label com.docker.compose.container-number=1 \
@@ -373,6 +374,21 @@ prepare_transient_case() {
 
   wait_app_ready "$transient_main" 0:0
   wait_docker_healthy "$transient_main"
+  # Reproduce Synology Compose user:0:0 + PUID:1026/PGID:100. The main
+  # application must drop privileges yet retain only the mounted socket's
+  # numeric group when its mode requires group access.
+  docker exec --user 0:0 "$transient_main" python -c '
+import os, stat
+from pathlib import Path
+status = Path("/proc/1/status").read_text()
+fields = {line.split(":", 1)[0]: line.split(":", 1)[1].split() for line in status.splitlines() if ":" in line}
+assert fields["Uid"][1] == "1026", fields["Uid"]
+assert fields["Gid"][1] == "100", fields["Gid"]
+sock = os.stat("/var/run/docker.sock")
+assert stat.S_ISSOCK(sock.st_mode)
+if sock.st_mode & stat.S_IRGRP and sock.st_mode & stat.S_IWGRP and sock.st_gid != 100:
+    assert str(sock.st_gid) in fields["Groups"], (sock.st_gid, fields["Groups"])
+'
   transient_initial_container_id="$(docker inspect "$transient_main" --format '{{.Id}}')"
   docker exec --user 0:0 --env PB_RELEASE_PROBE=transient-original "$transient_main" \
     python -c 'import os,sqlite3; c=sqlite3.connect("/config/packbreaker.db", timeout=30); c.execute("CREATE TABLE release_upgrade_probe (probe_key TEXT PRIMARY KEY, probe_value TEXT NOT NULL)"); c.execute("INSERT INTO release_upgrade_probe(probe_key, probe_value) VALUES (\"upgrade\", ?)", (os.environ["PB_RELEASE_PROBE"],)); c.commit(); c.close()'

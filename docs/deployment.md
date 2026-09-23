@@ -16,7 +16,7 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 
 运行镜像要求：
 
-- 镜像默认 `USER packbreaker`（UID/GID 1000）。Compose 为初始化 named `/config` 卷可短暂以 root 运行入口包装器；包装器只递归调整应用专属 `/config` 所有权，立即清空 supplementary groups 并按 `PUID`/`PGID` 永久降权后才导入/启动服务。`/data` 不自动 chown。
+- 镜像默认 `USER packbreaker`（UID/GID 1000）。Compose 为初始化 named `/config` 卷可短暂以 root 运行入口包装器；包装器只递归调整应用专属 `/config` 所有权，再按 `PUID`/`PGID` 永久降权后才导入/启动服务。`/data` 不自动 chown。已发布 v1.0.2 及以前入口会清空全部附加组；v1.0.3 研发候选仅在确有需要且可证实为 Unix socket 时保留挂载的 `docker.sock` 数字组，其余附加组继续清空。
 - 只包含运行依赖，不包含测试工具、源码缓存、Node modules 和真实配置。
 - 基础 Node/Python 镜像使用精确补丁版本 + sha256 digest 固定；正式发布按最终镜像 digest 生成 SPDX JSON SBOM。可移动 `stable` 只作发现通道，不能作为生产部署身份。
 - OCI 标签包含版本、Git revision、构建时间、源码地址和许可证。
@@ -127,6 +127,16 @@ docker run -d \
 若不愿把 Docker socket 授予主容器，仍可采用兼容的最小权限模式：主 PackBreaker 不挂 docker.sock，另外常驻 `packbreaker-updater`，二者共享同一个 `/config`。独立 helper 使用 `/config/updater/updater.sock` + 随机 token 接受受限升级请求。该模式继续受支持，但不再是独立 `docker run` 的默认易用部署。
 
 如果使用自定义 `PUID`/`PGID`，应确保 `/data` 内需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限；Web 一键升级还要求主进程身份能够访问挂载的 Docker socket。`0` 是有效值；`PUID=0`、`PGID=0` 时服务进程保持 root 身份运行。入口不会为了方便而修改媒体树所有权。默认仓库 `compose.yaml` 不授予 Docker 管理权限；需要 Web 升级时可由用户显式取消 docker.sock 挂载注释。
+
+**v1.0.3 候选的 socket 权限修复与现场排查：** Compose 的 `user: "0:0"` 并不意味着 Web 进程一直是 root：入口可能根据 `PUID`/`PGID` 降权。已发布的 v1.0.1/v1.0.2 即使挂载 `docker.sock`，也可能因该降权清除 socket 数字组导致一键升级失败。可以仅执行以下只读诊断，核对 Docker socket 类型、权限及**实际 Web 进程**的有效身份/附加组（`docker exec` 新建的进程不代表 Web 进程权限）：
+
+```bash
+docker exec --user 0:0 packbreaker sh -c 'stat -c "socket: %F %a %u:%g" /var/run/docker.sock; grep -E "^(Uid|Gid|Groups):" /proc/1/status'
+```
+
+该命令不包含站点凭据或媒体读取。不要直接 `chmod 666 /var/run/docker.sock`、修改宿主机 Docker daemon 或以 root 常驻 Web 来绕过错误。若 socket 是 `0600` 且运行身份不是 owner、socket GID 不可映射，或 Docker API/目标容器被额外策略阻断，v1.0.3 仍会安全阻断升级并展示区分后的错误；须按现场证据单独处理。
+
+**旧容器不能通过加载新的前端文件自行修复旧入口进程。** 如果在线升级已被当前旧容器阻断，应先核对现有数据库/主密钥备份，在新版正式发布后通过宿主机 `docker compose pull packbreaker`、`docker compose up -d --no-deps packbreaker` 做一次人工升级，再在新版验证 Web 后续升级。仅对已通过正式发布与相邻版本升级验证的版本执行操作；`latest` 是可变通道，升级前确认实际拉取版本及 Compose 文件中的 `image:`。
 
 ## 6. 网络与反向代理
 

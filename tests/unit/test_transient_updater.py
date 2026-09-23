@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 import backend.app.infrastructure.transient_updater as transient_module
+from backend.app.infrastructure.docker_updater import DockerUpdaterError
 from backend.app.infrastructure.transient_updater import TransientUpdaterLauncher
 from backend.app.infrastructure.updater_protocol import (
     UPDATER_PROTOCOL_VERSION,
@@ -196,6 +197,42 @@ def test_transient_launcher_requires_mounted_docker_socket(tmp_path: Path) -> No
         launcher.status()
 
     assert exc_info.value.code == "UPDATER_DOCKER_SOCKET_REQUIRED"
+
+
+def test_docker_access_distinguishes_host_permissions_from_missing_main_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docker_socket = tmp_path / "docker.sock"
+    docker_socket.touch()
+    launcher = TransientUpdaterLauncher(config_dir=tmp_path, docker_socket=docker_socket)
+
+    class FakeEngine:
+        def __init__(self, _socket: Path) -> None:
+            pass
+
+        def __enter__(self) -> FakeEngine:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def inspect_container(self, _name: str) -> dict[str, Any]:
+            raise DockerUpdaterError("DOCKER_CONTAINER_INSPECT_FAILED", "synthetic missing")
+
+    monkeypatch.setattr(transient_module, "DockerEngineClient", FakeEngine)
+    with pytest.raises(UpdaterProtocolError) as missing:
+        launcher.status()
+    assert missing.value.code == "UPDATER_TARGET_CONTAINER_UNAVAILABLE"
+
+    class PermissionDeniedEngine(FakeEngine):
+        def __enter__(self) -> PermissionDeniedEngine:
+            raise PermissionError("synthetic socket denied")
+
+    monkeypatch.setattr(transient_module, "DockerEngineClient", PermissionDeniedEngine)
+    with pytest.raises(UpdaterProtocolError) as denied:
+        launcher.status()
+    assert denied.value.code == "UPDATER_DOCKER_SOCKET_PERMISSION_DENIED"
+    assert "synthetic" not in str(denied.value)
 
 
 def test_transient_launcher_marks_missing_helper_during_switch_for_manual_recovery(

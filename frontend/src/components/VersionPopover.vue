@@ -3,11 +3,9 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   ArrowUpCircle,
   Check,
-  ChevronDown,
   ExternalLink,
   GitBranch,
   RefreshCw,
-  RotateCcw,
   TriangleAlert,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -34,7 +32,6 @@ const upgradeLoading = ref(false);
 const upgradeResultUnknown = ref(false);
 const pendingIdempotencyKey = ref('');
 const targetInFlight = ref('');
-const rollbackOpen = ref(false);
 const quietReleaseLoading = ref(false);
 const unseenUpdate = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -69,7 +66,13 @@ const automaticUpgradeHint = computed(() => {
     return '单容器一键升级需要挂载 /var/run/docker.sock。';
   }
   if (reasons.includes('UPDATER_DOCKER_UNAVAILABLE')) {
-    return '当前 PackBreaker 无法访问 Docker Engine，请检查 docker.sock 权限。';
+    return 'Docker Engine 连接不可用，请检查容器内的套接字挂载、访问权限及 Docker 服务状态。';
+  }
+  if (reasons.includes('UPDATER_DOCKER_SOCKET_PERMISSION_DENIED')) {
+    return '已找到 docker.sock，但运行中的 PackBreaker 进程没有访问权限；请核对 PUID/PGID 与 socket 所属组。';
+  }
+  if (reasons.includes('UPDATER_TARGET_CONTAINER_UNAVAILABLE')) {
+    return 'Docker Engine 可访问，但找不到或无权读取 PackBreaker 主容器，请核对 container_name 与 Docker API 权限。';
   }
   if (reasons.includes('UPDATER_MANUAL_RECOVERY_REQUIRED')) {
     return '上一次升级现场需要人工核对，当前禁止继续自动升级。';
@@ -342,27 +345,6 @@ defineExpose({ open });
         </p>
         <p v-else class="version-upgrade-hint">自动备份 · 临时 helper 接管 · 健康失败自动回滚</p>
       </section>
-
-      <section class="version-action-section rollback-section">
-        <button class="version-action-row" type="button" @click="rollbackOpen = !rollbackOpen">
-          <span><RotateCcw :size="17" />版本回退</span>
-          <ChevronDown :size="17" :class="{ expanded: rollbackOpen }" />
-        </button>
-        <div v-if="rollbackOpen" class="version-action-detail">
-          <p>
-            回退不能只替换旧镜像：如果新版本已经迁移数据库，应恢复与目标版本匹配的升级前一致性备份，
-            不执行数据库 downgrade。
-          </p>
-          <a
-            class="rollback-release-link"
-            href="https://github.com/YYxiaoma/PackBreaker/releases"
-            target="_blank"
-            rel="noreferrer"
-          >
-            <GitBranch :size="15" />选择历史 Release<ExternalLink :size="12" />
-          </a>
-        </div>
-      </section>
     </div>
   </el-popover>
 </template>
@@ -518,8 +500,7 @@ defineExpose({ open });
   font-size: 10px;
 }
 
-.release-link,
-.rollback-release-link {
+.release-link {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -529,8 +510,7 @@ defineExpose({ open });
   font-size: 13px;
 }
 
-.release-link:hover,
-.rollback-release-link:hover {
+.release-link:hover {
   color: var(--blue);
 }
 
@@ -591,58 +571,6 @@ defineExpose({ open });
   gap: 6px;
   color: var(--blue);
   font-weight: 650;
-}
-
-.version-action-section {
-  padding: 4px 12px;
-}
-
-.rollback-section {
-  padding-bottom: 10px;
-}
-
-.version-action-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  min-height: 50px;
-  padding: 0 8px;
-  border: 0;
-  color: var(--ink-soft);
-  background: transparent;
-  text-align: left;
-}
-
-.version-action-row > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.version-action-row > svg {
-  color: var(--muted);
-  transition: transform 0.16s ease;
-}
-
-.version-action-row > svg.expanded {
-  transform: rotate(180deg);
-}
-
-.version-action-detail {
-  padding: 0 8px 14px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.version-action-detail p {
-  margin: 0 0 10px;
-}
-
-.rollback-release-link {
-  margin-top: 2px;
-  color: var(--blue);
 }
 
 .spinning {
