@@ -377,9 +377,11 @@ prepare_transient_case() {
   # Reproduce Synology Compose user:0:0 + PUID:1026/PGID:100. The main
   # application must drop privileges yet retain only the mounted socket's
   # numeric group when its mode requires group access.
-  docker exec --user 0:0 "$transient_main" python -c '
+  docker exec --user 0:0 --env PB_TARGET_CONTAINER="$transient_main" \
+    "$transient_main" python -c '
 import os, stat
 from pathlib import Path
+from backend.app.infrastructure.docker_updater import DockerEngineClient
 status = Path("/proc/1/status").read_text()
 fields = {line.split(":", 1)[0]: line.split(":", 1)[1].split() for line in status.splitlines() if ":" in line}
 assert fields["Uid"][1] == "1026", fields["Uid"]
@@ -388,6 +390,15 @@ sock = os.stat("/var/run/docker.sock")
 assert stat.S_ISSOCK(sock.st_mode)
 if sock.st_mode & stat.S_IRGRP and sock.st_mode & stat.S_IWGRP and sock.st_gid != 100:
     assert str(sock.st_gid) in fields["Groups"], (sock.st_gid, fields["Groups"])
+# docker exec --user 0:0 otherwise masks permission bugs. Reproduce PID 1
+# credentials in this strictly read-only probe before reaching Docker API.
+os.setgroups([int(group) for group in fields["Groups"]])
+os.setgid(int(fields["Gid"][1]))
+os.setuid(int(fields["Uid"][1]))
+assert os.geteuid() == 1026 and os.getegid() == 100
+with DockerEngineClient(Path("/var/run/docker.sock")) as docker:
+    main = docker.inspect_container(os.environ["PB_TARGET_CONTAINER"])
+    assert main["Name"] == "/" + os.environ["PB_TARGET_CONTAINER"]
 '
   transient_initial_container_id="$(docker inspect "$transient_main" --format '{{.Id}}')"
   docker exec --user 0:0 --env PB_RELEASE_PROBE=transient-original "$transient_main" \
