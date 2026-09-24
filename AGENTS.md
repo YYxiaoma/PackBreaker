@@ -55,7 +55,7 @@ frontend/src/api/generated/  OpenAPI 生成的 TypeScript 类型
 - FastAPI / SQLAlchemy / Alembic / SQLite WAL
 - Vue 3 / Vite / TypeScript strict / Element Plus / Pinia
 - pytest / Ruff / mypy / Vitest / Playwright
-- Docker 单镜像；当前正式 v1.0.2 发布 `linux/amd64` + `linux/arm64`，v0.1.9 及以前仅承诺 `linux/amd64`。v1.0.2 八个新增站点为 `PENDING_REAL_VALIDATION`：仅允许加密保存配置和只读连接测试，不允许启用正式辅种任务；真实业务验收尚未完成，不能将配置开放描述为已通过真实任务验收
+- Docker 单镜像；当前正式 v1.0.3 发布 `linux/amd64` + `linux/arm64`，v0.1.9 及以前仅承诺 `linux/amd64`。v1.0.2 起八个新增站点仍为 `PENDING_REAL_VALIDATION`：仅允许加密保存配置和只读连接测试，不允许启用正式辅种任务；真实业务验收尚未完成，不能将配置开放描述为已通过真实任务验收
 
 ---
 

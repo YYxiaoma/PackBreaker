@@ -47,7 +47,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **GitHub Release 上传后回读一致性门禁（提交 `0c31045`，CI run `35501276565` 离线回归通过）**：Release workflow 在上传后读回正式 Release 元数据及实际下载的三份资产，再与独立 tag/commit/不可变镜像 digest、SBOM 和 SHA256SUMS 交叉核验；失败不会推进 stable/latest。移动通道前再次确认 GitHub 最新正式 tag 仍为当前版本。新增单元测试以模拟 CLI/合成资产验证失败关闭，不等于正式 v1.0.0 资产已发布或真实双架构运行。
 
-当前开发 Runner 没有 Docker daemon，真实容器验收由 GitHub Actions 独立 Runner 承担。当前最新正式 Release 为 [v1.0.2](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.2)，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:eb6083864d3a60f0dc926ac58cc27ccb18405df5f766d66cbc533a0252539fd5`。本次双架构运行、AMD64 相邻升级/回滚与发布资产回读证据详见 [恢复发布 run `35877552693`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35877552693)；首次失败的 Release run 保留原始失败记录。v1.0.0 的历史镜像及 [恢复记录](https://github.com/YYxiaoma/PackBreaker/actions/runs/35507181886) 同样保留。
+当前开发 Runner 没有 Docker daemon，真实容器验收由 GitHub Actions 独立 Runner 承担。当前最新正式 Release 为 [v1.0.3](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.3)，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:6625168abe3fd065b8904fc6db9ec4616bf0e21fa97c6d9efe29aa9cdc219a9a`。双架构运行、v1.0.2→v1.0.3 AMD64 相邻升级/回滚与发布资产回读证据详见 [恢复发布 run `35991628455`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35991628455)；首次失败的 Release run `35969011173` 保留原始失败记录。v1.0.2 的 [恢复记录](https://github.com/YYxiaoma/PackBreaker/actions/runs/35877552693) 和历史镜像也继续保留。
 
 ## 2. 下载器
 
@@ -68,7 +68,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 在 v1.0.1 中，候选 Profile Registry 另列出以下**当时尚不能配置**的类型：KeepFrds（`https://pt.keepfrds.com`）、HDHome（`https://hdhome.org`）、UBits（`https://ubits.club`）、HDFans（`https://hdfans.org`）、BTSCHOOL（`https://pt.btschool.club`）、PTTime（`https://www.pttime.org`）、Rousi Pro（`https://rousi.pro`）和聆音Club（`https://pt.soulvoice.club`）。前六项及聆音Club按 NexusPHP/Cookie profile 建模，各有**一个**真实 Torrent 读取与元信息解析成功样本；这不是全部种子类型或真实任务验收。Rousi Pro 以 API Key 搜索、独立 Cookie 取种，已有固定同源真实只读认证、搜索及**一次 Cookie-only 取种**的有效 v1 单文件元信息证据，且有合成的双凭据/分析至模拟 Transmission 添加、强制校验、做种与释放链路；独立 `fetch_details()` 仍未验收，完整真实任务与受控下载器现场证据仍不足。其 Cookie 不得冒充 API Key，API Key 也不具有已证实的取种权限。所有这些 profile 的 `support_status` 均为 `PENDING_ADAPTER`，数据库能容纳新站点类型不代表允许启用；只有逐站满足协议、错误归类、权限安全和必要真实任务验收后才能扩大上表的正式支持集合。详见 [v1.0.1 研发记录](./v1.0.1-development.md)。
 
-**当前正式 v1.0.2**：上述八个站点改为 `PENDING_REAL_VALIDATION`，可以在添加站点时选择、加密保存对应凭据并运行固定同源的只读连接测试；删除添加/编辑表单的站点地址输入框。它们仍不可启用生产辅种任务，服务层正式任务白名单只包含原有 M-TEAM、HDTime、HHClub。已发布 v1.0.1 镜像不具备此配置开放能力，须升级到 v1.0.2 才能在 Web 界面使用；详见 [v1.0.2 正式发布记录](./v1.0.2-release.md)。八站已有的有限只读取种或合成链路证据不变，不能据此宣称通过真实完整辅种验收。
+**当前正式 v1.0.3（配置能力自 v1.0.2 起）**：上述八个站点为 `PENDING_REAL_VALIDATION`，可以在添加站点时选择、加密保存对应凭据并运行固定同源的只读连接测试；添加/编辑表单不再提供站点地址输入框。它们仍不可启用生产辅种任务，服务层正式任务白名单只包含原有 M-TEAM、HDTime、HHClub。已发布 v1.0.1 镜像不具备此配置开放能力；详见 [v1.0.2 正式发布记录](./v1.0.2-release.md)。v1.0.3 的 Docker socket 修复不代表八站真实任务已验收。
 
 站点凭证只写入加密 secret store，管理 API/UI 不回显已保存明文。站点临时故障、鉴权失败和限流不会成为放宽 torrent 内容验证的理由。
 
@@ -90,7 +90,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 - 数据库升级先创建 `pre-upgrade` 一致性快照，在同文件系统临时副本完成迁移与验证后再原子切换。
 - 生产回滚不依赖 Alembic 原地 downgrade；旧镜像不能读取新 schema 时必须恢复兼容的升级前/离线备份。
 - `v0.1.2` Release workflow run `34937718889` 已真实跑绿 `v0.1.1` 基线启动/备份 → `v0.1.2` 候选接管/readiness → 用 `v0.1.1` 镜像恢复旧备份 → `v0.1.1` 再次 readiness，并额外通过独立 updater helper 的真实成功升级与故障候选自动数据库/容器回滚。
-- `release-baseline.json` 当前固定正式 `v1.0.2` 双架构不可变 digest；后续候选版本必须以该最新 published baseline 做相邻版本升级/回滚门禁后才允许进入正式发布。已发布的 v1.0.0/v1.0.1 历史镜像和证据继续保留；不能虚构无对应镜像的历史跨架构升级路径。
+- `release-baseline.json` 当前固定正式 `v1.0.3` 双架构不可变 digest；后续候选版本必须以该最新 published baseline 做相邻版本升级/回滚门禁后才允许进入正式发布。已发布的 v1.0.0/v1.0.1/v1.0.2 历史镜像和证据继续保留；不能虚构无对应镜像的历史跨架构升级路径。
 - `v0.1.2` 正式提供独立 updater helper 的 Web 一键升级链路；`v0.1.7` 起正式支持显式挂载 docker.sock 的 Compose 单容器使用同一 Web 升级链，并保留 Compose labels。自动容器替换仍只承诺单个 PackBreaker 容器、唯一可写 `/config`、官方 GHCR 镜像、可安全重建的端口/环境/挂载/restart policy 和单网络配置。复杂 namespace、多网络、显式静态 IP/MAC 或 AutoRemove 容器继续失败关闭。
 
 ## 6. 兼容承诺原则

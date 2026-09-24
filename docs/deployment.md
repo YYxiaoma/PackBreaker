@@ -128,7 +128,7 @@ docker run -d \
 
 如果使用自定义 `PUID`/`PGID`，应确保 `/data` 内需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限；Web 一键升级还要求主进程身份能够访问挂载的 Docker socket。`0` 是有效值；`PUID=0`、`PGID=0` 时服务进程保持 root 身份运行。入口不会为了方便而修改媒体树所有权。默认仓库 `compose.yaml` 不授予 Docker 管理权限；需要 Web 升级时可由用户显式取消 docker.sock 挂载注释。
 
-**v1.0.3 候选的 socket 权限修复与现场排查：** Compose 的 `user: "0:0"` 并不意味着 Web 进程一直是 root：入口可能根据 `PUID`/`PGID` 降权。已发布的 v1.0.1/v1.0.2 即使挂载 `docker.sock`，也可能因该降权清除 socket 数字组导致一键升级失败。可以仅执行以下只读诊断，核对 Docker socket 类型、权限及**实际 Web 进程**的有效身份/附加组（`docker exec` 新建的进程不代表 Web 进程权限）：
+**v1.0.3 正式版的 socket 权限修复与现场排查：** Compose 的 `user: "0:0"` 并不意味着 Web 进程一直是 root：入口可能根据 `PUID`/`PGID` 降权。已发布的 v1.0.1/v1.0.2 即使挂载 `docker.sock`，也可能因该降权清除 socket 数字组导致一键升级失败；v1.0.3 已在隔离 Docker E2E 中覆盖并修复此种情况，但尚未验证用户 NAS 的实际 socket 模式和 Docker API 策略。可以仅执行以下只读诊断，核对 Docker socket 类型、权限及**实际 Web 进程**的有效身份/附加组（`docker exec` 新建的进程不代表 Web 进程权限）：
 
 ```bash
 docker exec --user 0:0 packbreaker sh -c 'stat -c "socket: %F %a %u:%g" /var/run/docker.sock; grep -E "^(Uid|Gid|Groups):" /proc/1/status'
@@ -136,7 +136,7 @@ docker exec --user 0:0 packbreaker sh -c 'stat -c "socket: %F %a %u:%g" /var/run
 
 该命令不包含站点凭据或媒体读取。不要直接 `chmod 666 /var/run/docker.sock`、修改宿主机 Docker daemon 或以 root 常驻 Web 来绕过错误。若 socket 是 `0600` 且运行身份不是 owner、socket GID 不可映射，或 Docker API/目标容器被额外策略阻断，v1.0.3 仍会安全阻断升级并展示区分后的错误；须按现场证据单独处理。
 
-**旧容器不能通过加载新的前端文件自行修复旧入口进程。** 如果在线升级已被当前旧容器阻断，应先核对现有数据库/主密钥备份，在新版正式发布后通过宿主机 `docker compose pull packbreaker`、`docker compose up -d --no-deps packbreaker` 做一次人工升级，再在新版验证 Web 后续升级。仅对已通过正式发布与相邻版本升级验证的版本执行操作；`latest` 是可变通道，升级前确认实际拉取版本及 Compose 文件中的 `image:`。
+**旧容器不能通过加载新的前端文件自行修复旧入口进程。** 如果在线升级已被当前旧容器阻断，应先核对现有数据库/主密钥备份，在宿主机通过 `docker compose pull packbreaker`、`docker compose up -d --no-deps packbreaker` 完成一次人工升级，再在新版验证 Web 后续升级。建议先将 Compose 的镜像明确固定到 `ghcr.io/yyxiaoma/packbreaker:1.0.3` 或发布清单中的不可变摘要，并确认保留原有端口、环境变量、配置与媒体挂载；`latest` 是可变通道，不能只根据标签推断下载的版本身份。人工升级仍须在用户自己的宿主机完成，不是自动对生产 NAS 执行。
 
 ## 6. 网络与反向代理
 

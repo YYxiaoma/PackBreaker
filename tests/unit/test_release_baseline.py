@@ -11,20 +11,20 @@ from scripts.validate_release_baseline import load_release_baseline, project_ver
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_repository_release_baseline_is_immutable_v102_multiarch() -> None:
+def test_repository_release_baseline_is_immutable_v103_multiarch() -> None:
     baseline = load_release_baseline()
 
-    assert baseline.version == "1.0.2"
-    assert baseline.tag == "v1.0.2"
-    assert baseline.commit == "43be7bf77276f42d1dca45a4b78132d6a7044b30"
+    assert baseline.version == "1.0.3"
+    assert baseline.tag == "v1.0.3"
+    assert baseline.commit == "5e215c48d9ab7dd7afde02ee2f331268990d00df"
     assert baseline.format_version == 2
     assert baseline.platform == "multi"
     assert baseline.platforms == ("linux/amd64", "linux/arm64")
     assert baseline.alembic_revision == "0031_site_type_capacity_v101"
-    assert baseline.release_workflow_run_id == 35877552693
+    assert baseline.release_workflow_run_id == 35991628455
     assert baseline.immutable_image == (
         "ghcr.io/yyxiaoma/packbreaker@"
-        "sha256:eb6083864d3a60f0dc926ac58cc27ccb18405df5f766d66cbc533a0252539fd5"
+        "sha256:6625168abe3fd065b8904fc6db9ec4616bf0e21fa97c6d9efe29aa9cdc219a9a"
     )
 
 
