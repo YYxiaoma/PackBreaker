@@ -70,4 +70,13 @@ def test_native_arm64_candidate_proves_formal_cross_version_upgrade_and_rollback
         == "bash scripts/check-release-upgrade.sh packbreaker:ci-arm64"
     )
     assert steps[updater]["run"].strip() == "bash scripts/check-updater-e2e.sh packbreaker:ci-arm64"
-    assert "--synthetic-arm64-baseline" not in "\n".join(str(step.get("run", "")) for step in steps)
+    # The formal updater must use the immutable published baseline. A
+    # separately named synthetic exercise is permitted for anonymous volumes,
+    # but must never be confused with cross-version upgrade evidence.
+    assert "--synthetic-arm64-baseline" not in steps[updater]["run"]
+    synthetic = next(
+        step
+        for step in steps
+        if step.get("name") == "Exercise native ARM64 synthetic anonymous-volume replacement"
+    )
+    assert "--synthetic-arm64-baseline" in synthetic["run"]

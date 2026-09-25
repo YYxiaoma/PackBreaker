@@ -127,7 +127,10 @@ def test_ci_container_gate_exercises_immutable_previous_release() -> None:
     assert "nsenter --target" in downloader_e2e and "--net" in downloader_e2e
     assert "--junitxml" in downloader_e2e and 'suite.attrib.get("tests") == "1"' in downloader_e2e
     assert "restore-backup" in workflow
-    assert "--synthetic-arm64-baseline" not in workflow
+    # Synthetic anonymous-volume checks are separate from the mandatory
+    # immutable-baseline formal updater; they cannot substitute for it.
+    assert "run: bash scripts/check-updater-e2e.sh packbreaker:ci-arm64\n" in workflow
+    assert "--synthetic-arm64-baseline" in workflow
     assert "check-immutable-image-runtime.sh" in workflow
     assert "scripts/check-release-upgrade.sh packbreaker:ci-arm64" in workflow
     assert "scripts/check-updater-e2e.sh packbreaker:ci-arm64" in workflow
