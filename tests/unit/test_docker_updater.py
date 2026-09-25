@@ -147,6 +147,110 @@ def test_replacement_plan_can_preserve_docker_socket_for_single_container_upgrad
     assert "/var/run/docker.sock:/var/run/docker.sock" in host["Binds"]
 
 
+def _container_with_implicit_data_volume() -> dict[str, Any]:
+    container = _container()
+    binds = container["HostConfig"]["Binds"]
+    binds.remove("/srv/media:/data")
+    binds.extend(
+        [
+            "/volume2/videos/downloads:/data/downloads",
+            "/volume3/videos2/downloads:/data/downloads2",
+        ]
+    )
+    container["Mounts"] = [
+        mount for mount in container["Mounts"] if mount["Destination"] != "/data"
+    ]
+    container["Mounts"].extend(
+        [
+            {
+                "Type": "bind",
+                "Source": "/volume2/videos/downloads",
+                "Destination": "/data/downloads",
+                "RW": True,
+            },
+            {
+                "Type": "bind",
+                "Source": "/volume3/videos2/downloads",
+                "Destination": "/data/downloads2",
+                "RW": True,
+            },
+            {
+                "Type": "volume",
+                "Name": "e" * 64,
+                "Source": "/var/lib/docker/volumes/" + "e" * 64 + "/_data",
+                "Destination": "/data",
+                "RW": True,
+            },
+        ]
+    )
+    return container
+
+
+def test_replacement_plan_pins_original_implicit_volume_with_nested_media_binds() -> None:
+    container = _container_with_implicit_data_volume()
+    plan = build_replacement_plan(
+        container,
+        _old_image(),
+        target_image=_TARGET,
+        allowed_image=_OFFICIAL,
+        preserve_docker_socket=True,
+    )
+
+    host = plan.create_payload["HostConfig"]
+    assert "/volume2/videos/downloads:/data/downloads" in host["Binds"]
+    assert "/volume3/videos2/downloads:/data/downloads2" in host["Binds"]
+    assert host["Mounts"] == [
+        {"Type": "volume", "Source": "e" * 64, "Target": "/data", "ReadOnly": False}
+    ]
+    assert all("/var/lib/docker/volumes" not in str(m) for m in host["Mounts"])
+
+
+def test_replacement_plan_does_not_duplicate_explicit_data_mount() -> None:
+    container = _container()
+    plan = build_replacement_plan(
+        container, _old_image(), target_image=_TARGET, allowed_image=_OFFICIAL
+    )
+    assert plan.create_payload["HostConfig"].get("Mounts") is None
+    assert "/srv/media:/data" in plan.create_payload["HostConfig"]["Binds"]
+
+
+@pytest.mark.parametrize("invalid_name", [None, "", "../../unexpected", "/data"])
+def test_replacement_plan_rejects_unidentified_implicit_volume(invalid_name: object) -> None:
+    container = _container_with_implicit_data_volume()
+    container["Mounts"][-1]["Name"] = invalid_name
+    with pytest.raises(DockerUpdaterError) as exc_info:
+        build_replacement_plan(
+            container, _old_image(), target_image=_TARGET, allowed_image=_OFFICIAL
+        )
+    assert exc_info.value.code == "UPGRADE_VOLUME_IDENTITY_INVALID"
+
+
+def test_replacement_plan_keeps_implicit_volume_read_only() -> None:
+    container = _container_with_implicit_data_volume()
+    container["Mounts"][-1]["RW"] = False
+    plan = build_replacement_plan(
+        container, _old_image(), target_image=_TARGET, allowed_image=_OFFICIAL
+    )
+    assert plan.create_payload["HostConfig"]["Mounts"][0]["ReadOnly"] is True
+
+
+def test_replacement_plan_fails_closed_for_undeclared_bind_mount() -> None:
+    container = _container()
+    container["Mounts"].append(
+        {
+            "Type": "bind",
+            "Source": "/srv/not-in-host-config",
+            "Destination": "/data/extra",
+            "RW": True,
+        }
+    )
+    with pytest.raises(DockerUpdaterError) as exc_info:
+        build_replacement_plan(
+            container, _old_image(), target_image=_TARGET, allowed_image=_OFFICIAL
+        )
+    assert exc_info.value.code == "UPGRADE_MOUNT_UNSUPPORTED"
+
+
 def test_replacement_plan_preserves_compose_labels_for_web_upgrade() -> None:
     container = _container()
     container["Config"]["Labels"].update(

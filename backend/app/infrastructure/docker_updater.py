@@ -442,6 +442,7 @@ def build_replacement_plan(
             value = _sanitize_mounts(value, preserve_docker_socket=preserve_docker_socket)
         if value not in (None, [], {}):
             host_payload[key] = value
+    _pin_implicit_volumes(container, host_payload, preserve_docker_socket=preserve_docker_socket)
     create_payload["HostConfig"] = host_payload
     return ReplacementPlan(
         container_id=container_id,
@@ -757,6 +758,73 @@ def _sanitize_mounts(
             sanitized["Target"] = target
         kept.append(sanitized)
     return kept
+
+
+def _pin_implicit_volumes(
+    container: Mapping[str, Any],
+    host_payload: dict[str, Any],
+    *,
+    preserve_docker_socket: bool,
+) -> None:
+    """Retain Dockerfile-created volumes absent from HostConfig.Binds/Mounts.
+
+    Inspect.Mounts is the effective runtime state; HostConfig alone can omit
+    anonymous volumes created by the image's VOLUME instruction. Recreating
+    without their actual Docker volume names would silently mount empty volumes.
+    """
+    destinations: set[str] = set()
+    for bind in host_payload.get("Binds", []):
+        parts = bind.split(":", 2)
+        if len(parts) < 2 or not parts[1].startswith("/"):
+            raise DockerUpdaterError("UPGRADE_BINDS_INVALID", "Docker Binds 目标路径无效")
+        destinations.add(parts[1])
+    for mount in host_payload.get("Mounts", []):
+        target = mount.get("Target")
+        if not isinstance(target, str) or not target.startswith("/"):
+            raise DockerUpdaterError("UPGRADE_MOUNTS_INVALID", "Docker Mounts 目标路径无效")
+        if target in destinations:
+            raise DockerUpdaterError("UPGRADE_MOUNTS_INVALID", "容器挂载目标重复")
+        destinations.add(target)
+
+    effective_mounts = container.get("Mounts")
+    if not isinstance(effective_mounts, list):
+        raise DockerUpdaterError("UPGRADE_MOUNTS_INVALID", "无法核对容器实际挂载")
+    recovered: list[dict[str, Any]] = []
+    for item in effective_mounts:
+        if not isinstance(item, dict):
+            raise DockerUpdaterError("UPGRADE_MOUNTS_INVALID", "容器实际挂载无效")
+        target = item.get("Destination")
+        if not isinstance(target, str) or not target.startswith("/"):
+            raise DockerUpdaterError("UPGRADE_MOUNTS_INVALID", "容器实际挂载目标无效")
+        if target == "/var/run/docker.sock" and not preserve_docker_socket:
+            continue
+        if target in destinations:
+            continue
+        if item.get("Type") != "volume":
+            # VolumesFrom, implicit bind mounts, etc. cannot be safely rebuilt
+            # using HostConfig alone. Never silently drop an unknown mount.
+            raise DockerUpdaterError("UPGRADE_MOUNT_UNSUPPORTED", "存在无法自动保留的容器挂载")
+        name = item.get("Name")
+        writable = item.get("RW")
+        if (
+            not isinstance(name, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None
+            or not isinstance(writable, bool)
+        ):
+            raise DockerUpdaterError(
+                "UPGRADE_VOLUME_IDENTITY_INVALID", "无法确定原有 Docker 卷身份"
+            )
+        recovered.append(
+            {
+                "Type": "volume",
+                "Source": name,
+                "Target": target,
+                "ReadOnly": not writable,
+            }
+        )
+        destinations.add(target)
+    if recovered:
+        host_payload.setdefault("Mounts", []).extend(recovered)
 
 
 def _environment_overrides(current: object, defaults: object) -> list[str]:

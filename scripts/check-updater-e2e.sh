@@ -46,9 +46,17 @@ transient_main="packbreaker-updater-transient-$suffix"
 success_request="success-$suffix"
 rollback_request="rollback-$suffix"
 transient_request="transient-$suffix"
+transient_start_image="$local_baseline_tag"
+transient_start_version="$baseline_version"
+transient_start_image_id=""
+transient_original_data_volume=""
 
 cleanup() {
   docker ps -aq --filter "name=$suffix" | xargs -r docker rm --force >/dev/null 2>&1 || true
+  # Only remove the anonymous volume created for this isolated test run.
+  if [[ -n "$transient_original_data_volume" ]]; then
+    docker volume rm "$transient_original_data_volume" >/dev/null 2>&1 || true
+  fi
   if [[ -d "$sandbox" && ! -L "$sandbox" && \
         "$(basename "$sandbox")" == .packbreaker-updater-e2e.* && \
         "$sandbox" != / ]]; then
@@ -347,9 +355,25 @@ assert_quiesced_backup_exists() {
 }
 
 prepare_transient_case() {
-  mkdir -p "$transient_config" "$transient_data"
+  mkdir -p "$transient_config" "$transient_data/downloads" "$transient_data/downloads2"
   chmod 700 "$transient_config"
-  chmod 755 "$transient_data"
+  chmod 755 "$transient_data" "$transient_data/downloads" "$transient_data/downloads2"
+  # The already-published v1.0.3 launcher does not contain the future volume
+  # recovery fix: a v1.0.3 -> candidate upgrade requires explicitly mounted
+  # /data. The synthetic ARM64 case and later formal baselines test implicit
+  # anonymous /data with two nested binds without touching real media.
+  local transient_mount_args=()
+  if [[ "$baseline_mode" == formal && "$baseline_version" == 1.0.3 ]]; then
+    transient_mount_args=(--volume "$transient_data:/data")
+    printf "isolated-persistent-volume\n" > "$transient_data/.packbreaker-e2e-volume-probe"
+  else
+    transient_mount_args=(
+      --volume "$transient_data/downloads:/data/downloads"
+      --volume "$transient_data/downloads2:/data/downloads2"
+    )
+    printf "isolated-downloads\n" > "$transient_data/downloads/.packbreaker-e2e-bind-probe"
+    printf "isolated-downloads2\n" > "$transient_data/downloads2/.packbreaker-e2e-bind-probe"
+  fi
 
   docker run --detach \
     --name "$transient_main" \
@@ -364,16 +388,25 @@ prepare_transient_case() {
     --label com.docker.compose.container-number=1 \
     --publish 127.0.0.1:18083:8000 \
     --volume "$transient_config:/config" \
-    --volume "$transient_data:/data" \
+    "${transient_mount_args[@]}" \
     --volume /var/run/docker.sock:/var/run/docker.sock \
     --health-interval 1s \
     --health-timeout 2s \
     --health-retries 10 \
     --health-start-period 1s \
-    "$local_candidate_tag" >/dev/null
+    "$transient_start_image" >/dev/null
 
   wait_app_ready "$transient_main" 0:0
   wait_docker_healthy "$transient_main"
+  transient_start_image_id="$(docker inspect "$transient_main" --format '{{.Image}}')"
+  test "$transient_start_image_id" = "$(docker image inspect "$transient_start_image" --format '{{.Id}}')"
+  test "$(docker exec --user 0:0 "$transient_main" python -c 'from backend.app.versioning import app_version; print(app_version())')" = "$transient_start_version"
+  if [[ "$baseline_mode" != formal || "$baseline_version" != 1.0.3 ]]; then
+    transient_original_data_volume="$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')"
+    test -n "$transient_original_data_volume"
+    test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}{{end}}{{end}}')" = volume
+    docker exec --user 0:0 "$transient_main" python -c 'from pathlib import Path; Path("/data/.packbreaker-e2e-volume-probe").write_text("isolated-persistent-volume\n")'
+  fi
   # Reproduce Synology Compose user:0:0 + PUID:1026/PGID:100. The main
   # application must drop privileges yet retain only the mounted socket's
   # numeric group when its mode requires group access.
@@ -413,7 +446,7 @@ with DockerEngineClient(Path("/var/run/docker.sock")) as docker:
 trigger_transient_upgrade() {
   docker exec --user 0:0 \
     --env PB_REQUEST_ID="$transient_request" \
-    --env PB_CURRENT_VERSION="$candidate_version" \
+    --env PB_CURRENT_VERSION="$transient_start_version" \
     --env PB_TARGET_VERSION="$candidate_version" \
     --env PB_TARGET_IMAGE="$candidate_target" \
     --env PB_BACKUP_DB="$transient_backup_db" \
@@ -447,6 +480,13 @@ fi
 baseline_image_id="$(docker image inspect "$baseline_image" --format '{{.Id}}')"
 candidate_image_id="$(docker image inspect "$candidate_image" --format '{{.Id}}')"
 test "$baseline_image_id" != "$candidate_image_id"
+if [[ "$baseline_mode" == formal ]]; then
+  # Same-version replacement is not evidence of upgrading from a published release.
+  test "$baseline_version" != "$candidate_version"
+else
+  # ARM64 synthetic mode proves only replacement, not cross-version upgrade.
+  transient_start_image="$local_candidate_tag"
+fi
 test "$(docker run --rm "$candidate_image" python -c 'from backend.app.versioning import app_version; print(app_version())')" = "$candidate_version"
 
 echo "Start isolated local registry"
@@ -529,10 +569,9 @@ docker exec --user "$runtime_user" "$rollback_main" \
   python -c 'import glob,sqlite3; files=glob.glob("/config/backups/pre-restore/packbreaker-*.db"); assert len(files) == 1, files; c=sqlite3.connect(files[0], timeout=30); row=c.execute("SELECT probe_value FROM release_upgrade_probe WHERE probe_key=\"upgrade\"").fetchone(); assert row == ("candidate-mutated",), row; c.close()'
 
 echo "Run real single-container transient helper replacement path"
-# 正式 v0.1.3 尚未包含 transient launcher，因此首个支持该能力的候选版本无法从
-# v0.1.3 主容器内部发起完整相邻版本流程。这里先用候选镜像验证真实 Docker 替换机制：
-# 一次性 helper 创建/接管、主容器重建、docker.sock 保留、状态持久化与自动清理。
-# 待 transient-capable 版本成为正式 baseline 后，再由后续版本覆盖完整相邻版本 API 路径。
+# Formal mode starts the published immutable baseline (v1.0.3 onwards) and
+# upgrades it to a genuinely newer candidate through the baseline launcher.
+# Synthetic ARM64 mode remains a same-version replacement, not upgrade evidence.
 prepare_transient_case
 trigger_transient_upgrade
 wait_app_ready_after_switch "$transient_main" 0:0 "$transient_initial_container_id"
@@ -540,6 +579,16 @@ wait_docker_healthy "$transient_main"
 transient_new_container_id="$(docker inspect "$transient_main" --format '{{.Id}}')"
 test "$transient_new_container_id" != "$transient_initial_container_id"
 test "$(docker inspect "$transient_main" --format '{{.Image}}')" = "$candidate_image_id"
+test "$(docker exec --user 0:0 "$transient_main" python -c 'from backend.app.versioning import app_version; print(app_version())')" = "$candidate_version"
+if [[ "$baseline_mode" == formal && "$baseline_version" == 1.0.3 ]]; then
+  test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}')" = "$transient_data"
+  docker exec --user 0:0 "$transient_main" python -c 'from pathlib import Path; assert Path("/data/.packbreaker-e2e-volume-probe").read_text() == "isolated-persistent-volume\n"'
+else
+  test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')" = "$transient_original_data_volume"
+  test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data/downloads"}}{{.Source}}{{end}}{{end}}')" = "$transient_data/downloads"
+  test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data/downloads2"}}{{.Source}}{{end}}{{end}}')" = "$transient_data/downloads2"
+  docker exec --user 0:0 "$transient_main" python -c 'from pathlib import Path; assert Path("/data/.packbreaker-e2e-volume-probe").read_text() == "isolated-persistent-volume\n"; assert Path("/data/downloads/.packbreaker-e2e-bind-probe").read_text() == "isolated-downloads\n"; assert Path("/data/downloads2/.packbreaker-e2e-bind-probe").read_text() == "isolated-downloads2\n"'
+fi
 docker exec --user 0:0 "$transient_main" \
   python -c 'import sqlite3; c=sqlite3.connect("/config/packbreaker.db", timeout=30); row=c.execute("SELECT probe_value FROM release_upgrade_probe WHERE probe_key=\"upgrade\"").fetchone(); assert row == ("transient-original",), row; c.close()'
 wait_transient_terminal

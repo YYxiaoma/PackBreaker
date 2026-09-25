@@ -136,6 +136,8 @@ docker exec --user 0:0 packbreaker sh -c 'stat -c "socket: %F %a %u:%g" /var/run
 
 该命令不包含站点凭据或媒体读取。不要直接 `chmod 666 /var/run/docker.sock`、修改宿主机 Docker daemon 或以 root 常驻 Web 来绕过错误。若 socket 是 `0600` 且运行身份不是 owner、socket GID 不可映射，或 Docker API/目标容器被额外策略阻断，v1.0.3 仍会安全阻断升级并展示区分后的错误；须按现场证据单独处理。
 
+**v1.0.3 及后续 Web 升级的卷保留前提：** 如正在运行的容器通过镜像 `VOLUME /data` 自动获得匿名卷，但 Compose 未声明 `/data`，不能仅因 socket 权限已修复便认为 Web 升级安全。已发布 v1.0.3 的容器替换规划从 `HostConfig.Binds/Mounts` 复制声明挂载，未显式声明的匿名卷可能在重新创建时被新空卷替代，造成原数据在新容器内不可见；后续候选版的新代码**不能反向修复由 v1.0.3 自身启动的旧 helper**。v1.0.3 发起 Web 升级前，必须确认 `/data` 的原卷身份，在受控的宿主机部署调整中将其明确挂载，并核查升级前后卷身份和内容一致；不可直接执行 `docker compose up` 猜测会保留，也不得自动删卷或移动媒体。后续候选已实现从 Docker inspect 恢复未声明的匿名卷，仍须经过更高正式版本作为源的隔离 Docker E2E 后才可扩大支持范围。生产部署调整需要单独授权，不因本段说明自动执行。
+
 **旧容器不能通过加载新的前端文件自行修复旧入口进程。** 如果在线升级已被当前旧容器阻断，应先核对现有数据库/主密钥备份，在宿主机通过 `docker compose pull packbreaker`、`docker compose up -d --no-deps packbreaker` 完成一次人工升级，再在新版验证 Web 后续升级。建议先将 Compose 的镜像明确固定到 `ghcr.io/yyxiaoma/packbreaker:1.0.3` 或发布清单中的不可变摘要，并确认保留原有端口、环境变量、配置与媒体挂载；`latest` 是可变通道，不能只根据标签推断下载的版本身份。人工升级仍须在用户自己的宿主机完成，不是自动对生产 NAS 执行。
 
 ## 6. 网络与反向代理
