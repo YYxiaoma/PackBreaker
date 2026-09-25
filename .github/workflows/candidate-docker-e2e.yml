@@ -7,6 +7,7 @@ on:
       - main
       - "candidate/**"
     paths:
+      - ".github/workflows/ci.yml"
       - ".github/workflows/candidate-docker-e2e.yml"
       - "Dockerfile"
       - "pyproject.toml"

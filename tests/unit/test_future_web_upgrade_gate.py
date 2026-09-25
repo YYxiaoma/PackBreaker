@@ -44,3 +44,19 @@ def test_v103_requires_explicit_data_and_future_sources_test_anonymous_volume() 
     assert 'Path("/data/.packbreaker-e2e-volume-probe").read_text()' in script
     assert 'Path("/data/downloads/.packbreaker-e2e-bind-probe").read_text()' in script
     assert 'Path("/data/downloads2/.packbreaker-e2e-bind-probe").read_text()' in script
+
+
+def test_native_arm64_ci_runs_real_synthetic_implicit_volume_replacement() -> None:
+    import yaml  # type: ignore[import-untyped]
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["arm64"]["steps"]
+    synthetic = next(
+        s
+        for s in steps
+        if s.get("name") == "Exercise native ARM64 synthetic anonymous-volume replacement"
+    )
+    assert synthetic["run"] == (
+        "bash scripts/check-updater-e2e.sh packbreaker:ci-arm64 --synthetic-arm64-baseline"
+    )
+    assert "if" not in synthetic

@@ -155,6 +155,8 @@ jobs:
       - name: Exercise native ARM64 formal updater and failure rollback
         if: steps.release_relation.outputs.candidate_newer == 'true'
         run: bash scripts/check-updater-e2e.sh packbreaker:ci-arm64
+      - name: Exercise native ARM64 synthetic anonymous-volume replacement
+        run: bash scripts/check-updater-e2e.sh packbreaker:ci-arm64 --synthetic-arm64-baseline
       - name: Exercise isolated native ARM64 qBittorrent and Transmission Docker APIs
         run: bash scripts/check-arm64-real-downloaders-e2e.sh packbreaker:ci-arm64
 
