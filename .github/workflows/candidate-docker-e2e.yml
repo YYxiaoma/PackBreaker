@@ -9,6 +9,7 @@ on:
     paths:
       - ".github/workflows/ci.yml"
       - ".github/workflows/candidate-docker-e2e.yml"
+      - ".github/workflows/release.yml"
       - "Dockerfile"
       - "pyproject.toml"
       - "uv.lock"

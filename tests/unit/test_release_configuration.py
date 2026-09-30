@@ -62,6 +62,18 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
     assert ":stable" in workflow
     assert "--generate-notes" in workflow
     assert "check-release-upgrade.sh packbreaker:release-candidate" in workflow
+    published = '"${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"'
+    assert "Exercise formal AMD64 updater with published immutable digest" in workflow
+    assert "scripts/check-updater-e2e.sh" in workflow
+    assert workflow.index("Exercise formal AMD64 adjacent upgrade") < workflow.index(
+        "Exercise formal AMD64 updater with published immutable digest"
+    )
+    assert workflow.count(published) >= 4
+    assert "Exercise formal ARM64 updater with the exact published immutable digest" in workflow
+    assert "Exercise published ARM64 anonymous-volume retention" in workflow
+    assert workflow.index(
+        "Exercise formal ARM64 updater with the exact published immutable digest"
+    ) < workflow.index("Exercise published ARM64 anonymous-volume retention")
 
 
 def test_published_release_readback_blocks_mutable_channel_update() -> None:
@@ -94,6 +106,7 @@ def test_candidate_e2e_reads_real_published_baseline_image_config_without_publis
     assert candidate.index("Verify actual published baseline index") < candidate.index(
         "Build current main as local candidate"
     )
+    assert '".github/workflows/release.yml"' in candidate
 
 
 def test_ci_container_gate_exercises_immutable_previous_release() -> None:

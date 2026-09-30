@@ -213,6 +213,12 @@ jobs:
         run: |
           bash scripts/check-release-upgrade.sh \
             "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"
+      - name: Exercise formal AMD64 updater with published immutable digest
+        if: ${{ !startsWith(github.ref_name, 'v0.') }}
+        shell: bash
+        run: |
+          bash scripts/check-updater-e2e.sh \
+            "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"
       - name: Exercise immutable published ARM64 image under QEMU in isolated runtime
         if: ${{ !startsWith(github.ref_name, 'v0.') }}
         shell: bash
@@ -248,6 +254,19 @@ jobs:
               "${{ needs.release.outputs.image }}@${{ needs.release.outputs.digest }}" \
               linux/arm64 "$GITHUB_REF_NAME" "$GITHUB_SHA"
           fi
+      - name: Exercise formal ARM64 updater with the exact published immutable digest
+        if: ${{ !startsWith(github.ref_name, 'v0.') }}
+        shell: bash
+        run: |
+          bash scripts/check-updater-e2e.sh \
+            "${{ needs.release.outputs.image }}@${{ needs.release.outputs.digest }}"
+      - name: Exercise published ARM64 anonymous-volume retention
+        if: ${{ !startsWith(github.ref_name, 'v0.') }}
+        shell: bash
+        run: |
+          bash scripts/check-updater-e2e.sh \
+            "${{ needs.release.outputs.image }}@${{ needs.release.outputs.digest }}" \
+            --synthetic-arm64-baseline
 
   release-assets:
     runs-on: ubuntu-latest

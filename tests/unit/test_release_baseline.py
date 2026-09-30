@@ -127,7 +127,12 @@ def test_native_arm64_release_backup_restore_keeps_synthetic_mode_but_ci_uses_fo
     assert "check-release-upgrade.sh packbreaker:ci-arm64" in ci
     assert "check-immutable-image-runtime.sh" in ci
     assert "check-release-upgrade.sh packbreaker:release-candidate" in release
-    assert "--synthetic-arm64-baseline" not in release
+    assert "Exercise formal ARM64 updater with the exact published immutable digest" in release
+    assert "Exercise published ARM64 anonymous-volume retention" in release
+    assert release.index(
+        "Exercise formal ARM64 updater with the exact published immutable digest"
+    ) < release.index("Exercise published ARM64 anonymous-volume retention")
+    assert "--synthetic-arm64-baseline" in release
 
 
 def test_native_arm64_release_backup_restore_gate_rejects_unknown_mode_before_docker() -> None:
