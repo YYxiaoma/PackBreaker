@@ -81,12 +81,18 @@ def test_native_arm64_candidate_failed_start_cleans_only_its_sandbox(tmp_path: P
 
 
 def _validate_order(jobs: dict[str, object]) -> None:
+    qemu = jobs["qemu-arm64-published-runtime"]
     native = jobs["native-arm64-published-runtime"]
     assets = jobs["release-assets"]
-    assert isinstance(native, dict) and isinstance(assets, dict)
+    assert isinstance(qemu, dict) and isinstance(native, dict) and isinstance(assets, dict)
+    assert qemu["needs"] == "release"
     assert native["needs"] == "release"
-    assert set(assets["needs"]) == {"release", "native-arm64-published-runtime"}
-    assert "if" not in assets and "if" not in native
+    assert set(assets["needs"]) == {
+        "release",
+        "qemu-arm64-published-runtime",
+        "native-arm64-published-runtime",
+    }
+    assert "if" not in assets and "if" not in qemu and "if" not in native
 
 
 def test_release_assets_wait_for_native_arm64_same_immutable_digest() -> None:
@@ -94,6 +100,7 @@ def test_release_assets_wait_for_native_arm64_same_immutable_digest() -> None:
     jobs = workflow["jobs"]
     assert jobs["release"]["needs"] == "arm64-validation"
     assert jobs["release"]["runs-on"] == "ubuntu-latest"
+    assert jobs["qemu-arm64-published-runtime"]["runs-on"] == "ubuntu-24.04"
     assert jobs["native-arm64-published-runtime"]["runs-on"] == "ubuntu-24.04-arm"
     assert jobs["release-assets"]["runs-on"] == "ubuntu-latest"
     assert workflow["concurrency"]["cancel-in-progress"] is False
@@ -108,11 +115,17 @@ def test_release_assets_wait_for_native_arm64_same_immutable_digest() -> None:
         "digest": "${{ steps.build.outputs.digest }}",
     }
     build_steps = "\n".join(str(step) for step in build["steps"])
+    qemu_steps = "\n".join(str(step) for step in jobs["qemu-arm64-published-runtime"]["steps"])
     native_steps = "\n".join(str(step) for step in jobs["native-arm64-published-runtime"]["steps"])
     assets_steps = "\n".join(str(step) for step in jobs["release-assets"]["steps"])
 
     assert "docker/build-push-action@v7.3.0" in build_steps
-    assert "Exercise immutable published ARM64 image under QEMU" in build_steps
+    assert "Verify the exact published ARM64 index digest under QEMU" not in build_steps
+    assert "Verify the exact published ARM64 index digest under QEMU" in qemu_steps
+    assert "docker/setup-qemu-action@v3" in qemu_steps
+    assert 'test "$(uname -m)" = x86_64' in qemu_steps
+    assert "check-immutable-image-runtime.sh" in qemu_steps
+    assert "${{ needs.release.outputs.image }}@${{ needs.release.outputs.digest }}" in qemu_steps
     published_upgrade_steps = [
         (index, step)
         for index, step in enumerate(build["steps"])
@@ -131,9 +144,6 @@ def test_release_assets_wait_for_native_arm64_same_immutable_digest() -> None:
     assert (
         step_names.index("Exercise immutable published AMD64 image in isolated runtime")
         < upgrade_index
-    )
-    assert upgrade_index < step_names.index(
-        "Exercise immutable published ARM64 image under QEMU in isolated runtime"
     )
     assert "gh release create" not in build_steps
     assert "actions/upload-artifact" not in build_steps
@@ -170,7 +180,9 @@ def test_release_assets_wait_for_native_arm64_same_immutable_digest() -> None:
             assert "${{ steps.build.outputs.digest }}" not in str(step)
 
 
-@pytest.mark.parametrize("missing", ["release", "native-arm64-published-runtime"])
+@pytest.mark.parametrize(
+    "missing", ["release", "qemu-arm64-published-runtime", "native-arm64-published-runtime"]
+)
 def test_release_asset_job_rejects_missing_required_dependency(missing: str) -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]

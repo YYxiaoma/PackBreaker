@@ -71,6 +71,12 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
     assert workflow.count(published) >= 4
     assert "Exercise formal ARM64 updater with the exact published immutable digest" in workflow
     assert "Exercise published ARM64 anonymous-volume retention" in workflow
+    assert "qemu-arm64-published-runtime:" in workflow
+    assert "Verify the exact published ARM64 index digest under QEMU" in workflow
+    assert "cannot overwrite digest" in workflow
+    assert (
+        "needs: [release, qemu-arm64-published-runtime, native-arm64-published-runtime]" in workflow
+    )
     assert workflow.index(
         "Exercise formal ARM64 updater with the exact published immutable digest"
     ) < workflow.index("Exercise published ARM64 anonymous-volume retention")

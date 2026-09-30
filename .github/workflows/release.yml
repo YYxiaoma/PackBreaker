@@ -219,13 +219,36 @@ jobs:
         run: |
           bash scripts/check-updater-e2e.sh \
             "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"
-      - name: Exercise immutable published ARM64 image under QEMU in isolated runtime
-        if: ${{ !startsWith(github.ref_name, 'v0.') }}
+
+  qemu-arm64-published-runtime:
+    # Keep QEMU validation on a fresh Docker engine. Pulling amd64 and arm64
+    # variants of the same index digest into one classic image store can fail
+    # with "cannot overwrite digest" even though the published index is valid.
+    runs-on: ubuntu-24.04
+    needs: release
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the exact published ARM64 index digest under QEMU
         shell: bash
         run: |
-          bash scripts/check-immutable-image-runtime.sh \
-            "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}" \
-            linux/arm64 "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" == v0.* ]]; then
+            echo 'Previous AMD64-only release does not have an ARM64 child image'
+          else
+            test "$(uname -m)" = x86_64
+            bash scripts/check-immutable-image-runtime.sh \
+              "${{ needs.release.outputs.image }}@${{ needs.release.outputs.digest }}" \
+              linux/arm64 "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          fi
 
   native-arm64-published-runtime:
     # Do not skip the job on v0.x: a skipped dependency would prevent the
@@ -270,7 +293,7 @@ jobs:
 
   release-assets:
     runs-on: ubuntu-latest
-    needs: [release, native-arm64-published-runtime]
+    needs: [release, qemu-arm64-published-runtime, native-arm64-published-runtime]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
