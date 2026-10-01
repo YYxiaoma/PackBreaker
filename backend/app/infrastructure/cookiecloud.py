@@ -82,11 +82,14 @@ class CookieCloudClient:
         encrypted = value.get("encrypted")
         if not isinstance(encrypted, str) or not encrypted:
             raise CookieCloudError("COOKIECLOUD_INVALID_RESPONSE", retryable=False)
-        raw_crypto_type = value.get("crypto_type", CookieCloudCryptoType.LEGACY.value)
-        try:
-            crypto_type = CookieCloudCryptoType(raw_crypto_type)
-        except (TypeError, ValueError) as exc:
-            raise CookieCloudError("COOKIECLOUD_CRYPTO_UNSUPPORTED", retryable=False) from exc
+        raw_crypto_type = value.get("crypto_type")
+        if raw_crypto_type is None:
+            crypto_type = _infer_cookiecloud_crypto_type(encrypted)
+        else:
+            try:
+                crypto_type = CookieCloudCryptoType(raw_crypto_type)
+            except (TypeError, ValueError) as exc:
+                raise CookieCloudError("COOKIECLOUD_CRYPTO_UNSUPPORTED", retryable=False) from exc
         return CookieCloudEnvelope(encrypted=encrypted, crypto_type=crypto_type)
 
 
@@ -192,6 +195,19 @@ def _evp_bytes_to_key(password: bytes, salt: bytes) -> tuple[bytes, bytes]:
         ).digest()
         derived += previous
     return derived[:32], derived[32:48]
+
+
+def _infer_cookiecloud_crypto_type(encrypted: str) -> CookieCloudCryptoType:
+    try:
+        raw = base64.b64decode(encrypted, validate=True)
+    except (ValueError, binascii.Error):
+        # Preserve the existing error boundary: malformed ciphertext is
+        # reported by the decrypt step, not misclassified as an unsupported
+        # future algorithm.
+        return CookieCloudCryptoType.LEGACY
+    if raw.startswith(b"Salted__"):
+        return CookieCloudCryptoType.LEGACY
+    return CookieCloudCryptoType.AES_128_CBC_FIXED
 
 
 def _decrypt_aes_cbc(*, ciphertext: bytes, key: bytes, iv: bytes) -> bytes:

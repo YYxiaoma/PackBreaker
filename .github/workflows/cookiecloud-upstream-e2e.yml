@@ -1,0 +1,61 @@
+name: CookieCloud Upstream E2E
+
+on:
+  push:
+    branches:
+      - main
+      - "candidate/**"
+    paths:
+      - ".github/workflows/cookiecloud-upstream-e2e.yml"
+      - "backend/app/domain/cookiecloud.py"
+      - "backend/app/infrastructure/cookiecloud.py"
+      - "scripts/check_cookiecloud_upstream_docker.py"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cookiecloud-upstream-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  official-server:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned uv and dependencies
+        run: |
+          python -m pip install "uv==0.12.11"
+          uv sync --frozen --all-groups
+      - name: Pull and start official easychen/CookieCloud
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull easychen/cookiecloud:latest
+          digest="$(docker image inspect easychen/cookiecloud:latest --format '{{index .RepoDigests 0}}')"
+          test -n "$digest"
+          echo "Official CookieCloud image: $digest" >> "$GITHUB_STEP_SUMMARY"
+          docker run --detach             --name packbreaker-cookiecloud-upstream             --env API_ROOT=/cc             --publish 127.0.0.1:18088:8088             easychen/cookiecloud:latest
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18088/cc/ >/dev/null; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              docker logs packbreaker-cookiecloud-upstream || true
+              exit 1
+            fi
+            sleep 1
+          done
+      - name: Exercise official server with both crypto formats
+        run: |
+          uv run python scripts/check_cookiecloud_upstream_docker.py             http://127.0.0.1:18088/cc
+      - name: Cleanup upstream container
+        if: always()
+        run: docker rm --force packbreaker-cookiecloud-upstream >/dev/null 2>&1 || true

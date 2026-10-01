@@ -189,6 +189,37 @@ async def test_client_fetches_get_uuid_without_sending_password() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expected", "encrypted"),
+    (
+        (
+            CookieCloudCryptoType.LEGACY,
+            _legacy_encrypt("uuid", "password", _payload()),
+        ),
+        (
+            CookieCloudCryptoType.AES_128_CBC_FIXED,
+            _fixed_encrypt("uuid", "password", _payload()),
+        ),
+    ),
+)
+async def test_client_infers_crypto_when_server_omits_crypto_type(
+    expected: CookieCloudCryptoType,
+    encrypted: str,
+) -> None:
+    client = CookieCloudClient(
+        transport=httpx2.MockTransport(
+            lambda _request: httpx2.Response(200, json={"encrypted": encrypted})
+        )
+    )
+    result = await client.fetch(
+        server_url="https://cookie.example.test",
+        uuid="uuid",
+        timeout_seconds=5,
+    )
+    assert result.crypto_type is expected
+
+
+@pytest.mark.asyncio
 async def test_client_rejects_redirects_and_unknown_crypto() -> None:
     redirects = CookieCloudClient(
         transport=httpx2.MockTransport(
