@@ -17,16 +17,16 @@ def _workflow() -> dict[Any, Any]:
     return value
 
 
-def test_v105_candidate_delivery_is_manual_and_version_pinned() -> None:
+def test_v105_candidate_delivery_is_restricted_branch_and_version_pinned() -> None:
     workflow = _workflow()
     triggers = workflow.get("on", workflow.get(True))
     assert isinstance(triggers, dict)
-    assert set(triggers) == {"workflow_dispatch"}
-    dispatch = triggers["workflow_dispatch"]
-    assert isinstance(dispatch, dict)
-    assert dispatch["inputs"]["candidate_sha"]["required"] is True
+    assert set(triggers) == {"push"}
+    push = triggers["push"]
+    assert push["branches"] == ["delivery/v1.0.5-candidate-image"]
 
     env = workflow["env"]
+    assert env["CANDIDATE_SHA"] == "6319263b24fa9c53ea9eb2708d5fa94ffe187cab"
     assert env["CANDIDATE_VERSION"] == "1.0.5"
     assert env["IMAGE"] == "ghcr.io/yyxiaoma/packbreaker"
 
@@ -46,7 +46,8 @@ def test_v105_candidate_delivery_verifies_main_sha_and_both_architectures() -> N
     jobs = workflow["jobs"]
     publish = jobs["publish-candidate"]
     assert publish["if"] == (
-        "github.repository == 'YYxiaoma/PackBreaker' && github.ref == 'refs/heads/main'"
+        "github.repository == 'YYxiaoma/PackBreaker' && "
+        "github.ref == 'refs/heads/delivery/v1.0.5-candidate-image'"
     )
     commands = "\n".join(str(step.get("run", "")) for step in publish["steps"])
     assert 'git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main' in commands
