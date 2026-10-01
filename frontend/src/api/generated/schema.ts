@@ -159,6 +159,58 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/cookiecloud/config': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Cookiecloud Config */
+    get: operations['get_cookiecloud_config_api_v1_cookiecloud_config_get'];
+    /** Update Cookiecloud Config */
+    put: operations['update_cookiecloud_config_api_v1_cookiecloud_config_put'];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/cookiecloud/sync': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Sync Cookiecloud */
+    post: operations['sync_cookiecloud_api_v1_cookiecloud_sync_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/cookiecloud/test': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Test Cookiecloud */
+    post: operations['test_cookiecloud_api_v1_cookiecloud_test_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/downloaders': {
     parameters: {
       query?: never;
@@ -1764,6 +1816,151 @@ export interface components {
        */
       new_password: string;
     };
+    /**
+     * CookieCloudConnectionStatus
+     * @enum {string}
+     */
+    CookieCloudConnectionStatus: 'UNTESTED' | 'OK' | 'FAILED';
+    /**
+     * CookieCloudCryptoType
+     * @enum {string}
+     */
+    CookieCloudCryptoType: 'legacy' | 'aes-128-cbc-fixed';
+    /** CookieCloudProbeResponse */
+    CookieCloudProbeResponse: {
+      /** Cookie Count */
+      cookie_count: number;
+      crypto_type: components['schemas']['CookieCloudCryptoType'];
+      /** Domain Count */
+      domain_count: number;
+      /**
+       * Status
+       * @constant
+       */
+      status: 'ok';
+      /**
+       * Tested At
+       * Format: date-time
+       */
+      tested_at: string;
+      /** Update Time */
+      update_time: string | null;
+      /** Version */
+      version: number;
+    };
+    /** CookieCloudSettingResponse */
+    CookieCloudSettingResponse: {
+      /** Auto Sync */
+      auto_sync: boolean;
+      connection_status: components['schemas']['CookieCloudConnectionStatus'];
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Enabled */
+      enabled: boolean;
+      /** Last Sync At */
+      last_sync_at: string | null;
+      /** Last Sync Error Code */
+      last_sync_error_code: string | null;
+      last_sync_status: components['schemas']['CookieCloudSyncStatus'];
+      /** Last Test At */
+      last_test_at: string | null;
+      /** Matched Sites */
+      matched_sites: number;
+      /** Password Configured */
+      password_configured: boolean;
+      /** Request Timeout Seconds */
+      request_timeout_seconds: number;
+      /** Server Url */
+      server_url: string;
+      /** Sync Interval Minutes */
+      sync_interval_minutes: number;
+      /** Unmatched Domains */
+      unmatched_domains: number;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+      /** Updated Sites */
+      updated_sites: number;
+      /** Uuid */
+      uuid: string;
+      /** Version */
+      version: number;
+    };
+    /** CookieCloudSettingUpdateRequest */
+    CookieCloudSettingUpdateRequest: {
+      /**
+       * Auto Sync
+       * @default true
+       */
+      auto_sync: boolean;
+      /**
+       * Enabled
+       * @default false
+       */
+      enabled: boolean;
+      /** Password */
+      password?: string | null;
+      /**
+       * Password Action
+       * @default KEEP
+       * @enum {string}
+       */
+      password_action: 'KEEP' | 'SET' | 'CLEAR';
+      /**
+       * Request Timeout Seconds
+       * @default 15
+       */
+      request_timeout_seconds: number;
+      /**
+       * Server Url
+       * @default
+       */
+      server_url: string;
+      /**
+       * Sync Interval Minutes
+       * @default 30
+       */
+      sync_interval_minutes: number;
+      /**
+       * Uuid
+       * @default
+       */
+      uuid: string;
+    };
+    /** CookieCloudSyncResponse */
+    CookieCloudSyncResponse: {
+      crypto_type: components['schemas']['CookieCloudCryptoType'];
+      /** Matched Sites */
+      matched_sites: number;
+      /**
+       * Status
+       * @constant
+       */
+      status: 'ok';
+      /**
+       * Synced At
+       * Format: date-time
+       */
+      synced_at: string;
+      /** Unmatched Domains */
+      unmatched_domains: number;
+      /** Update Time */
+      update_time: string | null;
+      /** Updated Sites */
+      updated_sites: number;
+      /** Version */
+      version: number;
+    };
+    /**
+     * CookieCloudSyncStatus
+     * @enum {string}
+     */
+    CookieCloudSyncStatus: 'NEVER' | 'SUCCESS' | 'FAILED';
     /** DownloaderActionRequest */
     DownloaderActionRequest: {
       /**
@@ -4447,6 +4644,144 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['SetupResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_cookiecloud_config_api_v1_cookiecloud_config_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CookieCloudSettingResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  update_cookiecloud_config_api_v1_cookiecloud_config_put: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CookieCloudSettingUpdateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CookieCloudSettingResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  sync_cookiecloud_api_v1_cookiecloud_sync_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CookieCloudSyncResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  test_cookiecloud_api_v1_cookiecloud_test_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CookieCloudProbeResponse'];
         };
       };
       /** @description Validation Error */

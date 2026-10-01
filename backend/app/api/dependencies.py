@@ -7,6 +7,7 @@ from backend.app.application.admin_notifications import AdminNotificationService
 from backend.app.application.ai_agent import AIAgentService
 from backend.app.application.ai_telegram import AITelegramService
 from backend.app.application.auth import AuthIdentity, AuthService
+from backend.app.application.cookiecloud import CookieCloudService
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.notifications import NotificationService
 from backend.app.application.sites import SiteService
@@ -55,6 +56,10 @@ def ai_telegram_service(request: Request) -> AITelegramService:
 
 def site_service(request: Request) -> SiteService:
     return cast(SiteService, request.app.state.site_service)
+
+
+def cookiecloud_service(request: Request) -> CookieCloudService:
+    return cast(CookieCloudService, request.app.state.cookiecloud_service)
 
 
 def task_analysis_service(request: Request) -> TaskAnalysisService:

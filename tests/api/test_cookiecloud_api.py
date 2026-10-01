@@ -1,0 +1,365 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+from collections.abc import Mapping
+from pathlib import Path
+
+import httpx2
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from backend.app.api.dependencies import CSRF_COOKIE
+from backend.app.application.cookiecloud import CookieCloudService
+from backend.app.config import AppSettings
+from backend.app.infrastructure.cookiecloud import CookieCloudClient
+from backend.app.infrastructure.persistence.models import CookieCloudSetting, SecretRecord, Site
+from backend.app.main import create_app
+
+_PASSWORD = "synthetic correct horse battery staple"
+_COOKIECLOUD_PASSWORD = "synthetic-cookiecloud-password"
+
+
+def _settings(tmp_path: Path) -> AppSettings:
+    return AppSettings(
+        config_dir=(tmp_path / "config").resolve(),
+        data_dir=(tmp_path / "data").resolve(),
+    )
+
+
+def _login(client: TestClient) -> dict[str, str]:
+    assert client.post("/api/v1/auth/setup", json={"password": _PASSWORD}).status_code == 201
+    assert (
+        client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": _PASSWORD},
+        ).status_code
+        == 200
+    )
+    csrf = client.cookies.get(CSRF_COOKIE)
+    assert csrf is not None
+    return {"X-CSRF-Token": csrf}
+
+
+def _fixed_encrypt(uuid: str, password: str, payload: Mapping[str, object]) -> str:
+    key = (
+        hashlib.md5(  # noqa: S324 - easychen/CookieCloud protocol fixture
+            f"{uuid}-{password}".encode(),
+            usedforsecurity=False,
+        )
+        .hexdigest()[:16]
+        .encode()
+    )
+    padder = padding.PKCS7(128).padder()
+    padded = padder.update(json.dumps(payload).encode()) + padder.finalize()
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(b"\x00" * 16)).encryptor()
+    return base64.b64encode(encryptor.update(padded) + encryptor.finalize()).decode()
+
+
+def test_cookiecloud_config_encrypts_password_and_never_echoes_it(tmp_path: Path) -> None:
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        current = client.get("/api/v1/cookiecloud/config")
+        assert current.status_code == 200
+        assert current.json()["password_configured"] is False
+        assert current.json()["last_sync_status"] == "NEVER"
+
+        saved = client.put(
+            "/api/v1/cookiecloud/config",
+            headers={**headers, "If-Match": current.headers["etag"]},
+            json={
+                "enabled": True,
+                "server_url": "https://cookie.example.test/root/",
+                "uuid": "synthetic-uuid",
+                "password_action": "SET",
+                "password": _COOKIECLOUD_PASSWORD,
+                "auto_sync": True,
+                "sync_interval_minutes": 30,
+                "request_timeout_seconds": 15,
+            },
+        )
+        assert saved.status_code == 200
+        payload = saved.json()
+        assert payload["server_url"] == "https://cookie.example.test/root"
+        assert payload["password_configured"] is True
+        assert payload["connection_status"] == "UNTESTED"
+        assert _COOKIECLOUD_PASSWORD not in saved.text
+        assert "password" not in payload
+
+        with app.state.runtime.session_factory() as session:
+            setting = session.get(CookieCloudSetting, "default")
+            assert setting is not None and setting.password_secret_id is not None
+            secret = session.get(SecretRecord, setting.password_secret_id)
+            assert secret is not None and secret.kind == "COOKIECLOUD_PASSWORD"
+            assert _COOKIECLOUD_PASSWORD not in secret.ciphertext
+
+
+def test_cookiecloud_saved_probe_uses_get_uuid_and_local_decryption(tmp_path: Path) -> None:
+    uuid = "synthetic uuid"
+    cookie_payload = {
+        "cookie_data": {
+            ".example.test": [
+                {
+                    "name": "session",
+                    "value": "synthetic-cookie-value",
+                    "domain": ".example.test",
+                    "path": "/",
+                }
+            ]
+        },
+        "local_storage_data": {},
+        "update_time": "2026-09-30T12:00:00.000Z",
+    }
+    encrypted = _fixed_encrypt(uuid, _COOKIECLOUD_PASSWORD, cookie_payload)
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        assert str(request.url) == "https://cookie.example.test/root/get/synthetic%20uuid"
+        assert _COOKIECLOUD_PASSWORD not in str(request.url)
+        return httpx2.Response(
+            200,
+            json={"encrypted": encrypted, "crypto_type": "aes-128-cbc-fixed"},
+        )
+
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        current = client.get("/api/v1/cookiecloud/config")
+        saved = client.put(
+            "/api/v1/cookiecloud/config",
+            headers={**headers, "If-Match": current.headers["etag"]},
+            json={
+                "enabled": True,
+                "server_url": "https://cookie.example.test/root",
+                "uuid": uuid,
+                "password_action": "SET",
+                "password": _COOKIECLOUD_PASSWORD,
+                "auto_sync": True,
+                "sync_interval_minutes": 30,
+                "request_timeout_seconds": 15,
+            },
+        )
+        assert saved.status_code == 200
+        app.state.cookiecloud_service = CookieCloudService(
+            app.state.runtime.session_factory,
+            app.state.secret_store,
+            client=CookieCloudClient(transport=httpx2.MockTransport(handler)),
+        )
+
+        tested = client.post("/api/v1/cookiecloud/test", headers=headers)
+        assert tested.status_code == 200
+        result = tested.json()
+        assert result["status"] == "ok"
+        assert result["crypto_type"] == "aes-128-cbc-fixed"
+        assert result["domain_count"] == 1
+        assert result["cookie_count"] == 1
+        assert result["update_time"] == "2026-09-30T12:00:00.000Z"
+        assert "synthetic-cookie-value" not in tested.text
+        assert _COOKIECLOUD_PASSWORD not in tested.text
+        assert len(requests) == 1
+
+        refreshed = client.get("/api/v1/cookiecloud/config")
+        assert refreshed.json()["connection_status"] == "OK"
+        assert refreshed.json()["last_test_at"] is not None
+
+
+def test_cookiecloud_wrong_password_error_does_not_leak_secrets(tmp_path: Path) -> None:
+    encrypted = _fixed_encrypt(
+        "synthetic-uuid",
+        "actual-password",
+        {"cookie_data": {}, "local_storage_data": {}},
+    )
+
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={"encrypted": encrypted, "crypto_type": "aes-128-cbc-fixed"},
+        )
+
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        current = client.get("/api/v1/cookiecloud/config")
+        saved = client.put(
+            "/api/v1/cookiecloud/config",
+            headers={**headers, "If-Match": current.headers["etag"]},
+            json={
+                "enabled": True,
+                "server_url": "https://cookie.example.test",
+                "uuid": "synthetic-uuid",
+                "password_action": "SET",
+                "password": "wrong-password",
+                "auto_sync": False,
+                "sync_interval_minutes": 30,
+                "request_timeout_seconds": 15,
+            },
+        )
+        assert saved.status_code == 200
+        app.state.cookiecloud_service = CookieCloudService(
+            app.state.runtime.session_factory,
+            app.state.secret_store,
+            client=CookieCloudClient(transport=httpx2.MockTransport(handler)),
+        )
+
+        tested = client.post("/api/v1/cookiecloud/test", headers=headers)
+        assert tested.status_code == 422
+        assert tested.json()["code"] == "COOKIECLOUD_DECRYPT_FAILED"
+        assert "wrong-password" not in tested.text
+        assert "actual-password" not in tested.text
+        assert encrypted not in tested.text
+        assert client.get("/api/v1/cookiecloud/config").json()["connection_status"] == "FAILED"
+
+
+def test_cookiecloud_sync_updates_cookie_sites_and_preserves_rousi_api_key(tmp_path: Path) -> None:
+    uuid = "sync-uuid"
+    payload = {
+        "cookie_data": {
+            ".keepfrds.com": [
+                {
+                    "name": "session",
+                    "value": "cookiecloud-keepfrds",
+                    "domain": ".keepfrds.com",
+                    "path": "/",
+                }
+            ],
+            ".rousi.pro": [
+                {
+                    "name": "rousi_session",
+                    "value": "cookiecloud-rousi",
+                    "domain": ".rousi.pro",
+                    "path": "/",
+                }
+            ],
+            ".outside.invalid": [
+                {
+                    "name": "ignored",
+                    "value": "foreign",
+                    "domain": ".outside.invalid",
+                    "path": "/",
+                }
+            ],
+        },
+        "local_storage_data": {},
+        "update_time": "2026-09-30T13:00:00.000Z",
+    }
+    encrypted = _fixed_encrypt(uuid, _COOKIECLOUD_PASSWORD, payload)
+
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={"encrypted": encrypted, "crypto_type": "aes-128-cbc-fixed"},
+        )
+
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        keepfrds = client.post(
+            "/api/v1/sites",
+            headers=headers,
+            json={
+                "name": "KeepFrds",
+                "type": "KEEPFRDS",
+                "credential": {"kind": "COOKIE", "value": "session=old-keepfrds"},
+            },
+        )
+        assert keepfrds.status_code == 201
+        keepfrds_id = keepfrds.json()["id"]
+        enabled = client.post(
+            f"/api/v1/sites/{keepfrds_id}/actions",
+            headers={**headers, "If-Match": keepfrds.headers["etag"]},
+            json={"action": "enable"},
+        )
+        assert enabled.status_code == 200 and enabled.json()["enabled"] is True
+
+        rousi = client.post(
+            "/api/v1/sites",
+            headers=headers,
+            json={
+                "name": "Rousi Pro",
+                "type": "ROUSI_PRO",
+                "credential": {"kind": "API_KEY", "value": "rousi-api-key"},
+                "download_cookie": "rousi_session=old",
+            },
+        )
+        assert rousi.status_code == 201
+        rousi_id = rousi.json()["id"]
+        enabled = client.post(
+            f"/api/v1/sites/{rousi_id}/actions",
+            headers={**headers, "If-Match": rousi.headers["etag"]},
+            json={"action": "enable"},
+        )
+        assert enabled.status_code == 200 and enabled.json()["enabled"] is True
+
+        current = client.get("/api/v1/cookiecloud/config")
+        saved = client.put(
+            "/api/v1/cookiecloud/config",
+            headers={**headers, "If-Match": current.headers["etag"]},
+            json={
+                "enabled": True,
+                "server_url": "https://cookie.example.test",
+                "uuid": uuid,
+                "password_action": "SET",
+                "password": _COOKIECLOUD_PASSWORD,
+                "auto_sync": True,
+                "sync_interval_minutes": 30,
+                "request_timeout_seconds": 15,
+            },
+        )
+        assert saved.status_code == 200
+        app.state.cookiecloud_service = CookieCloudService(
+            app.state.runtime.session_factory,
+            app.state.secret_store,
+            client=CookieCloudClient(transport=httpx2.MockTransport(handler)),
+            site_service=app.state.site_service,
+        )
+
+        synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
+        assert synced.status_code == 200
+        report = synced.json()
+        assert report["matched_sites"] == 2
+        assert report["updated_sites"] == 2
+        assert report["unmatched_domains"] == 1
+        assert "cookiecloud-keepfrds" not in synced.text
+        assert "cookiecloud-rousi" not in synced.text
+
+        with app.state.runtime.session_factory() as session:
+            sites = {
+                row.type: row
+                for row in session.scalars(select(Site).where(Site.id.in_([keepfrds_id, rousi_id])))
+            }
+            keepfrds_row = sites["KEEPFRDS"]
+            rousi_row = sites["ROUSI_PRO"]
+            assert keepfrds_row.enabled is True and keepfrds_row.secret_id is not None
+            assert rousi_row.enabled is True
+            assert rousi_row.secret_id is not None and rousi_row.download_secret_id is not None
+            assert (
+                app.state.secret_store.get(
+                    keepfrds_row.secret_id,
+                    expected_kind="SITE_COOKIE",
+                )
+                == b"session=cookiecloud-keepfrds"
+            )
+            assert (
+                app.state.secret_store.get(
+                    rousi_row.secret_id,
+                    expected_kind="SITE_API_KEY",
+                )
+                == b"rousi-api-key"
+            )
+            assert (
+                app.state.secret_store.get(
+                    rousi_row.download_secret_id,
+                    expected_kind="SITE_DOWNLOAD_COOKIE",
+                )
+                == b"rousi_session=cookiecloud-rousi"
+            )
+
+        second = client.post("/api/v1/cookiecloud/sync", headers=headers)
+        assert second.status_code == 200
+        assert second.json()["matched_sites"] == 2
+        assert second.json()["updated_sites"] == 0

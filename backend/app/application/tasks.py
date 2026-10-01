@@ -518,7 +518,7 @@ class TaskAnalysisService:
             return TaskCreateView(task=self._task_view(task), created=created)
 
     async def analyze(self, task_id: str, *, source_root: str) -> PreflightSnapshot:
-        normalized_root, resolved_root = self._resolve_source_root(source_root)
+        normalized_root, resolved_root = self._resolve_source_root(source_root, task_id=task_id)
         analysis = self._analysis
         with self._session_factory() as session:
             task = TaskRepository(session).get(task_id)
@@ -677,7 +677,7 @@ class TaskAnalysisService:
             reasons.append("UNIT_RECORD_MISSING")
         else:
             try:
-                _, source_path = self._resolve_source_root(unit.source_root)
+                _, source_path = self._resolve_source_root(unit.source_root, task_id=task_id)
                 current_inventory = scan_source_inventory(source_path)
                 if source_inventory_digest(current_inventory) != record.source_inventory_digest:
                     reasons.append("SOURCE_CHANGED")
@@ -963,7 +963,7 @@ class TaskAnalysisService:
             preflight_snapshot_id = gate_record.preflight_snapshot_id
             review_revision_id = gate_record.review_revision_id
 
-        _, resolved_source = self._resolve_source_root(source_root)
+        _, resolved_source = self._resolve_source_root(source_root, task_id=task_id)
         try:
             inventory = scan_source_inventory(resolved_source)
         except DomainViolation as exc:
@@ -1143,7 +1143,7 @@ class TaskAnalysisService:
                 detail="重验证只能基于当前 preflight 执行",
             )
 
-        _, resolved_root = self._resolve_source_root(source_root)
+        _, resolved_root = self._resolve_source_root(source_root, task_id=task_id)
         try:
             inventory = scan_source_inventory(resolved_root)
         except DomainViolation as exc:
@@ -1934,6 +1934,7 @@ class TaskAnalysisService:
         if state.manual_mappings:
             assert approved is not None
             self._validate_manual_mappings(
+                task_id=task_id,
                 source_root=unit_source_root,
                 expected_source_inventory_digest=snapshot_inventory_digest,
                 candidate_evidence=approved[3],
@@ -2061,6 +2062,7 @@ class TaskAnalysisService:
     def _validate_manual_mappings(
         self,
         *,
+        task_id: str,
         source_root: str,
         expected_source_inventory_digest: str,
         candidate_evidence: dict[str, Any],
@@ -2082,7 +2084,7 @@ class TaskAnalysisService:
             ):
                 ambiguous[torrent_path] = tuple(candidate_paths)
 
-        _, resolved_root = self._resolve_source_root(source_root)
+        _, resolved_root = self._resolve_source_root(source_root, task_id=task_id)
         try:
             inventory = scan_source_inventory(resolved_root)
         except DomainViolation as exc:
@@ -2125,19 +2127,22 @@ class TaskAnalysisService:
     def _require_task(self, task_id: str) -> None:
         self._task_version(task_id)
 
-    def _resolve_source_root(self, value: str) -> tuple[str, Path]:
+    def _resolve_source_root(
+        self,
+        value: str,
+        *,
+        task_id: str | None = None,
+    ) -> tuple[str, Path]:
         normalized = unicodedata.normalize("NFC", value.strip())
         has_windows_drive = (
             len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":"
         )
-        if (
-            not normalized
-            or "\x00" in normalized
-            or "\\" in normalized
-            or normalized.startswith("/")
-            or has_windows_drive
-        ):
-            raise _source_root_invalid("source_root 必须是 /data 下的 POSIX 相对目录")
+        if not normalized or "\x00" in normalized or "\\" in normalized or has_windows_drive:
+            raise _source_root_invalid("source_root 必须是安全 POSIX 路径")
+        if normalized.startswith("/"):
+            if task_id is None:
+                raise _source_root_invalid("绝对 source_root 只能由下载器任务的路径映射授权")
+            return self._resolve_downloader_source_root(task_id, normalized)
         if normalized == ".":
             parts: tuple[str, ...] = ()
         else:
@@ -2173,8 +2178,83 @@ class TaskAnalysisService:
                 raise _source_root_invalid("source_root 的中间路径不是目录")
         resolved = current.resolve(strict=True)
         if not resolved.is_relative_to(base) or not resolved.is_dir():
-            raise _source_root_invalid("source_root 必须解析到 /data 内的真实目录")
+            raise _source_root_invalid("source_root 必须解析到授权数据目录内的真实目录")
         return ("." if not parts else "/".join(parts), resolved)
+
+    def _resolve_downloader_source_root(self, task_id: str, value: str) -> tuple[str, Path]:
+        requested = Path(value)
+        if not requested.is_absolute() or ".." in requested.parts:
+            raise _source_root_invalid("下载器 source_root 必须是安全绝对路径")
+        with self._session_factory() as session:
+            task = TaskRepository(session).get(task_id)
+            if task is None:
+                raise _task_not_found()
+            downloader_id = task.source_downloader_id
+            if not downloader_id:
+                raise _source_root_invalid("绝对 source_root 仅允许用于绑定下载器的任务")
+            downloader = DownloaderRepository(session).get(downloader_id)
+            if downloader is None:
+                raise _source_root_invalid("来源下载器配置不存在")
+            roots = {
+                Path(item["container_prefix"])
+                for item in downloader.path_mappings
+                if isinstance(item, dict) and isinstance(item.get("container_prefix"), str)
+            }
+
+        candidates: list[tuple[int, Path, tuple[str, ...]]] = []
+        for root in roots:
+            if not root.is_absolute() or root == Path("/"):
+                continue
+            try:
+                relative_suffix = requested.relative_to(root)
+            except ValueError:
+                continue
+            candidates.append((len(root.parts), root, relative_suffix.parts))
+        if not candidates:
+            raise _source_root_invalid("下载器 source_root 不在该下载器授权的路径映射内")
+
+        _, root, suffix_parts = max(candidates, key=lambda item: item[0])
+        current = Path("/")
+        for part in root.parts[1:]:
+            current = current / part
+            try:
+                item_stat = current.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise _source_root_invalid("下载器路径映射根不可用") from exc
+            if stat.S_ISLNK(item_stat.st_mode):
+                raise _source_root_invalid("下载器路径映射根不能经过符号链接")
+            if not stat.S_ISDIR(item_stat.st_mode):
+                raise _source_root_invalid("下载器路径映射根必须是真实目录")
+        try:
+            resolved_root = root.resolve(strict=True)
+        except OSError as exc:
+            raise _source_root_invalid("下载器路径映射根不可用") from exc
+
+        current = root
+        for index, part in enumerate(suffix_parts):
+            if not part or part in {".", ".."}:
+                raise _source_root_invalid("下载器 source_root 包含不安全路径段")
+            current = current / part
+            try:
+                item_stat = current.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise ApplicationError(
+                    code="ANALYSIS_SOURCE_ROOT_NOT_FOUND",
+                    status=404,
+                    title="源目录不存在",
+                    detail="下载器 source_root 指向的目录不可见",
+                ) from exc
+            if stat.S_ISLNK(item_stat.st_mode):
+                raise _source_root_invalid("下载器 source_root 不能经过符号链接")
+            if index < len(suffix_parts) - 1 and not stat.S_ISDIR(item_stat.st_mode):
+                raise _source_root_invalid("下载器 source_root 的中间路径不是目录")
+        try:
+            resolved = current.resolve(strict=True)
+        except OSError as exc:
+            raise _source_root_invalid("下载器 source_root 不可访问") from exc
+        if not resolved.is_relative_to(resolved_root) or not resolved.is_dir():
+            raise _source_root_invalid("下载器 source_root 必须解析到授权映射内的真实目录")
+        return resolved.as_posix(), resolved
 
     def _resolve_execution_target_root(self, value: str) -> tuple[str, Path]:
         normalized = unicodedata.normalize("NFC", value.strip())

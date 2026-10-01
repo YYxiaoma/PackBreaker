@@ -104,6 +104,47 @@ class BackupPolicy(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class CookieCloudSetting(Base):
+    __tablename__ = "cookiecloud_setting"
+    __table_args__ = (
+        CheckConstraint("id = 'default'", name="singleton"),
+        CheckConstraint("sync_interval_minutes BETWEEN 5 AND 10080", name="sync_interval"),
+        CheckConstraint("request_timeout_seconds BETWEEN 1 AND 120", name="request_timeout"),
+        CheckConstraint(
+            "connection_status IN ('UNTESTED', 'OK', 'FAILED')", name="connection_status"
+        ),
+        CheckConstraint(
+            "last_sync_status IN ('NEVER', 'SUCCESS', 'FAILED')", name="last_sync_status"
+        ),
+        CheckConstraint("matched_sites >= 0", name="matched_sites_nonnegative"),
+        CheckConstraint("updated_sites >= 0", name="updated_sites_nonnegative"),
+        CheckConstraint("unmatched_domains >= 0", name="unmatched_domains_nonnegative"),
+        CheckConstraint("version >= 1", name="version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default="default")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    server_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    uuid: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    password_secret_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("secret.id", ondelete="SET NULL"), nullable=True
+    )
+    auto_sync: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sync_interval_minutes: Mapped[int] = mapped_column(nullable=False, default=30)
+    request_timeout_seconds: Mapped[int] = mapped_column(nullable=False, default=15)
+    connection_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
+    last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_sync_status: Mapped[str] = mapped_column(String(16), nullable=False, default="NEVER")
+    last_sync_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    matched_sites: Mapped[int] = mapped_column(nullable=False, default=0)
+    updated_sites: Mapped[int] = mapped_column(nullable=False, default=0)
+    unmatched_domains: Mapped[int] = mapped_column(nullable=False, default=0)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class Administrator(Base):
     __tablename__ = "administrator"
     __table_args__ = (

@@ -129,9 +129,9 @@ def normalize_base_url(kind: DownloaderKind, value: str) -> str:
 def normalize_path_mappings(
     rules: list[PathMappingRule],
     *,
-    allowed_root: Path,
+    allowed_root: Path | None = None,
 ) -> list[PathMappingRule]:
-    root = allowed_root.resolve(strict=False)
+    root = allowed_root.resolve(strict=False) if allowed_root is not None else None
     normalized: list[PathMappingRule] = []
     seen: set[tuple[str, str]] = set()
     for rule in rules:
@@ -140,7 +140,9 @@ def normalize_path_mappings(
         if not container.is_absolute():
             raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器路径必须是绝对路径")
         resolved = container.resolve(strict=False)
-        if not resolved.is_relative_to(root):
+        if resolved == Path("/"):
+            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器路径不能直接使用根目录 /")
+        if root is not None and not resolved.is_relative_to(root):
             raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器路径必须位于数据根目录内")
         key = (_remote_key(remote), str(resolved))
         if key in seen:
@@ -154,7 +156,7 @@ def map_remote_path(
     remote_path: str,
     rules: list[PathMappingRule],
     *,
-    allowed_root: Path,
+    allowed_root: Path | None = None,
 ) -> MappingMatch:
     normalized_remote = _normalize_remote(remote_path)
     candidates: list[tuple[int, int, PathMappingRule, tuple[str, ...]]] = []
@@ -169,9 +171,13 @@ def map_remote_path(
     if len(winners) != 1:
         raise DomainViolation(ErrorCode.MAPPING_AMBIGUOUS, "下载器路径同时命中多条等长映射")
     _, index, rule, suffix = winners[0]
-    mapped = Path(rule.container_prefix).joinpath(*suffix).resolve(strict=False)
-    root = allowed_root.resolve(strict=False)
-    if not mapped.is_relative_to(root):
+    prefix = Path(rule.container_prefix).resolve(strict=False)
+    if prefix == Path("/"):
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器映射根不能直接使用 /")
+    mapped = prefix.joinpath(*suffix).resolve(strict=False)
+    if not mapped.is_relative_to(prefix):
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "映射结果越过配置的容器映射根")
+    if allowed_root is not None and not mapped.is_relative_to(allowed_root.resolve(strict=False)):
         raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "映射结果越过数据根目录")
     return MappingMatch(index, mapped, normalized_remote)
 
@@ -192,15 +198,16 @@ def reverse_map_container_path_unique(
     container_path: Path,
     rules: list[PathMappingRule],
     *,
-    allowed_root: Path,
+    allowed_root: Path | None = None,
 ) -> str:
     resolved = container_path.resolve(strict=False)
-    root = allowed_root.resolve(strict=False)
-    if not resolved.is_relative_to(root):
+    if allowed_root is not None and not resolved.is_relative_to(allowed_root.resolve(strict=False)):
         raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器路径必须位于数据根目录内")
     candidates: list[tuple[int, int, PathMappingRule]] = []
     for index, rule in enumerate(rules):
         prefix = Path(rule.container_prefix).resolve(strict=False)
+        if prefix == Path("/"):
+            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器映射根不能直接使用 /")
         try:
             resolved.relative_to(prefix)
         except ValueError:

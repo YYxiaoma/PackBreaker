@@ -43,6 +43,7 @@ class AppSettings(BaseSettings):
     ai_telegram_poll_timeout_seconds: int = Field(default=20, ge=5, le=50)
     ai_telegram_poll_limit: int = Field(default=20, ge=1, le=100)
     backup_driver_interval_seconds: float = Field(default=60.0, ge=1.0, le=3600.0)
+    cookiecloud_driver_interval_seconds: float = Field(default=60.0, ge=5.0, le=3600.0)
 
     @field_validator("config_dir", "data_dir")
     @classmethod

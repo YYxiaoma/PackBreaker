@@ -10,8 +10,8 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11"></a>
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64%20%7C%20linux%2Farm64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64 and linux/arm64"></a>
-  <img src="https://img.shields.io/badge/latest_release-v1.0.0-2563EB" alt="latest release v1.0.0">
-  <img src="https://img.shields.io/badge/main-v1.0.0_released-16A34A" alt="main v1.0.0 released">
+  <img src="https://img.shields.io/badge/latest_release-v1.0.4-2563EB" alt="latest release v1.0.4">
+  <img src="https://img.shields.io/badge/main-v1.0.5_candidate-F59E0B" alt="main v1.0.5 candidate">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 
@@ -43,9 +43,9 @@ PackBreaker 是一个面向 PT 场景的**自动拆包辅种系统**。它从 qB
   </tr>
 </table>
 
-| **887** 后端测试（含发布收口回归） | **85** 前端测试（v1.0.0） | **qB 真实写链路** | **Transmission 真实写链路** |
+| **完整质量门** | **前端回归** | **qB 真实写链路** | **Transmission 真实写链路** |
 | ---: | ---: | ---: | ---: |
-| 全量通过 | 全量通过 | add / verify / start / remove 通过 | add / verify / start / remove 通过 |
+| `scripts/check.py` / `scripts/test.py` | 19 个测试文件 / 88 项测试 | add / verify / start / remove 通过 | add / verify / start / remove 通过 |
 
 ---
 
@@ -88,7 +88,8 @@ PackBreaker 不是“文件名看起来像就直接加种”的脚本。它把**
 | 🧲 **qB / Transmission** | 多实例管理、测试连接、实时上传/下载速度、任务总大小、剩余空间、任务数量、路径映射诊断 |
 | 🛠️ **99% / 异常修复** | 支持客户端下载校验、失败重试、repair、缺失附属文件处理、对账与人工修复入口 |
 | 🗂️ **任务中心** | 手动拆包、监控拆包、Cron、执行记录、成功/失败计数、重试、状态追踪 |
-| 🌐 **站点管理** | 固定可信站点 Profile、Cookie/API Key、UA、浏览器请求头仿真、独立代理、连接测试、用户详情 |
+| 🌐 **站点管理** | 11 个固定可信站点 Profile、Cookie/API Key、UA、浏览器请求头仿真、独立代理、连接测试 |
+| ☁️ **CookieCloud** | 对接 easychen/CookieCloud，支持本地解密、手动/自动同步、域名边界匹配与 SecretStore 密码保护 |
 | 🔔 **通知系统** | Telegram / Server酱、事件订阅、独立代理、测试消息、失败重试、站内 Inbox |
 | 🤖 **AI 助手** | OpenAI / OpenAI-compatible、自定义 Base URL / Model、只读 Tool、Telegram Long Polling 对话 |
 | 🧾 **日志与诊断** | 结构化日志、筛选查询、脱敏导出、系统健康、诊断包、trace_id |
@@ -187,31 +188,21 @@ stateDiagram-v2
 | **qBittorrent** | 5.2.3 / WebAPI 2.15.1 | 认证、Torrent 读取、路径映射、运行指标、添加、recheck、start、remove、恢复 |
 | **Transmission** | 4.1.3 / RPC 6.0.1 | JSON-RPC、Torrent 读取、路径映射、运行指标、add、verify、start、remove、恢复 |
 
-v0.1.6 真实环境验收中，qBittorrent 28/28、Transmission 3220/3220 个真实 Torrent save path 均成功映射到容器目录。
+历史真实环境验收中，qBittorrent 28/28、Transmission 3220/3220 个真实 Torrent save path 均成功映射到容器目录。v1.0.5 起，下载器路径映射不再要求容器侧路径位于 `/data`：可以直接使用 `/downloads`、`/downloads2`、`/mnt/media` 等管理员显式挂载的绝对目录；映射根本身就是授权边界，容器根 `/`、未映射绝对路径和符号链接逃逸仍会被拒绝。
 
 ---
 
 ## 🌐 站点支持
 
-正式可配置：
+v1.0.5 当前内置的 11 个站点 Profile 均可配置、启用并直接参与正式拆包任务：
 
 - **M-TEAM** — API Key
-- **HDTime** — Cookie
-- **HHClub** — Cookie
+- **Rousi Pro** — API Key + 独立下载 Cookie
+- **HDTime、HHClub、KeepFrds、HDHome、UBits、HDFans、BTSCHOOL、PTTime、聆音Club** — Cookie
 
-站点地址由后端受信任 Profile Registry 固定，避免把 Cookie / API Key 发送到用户误填的第三方域名。
+站点地址由后端受信任 Profile Registry 固定，避免把 Cookie / API Key 发送到用户误填的第三方域名。历史 `PENDING_ADAPTER` / `PENDING_REAL_VALIDATION` 标记不再作为当前站点的生产任务门禁；真实身份验证失败、凭据缺失、网络错误和不受信地址仍会失败关闭。
 
-已经进入 Registry、但仍处于 **PENDING_ADAPTER** 的计划站点：
-
-- KeepFrds
-- HDHome
-- UBits
-- HDFans
-- BTSCHOOL
-- PTTime
-- Rousi Pro
-
-这些站点会在界面中标明“待适配”，在适配器、共享契约测试与真实只读验收完成前，前端和后端都会阻止保存或探测。
+Cookie 站点可通过系统设置中的 **CookieCloud** 对接 [easychen/CookieCloud](https://github.com/easychen/CookieCloud) 自动更新凭据。Rousi Pro 的 CookieCloud 同步只更新独立下载 Cookie，不会覆盖主 API Key。
 
 ---
 
@@ -273,25 +264,26 @@ PackBreaker 对“自动化”采用偏保守的设计：
 
 ## 🖥️ 管理界面
 
-v0.1.6 管理端覆盖：
+当前管理端覆盖：
 
 - 总览 Dashboard
-- 任务中心
-- 预演与确认
+- 任务中心（手动拆包 / 监控拆包 / 执行记录）
 - 站点管理
 - 下载器管理
-- 清理与对账
 - 日志中心
 - 系统设置
   - 通知渠道
+  - CookieCloud
   - AI 助手
-  - 备份策略
+  - 备份恢复
 - 用户抽屉
   - Inbox
   - 深浅主题
   - 修改密码
   - 退出登录
 - About / 版本更新
+
+“预演与确认”“清理与对账”已经不再作为独立页面存在，相关能力被整合到统一任务生命周期、Execution Plan、风险检查、自动校验与恢复/对账流程中。
 
 桌面和移动端共享同一套功能模型，关键操作均保留明确状态和失败原因。
 
@@ -318,7 +310,11 @@ services:
       PACKBREAKER_TIMEZONE: "Asia/Shanghai"
     volumes:
       - /root/packbreaker/config:/config
+      # 可选：目录来源 / 默认输出继续使用统一 /data 根。
       - /path/to/common/storage:/data
+      # v1.0.5：下载器来源也可直接使用独立挂载，无需重复挂到 /data 下。
+      - /volume2/videos/downloads:/downloads
+      - /volume3/videos2/downloads:/downloads2
       # 可选：需要在 Web 中一键升级时挂载。
       - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
@@ -331,7 +327,7 @@ services:
       - no-new-privileges:true
 ```
 
-把 `/path/to/common/storage` 替换为 qBittorrent / Transmission 与 PackBreaker 都能访问的公共媒体父目录。源文件与 Hardlink 目标应尽量位于同一文件系统，否则创建 Hardlink 时会因 `EXDEV` 失败。
+`/data` 仍适合目录来源和默认输出目录，但下载器来源不再依赖它。若下载器自身保存到 `/downloads` / `/downloads2`，只要同一宿主目录直接挂载到 PackBreaker 的对应路径，并在下载器配置里建立 `/downloads → /downloads` 等映射即可。源文件与 Hardlink 目标是否可链接仍以真实路径诊断和 `st_dev` 为准，跨文件系统会因 `EXDEV` 失败。
 
 启动：
 
@@ -374,6 +370,8 @@ docker run -d \
   -p 8000:8000 \
   -v /root/packbreaker/config:/config \
   -v /path/to/common/storage:/data \
+  -v /volume2/videos/downloads:/downloads \
+  -v /volume3/videos2/downloads:/downloads2 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/yyxiaoma/packbreaker:latest
 ```
@@ -432,28 +430,22 @@ uv run python scripts/test.py
 
 ## 📊 当前状态
 
-**最新正式版本为 v1.0.0**，支持单个 Docker 镜像在 `linux/amd64` 和 `linux/arm64`（aarch64）上运行。[v1.0.0 GitHub Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.0) 已发布，使用以下完整不可变 digest 安装和升级，不能把可移动的 `stable/latest` 当作生产镜像身份。
+**最新正式版本为 v1.0.4**，支持单个 Docker 镜像在 `linux/amd64` 和 `linux/arm64`（aarch64）上运行。[v1.0.4 GitHub Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.4) 已公开发布；生产安装和升级建议使用完整不可变 digest，而不是把可移动的 `stable/latest` 当作镜像身份。
 
-- 发布源代码 Tag 指向 commit：`ce86939224301315092b27621830560bf8438d58`。
-- 正式镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4`。
-- [正式恢复发布流水线 `35507181886`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35507181886) 已使用**同一已推送镜像摘要**通过原生 AMD64 的 v0.1.9 → v1.0.0 → v0.1.9 升级/回滚、原生 ARM64 和隔离 QEMU ARM64 的启动/备份门禁，并完成 GitHub Release 资产上传后回读。
-- 已独立下载并校验三份 Release 资产；GHCR `1.0.0`、`stable`、`latest` 均指向同一 v1.0.0 digest，旧版 `0.1.9` 标签仍保留原 digest。先前失败的首次发布和恢复尝试保留原始运行记录，详见 [发布流程](./docs/release-process.md)。
+- 正式源码 commit：`bf33b03c761c28aa8f798a46d7a1a205c400dbe8`。
+- 正式镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:3d1dd66e0482d1f9fe5572cbfc32bc8e1adfad98e09866039e9d073e75ba56fa`。
+- v1.0.4 已完成 AMD64、隔离 QEMU ARM64、原生 ARM64 的不可变镜像回读、Web updater、失败自动回滚、匿名卷保留以及 Release 资产校验；详见 [v1.0.4 正式发布与受控恢复记录](./docs/v1.0.4-release.md)。
 
-**上一正式版本 v0.1.9 的历史发布证据**：[Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v0.1.9) / [Actions run `35429394091`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35429394091)；AMD64 不可变 digest 为 `sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。
+**当前 `main` 正在开发 v1.0.5 candidate，尚未正式发布。** 本轮重点包括：
 
-此前 v0.1.8 的正式发布证据包括：
+- 当前 11 个内置站点全部解除历史未验证门禁，可按真实配置状态参与拆包任务；
+- 对接 easychen/CookieCloud，支持本地解密、测试连接、立即同步与自动同步；
+- 下载器来源路径不再强制位于 `/data`，可直接授权 `/downloads`、`/mnt/media` 等独立挂载目录；
+- v1.0.4 → v1.0.5 数据库迁移、版本关系、静态质量门和完整测试已通过；
+- 正式候选 Docker E2E 将继续验证 v1.0.4 → v1.0.5 Web updater、自动回滚、双架构运行，以及独立 `/downloads` / `/downloads2` 挂载在容器重建后仍原样保留；
+- 真实外部 CookieCloud 服务验收需要专用的本地 `runtime/cookiecloud-acceptance.secret`，不会把凭据写入仓库。
 
-- 后端 759 tests passed
-- 前端 17 个测试文件 / 81 tests passed
-- production build 通过
-- Candidate Docker E2E run `35351598555` 已完成 candidate 镜像构建、`v0.1.7 → v0.1.8 → v0.1.7` 升级/回滚、真实 updater、自动回滚与 Compose label preservation
-- main 上的 Candidate Docker E2E run `35353218750` 再次通过
-- main CI run `35365772447` 已完成 quality、browser-e2e、container 与 updater-e2e 四项门禁
-- qBittorrent 与 Transmission 的真实 add / verify / start / remove / rollback 安全语义已完成现场验收
-- HHClub fresh candidate 已完成 Analyze → Review → Gate → Plan → qB add/start → DONE → release 的真实完整任务闭环，并在收尾后保持零验收残留
-- Web / Telegram Approval、监控高风险预授权与 startup recovery 已完成真实验收
-- Release workflow run `35366864779` 已完成 release quality gates、`v0.1.7 → v0.1.8 → v0.1.7` 升级/回滚、真实 updater helper E2E、linux/amd64 镜像发布、SPDX SBOM、release manifest、SHA256SUMS、GitHub Release 与 `stable/latest` 推进
-- 正式不可变镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:f114296a40c3bc68f036071382ea3029818fc909ef78a2c07a5ab382e6c4d0d3`
+研发与验收细节见 [v1.0.5 研发设计与验收文档](./docs/v1.0.5-development.md)。
 
 完整支持边界和已知限制请看：
 

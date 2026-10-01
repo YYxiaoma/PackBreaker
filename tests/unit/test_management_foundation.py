@@ -16,7 +16,7 @@ from backend.app.domain.site_config import (
 
 def test_site_profile_registry_lists_supported_and_planned_origins() -> None:
     assert set(SITE_PROFILE_REGISTRY) == set(SiteKind)
-    assert {SiteKind.MTEAM, SiteKind.HDTIME, SiteKind.HHCLUB} == PERSISTED_SITE_KINDS
+    assert frozenset(SiteKind) == PERSISTED_SITE_KINDS
     assert frozenset(SiteKind) == CONFIGURABLE_SITE_KINDS
     assert trusted_site_base_url(SiteKind.MTEAM) == "https://kp.m-team.cc"
     assert trusted_site_base_url(SiteKind.HDTIME) == "https://hdtime.org"
@@ -31,10 +31,8 @@ def test_site_profile_registry_lists_supported_and_planned_origins() -> None:
     assert required_site_credential_kind(SiteKind.MTEAM) is SiteCredentialKind.API_KEY
     assert required_site_credential_kind(SiteKind.HHCLUB) is SiteCredentialKind.COOKIE
     assert required_site_credential_kind(SiteKind.ROUSI_PRO) is SiteCredentialKind.API_KEY
-    for kind in set(SiteKind) - PERSISTED_SITE_KINDS:
-        assert (
-            SITE_PROFILE_REGISTRY[kind].support_status is SiteSupportStatus.PENDING_REAL_VALIDATION
-        )
+    for kind in SiteKind:
+        assert SITE_PROFILE_REGISTRY[kind].support_status is SiteSupportStatus.SUPPORTED
 
 
 def test_cookie_profiles_support_controlled_request_headers() -> None:

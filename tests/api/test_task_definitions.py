@@ -1083,8 +1083,9 @@ def test_manual_downloader_task_materializes_selected_torrent_into_safe_pending_
     torrent_hash = "a" * 40
     try:
         site_id = _create_ready_site(app)
-        downloader_id = _create_ready_qb_downloader(app)
-        movie_root = app.state.settings.data_dir / "source" / "Movie.Pack"
+        standalone_source = tmp_path / "standalone-downloader-mount"
+        downloader_id = _create_ready_qb_downloader(app, source_root=standalone_source)
+        movie_root = standalone_source / "Movie.Pack"
         movie_root.mkdir(parents=True)
         (movie_root / "Movie.2024.1080p.mkv").write_bytes(b"synthetic-video")
         (movie_root / "sample.mkv").write_bytes(b"sample")
@@ -1241,7 +1242,7 @@ def test_manual_downloader_task_materializes_selected_torrent_into_safe_pending_
             assert task.source_hash == torrent_hash
             assert task.checkpoint["task_definition_id"] == definition_id
             assert task.checkpoint["site_id"] == site_id
-            assert task.checkpoint["source_root"] == "source/Movie.Pack"
+            assert task.checkpoint["source_root"] == movie_root.resolve().as_posix()
 
             task.status = "FAILED"
             task.error_code = "SYNTHETIC_UNPACK_FAILURE"
@@ -1310,7 +1311,7 @@ def test_manual_downloader_task_materializes_selected_torrent_into_safe_pending_
             assert rerun.run_number == 2
             assert rerun.checkpoint["task_definition_id"] == definition_id
             assert rerun.checkpoint["site_id"] == site_id
-            assert rerun.checkpoint["source_root"] == "source/Movie.Pack"
+            assert rerun.checkpoint["source_root"] == movie_root.resolve().as_posix()
             assert rerun.checkpoint["task_execution_id"] == retry_body["id"]
             logical_runs = tuple(
                 session.scalars(
@@ -1393,14 +1394,18 @@ def _create_ready_site(app: FastAPI, *, enabled: bool = True) -> str:
     return site_id
 
 
-def _create_ready_qb_downloader(app: FastAPI) -> str:
+def _create_ready_qb_downloader(
+    app: FastAPI,
+    *,
+    source_root: Path | None = None,
+) -> str:
     secret_id = app.state.secret_store.put(
         kind="DOWNLOADER_CREDENTIAL",
         value=b'{"username":"admin","password":"synthetic-password","api_key":null}',
     )
     downloader_id = new_uuid()
     now = datetime.now(UTC)
-    source_root = app.state.settings.data_dir / "source"
+    source_root = source_root or (app.state.settings.data_dir / "source")
     source_root.mkdir(parents=True, exist_ok=True)
     with app.state.runtime.session_factory() as session:
         session.add(

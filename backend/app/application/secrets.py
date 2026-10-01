@@ -47,19 +47,28 @@ class SecretStore:
 
     def get(self, secret_id: str, *, expected_kind: str | None = None) -> bytes:
         with self._session_factory() as session:
-            record = SecretRepository(session).get(secret_id)
-            if record is None:
-                raise SecretNotFound(secret_id)
-            if expected_kind is not None and record.kind != expected_kind:
-                # Do not decrypt or surface the referenced secret's ID, kind,
-                # ciphertext or plaintext when an imported relation is wrong.
-                raise SecretKindMismatch("加密凭据用途与引用类型不一致")
-            return self._cipher.decrypt(
-                secret_id=record.id,
-                kind=record.kind,
-                key_version=record.key_version,
-                ciphertext=record.ciphertext,
-            )
+            return self.get_in_session(session, secret_id, expected_kind=expected_kind)
+
+    def get_in_session(
+        self,
+        session: Session,
+        secret_id: str,
+        *,
+        expected_kind: str | None = None,
+    ) -> bytes:
+        record = SecretRepository(session).get(secret_id)
+        if record is None:
+            raise SecretNotFound(secret_id)
+        if expected_kind is not None and record.kind != expected_kind:
+            # Do not decrypt or surface the referenced secret's ID, kind,
+            # ciphertext or plaintext when an imported relation is wrong.
+            raise SecretKindMismatch("加密凭据用途与引用类型不一致")
+        return self._cipher.decrypt(
+            secret_id=record.id,
+            kind=record.kind,
+            key_version=record.key_version,
+            ciphertext=record.ciphertext,
+        )
 
     def delete_in_session(self, session: Session, secret_id: str) -> None:
         SecretRepository(session).delete(secret_id)

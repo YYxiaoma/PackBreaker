@@ -374,6 +374,20 @@ def test_task_analyze_rejects_traversal_and_symlink_source_roots(tmp_path: Path)
         )
         assert windows_drive.status_code == 422
         assert windows_drive.json()["code"] == "ANALYSIS_SOURCE_ROOT_INVALID"
+
+        downloader_id = _create_ready_qb_target(app, settings)
+        with app.state.runtime.session_factory() as session:
+            task = session.get(UnpackTask, task_id)
+            assert task is not None
+            task.source_downloader_id = downloader_id
+            session.commit()
+        unmapped_absolute = client.post(
+            f"/api/v1/tasks/{task_id}/actions",
+            headers=_csrf(client),
+            json={"action": "analyze", "source_root": str(outside)},
+        )
+        assert unmapped_absolute.status_code == 422
+        assert unmapped_absolute.json()["code"] == "ANALYSIS_SOURCE_ROOT_INVALID"
     finally:
         client.__exit__(None, None, None)
 

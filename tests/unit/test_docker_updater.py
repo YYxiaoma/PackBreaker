@@ -147,6 +147,44 @@ def test_replacement_plan_can_preserve_docker_socket_for_single_container_upgrad
     assert "/var/run/docker.sock:/var/run/docker.sock" in host["Binds"]
 
 
+def test_replacement_plan_preserves_arbitrary_downloader_bind_mounts() -> None:
+    container = _container()
+    container["HostConfig"]["Binds"].extend(
+        [
+            "/volume2/videos/downloads:/downloads",
+            "/volume3/videos2/downloads:/downloads2",
+        ]
+    )
+    container["Mounts"].extend(
+        [
+            {
+                "Type": "bind",
+                "Source": "/volume2/videos/downloads",
+                "Destination": "/downloads",
+                "RW": True,
+            },
+            {
+                "Type": "bind",
+                "Source": "/volume3/videos2/downloads",
+                "Destination": "/downloads2",
+                "RW": True,
+            },
+        ]
+    )
+
+    plan = build_replacement_plan(
+        container,
+        _old_image(),
+        target_image=_TARGET,
+        allowed_image=_OFFICIAL,
+        preserve_docker_socket=True,
+    )
+
+    binds = plan.create_payload["HostConfig"]["Binds"]
+    assert "/volume2/videos/downloads:/downloads" in binds
+    assert "/volume3/videos2/downloads:/downloads2" in binds
+
+
 def _container_with_implicit_data_volume() -> dict[str, Any]:
     container = _container()
     binds = container["HostConfig"]["Binds"]

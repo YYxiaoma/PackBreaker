@@ -148,7 +148,7 @@ function resetDraft() {
 
 function openCreate() {
   resetDraft();
-  draft.mappings.push({ remote_prefix: '/downloads', container_prefix: '/data/downloads' });
+  draft.mappings.push({ remote_prefix: '/downloads', container_prefix: '/downloads' });
   dialog.value = true;
 }
 
@@ -167,7 +167,7 @@ function openEdit(item: Downloader) {
 }
 
 function addMapping() {
-  draft.mappings.push({ remote_prefix: '', container_prefix: '/data/downloads2' });
+  draft.mappings.push({ remote_prefix: '', container_prefix: '' });
 }
 
 function removeMapping(index: number) {
@@ -204,13 +204,12 @@ function validateDraft(): boolean {
     return false;
   }
   if (
-    draft.mappings.some((mapping) =>
-      /^\/(?:downloads|downloads2)(?:\/|$)/.test(mapping.container_prefix.trim()),
-    )
+    draft.mappings.some((mapping) => {
+      const containerPath = mapping.container_prefix.trim();
+      return !containerPath.startsWith('/') || containerPath === '/';
+    })
   ) {
-    ElMessage.warning(
-      '左侧填写下载器路径 /downloads 或 /downloads2；右侧填写 PackBreaker 数据根目录 /data 下的挂载路径，例如 /data/downloads 或 /data/downloads2。请确保宿主机目录已挂载到对应位置。',
-    );
+    ElMessage.warning('PackBreaker 容器路径必须是绝对路径，且不能直接使用容器根目录 /');
     return false;
   }
   return true;
@@ -627,7 +626,7 @@ async function remove(item: Downloader) {
           <el-button size="small" @click="addMapping"><Plus :size="14" />添加规则</el-button>
         </div>
         <el-alert
-          title="左侧是下载器看到的路径（/downloads、/downloads2），右侧是 PackBreaker 容器内的数据路径（/data/downloads、/data/downloads2）。请先将相应目录挂载在 /data 下，不能把右侧直接填写为 /downloads。"
+          title="左侧是下载器看到的路径；右侧是同一目录在 PackBreaker 容器内的实际挂载路径。右侧可使用 /downloads、/mnt/media 等任意已挂载绝对路径，不再要求位于 /data 下；出于安全原因不能填写容器根目录 /。"
           type="info"
           :closable="false"
           class="section-space"
@@ -637,7 +636,7 @@ async function remove(item: Downloader) {
           <span>→</span>
           <el-input
             v-model="mapping.container_prefix"
-            placeholder="容器路径，例如 /data/downloads"
+            placeholder="容器路径，例如 /downloads 或 /mnt/media/downloads"
           />
           <el-button link type="danger" aria-label="删除路径映射" @click="removeMapping(index)">
             <Trash2 :size="16" />
@@ -672,7 +671,10 @@ async function remove(item: Downloader) {
               />
             </el-form-item>
             <el-form-item label="容器内已存在目标目录">
-              <el-input v-model="probe.target_directory" placeholder="/data/seeding/test-target" />
+              <el-input
+                v-model="probe.target_directory"
+                placeholder="/downloads/seeding 或 /mnt/media/seeding"
+              />
             </el-form-item>
           </el-form>
         </div>

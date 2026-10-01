@@ -12,6 +12,7 @@ from starlette.responses import Response
 
 from backend.app.api.ai_agent import router as ai_agent_router
 from backend.app.api.auth import router as auth_router
+from backend.app.api.cookiecloud import router as cookiecloud_router
 from backend.app.api.downloaders import router as downloader_router
 from backend.app.api.health import router as health_router
 from backend.app.api.notifications import router as notification_router
@@ -27,6 +28,8 @@ from backend.app.application.ai_telegram_driver import AITelegramDriver
 from backend.app.application.ai_tools import AIToolService
 from backend.app.application.auth import AuthService
 from backend.app.application.backup_schedule import BackupDriver, BackupScheduleService
+from backend.app.application.cookiecloud import CookieCloudService
+from backend.app.application.cookiecloud_driver import CookieCloudDriver
 from backend.app.application.downloader_operations import (
     QbittorrentAddOperationService,
     QbittorrentJournalReconcileService,
@@ -258,6 +261,18 @@ def create_app(
             reliability_registry=site_reliability_registry,
         )
         app.state.site_service = site_service
+        cookiecloud_service = CookieCloudService(
+            resolved_runtime.session_factory,
+            secret_store,
+            site_service=site_service,
+        )
+        cookiecloud_service.ensure_default()
+        app.state.cookiecloud_service = cookiecloud_service
+        cookiecloud_driver = CookieCloudDriver(
+            cookiecloud_service,
+            interval_seconds=resolved_settings.cookiecloud_driver_interval_seconds,
+        )
+        app.state.cookiecloud_driver = cookiecloud_driver
         app.state.task_definition_service = TaskDefinitionService(
             resolved_runtime.session_factory,
             data_root=resolved_settings.data_dir,
@@ -466,6 +481,7 @@ def create_app(
             approval_service=task_telegram_approval_service,
         )
         app.state.ai_telegram_driver = ai_telegram_driver
+        cookiecloud_driver.start()
         backup_driver.start()
         ai_telegram_driver.start()
         try:
@@ -473,6 +489,7 @@ def create_app(
         finally:
             await ai_telegram_driver.stop()
             await backup_driver.stop()
+            await cookiecloud_driver.stop()
             await notification_driver.stop()
             await task_definition_driver.stop()
             await task_driver.stop()
@@ -562,6 +579,7 @@ def create_app(
 
     app.include_router(ai_agent_router, prefix="/api/v1")
     app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(cookiecloud_router, prefix="/api/v1")
     app.include_router(downloader_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(notification_router, prefix="/api/v1")

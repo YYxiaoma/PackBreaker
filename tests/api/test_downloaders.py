@@ -147,6 +147,65 @@ def _install_transmission_probe(app: FastAPI) -> None:
     )
 
 
+def test_downloader_mapping_and_diagnostic_can_use_mount_outside_data_root(
+    tmp_path: Path,
+) -> None:
+    client, _app = _authenticated_client(tmp_path)
+    try:
+        mount_root = tmp_path / "standalone-downloads"
+        mount_root.mkdir()
+        source = mount_root / "sample.mkv"
+        source.write_bytes(b"synthetic")
+        target = mount_root / "seeding"
+        target.mkdir()
+
+        created = client.post(
+            "/api/v1/downloaders",
+            headers=_csrf(client),
+            json={
+                "name": "独立挂载 qB",
+                "type": "QBITTORRENT",
+                "base_url": "http://qb.invalid:8080/",
+                "credential": {
+                    "username": "admin",
+                    "password": "synthetic-downloader-password",
+                },
+                "path_mappings": [
+                    {
+                        "remote_prefix": "/downloads",
+                        "container_prefix": str(mount_root),
+                    }
+                ],
+            },
+        )
+        assert created.status_code == 201
+        assert created.json()["path_mappings"] == [
+            {
+                "remote_prefix": "/downloads",
+                "container_prefix": str(mount_root.resolve()),
+            }
+        ]
+
+        diagnosed = client.post(
+            f"/api/v1/downloaders/{created.json()['id']}/path-diagnostics",
+            headers=_csrf(client),
+            json={
+                "probes": [
+                    {
+                        "remote_path": "/downloads/sample.mkv",
+                        "target_directory": str(target),
+                    }
+                ]
+            },
+        )
+        assert diagnosed.status_code == 200
+        assert diagnosed.json()["status"] == "ok"
+        assert diagnosed.json()["all_mappings_verified"] is True
+        assert list(target.iterdir()) == []
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_unsaved_downloader_probe_does_not_persist_config_or_secret(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     canary = "PACKBREAKER-UNSAVED-PROBE-CANARY-91f3"

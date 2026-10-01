@@ -2,7 +2,7 @@
 
 ## 1. 部署目标
 
-v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linux/arm64`（aarch64）两种 Linux Docker 平台；单容器内运行 FastAPI、前端静态资源、调度器和单进程 worker。SQLite、日志、密钥与备份保存在 `/config`，媒体和硬链接目标通过 `/data` 暴露。v0.1.9 及更早正式版本仅有 AMD64 镜像，ARM64 没有旧版本可用于跨架构回滚；部署须选择主机对应的平台并记录完整正式 digest。
+v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linux/arm64`（aarch64）两种 Linux Docker 平台；单容器内运行 FastAPI、前端静态资源、调度器和单进程 worker。SQLite、日志、密钥与备份保存在 `/config`。`/data` 仍是目录来源与默认输出目录的管理根；v1.0.5 起，下载器来源也可以通过下载器路径映射授权到 `/downloads`、`/mnt/media` 等其它显式挂载目录。v0.1.9 及更早正式版本仅有 AMD64 镜像，ARM64 没有旧版本可用于跨架构回滚；部署须选择主机对应的平台并记录完整正式 digest。
 
 首版不支持 Kubernetes、多副本或共享数据库。容器必须使用 init/锁机制确保同一 `/config` 只有一个活动 worker。
 
@@ -28,47 +28,35 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 | 容器路径 | 内容 | 权限 |
 | --- | --- | --- |
 | `/config` | SQLite、加密密钥文件、日志、备份、运行锁 | 应用用户读写，目录建议 0700 |
-| `/data` | 媒体源、硬链接目标、受控 staging | 按路径策略读/写；不能包含应用秘密 |
+| `/data` | 默认目录来源、输出目录、受控 staging | 按路径策略读/写；不能包含应用秘密 |
 | `/tmp` | 临时解析和导出 | 容器临时空间，定期清理 |
 | `/var/run/docker.sock` | 单容器一键升级或独立 `packbreaker-updater` helper 使用 | 挂载即拥有 Docker 主机级管理权限，只应在受信宿主机启用 |
 
-硬链接要求源与目标在内核允许的同一挂载/文件系统内。部署时应把源目录和目标目录的共同父目录一次性挂载到 `/data`，再通过应用允许根目录限制访问。把两个子目录分别 bind mount 可能产生 `EXDEV`，即使宿主机底层存储相同。
+硬链接要求源与目标在内核允许的同一挂载/文件系统内。目录来源和默认输出仍可使用 `/data`；下载器来源可挂载到任意显式绝对路径，并由对应下载器的路径映射授权。若源、目标跨不同 mount，仍可能产生 `EXDEV`，即使宿主机底层存储相同，因此必须以 PackBreaker 路径诊断结果为准。
 
 应用启动和保存下载器配置时执行路径诊断：容器可见性、device ID、普通文件、权限、符号链接、创建临时硬链接和清理测试。诊断未通过的映射不能启用自动执行。
 
-### 下载器使用 `/downloads`、`/downloads2` 时的路径映射
+### v1.0.5 下载器路径映射：不再强制位于 `/data`
 
-下载器的保存路径（远程路径）与 **PackBreaker 容器内**可访问的文件路径不是同一个字段。默认 `PACKBREAKER_DATA_DIR=/data` 时，下载器配置表单应填写：
+下载器的保存路径（远程路径）与 **PackBreaker 容器内**可访问的路径仍是两个独立字段，但 v1.0.5 不再要求右侧必须位于 `PACKBREAKER_DATA_DIR`。右侧可以直接填写管理员已经挂载到 PackBreaker 容器中的绝对路径：
 
 | 下载器路径（左侧） | PackBreaker 容器路径（右侧） |
 | --- | --- |
-| `/downloads` | `/data/downloads` |
-| `/downloads2` | `/data/downloads2` |
+| `/downloads` | `/downloads` |
+| `/downloads2` | `/downloads2` |
+| `/volume/media` | `/mnt/media` |
 
-前提是相应文件**已经**在 PackBreaker 容器的 `/data/downloads`、`/data/downloads2` 可见。仓库的 Compose 默认将主机 `${PACKBREAKER_DATA_PATH:-./runtime/data}` 整体挂载到 `/data`；若主机下载目录不在该父目录下，应在部署时调整公共父目录挂载，并确认容器内路径；修改挂载通常需要重建容器。不要为了使保存通过而将数据根目录改为 `/`，也不要简单绕过容器路径边界校验。旧映射变更后，原有执行计划必须重新进行路径诊断与授权。
+每一条 `container_prefix` 本身就是该下载器的授权根。PackBreaker 会拒绝相对路径和容器根 `/`，并在任务物化、Analyze、preflight、人工复验等阶段重新确认绝对来源仍位于任务绑定下载器的已配置映射内。路径中的 `..`、符号链接逃逸、丢失的映射或下载器都会失败关闭。
 
-例如：左侧写 `/downloads`、右侧也写 `/downloads` 会被拒绝，因为后者不在 `/data` 下；这与下载器是否真正连接成功无关。若只挂载 `/downloads` 而未挂载到 `/data/downloads`，请先修正 Docker 挂载。通过保存校验也不代表已通过启用所需的文件、目录、权限和硬链接诊断。
+现有 `/data/...` 映射保持兼容。取消下载器来源的 `/data` 限制不等于保证跨 mount 硬链接可行；路径诊断仍会检查真实文件、权限、`st_dev`、正反向映射并实际创建/清理临时 hardlink。
 
-#### Synology Container Manager：保留现有 `/data` 卷的增量挂载方案
+#### Synology Container Manager：直接复用现有下载目录挂载
 
-在一种已经确认的真实部署中，`/volume2/videos/downloads` → `/downloads`、`/volume3/videos2/downloads` → `/downloads2`；`/data` 是已有独立 Docker 数据卷，`/config` 另有持久挂载。此时不需要更改下载器原有路径，**不能仅凭原有两个挂载就把右侧配置为 `/downloads`**。拟重建后的卷清单应在保留原有所有卷及其身份的前提下追加：
+若已有 `/volume2/videos/downloads` → `/downloads`、`/volume3/videos2/downloads` → `/downloads2`，v1.0.5 可以直接把下载器路径映射配置为 `/downloads → /downloads`、`/downloads2 → /downloads2`，无需为了下载器来源校验再追加 `/data/downloads`、`/data/downloads2` 的重复挂载。
 
-| Synology 主机目录 | 追加的 PackBreaker 容器目录 |
-| --- | --- |
-| `/volume2/videos/downloads` | `/data/downloads` |
-| `/volume3/videos2/downloads` | `/data/downloads2` |
+`/config` 与已有 `/data` 卷（若使用）仍应保持原身份；本版本不会自动移动媒体、删除卷或改宿主目录。目录来源与默认输出仍使用 `PACKBREAKER_DATA_DIR`，因此是否继续挂载 `/data` 取决于这些功能是否需要访问该数据根。
 
-`/config` 原宿主机路径与 `/data` **原 Docker 卷的精确名称/来源**必须保持不变，不应创建一个空白 `/data` 新卷；`/downloads`、`/downloads2` 原挂载可保留供旧配置使用。应用原有 `/data` 文件不会因为增加子目录挂载而自动迁移；如果原卷已有同名目录，新的子挂载会暂时遮挡其内容，必须先只读核对并处理冲突，不能直接覆盖。重建前先按既有备份流程获得一致性配置备份，并记录旧镜像不可变摘要、网络、端口、环境变量名（不要导出秘密值）、卷及权限。Container Manager 不同版本的「编辑/复制设置」行为不同，**不能假定复制设置会自动复用匿名 `/data` 卷**；若不能指定旧卷，先停止操作并改用能准确重挂旧卷的明确方案。生产容器的停止、重建和存储调整必须由管理员另行确认执行；本示例并未对生产容器作任何更改。
-
-仅供核对卷身份的**只读**命令（不会展示容器环境变量与凭据）：
-
-```bash
-docker inspect packbreaker --format '{{range .Mounts}}{{if or (eq .Destination "/data") (eq .Destination "/config")}}{{printf "%s type=%s name=%s source=%s\n" .Destination .Type .Name .Source}}{{end}}{{end}}'
-```
-
-原宿主目录分别位于 `/volume2`、`/volume3`，不能假定两个目录间允许硬链接。即使在同一个宿主文件系统，Docker 不同 bind mount 之间也可能遇到 `EXDEV`；必须在目标所处的真实路径执行现有受控路径诊断，不可据「目录存在」断言硬链接可用。只读排查阶段不对真实文件执行创建/删除试验。
-
-**不强制 `/data` 是否可选？** 在当前版本中，数据根目录是任务扫描、执行计划、硬链接、清理/回滚和文件系统安全网关共同依赖的单一授权边界，并非下载器表单的孤立输入限制。可以单独设计「管理员明确授权的多个数据根目录」作为未来功能，但必须逐一证明所有任务与写入/回滚链路对跨根路径、挂载点、软链接、device ID 及历史计划的失败关闭；不能通过直接删除 `is_relative_to(root)`、将 `PACKBREAKER_DATA_DIR` 设置为 `/` 或创建指向根目录外的软链接实现。
+原宿主目录分别位于 `/volume2`、`/volume3` 时，不能假定两个目录间允许硬链接。即使在同一个宿主文件系统，Docker 不同 bind mount 之间也可能遇到 `EXDEV`；必须执行受控路径诊断，以真实 hardlink probe 结果决定是否允许执行。
 
 ## 4. 启动配置
 
@@ -122,11 +110,11 @@ docker run -d \
   ghcr.io/yyxiaoma/packbreaker:latest
 ```
 
-需要访问媒体目录时，仍应按实际公共父目录额外挂载 `/data`。`docker.sock` 等价于 Docker 主机级管理权限，因此该易用模式只应部署在受信宿主机；PackBreaker 的升级 API 仍只接受官方 Release 的 `ghcr.io/yyxiaoma/packbreaker@sha256:<digest>`，并只重建名为 `packbreaker` 的受支持单容器拓扑。
+需要访问媒体目录时，可继续使用 `/data` 作为统一数据根，也可将下载器来源直接挂载为 `/downloads`、`/mnt/media` 等路径并在下载器配置中建立对应映射。`docker.sock` 等价于 Docker 主机级管理权限，因此该易用模式只应部署在受信宿主机；PackBreaker 的升级 API 仍只接受官方 Release 的 `ghcr.io/yyxiaoma/packbreaker@sha256:<digest>`，并只重建名为 `packbreaker` 的受支持单容器拓扑。
 
 若不愿把 Docker socket 授予主容器，仍可采用兼容的最小权限模式：主 PackBreaker 不挂 docker.sock，另外常驻 `packbreaker-updater`，二者共享同一个 `/config`。独立 helper 使用 `/config/updater/updater.sock` + 随机 token 接受受限升级请求。该模式继续受支持，但不再是独立 `docker run` 的默认易用部署。
 
-如果使用自定义 `PUID`/`PGID`，应确保 `/data` 内需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限；Web 一键升级还要求主进程身份能够访问挂载的 Docker socket。`0` 是有效值；`PUID=0`、`PGID=0` 时服务进程保持 root 身份运行。入口不会为了方便而修改媒体树所有权。默认仓库 `compose.yaml` 不授予 Docker 管理权限；需要 Web 升级时可由用户显式取消 docker.sock 挂载注释。
+如果使用自定义 `PUID`/`PGID`，应确保 `/data` 以及所有下载器显式映射目录中需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限；Web 一键升级还要求主进程身份能够访问挂载的 Docker socket。`0` 是有效值；`PUID=0`、`PGID=0` 时服务进程保持 root 身份运行。入口不会为了方便而修改媒体树所有权。默认仓库 `compose.yaml` 不授予 Docker 管理权限；需要 Web 升级时可由用户显式取消 docker.sock 挂载注释。
 
 **v1.0.3 正式版的 socket 权限修复与现场排查：** Compose 的 `user: "0:0"` 并不意味着 Web 进程一直是 root：入口可能根据 `PUID`/`PGID` 降权。已发布的 v1.0.1/v1.0.2 即使挂载 `docker.sock`，也可能因该降权清除 socket 数字组导致一键升级失败；v1.0.3 已在隔离 Docker E2E 中覆盖并修复此种情况，但尚未验证用户 NAS 的实际 socket 模式和 Docker API 策略。可以仅执行以下只读诊断，核对 Docker socket 类型、权限及**实际 Web 进程**的有效身份/附加组（`docker exec` 新建的进程不代表 Web 进程权限）：
 

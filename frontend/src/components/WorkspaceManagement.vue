@@ -3,6 +3,7 @@ import { ref } from 'vue';
 
 import AIAgentManagement from './AIAgentManagement.vue';
 import BackupManagement from './BackupManagement.vue';
+import CookieCloudManagement from './CookieCloudManagement.vue';
 import DownloaderManagement from './DownloaderManagement.vue';
 import NotificationManagement from './NotificationManagement.vue';
 import OperationalLogs from './OperationalLogs.vue';
@@ -20,7 +21,7 @@ const settingTab = ref('通知');
   <div v-else-if="page === '系统设置'" class="panel">
     <el-tabs v-model="settingTab">
       <el-tab-pane
-        v-for="item in ['通知', 'AI 助手', '备份恢复']"
+        v-for="item in ['通知', 'CookieCloud', 'AI 助手', '备份恢复']"
         :key="item"
         :name="item"
         :label="item"
@@ -31,6 +32,9 @@ const settingTab = ref('通知');
     </div>
     <div v-else-if="settingTab === 'AI 助手'" class="settings-content">
       <AIAgentManagement />
+    </div>
+    <div v-else-if="settingTab === 'CookieCloud'" class="settings-content">
+      <CookieCloudManagement />
     </div>
     <div v-else class="settings-content">
       <h3>备份与恢复</h3>

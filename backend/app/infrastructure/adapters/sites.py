@@ -49,10 +49,7 @@ _MTEAM_DOWNLOAD_REDIRECT_HOST_SUFFIXES = ("m-team.cc", "halomt.com", "groueta.cc
 _IMDB_ID_RE = re.compile(r"tt\d{5,10}", re.IGNORECASE)
 _DOUBAN_ID_RE = re.compile(r"\d{3,12}")
 
-# New NexusPHP profiles are intentionally still PENDING_ADAPTER in the public
-# registry. This factory wiring permits isolated contract/real read-only checks;
-# persistence and site tasks remain blocked until site-specific search and
-# torrent-download contracts have been validated separately.
+# NexusPHP profiles that share the reviewed web adapter wiring.
 _CANDIDATE_NEXUS_KINDS = frozenset(
     {
         SiteKind.HDHOME,
@@ -66,9 +63,8 @@ _CANDIDATE_NEXUS_KINDS = frozenset(
 )
 
 # Positions are counted from the rightmost torrent-table cell. These three
-# candidate sites include extra columns compared with the NexusPHP baseline.
-# Verify every field using site-specific synthetic fixtures before enabling
-# persistent site configuration; do not apply these offsets to existing sites.
+# sites include extra columns compared with the NexusPHP baseline. Keep these
+# offsets site-specific rather than applying them to every NexusPHP profile.
 _CANDIDATE_NEXUS_COLUMNS: dict[SiteKind, tuple[int, int, int, int]] = {
     # date, size, seeders, leechers
     SiteKind.HDHOME: (7, 6, 5, 4),

@@ -1,4 +1,4 @@
-"""Opt-in two-page search-only evidence for pending NexusPHP site adapters.
+"""Opt-in two-page search-only evidence for NexusPHP site adapters.
 
 The probe never requests torrent details or downloads, contacts a tracker or
 downloader, or stores remote search results. It is deliberately excluded from
@@ -75,7 +75,6 @@ async def check_one_site(
         or entry.get("auth_type") != "cookie"
         or not isinstance(entry.get("cookie"), str)
         or profile.credential_kind is not SiteCredentialKind.COOKIE
-        or profile.support_status.value not in {"PENDING_ADAPTER", "PENDING_REAL_VALIDATION"}
     ):
         return {"site": site, "status": "CONFIG_BLOCKED"}
     try:

@@ -71,6 +71,24 @@ def test_mapping_rejects_traversal_and_container_escape(tmp_path: Path) -> None:
     assert escape.value.code is ErrorCode.PATH_MAPPING_INVALID
 
 
+def test_mapping_can_authorize_explicit_mount_outside_data_root(tmp_path: Path) -> None:
+    mount_root = (tmp_path / "standalone-downloads").resolve()
+    mount_root.mkdir()
+    rules = normalize_path_mappings(
+        [PathMappingRule("/downloads", str(mount_root))],
+    )
+
+    matched = map_remote_path("/downloads/Movie/file.mkv", rules)
+    assert matched.container_path == mount_root / "Movie" / "file.mkv"
+    assert reverse_map_container_path_unique(mount_root / "Movie", rules) == "/downloads/Movie"
+
+
+def test_mapping_never_authorizes_container_root() -> None:
+    with pytest.raises(DomainViolation) as failure:
+        normalize_path_mappings([PathMappingRule("/downloads", "/")])
+    assert failure.value.code is ErrorCode.PATH_MAPPING_INVALID
+
+
 def test_remote_downloads_and_downloads2_map_into_explicit_data_root(tmp_path: Path) -> None:
     root = tmp_path / "data"
     (root / "downloads").mkdir(parents=True)
@@ -87,7 +105,7 @@ def test_remote_downloads_and_downloads2_map_into_explicit_data_root(tmp_path: P
         assert matched.rule_index == i
         assert matched.container_path == root / name / "example.mkv"
 
-    # 容器路径不能直接填下载器的 /downloads：必须挂载到数据根目录内。
+    # 兼容旧调用方：显式提供 allowed_root 时仍保持原数据根边界。
     with pytest.raises(DomainViolation) as failure:
         normalize_path_mappings(
             [PathMappingRule("/downloads", str(tmp_path / "downloads"))],

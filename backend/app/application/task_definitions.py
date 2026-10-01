@@ -1021,9 +1021,7 @@ class TaskDefinitionService:
             if not isinstance(raw_path, str) or not raw_path.strip():
                 continue
             try:
-                mapped = map_remote_path(
-                    raw_path, mappings, allowed_root=self._data_root
-                ).container_path
+                mapped = map_remote_path(raw_path, mappings).container_path
                 item_stat = mapped.stat(follow_symlinks=False)
             except (DomainViolation, OSError):
                 continue

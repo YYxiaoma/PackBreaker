@@ -1,4 +1,4 @@
-# PackBreaker v1.0 支持矩阵
+# PackBreaker v1.0.5 候选支持矩阵
 
 本页定义当前明确支持或已经现场验证的运行边界。未列为“支持”的组合不等于一定不可用，但在取得对应协议、恢复和真实环境证据前不得作为正式兼容承诺。
 
@@ -6,8 +6,8 @@
 
 | 项目 | 当前状态 | 说明 |
 | --- | --- | --- |
-| Linux `amd64` 容器 | v1.0.0 正式发布 | 正式镜像含 `linux/amd64`；保留上一正式 v0.1.9 不可变摘要的升级/回滚与备份恢复证据。 |
-| Linux `arm64` / aarch64 容器 | v1.0.0 正式发布 | 正式镜像含 `linux/arm64`，已通过原生 ARM64 与隔离 QEMU 的**同一已发布不可变摘要**启动、预检及数据库备份；真实生产 PT/下载器现场接管另需用户环境验收。 |
+| Linux `amd64` 容器 | v1.0.4 正式支持；v1.0.5 candidate | v1.0.4 正式镜像已发布；v1.0.5 本地质量门已通过，推送后仍需 Candidate Docker E2E / Release gate。 |
+| Linux `arm64` / aarch64 容器 | v1.0.4 正式支持；v1.0.5 candidate | v1.0.4 已通过原生 ARM64 与隔离 QEMU 的同一不可变摘要运行；v1.0.5 仍需候选双架构 CI。 |
 | Linux 其他架构（含 ARMv7） | 未声明支持 | 尚无正式镜像及相应构建、恢复验收矩阵。 |
 | Windows / macOS 原生生产运行 | 未声明支持 | 可用于开发，但 v1.0 生产部署以 Linux 容器为边界。 |
 
@@ -68,7 +68,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 在 v1.0.1 中，候选 Profile Registry 另列出以下**当时尚不能配置**的类型：KeepFrds（`https://pt.keepfrds.com`）、HDHome（`https://hdhome.org`）、UBits（`https://ubits.club`）、HDFans（`https://hdfans.org`）、BTSCHOOL（`https://pt.btschool.club`）、PTTime（`https://www.pttime.org`）、Rousi Pro（`https://rousi.pro`）和聆音Club（`https://pt.soulvoice.club`）。前六项及聆音Club按 NexusPHP/Cookie profile 建模，各有**一个**真实 Torrent 读取与元信息解析成功样本；这不是全部种子类型或真实任务验收。Rousi Pro 以 API Key 搜索、独立 Cookie 取种，已有固定同源真实只读认证、搜索及**一次 Cookie-only 取种**的有效 v1 单文件元信息证据，且有合成的双凭据/分析至模拟 Transmission 添加、强制校验、做种与释放链路；独立 `fetch_details()` 仍未验收，完整真实任务与受控下载器现场证据仍不足。其 Cookie 不得冒充 API Key，API Key 也不具有已证实的取种权限。所有这些 profile 的 `support_status` 均为 `PENDING_ADAPTER`，数据库能容纳新站点类型不代表允许启用；只有逐站满足协议、错误归类、权限安全和必要真实任务验收后才能扩大上表的正式支持集合。详见 [v1.0.1 研发记录](./v1.0.1-development.md)。
 
-**当前正式 v1.0.4（配置能力自 v1.0.2 起）**：上述八个站点为 `PENDING_REAL_VALIDATION`，可以在添加站点时选择、加密保存对应凭据并运行固定同源的只读连接测试；添加/编辑表单不再提供站点地址输入框。它们仍不可启用生产辅种任务，服务层正式任务白名单只包含原有 M-TEAM、HDTime、HHClub。已发布 v1.0.1 镜像不具备此配置开放能力；详见 [v1.0.2 正式发布记录](./v1.0.2-release.md)。v1.0.3/v1.0.4 的升级修复不代表八站真实任务已验收。
+**v1.0.5 candidate**：当前 11 个内置 `SiteKind` 均可配置、启用并进入正式任务 Adapter Registry。历史 `PENDING_ADAPTER` / `PENDING_REAL_VALIDATION` 不再阻止任务执行；但这不等于每个站点都拥有相同深度的真实现场证据。真实鉴权失败、站点不可用、限流、网络错误、凭据缺失和内容验证失败仍按实际结果失败关闭。Rousi Pro 继续使用 API Key 搜索/API + 独立下载 Cookie 的双凭据模型，Cookie 不得覆盖 API Key。
 
 站点凭证只写入加密 secret store，管理 API/UI 不回显已保存明文。站点临时故障、鉴权失败和限流不会成为放宽 torrent 内容验证的理由。
 
@@ -78,14 +78,14 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 - SQLite 是 v1.0 唯一数据库后端；Runtime 启动使用 Alembic head 校验和安全临时副本升级。
 - `/config` 必须是可写真实目录并满足最小权限要求；`secret.key` 需要独立安全保管，不包含在数据库备份中。
-- `/data` 作为媒体只读根；业务链不得修改源文件内容或替换源 inode。
+- `PACKBREAKER_DATA_DIR`（默认 `/data`）仍是目录来源和默认输出目录的管理根；下载器来源可以使用该下载器显式配置的 `/downloads`、`/mnt/media` 等其它容器挂载根。
 - 零复制辅种依赖源与目标位于支持 hardlink 的同一设备；跨设备或证据不确定场景必须失败关闭或进入明确的人工/下载器校验流程。
 - 受控 repair inode isolation 与自动 cleanup 额外要求目标文件系统支持 Linux `user.*` extended attributes。PackBreaker 会在独立 repair target 上持久化 `user.packbreaker.repair_owner` ownership marker；文件系统不支持 xattr、marker 缺失或 marker 与 isolation journal 不一致时必须失败关闭，不能仅凭 inode/size 推断所有权。普通 hardlink 辅种不依赖该 marker。
 - 路径映射采用明确 remote/container 前缀，禁止路径穿越、符号链接逃逸和未证明目标目录。
 
 ## 5. 升级与回滚
 
-- 当前数据库 head 为 `0031_site_type_capacity_v101`；自动化矩阵覆盖历史 revision（包括 `0024_task_center_v015`）到当前 head。
+- 当前 v1.0.5 candidate 数据库 head 为 `0032_cookiecloud_v105`；自动化矩阵覆盖历史 revision（包括 `0024_task_center_v015`）到当前 head。
 - 生产升级使用不可变 `<image>@sha256:<digest>`；`stable` 只用于发现，不是部署身份。
 - 数据库升级先创建 `pre-upgrade` 一致性快照，在同文件系统临时副本完成迁移与验证后再原子切换。
 - 生产回滚不依赖 Alembic 原地 downgrade；旧镜像不能读取新 schema 时必须恢复兼容的升级前/离线备份。

@@ -38,6 +38,8 @@ rollback_config="$sandbox/rollback-config"
 rollback_data="$sandbox/rollback-data"
 transient_config="$sandbox/transient-config"
 transient_data="$sandbox/transient-data"
+transient_downloads="$sandbox/transient-downloads"
+transient_downloads2="$sandbox/transient-downloads2"
 success_main="packbreaker-updater-success-$suffix"
 success_helper="packbreaker-updater-success-helper-$suffix"
 rollback_main="packbreaker-updater-rollback-$suffix"
@@ -355,9 +357,21 @@ assert_quiesced_backup_exists() {
 }
 
 prepare_transient_case() {
-  mkdir -p "$transient_config" "$transient_data/downloads" "$transient_data/downloads2"
+  mkdir -p \
+    "$transient_config" \
+    "$transient_data/downloads" \
+    "$transient_data/downloads2" \
+    "$transient_downloads" \
+    "$transient_downloads2"
   chmod 700 "$transient_config"
-  chmod 755 "$transient_data" "$transient_data/downloads" "$transient_data/downloads2"
+  chmod 755 \
+    "$transient_data" \
+    "$transient_data/downloads" \
+    "$transient_data/downloads2" \
+    "$transient_downloads" \
+    "$transient_downloads2"
+  printf "standalone-downloads\n" > "$transient_downloads/.packbreaker-e2e-standalone-probe"
+  printf "standalone-downloads2\n" > "$transient_downloads2/.packbreaker-e2e-standalone-probe"
   # The already-published v1.0.3 launcher does not contain the future volume
   # recovery fix: a v1.0.3 -> candidate upgrade requires explicitly mounted
   # /data. The synthetic ARM64 case and later formal baselines test implicit
@@ -389,6 +403,8 @@ prepare_transient_case() {
     --publish 127.0.0.1:18083:8000 \
     --volume "$transient_config:/config" \
     "${transient_mount_args[@]}" \
+    --volume "$transient_downloads:/downloads" \
+    --volume "$transient_downloads2:/downloads2" \
     --volume /var/run/docker.sock:/var/run/docker.sock \
     --health-interval 1s \
     --health-timeout 2s \
@@ -580,6 +596,9 @@ transient_new_container_id="$(docker inspect "$transient_main" --format '{{.Id}}
 test "$transient_new_container_id" != "$transient_initial_container_id"
 test "$(docker inspect "$transient_main" --format '{{.Image}}')" = "$candidate_image_id"
 test "$(docker exec --user 0:0 "$transient_main" python -c 'from backend.app.versioning import app_version; print(app_version())')" = "$candidate_version"
+test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/downloads"}}{{.Source}}{{end}}{{end}}')" = "$transient_downloads"
+test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/downloads2"}}{{.Source}}{{end}}{{end}}')" = "$transient_downloads2"
+docker exec --user 0:0 "$transient_main" python -c 'from pathlib import Path; assert Path("/downloads/.packbreaker-e2e-standalone-probe").read_text() == "standalone-downloads\n"; assert Path("/downloads2/.packbreaker-e2e-standalone-probe").read_text() == "standalone-downloads2\n"'
 if [[ "$baseline_mode" == formal && "$baseline_version" == 1.0.3 ]]; then
   test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}')" = "$transient_data"
   docker exec --user 0:0 "$transient_main" python -c 'from pathlib import Path; assert Path("/data/.packbreaker-e2e-volume-probe").read_text() == "isolated-persistent-volume\n"'
@@ -599,4 +618,4 @@ test "$(docker inspect "$transient_main" --format '{{index .Config.Labels "com.d
 assert_quiesced_backup_exists "$transient_config"
 wait_transient_helper_cleanup
 
-echo "updater E2E passed: baseline_mode=$baseline_mode $baseline_version -> candidate $candidate_version, unhealthy-candidate rollback, and single-container transient helper replacement"
+echo "updater E2E passed: baseline_mode=$baseline_mode $baseline_version -> candidate $candidate_version, unhealthy-candidate rollback, arbitrary /downloads mount retention, and single-container transient helper replacement"

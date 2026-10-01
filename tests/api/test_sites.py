@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from backend.app.api.dependencies import CSRF_COOKIE
-from backend.app.application import sites as site_application
 from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretStore
 from backend.app.config import AppSettings
@@ -104,21 +103,20 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
         assert items["HHCLUB"]["base_url"] == "https://hhanclub.net"
         assert items["HDTIME"]["supports_user_agent"] is True
         assert items["HDTIME"]["supports_browser_emulation"] is True
-        assert items["KEEPFRDS"]["support_status"] == "PENDING_REAL_VALIDATION"
+        assert items["KEEPFRDS"]["support_status"] == "SUPPORTED"
         assert items["ROUSI_PRO"]["credential_kind"] == "API_KEY"
         assert items["LINGYIN_CLUB"]["base_url"] == "https://pt.soulvoice.club"
         assert items["LINGYIN_CLUB"]["credential_kind"] == "COOKIE"
-        assert items["LINGYIN_CLUB"]["support_status"] == "PENDING_REAL_VALIDATION"
+        assert items["LINGYIN_CLUB"]["support_status"] == "SUPPORTED"
     finally:
         client.__exit__(None, None, None)
 
 
-def test_eight_site_profiles_are_configurable_without_task_activation(tmp_path: Path) -> None:
+def test_all_site_profiles_can_enable_without_connection_probe(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
-        candidate_kinds = tuple(kind for kind in SiteKind if not site_kind_is_persistable(kind))
-        assert len(candidate_kinds) == 8
-        for kind in candidate_kinds:
+        assert all(site_kind_is_persistable(kind) for kind in SiteKind)
+        for kind in SiteKind:
             profile = site_profile(kind)
             secret = f"synthetic-secret-for-{kind.value}"
             payload = {
@@ -138,26 +136,38 @@ def test_eight_site_profiles_are_configurable_without_task_activation(tmp_path: 
             assert view["enabled"] is False
             assert secret not in created.text
             assert "synthetic-rousi-cookie" not in created.text
-            denied = client.post(
+            enabled = client.post(
                 f"/api/v1/sites/{view['id']}/actions",
                 headers={**_csrf(client), "If-Match": '"1"'},
                 json={"action": "enable"},
             )
-            assert denied.status_code == 409
-            assert denied.json()["code"] == "SITE_ADAPTER_PENDING"
-            assert secret not in denied.text
+            assert enabled.status_code == 200, (kind, enabled.text)
+            assert enabled.json()["enabled"] is True
+            assert enabled.json()["connection_status"] == "UNTESTED"
+            assert secret not in enabled.text
         with app.state.runtime.session_factory() as session:
             records = list(session.scalars(select(Site)))
-            assert len(records) == 8
-            assert all(not row.enabled and row.secret_id is not None for row in records)
-            assert len(list(session.scalars(select(SecretRecord)))) == 9
+            assert len(records) == len(SiteKind)
+            assert all(row.enabled and row.secret_id is not None for row in records)
+            assert len(list(session.scalars(select(SecretRecord)))) == len(SiteKind) + 1
+        assert len(app.state.site_service.enabled_site_versions()) == len(SiteKind)
+        assert len(app.state.site_service.enabled_adapters()) == len(SiteKind)
     finally:
         client.__exit__(None, None, None)
 
 
 @pytest.mark.parametrize(
     "kind",
-    tuple(kind for kind in SiteKind if not site_kind_is_persistable(kind)),
+    (
+        SiteKind.KEEPFRDS,
+        SiteKind.HDHOME,
+        SiteKind.UBITS,
+        SiteKind.HDFANS,
+        SiteKind.BTSCHOOL,
+        SiteKind.PTTIME,
+        SiteKind.ROUSI_PRO,
+        SiteKind.LINGYIN_CLUB,
+    ),
 )
 def test_new_site_saved_and_unsaved_connection_probes_stay_read_only(
     tmp_path: Path,
@@ -242,16 +252,7 @@ def test_new_site_ignores_unrecognized_origin_field_and_uses_fixed_registry_url(
         client.__exit__(None, None, None)
 
 
-def test_rousi_dual_credential_lifecycle_after_synthetic_only_promotion(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Test the future supported path without changing production's PENDING gate.
-    monkeypatch.setattr(
-        site_application,
-        "site_kind_is_persistable",
-        lambda kind: kind is SiteKind.ROUSI_PRO or site_kind_is_persistable(kind),
-    )
+def test_rousi_dual_credential_lifecycle(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     key = "synthetic-rousi-key-first"
     cookie = "synthetic-rousi-cookie-first"
@@ -370,15 +371,9 @@ def test_rousi_dual_credential_lifecycle_after_synthetic_only_promotion(
 @pytest.mark.parametrize("wrong_reference", ("primary", "download"))
 def test_imported_rousi_wrong_secret_kind_cannot_activate(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     wrong_reference: str,
 ) -> None:
     """Wrongly imported primary/secondary secrets must not cross auth headers."""
-    monkeypatch.setattr(
-        site_application,
-        "site_kind_is_persistable",
-        lambda kind: kind is SiteKind.ROUSI_PRO or site_kind_is_persistable(kind),
-    )
     client, app = _authenticated_client(tmp_path)
     key = "synthetic-primary-key-not-a-cookie"
     cookie = "synthetic-independent-download-cookie"
@@ -428,18 +423,13 @@ def test_imported_rousi_wrong_secret_kind_cannot_activate(
         client.__exit__(None, None, None)
 
 
-@pytest.mark.parametrize(
-    "pending_kind",
-    tuple(kind for kind in SiteKind if not site_kind_is_persistable(kind)),
-)
-def test_imported_unverified_site_cannot_enable_or_enter_task_adapter_registry(
+def test_imported_formerly_pending_site_can_enable_and_enter_task_adapter_registry(
     tmp_path: Path,
-    pending_kind: SiteKind,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, app = _authenticated_client(tmp_path)
-    profile = site_profile(pending_kind)
-    marker = f"synthetic-imported-pending-{pending_kind.value}"
+    kind = SiteKind.KEEPFRDS
+    profile = site_profile(kind)
+    marker = "synthetic-imported-formerly-pending-keepfrds"
     try:
         with app.state.runtime.session_factory() as session:
             secret_id = SecretStore(
@@ -453,8 +443,8 @@ def test_imported_unverified_site_cannot_enable_or_enter_task_adapter_registry(
                 value=marker.encode(),
             )
             record = SiteRepository(session).create(
-                name=f"Synthetic imported {pending_kind.value}",
-                kind=pending_kind.value,
+                name="Synthetic imported KeepFrds",
+                kind=kind.value,
                 base_url=profile.base_url,
                 credential_kind=profile.credential_kind.value,
                 secret_id=secret_id,
@@ -470,30 +460,20 @@ def test_imported_unverified_site_cannot_enable_or_enter_task_adapter_registry(
             )
             site_id = record.id
             session.commit()
-        denied = client.post(
+        enabled = client.post(
             f"/api/v1/sites/{site_id}/actions",
             headers={**_csrf(client), "If-Match": '"1"'},
             json={"action": "enable"},
         )
-        assert denied.status_code == 409
-        assert denied.json()["code"] == "SITE_ADAPTER_PENDING"
-        assert marker not in denied.text
-        with app.state.runtime.session_factory() as session:
-            record = session.get(Site, site_id)
-            assert record is not None and record.version == 1
-            record.enabled = True  # hostile direct import must still be rejected
-            session.commit()
-
-        def reject_secret_read(*_args: object, **_kwargs: object) -> bytes:
-            raise AssertionError("Unverified task adapter must not decrypt any secrets")
-
-        monkeypatch.setattr(app.state.site_service._secret_store, "get", reject_secret_read)
-        with pytest.raises(ApplicationError) as blocked:
-            app.state.site_service.enabled_adapters()
-        assert blocked.value.code == "SITE_ADAPTER_PENDING"
-        with pytest.raises(ApplicationError) as blocked:
-            app.state.site_service.enabled_site_versions()
-        assert blocked.value.code == "SITE_ADAPTER_PENDING"
+        assert enabled.status_code == 200
+        assert enabled.json()["enabled"] is True
+        assert enabled.json()["connection_status"] == "UNTESTED"
+        assert marker not in enabled.text
+        adapters = app.state.site_service.enabled_adapters()
+        assert len(adapters) == 1
+        assert adapters[0].config_id == site_id
+        assert adapters[0].site_id == "keepfrds"
+        assert app.state.site_service.enabled_site_versions() == ((site_id, 2),)
     finally:
         client.__exit__(None, None, None)
 
@@ -668,19 +648,21 @@ def test_site_credential_is_encrypted_write_only_and_clearable(tmp_path: Path) -
         client.__exit__(None, None, None)
 
 
-def test_site_connection_probe_enable_gate_and_config_invalidation(tmp_path: Path) -> None:
+def test_site_enable_does_not_require_probe_and_config_invalidation(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     api_key = "synthetic-mteam-key"
     try:
         created = _create_site(client, api_key)
         site_id = cast(str, created["id"])
-        blocked = client.post(
+        enabled = client.post(
             f"/api/v1/sites/{site_id}/actions",
             headers={**_csrf(client), "If-Match": '"1"'},
             json={"action": "enable"},
         )
-        assert blocked.status_code == 409
-        assert blocked.json()["code"] == "SITE_CONNECTION_TEST_REQUIRED"
+        assert enabled.status_code == 200
+        assert enabled.json()["enabled"] is True
+        assert enabled.json()["connection_status"] == "UNTESTED"
+        assert enabled.headers["ETag"] == '"2"'
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             assert request.headers.get("x-api-key") == api_key
@@ -697,15 +679,7 @@ def test_site_connection_probe_enable_gate_and_config_invalidation(tmp_path: Pat
         refreshed = client.get(f"/api/v1/sites/{site_id}")
         assert refreshed.status_code == 200
         assert refreshed.json()["connection_status"] == "OK"
-
-        enabled = client.post(
-            f"/api/v1/sites/{site_id}/actions",
-            headers={**_csrf(client), "If-Match": '"1"'},
-            json={"action": "enable"},
-        )
-        assert enabled.status_code == 200
-        assert enabled.json()["enabled"] is True
-        assert enabled.headers["ETag"] == '"2"'
+        assert refreshed.json()["enabled"] is True
 
         changed = client.patch(
             f"/api/v1/sites/{site_id}",

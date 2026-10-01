@@ -1,4 +1,4 @@
-"""Explicitly gated one-shot, in-memory real torrent acceptance for pending sites.
+"""Explicitly gated one-shot, in-memory real torrent acceptance for configured sites.
 
 The read may be counted by a private tracker as a torrent download, even
 though this script never starts a client or contacts a tracker. It is NOT part
@@ -60,7 +60,6 @@ async def check_one_site(
             dual_credential
             and (not isinstance(entry.get("api_key"), str) or not entry["api_key"].strip())
         )
-        or profile.support_status.value not in {"PENDING_ADAPTER", "PENDING_REAL_VALIDATION"}
     ):
         return {"site": site, "status": "CONFIG_BLOCKED"}
     if dual_credential:

@@ -104,10 +104,6 @@ function profileConfigurable(profile: SiteProfile | undefined): boolean {
   return Boolean(profile && profile.support_status !== 'PENDING_ADAPTER');
 }
 
-const pendingRealValidation = computed(
-  () => selectedProfile.value?.support_status === 'PENDING_REAL_VALIDATION',
-);
-
 function connectionLabel(status: Site['connection_status']): string {
   if (status === 'OK') return '已验证';
   if (status === 'FAILED') return '失败';
@@ -303,7 +299,7 @@ function validateDraft(requireCredential = false): boolean {
     return false;
   }
   if (!editing.value && draft.enableAfterSave && !credentialPayload()) {
-    ElMessage.warning('启用站点必须提供凭证，保存后将先执行只读连接测试；也可以选择停用后保存。');
+    ElMessage.warning('启用站点必须提供凭证；也可以选择停用后保存。');
     return false;
   }
   if (draft.proxyEnabled && (!draft.proxyHost.trim() || draft.proxyPort === null)) {
@@ -467,7 +463,7 @@ async function save() {
         return;
       }
       await store.update(current, patch);
-      ElMessage.success('站点配置已保存；连接相关变更会自动停用并要求重新测试');
+      ElMessage.success('站点配置已保存；连接相关变更会自动停用，可重新启用或按需测试连接');
     } else {
       const payload: SiteCreateInput = {
         name: draft.name.trim(),
@@ -485,16 +481,12 @@ async function save() {
       const created = await store.create(payload);
       if (draft.enableAfterSave) {
         try {
-          await store.testConnection(created);
-          const latest = items.value.find((item) => item.id === created.id);
-          if (latest) await store.setEnabled(latest, true);
-          ElMessage.success('站点已保存、连接测试通过并启用');
+          await store.setEnabled(created, true);
+          ElMessage.success('站点已保存并启用；可按需执行连接测试');
         } catch (caught) {
           dialog.value = false;
           await refresh(false);
-          ElMessage.warning(
-            `站点已保存，但自动测试/启用失败：${problemText(toApiProblem(caught))}`,
-          );
+          ElMessage.warning(`站点已保存，但启用失败：${problemText(toApiProblem(caught))}`);
           return;
         }
       } else {
@@ -700,14 +692,6 @@ async function remove(item: Site) {
         </div>
 
         <el-alert
-          v-if="pendingRealValidation"
-          title="该站点支持添加配置及只读连接测试，但尚未完成真实辅种验收；暂不可启用执行任务。站点地址由系统自动绑定。"
-          type="warning"
-          :closable="false"
-          class="form-alert"
-        />
-
-        <el-alert
           v-if="editing && draft.credentialConfigured"
           title="凭证框留空将保留现有凭证。"
           type="info"
@@ -811,9 +795,9 @@ async function remove(item: Site) {
           >
         </template>
 
-        <el-form-item v-if="!editing && !pendingRealValidation" label="是否启用">
+        <el-form-item v-if="!editing" label="是否启用">
           <el-radio-group v-model="draft.enableAfterSave">
-            <el-radio :value="true">启用（保存后先测试连接）</el-radio>
+            <el-radio :value="true">启用</el-radio>
             <el-radio :value="false">停用</el-radio>
           </el-radio-group>
         </el-form-item>

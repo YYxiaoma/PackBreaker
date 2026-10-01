@@ -2498,7 +2498,7 @@ class TaskDefinitionExecutionService:
                 )
             except (ApplicationError, DomainViolation, OSError, ValueError):
                 continue
-            source_root_relative = self._relative_to_data_root(source_root)
+            source_root_reference = self._source_root_reference(source_root)
             digest = source_inventory_digest(inventory)
             for unit in units:
                 candidates.append(
@@ -2507,7 +2507,7 @@ class TaskDefinitionExecutionService:
                         stability_key=f"{torrent.torrent_hash}:{unit.source_relative_path}",
                         source_downloader_id=downloader_id,
                         source_hash=torrent.torrent_hash,
-                        source_root=source_root_relative,
+                        source_root=source_root_reference,
                         source_label=torrent.name,
                         unit=unit,
                         all_units=units,
@@ -2743,7 +2743,7 @@ class TaskDefinitionExecutionService:
                     )
                 )
                 continue
-            source_root_relative = self._relative_to_data_root(source_root)
+            source_root_reference = self._source_root_reference(source_root)
             for unit in units:
                 results.append(
                     self._materialize_unit(
@@ -2752,7 +2752,7 @@ class TaskDefinitionExecutionService:
                         trace_id=trace_id,
                         source_downloader_id=downloader_id,
                         source_hash=torrent.torrent_hash,
-                        source_root=source_root_relative,
+                        source_root=source_root_reference,
                         source_label=torrent.name,
                         source_object_key=f"{torrent.torrent_hash}:{unit.normalized_unit_key}",
                         unit=unit,
@@ -3110,12 +3110,12 @@ class TaskDefinitionExecutionService:
             hashes.append(normalized)
         return tuple(dict.fromkeys(hashes))
 
-    def _relative_to_data_root(self, path: Path) -> str:
+    def _source_root_reference(self, path: Path) -> str:
         resolved = path.resolve(strict=False)
         try:
             relative = resolved.relative_to(self._data_root)
-        except ValueError as exc:
-            raise self._source_invalid("来源路径越过授权数据根目录") from exc
+        except ValueError:
+            return resolved.as_posix()
         return relative.as_posix() or "."
 
     @staticmethod

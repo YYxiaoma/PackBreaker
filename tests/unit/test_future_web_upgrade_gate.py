@@ -46,6 +46,16 @@ def test_v103_requires_explicit_data_and_future_sources_test_anonymous_volume() 
     assert 'Path("/data/downloads2/.packbreaker-e2e-bind-probe").read_text()' in script
 
 
+def test_future_updater_gate_preserves_arbitrary_downloader_mounts() -> None:
+    script = (ROOT / "scripts/check-updater-e2e.sh").read_text(encoding="utf-8")
+    assert '--volume "$transient_downloads:/downloads"' in script
+    assert '--volume "$transient_downloads2:/downloads2"' in script
+    assert 'eq .Destination "/downloads"' in script
+    assert 'eq .Destination "/downloads2"' in script
+    assert 'Path("/downloads/.packbreaker-e2e-standalone-probe").read_text()' in script
+    assert 'Path("/downloads2/.packbreaker-e2e-standalone-probe").read_text()' in script
+
+
 def test_native_arm64_ci_runs_real_synthetic_implicit_volume_replacement() -> None:
     import yaml  # type: ignore[import-untyped]
 

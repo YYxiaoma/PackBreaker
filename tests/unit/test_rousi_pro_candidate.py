@@ -46,9 +46,7 @@ async def test_rousi_pro_candidate_uses_api_key_header_only_on_reviewed_readonly
         credential_kind=SiteCredentialKind.API_KEY,
         credential=_KEY,
     )
-    assert (
-        site_profile(SiteKind.ROUSI_PRO).support_status is SiteSupportStatus.PENDING_REAL_VALIDATION
-    )
+    assert site_profile(SiteKind.ROUSI_PRO).support_status is SiteSupportStatus.SUPPORTED
     assert (await adapter.test_connection()).site_id == "rousi_pro"
     assert len(requests) == 1
 

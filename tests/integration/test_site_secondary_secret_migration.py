@@ -1,4 +1,4 @@
-"""Additive encrypted secondary credential storage without enabling pending sites."""
+"""Additive encrypted secondary credential storage and v1.0.5 site activation."""
 
 from pathlib import Path
 
@@ -55,6 +55,78 @@ def test_existing_v100_site_survives_nullable_secondary_secret_migration(
                 )
             ).one()
             assert tuple(row) == ("old-site", "existing", "HHCLUB", 1, None)
+    finally:
+        engine.dispose()
+
+
+def test_v104_database_upgrades_to_cookiecloud_schema_without_touching_sites(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "v104-cookiecloud-upgrade.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database)
+    command.upgrade(config, "0031_site_type_capacity_v101")
+    engine = create_engine(sqlite_database_url(database))
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO site "
+                    "(id, name, type, base_url, credential_kind, secret_id, "
+                    "capabilities, connection_status, enabled, version, last_test_at, "
+                    "created_at, updated_at) "
+                    "VALUES ('v104-site', 'v1.0.4 KeepFrds', 'KEEPFRDS', "
+                    "'https://pt.keepfrds.com', 'COOKIE', NULL, '{}', 'UNTESTED', 0, 7, NULL, "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+            )
+            table_names = {
+                row[0]
+                for row in connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                )
+            }
+            assert "cookiecloud_setting" not in table_names
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            revision = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+            assert revision == "0032_cookiecloud_v105"
+            site = connection.execute(
+                text(
+                    "SELECT id, name, type, base_url, credential_kind, enabled, version "
+                    "FROM site WHERE id = 'v104-site'"
+                )
+            ).one()
+            assert tuple(site) == (
+                "v104-site",
+                "v1.0.4 KeepFrds",
+                "KEEPFRDS",
+                "https://pt.keepfrds.com",
+                "COOKIE",
+                0,
+                7,
+            )
+            columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(cookiecloud_setting)"))
+            }
+            assert {
+                "server_url",
+                "uuid",
+                "password_secret_id",
+                "auto_sync",
+                "sync_interval_minutes",
+                "last_sync_status",
+                "version",
+            } <= columns
+            assert (
+                connection.execute(text("SELECT COUNT(*) FROM cookiecloud_setting")).scalar_one()
+                == 0
+            )
+            assert connection.execute(text("PRAGMA foreign_key_check")).fetchall() == []
     finally:
         engine.dispose()
 
@@ -147,7 +219,7 @@ def test_secondary_secret_storage_rotation_and_cleanup_on_existing_site(
         runtime.stop()
 
 
-def test_rousi_pro_config_is_encrypted_but_not_activated_for_tasks(tmp_path: Path) -> None:
+def test_rousi_pro_config_is_encrypted_and_can_activate_for_tasks(tmp_path: Path) -> None:
     runtime = RuntimeManager(_settings(tmp_path))
     runtime.start()
     try:
@@ -165,14 +237,18 @@ def test_rousi_pro_config_is_encrypted_but_not_activated_for_tasks(tmp_path: Pat
         with runtime.session_factory() as session:
             assert session.query(Site).count() == 1
             assert session.query(SecretRecord).count() == 2
-        with pytest.raises(ApplicationError) as blocked:
-            service.set_enabled(created.id, expected_version=1, enabled=True)
-        assert blocked.value.code == "SITE_ADAPTER_PENDING"
+        enabled = service.set_enabled(created.id, expected_version=1, enabled=True)
+        assert enabled.enabled is True
+        assert service.enabled_site_versions() == ((created.id, 2),)
+        adapters = service.enabled_adapters()
+        assert len(adapters) == 1
+        assert adapters[0].config_id == created.id
+        assert adapters[0].site_id == "rousi_pro"
     finally:
         runtime.stop()
 
 
-def test_imported_enabled_pending_site_cannot_enter_production_adapter_registry(
+def test_imported_enabled_site_with_missing_rousi_secrets_fails_closed(
     tmp_path: Path,
 ) -> None:
     runtime = RuntimeManager(_settings(tmp_path))
@@ -181,8 +257,8 @@ def test_imported_enabled_pending_site_cannot_enter_production_adapter_registry(
         store = SecretStore(runtime.session_factory, runtime.secret_cipher)
         service = SiteService(runtime.session_factory, store)
         with runtime.session_factory() as session:
-            pending = SiteRepository(session).create(
-                name="Synthetic Pending Rousi",
+            imported = SiteRepository(session).create(
+                name="Synthetic Imported Rousi",
                 kind=SiteKind.ROUSI_PRO.value,
                 base_url=site_profile(SiteKind.ROUSI_PRO).base_url,
                 credential_kind=SiteCredentialKind.API_KEY.value,
@@ -197,22 +273,21 @@ def test_imported_enabled_pending_site_cannot_enter_production_adapter_registry(
                 proxy_username=None,
                 proxy_secret_id=None,
             )
-            # Simulate an externally imported row bypassing the public service
-            # validation, without ever loading a real credential or adapter.
-            pending.enabled = True
+            # Simulate an externally imported malformed enabled row bypassing
+            # the public service validation.
+            imported.enabled = True
+            site_id = imported.id
             session.commit()
         with pytest.raises(ApplicationError) as blocked_adapters:
             service.enabled_adapters()
-        assert blocked_adapters.value.code == "SITE_ADAPTER_PENDING"
-        with pytest.raises(ApplicationError) as blocked_versions:
-            service.enabled_site_versions()
-        assert blocked_versions.value.code == "SITE_ADAPTER_PENDING"
+        assert blocked_adapters.value.code == "SITE_ENABLED_CONFIG_INVALID"
+        assert service.enabled_site_versions() == ((site_id, 1),)
     finally:
         runtime.stop()
 
 
 @pytest.mark.asyncio
-async def test_imported_pending_site_refuses_probe_and_mixed_batch_before_secret_read(
+async def test_imported_malformed_rousi_blocks_mixed_batch_before_secret_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -241,15 +316,15 @@ async def test_imported_pending_site_refuses_probe_and_mixed_batch_before_secret
                 proxy_username=None,
                 proxy_secret_id=None,
             )
-            pending_key = store.put_in_session(
+            rousi_key = store.put_in_session(
                 session, kind="SITE_API_KEY", value=b"synthetic-pending-api-key"
             )
-            pending = SiteRepository(session).create(
-                name="Z pending",
+            rousi = SiteRepository(session).create(
+                name="Z malformed Rousi",
                 kind=SiteKind.ROUSI_PRO.value,
                 base_url=site_profile(SiteKind.ROUSI_PRO).base_url,
                 credential_kind=SiteCredentialKind.API_KEY.value,
-                secret_id=pending_key,
+                secret_id=rousi_key,
                 request_timeout_seconds=15,
                 search_interval_seconds=0,
                 user_agent=None,
@@ -261,23 +336,21 @@ async def test_imported_pending_site_refuses_probe_and_mixed_batch_before_secret
                 proxy_secret_id=None,
             )
             supported.enabled = True
-            pending.enabled = True
-            pending_id = pending.id
+            rousi.enabled = True
+            rousi_id = rousi.id
             session.commit()
 
         def reject_secret_read(_secret_id: str) -> bytes:
-            raise AssertionError("pending site must not trigger even an earlier secret read")
+            raise AssertionError("invalid mixed batch must fail before any secret read")
 
         monkeypatch.setattr(store, "get", reject_secret_read)
         with pytest.raises(ApplicationError) as blocked_adapters:
             service.enabled_adapters()
-        assert blocked_adapters.value.code == "SITE_ADAPTER_PENDING"
-        with pytest.raises(ApplicationError) as blocked_versions:
-            service.enabled_site_versions()
-        assert blocked_versions.value.code == "SITE_ADAPTER_PENDING"
-        # Read-only connection tests are now configurable; do not call the
-        # external adapter in this hostile-import/secret-gate test.
-        assert pending_id
+        assert blocked_adapters.value.code == "SITE_ENABLED_CONFIG_INVALID"
+        versions = dict(service.enabled_site_versions())
+        assert versions[rousi_id] == 1
+        assert versions[supported.id] == 1
+        # Do not call the external adapter in this hostile-import/secret-gate test.
         # Removed site user-details functionality has no business-service
         # entrypoint; the remaining test/analysis paths still fail closed.
         assert not hasattr(service, "user_profile")

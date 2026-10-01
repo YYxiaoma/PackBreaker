@@ -140,14 +140,12 @@ class QbittorrentWriteBinding:
         return reverse_map_container_path_unique(
             container_path,
             list(self.path_mappings),
-            allowed_root=self.data_root,
         )
 
     def container_path(self, remote_path: str) -> Path:
         return map_remote_path(
             remote_path,
             list(self.path_mappings),
-            allowed_root=self.data_root,
         ).container_path
 
 
@@ -165,14 +163,12 @@ class TransmissionWriteBinding:
         return reverse_map_container_path_unique(
             container_path,
             list(self.path_mappings),
-            allowed_root=self.data_root,
         )
 
     def container_path(self, remote_path: str) -> Path:
         return map_remote_path(
             remote_path,
             list(self.path_mappings),
-            allowed_root=self.data_root,
         ).container_path
 
 
@@ -843,13 +839,14 @@ class DownloaderService:
         target_directory: Path,
         mappings: list[PathMappingRule],
     ) -> PathDiagnosticResult:
-        match = map_remote_path(remote_path, mappings, allowed_root=self._data_root)
+        match = map_remote_path(remote_path, mappings)
         rule = mappings[match.rule_index]
+        mapping_root = Path(rule.container_prefix).resolve(strict=False)
         try:
             source = match.container_path.resolve(strict=True)
         except OSError as exc:
             raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "映射后的测试文件不可见") from exc
-        if not source.is_relative_to(self._data_root) or not source.is_file():
+        if not source.is_relative_to(mapping_root) or not source.is_file():
             raise DomainViolation(
                 ErrorCode.PATH_MAPPING_INVALID, "映射后的测试路径不是安全普通文件"
             )
@@ -859,9 +856,14 @@ class DownloaderService:
             target = target_directory.resolve(strict=True)
         except OSError as exc:
             raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "硬链接目标目录不可见") from exc
-        if not target.is_relative_to(self._data_root) or not target.is_dir():
+        authorized_roots = {
+            self._data_root.resolve(strict=False),
+            *(Path(item.container_prefix).resolve(strict=False) for item in mappings),
+        }
+        if not any(target.is_relative_to(root) for root in authorized_roots) or not target.is_dir():
             raise DomainViolation(
-                ErrorCode.PATH_MAPPING_INVALID, "硬链接目标目录必须位于数据根目录内"
+                ErrorCode.PATH_MAPPING_INVALID,
+                "硬链接目标目录必须位于数据根目录或已配置下载器映射目录内",
             )
 
         source_stat = source.stat()
@@ -911,7 +913,7 @@ class DownloaderService:
 
     def _normalize_mappings(self, mappings: list[PathMappingRule]) -> list[PathMappingRule]:
         try:
-            return normalize_path_mappings(mappings, allowed_root=self._data_root)
+            return normalize_path_mappings(mappings)
         except DomainViolation as exc:
             raise ApplicationError(
                 code=exc.code.value,

@@ -867,6 +867,326 @@
         "title": "ChangePasswordRequest",
         "type": "object"
       },
+      "CookieCloudConnectionStatus": {
+        "enum": [
+          "UNTESTED",
+          "OK",
+          "FAILED"
+        ],
+        "title": "CookieCloudConnectionStatus",
+        "type": "string"
+      },
+      "CookieCloudCryptoType": {
+        "enum": [
+          "legacy",
+          "aes-128-cbc-fixed"
+        ],
+        "title": "CookieCloudCryptoType",
+        "type": "string"
+      },
+      "CookieCloudProbeResponse": {
+        "properties": {
+          "cookie_count": {
+            "title": "Cookie Count",
+            "type": "integer"
+          },
+          "crypto_type": {
+            "$ref": "#/components/schemas/CookieCloudCryptoType"
+          },
+          "domain_count": {
+            "title": "Domain Count",
+            "type": "integer"
+          },
+          "status": {
+            "const": "ok",
+            "title": "Status",
+            "type": "string"
+          },
+          "tested_at": {
+            "format": "date-time",
+            "title": "Tested At",
+            "type": "string"
+          },
+          "update_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Update Time"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "tested_at",
+          "crypto_type",
+          "domain_count",
+          "cookie_count",
+          "update_time",
+          "version"
+        ],
+        "title": "CookieCloudProbeResponse",
+        "type": "object"
+      },
+      "CookieCloudSettingResponse": {
+        "properties": {
+          "auto_sync": {
+            "title": "Auto Sync",
+            "type": "boolean"
+          },
+          "connection_status": {
+            "$ref": "#/components/schemas/CookieCloudConnectionStatus"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "last_sync_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync At"
+          },
+          "last_sync_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync Error Code"
+          },
+          "last_sync_status": {
+            "$ref": "#/components/schemas/CookieCloudSyncStatus"
+          },
+          "last_test_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Test At"
+          },
+          "matched_sites": {
+            "title": "Matched Sites",
+            "type": "integer"
+          },
+          "password_configured": {
+            "title": "Password Configured",
+            "type": "boolean"
+          },
+          "request_timeout_seconds": {
+            "title": "Request Timeout Seconds",
+            "type": "integer"
+          },
+          "server_url": {
+            "title": "Server Url",
+            "type": "string"
+          },
+          "sync_interval_minutes": {
+            "title": "Sync Interval Minutes",
+            "type": "integer"
+          },
+          "unmatched_domains": {
+            "title": "Unmatched Domains",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "updated_sites": {
+            "title": "Updated Sites",
+            "type": "integer"
+          },
+          "uuid": {
+            "title": "Uuid",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "server_url",
+          "uuid",
+          "password_configured",
+          "auto_sync",
+          "sync_interval_minutes",
+          "request_timeout_seconds",
+          "connection_status",
+          "last_test_at",
+          "last_sync_at",
+          "last_sync_status",
+          "last_sync_error_code",
+          "matched_sites",
+          "updated_sites",
+          "unmatched_domains",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CookieCloudSettingResponse",
+        "type": "object"
+      },
+      "CookieCloudSettingUpdateRequest": {
+        "properties": {
+          "auto_sync": {
+            "default": true,
+            "title": "Auto Sync",
+            "type": "boolean"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 512,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "password_action": {
+            "default": "KEEP",
+            "enum": [
+              "KEEP",
+              "SET",
+              "CLEAR"
+            ],
+            "title": "Password Action",
+            "type": "string"
+          },
+          "request_timeout_seconds": {
+            "default": 15,
+            "maximum": 120.0,
+            "minimum": 1.0,
+            "title": "Request Timeout Seconds",
+            "type": "integer"
+          },
+          "server_url": {
+            "default": "",
+            "maxLength": 2048,
+            "title": "Server Url",
+            "type": "string"
+          },
+          "sync_interval_minutes": {
+            "default": 30,
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Sync Interval Minutes",
+            "type": "integer"
+          },
+          "uuid": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Uuid",
+            "type": "string"
+          }
+        },
+        "title": "CookieCloudSettingUpdateRequest",
+        "type": "object"
+      },
+      "CookieCloudSyncResponse": {
+        "properties": {
+          "crypto_type": {
+            "$ref": "#/components/schemas/CookieCloudCryptoType"
+          },
+          "matched_sites": {
+            "title": "Matched Sites",
+            "type": "integer"
+          },
+          "status": {
+            "const": "ok",
+            "title": "Status",
+            "type": "string"
+          },
+          "synced_at": {
+            "format": "date-time",
+            "title": "Synced At",
+            "type": "string"
+          },
+          "unmatched_domains": {
+            "title": "Unmatched Domains",
+            "type": "integer"
+          },
+          "update_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Update Time"
+          },
+          "updated_sites": {
+            "title": "Updated Sites",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "synced_at",
+          "crypto_type",
+          "matched_sites",
+          "updated_sites",
+          "unmatched_domains",
+          "update_time",
+          "version"
+        ],
+        "title": "CookieCloudSyncResponse",
+        "type": "object"
+      },
+      "CookieCloudSyncStatus": {
+        "enum": [
+          "NEVER",
+          "SUCCESS",
+          "FAILED"
+        ],
+        "title": "CookieCloudSyncStatus",
+        "type": "string"
+      },
       "DownloaderActionRequest": {
         "properties": {
           "action": {
@@ -7294,7 +7614,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.0.4"
+    "version": "1.0.5"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -8032,6 +8352,322 @@
         "summary": "Setup",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/api/v1/cookiecloud/config": {
+      "get": {
+        "operationId": "get_cookiecloud_config_api_v1_cookiecloud_config_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CookieCloudSettingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Cookiecloud Config",
+        "tags": [
+          "cookiecloud"
+        ]
+      },
+      "put": {
+        "operationId": "update_cookiecloud_config_api_v1_cookiecloud_config_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CookieCloudSettingUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CookieCloudSettingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Cookiecloud Config",
+        "tags": [
+          "cookiecloud"
+        ]
+      }
+    },
+    "/api/v1/cookiecloud/sync": {
+      "post": {
+        "operationId": "sync_cookiecloud_api_v1_cookiecloud_sync_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CookieCloudSyncResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync Cookiecloud",
+        "tags": [
+          "cookiecloud"
+        ]
+      }
+    },
+    "/api/v1/cookiecloud/test": {
+      "post": {
+        "operationId": "test_cookiecloud_api_v1_cookiecloud_test_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CookieCloudProbeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Cookiecloud",
+        "tags": [
+          "cookiecloud"
         ]
       }
     },

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from math import ceil
@@ -127,6 +128,81 @@ class SiteService:
         with self._session_factory() as session:
             return self._view(self._require_record(SiteRepository(session), site_id))
 
+    def sync_cookiecloud_credentials(
+        self,
+        updates: Mapping[str, tuple[Literal["PRIMARY", "DOWNLOAD"], str]],
+    ) -> int:
+        """Atomically replace site Cookies sourced from CookieCloud.
+
+        Enabled state is intentionally preserved so a successful background
+        refresh does not interrupt task execution. API-key credentials are
+        never replaced; Rousi Pro only accepts the independent download Cookie.
+        """
+
+        if not updates:
+            return 0
+        changed_ids: list[str] = []
+        with self._session_factory() as session:
+            repository = SiteRepository(session)
+            for site_id, (target, raw_cookie) in sorted(updates.items()):
+                current = self._require_record(repository, site_id)
+                kind = SiteKind(current.type)
+                if target == "PRIMARY":
+                    if SiteCredentialKind(current.credential_kind) is not SiteCredentialKind.COOKIE:
+                        raise self._credential_invalid(
+                            "CookieCloud 不能覆盖使用 API Key 的站点主凭证"
+                        )
+                    secret_field = "secret_id"
+                    expected_secret_kind = "SITE_COOKIE"
+                else:
+                    if kind is not SiteKind.ROUSI_PRO:
+                        raise self._credential_invalid(
+                            "CookieCloud 独立下载 Cookie 仅允许用于 Rousi Pro"
+                        )
+                    secret_field = "download_secret_id"
+                    expected_secret_kind = "SITE_DOWNLOAD_COOKIE"
+
+                normalized = self._normalize_credential(SiteCredentialKind.COOKIE, raw_cookie)
+                old_secret_id = getattr(current, secret_field)
+                if old_secret_id is not None:
+                    try:
+                        old_cookie = self._secret_store.get_in_session(
+                            session,
+                            old_secret_id,
+                            expected_kind=expected_secret_kind,
+                        ).decode("utf-8")
+                    except (SecretNotFound, SecretKindMismatch, UnicodeDecodeError):
+                        old_cookie = None
+                    if old_cookie == normalized:
+                        continue
+
+                new_secret_id = self._secret_store.put_in_session(
+                    session,
+                    kind=expected_secret_kind,
+                    value=normalized.encode(),
+                )
+                values: dict[str, Any] = {secret_field: new_secret_id}
+                if target == "PRIMARY":
+                    values.update(
+                        connection_status=SiteProbeStatus.UNTESTED.value,
+                        capabilities={},
+                        last_test_at=None,
+                    )
+                if not repository.update_config(
+                    site_id,
+                    expected_version=current.version,
+                    values=values,
+                ):
+                    session.rollback()
+                    raise self._version_conflict()
+                if old_secret_id is not None:
+                    self._secret_store.delete_in_session(session, old_secret_id)
+                changed_ids.append(site_id)
+            session.commit()
+        for site_id in changed_ids:
+            self._reliability_registry.discard(site_id)
+        return len(changed_ids)
+
     async def health(self, site_id: str) -> SiteReliabilityHealth:
         with self._session_factory() as session:
             current = self._require_record(SiteRepository(session), site_id)
@@ -151,7 +227,7 @@ class SiteService:
             records = tuple(SiteRepository(session).list_enabled())
             snapshots = tuple(self._snapshot(record) for record in records)
         # Validate *all* stored kinds before decrypting even the first secret.
-        # A directly imported pending row must not activate a mixed batch.
+        # A future unsupported row must not activate a mixed batch.
         for snapshot in snapshots:
             self._require_persistable_kind(snapshot.type)
             if snapshot.type is SiteKind.ROUSI_PRO and snapshot.download_secret_id is None:
@@ -479,7 +555,7 @@ class SiteService:
             current = self._require_record(repository, site_id)
             if enabled:
                 # Defense in depth for imported/legacy rows that may carry a
-                # PENDING_ADAPTER type despite the public create/update gates.
+                # future PENDING_ADAPTER type despite the public create/update gates.
                 self._require_persistable_kind(SiteKind(current.type))
                 if current.secret_id is None:
                     raise ApplicationError(
@@ -494,13 +570,6 @@ class SiteService:
                         status=409,
                         title="站点下载凭证未配置",
                         detail="Rousi Pro 启用前必须单独配置下载 Cookie",
-                    )
-                if current.connection_status != SiteProbeStatus.OK.value:
-                    raise ApplicationError(
-                        code="SITE_CONNECTION_TEST_REQUIRED",
-                        status=409,
-                        title="站点连接尚未验证",
-                        detail="启用站点前必须通过只读连接测试",
                     )
             if current.enabled == enabled:
                 if current.version != expected_version:
@@ -640,8 +709,8 @@ class SiteService:
     def _connection_snapshot(self, site_id: str) -> _SiteConnectionSnapshot:
         with self._session_factory() as session:
             current = self._require_record(SiteRepository(session), site_id)
-            # A configured pending-real-validation site may run read-only
-            # authentication checks, but not enter enabled task adapters.
+            # Connection probes remain available independently from whether
+            # the site is currently enabled for task execution.
             self._require_configurable_kind(SiteKind(current.type))
             return self._snapshot(current)
 
@@ -1059,10 +1128,7 @@ class SiteService:
             code="SITE_ADAPTER_PENDING",
             status=409,
             title="站点尚未开放正式任务",
-            detail=(
-                f"{profile.display_name} 尚未完成真实辅种验收；"
-                "可保存配置并测试只读连接，但不能启用正式任务"
-            ),
+            detail=f"{profile.display_name} 当前适配器尚未开放正式任务",
         )
 
     @staticmethod
