@@ -9,8 +9,14 @@ import yaml  # type: ignore[import-untyped]
 
 from scripts import ci_release_relation
 from scripts.ci_release_relation import is_newer_release, main
+from scripts.validate_release_baseline import load_release_baseline
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _next_patch(version: str) -> str:
+    major, minor, patch = (int(part) for part in version.split("."))
+    return f"{major}.{minor}.{patch + 1}"
 
 
 @pytest.mark.parametrize(
@@ -37,14 +43,17 @@ def test_release_relation_rejects_older_checkout(candidate: str) -> None:
 def test_same_version_after_release_exports_explicit_false(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ci_release_relation, "project_version", lambda: "1.0.4")
+    baseline = load_release_baseline().version
+    monkeypatch.setattr(ci_release_relation, "project_version", lambda: baseline)
     output = tmp_path / "github-output"
     assert main(["--github-output", str(output)]) == 0
     assert output.read_text(encoding="utf-8") == "candidate_newer=false\n"
 
 
 def test_newer_candidate_exports_true(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ci_release_relation, "project_version", lambda: "1.0.5")
+    baseline = load_release_baseline().version
+    candidate = _next_patch(baseline)
+    monkeypatch.setattr(ci_release_relation, "project_version", lambda: candidate)
     output = tmp_path / "github-output"
     assert main(["--github-output", str(output)]) == 0
     assert output.read_text(encoding="utf-8") == "candidate_newer=true\n"
