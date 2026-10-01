@@ -98,7 +98,10 @@ def _validate_order(jobs: dict[str, object]) -> None:
 def test_release_assets_wait_for_native_arm64_same_immutable_digest() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
-    assert jobs["release"]["needs"] == "arm64-validation"
+    assert set(jobs["release"]["needs"]) == {
+        "arm64-validation",
+        "cookiecloud-upstream-validation",
+    }
     assert jobs["release"]["runs-on"] == "ubuntu-latest"
     assert jobs["qemu-arm64-published-runtime"]["runs-on"] == "ubuntu-24.04"
     assert jobs["native-arm64-published-runtime"]["runs-on"] == "ubuntu-24.04-arm"

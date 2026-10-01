@@ -24,7 +24,10 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
 
     assert "linux/amd64,linux/arm64" in workflow
     assert "ubuntu-24.04-arm" in workflow
-    assert "needs: arm64-validation" in workflow
+    assert "needs: [arm64-validation, cookiecloud-upstream-validation]" in workflow
+    assert "cookiecloud-upstream-validation:" in workflow
+    assert "217612dd675d194db8036bc22e632173dc7ace34" in workflow
+    assert "scripts/check_cookiecloud_upstream_docker.py" in workflow
     assert "verify_release_platforms.py" in workflow
     assert '--tag "$GITHUB_REF_NAME"' in workflow
     assert '--commit "$GITHUB_SHA"' in workflow

@@ -80,3 +80,15 @@ release manifest 不保存凭证、数据库或真实环境路径。SBOM 从已�
 - 同一运行的资产 Job 已通过本地校验、上传 [v1.0.0 GitHub Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.0)、重新下载回读及 `stable/latest` 推进。已另从公开 Release 独立下载并以 `scripts/verify_release_evidence.py` 再次校验三份实际资产，退出码为 0：Release JSON SHA256 `a9e7e4fbc25c0d40e7a8440d5b1abd7866410a016287fb929204f179f6318da2`；SPDX SBOM SHA256 `72aa07918de62022b463672528d42198d8477168cf0c87860134a1cf64227444`；SHA256SUMS SHA256 `a21801bc47e28d7a953e21cf15f7aadc83deb10f912ee9246393879801ac217a`。
 - 已独立从 GHCR 回读 `:1.0.0`、`:stable`、`:latest`，三者 OCI index digest 均为 `sha256:fce1f3e3c0f56a8c024bbbf46a65fbc4ca51225a5c2bc2543fdddbb02c21a0c4`，实际 index 内容 SHA256 与 Registry digest 一致且包含 `linux/amd64`、`linux/arm64`。旧版 `:0.1.9` 仍保持其原 digest `sha256:3bf7eee3825821a5fef28338b7f1ce749cbae353bcd3a4ef81883ee6a021261d`。
 - `release-baseline.json` 已切换为正式 v1.0.0 的双架构不可变摘要，供后续研发候选的相邻版本升级/回滚使用。首次失败的原 Release run 和两次失败的恢复尝试均保留为历史失败证据，不将其改写成成功；正式完成以最终恢复 run `35507181886` 为准。
+
+## 9. v1.0.5 CookieCloud 发布门
+
+v1.0.5 引入 easychen/CookieCloud 后，正式 Release 不只依赖 PackBreaker 自身单元测试或历史 CI 结果。Release workflow 在构建正式镜像前新增独立 `cookiecloud-upstream-validation` Job：
+
+- 固定检出 easychen/CookieCloud commit `217612dd675d194db8036bc22e632173dc7ace34`，避免正式发布证据依赖可变 upstream `latest`。
+- 使用 upstream `api/pnpm-lock.yaml` 冻结安装服务端依赖，并在隔离端口以 `API_ROOT=/cc` 启动官方 API 实现。
+- 通过 PackBreaker `scripts/check_cookiecloud_upstream_docker.py` 写入合成 CookieCloud 密文，再执行真实 HTTP `GET /get/:uuid` 和 PackBreaker 服务端本地解密。
+- 同时验证 legacy CryptoJS/OpenSSL 兼容格式与 `aes-128-cbc-fixed`；不使用真实用户 Cookie、UUID 或密码。
+- 该 Job 与原生 ARM64 发布前验证同时作为正式 `release` Job 的强依赖，任一失败都不能构建和发布正式 v1.0.5 镜像。
+
+用户自建 CookieCloud 的只读现场验收仍是独立环境验收，不由上述合成 upstream gate 伪装替代。

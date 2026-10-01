@@ -78,9 +78,78 @@ jobs:
           docker exec --user "$(id -u):$(id -g)" "$container" \
             python -m backend.app.maintenance backup
 
+  cookiecloud-upstream-validation:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      COOKIECLOUD_UPSTREAM_SHA: 217612dd675d194db8036bc22e632173dc7ace34
+    steps:
+      - name: Check out PackBreaker release source
+        uses: actions/checkout@v4
+        with:
+          path: packbreaker
+          persist-credentials: false
+      - name: Check out pinned easychen/CookieCloud source
+        uses: actions/checkout@v4
+        with:
+          repository: easychen/CookieCloud
+          ref: 217612dd675d194db8036bc22e632173dc7ace34
+          path: upstream-cookiecloud
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pinned PackBreaker and upstream dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C upstream-cookiecloud rev-parse HEAD)" = "$COOKIECLOUD_UPSTREAM_SHA"
+          python -m pip install "uv==0.12.11"
+          (cd packbreaker && uv sync --frozen --all-groups)
+          corepack enable
+          corepack install --global pnpm@10.34.5
+          corepack pnpm --dir upstream-cookiecloud/api install --frozen-lockfile --prod
+      - name: Exercise pinned easychen/CookieCloud HTTP protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/cookiecloud-upstream.log"
+          (
+            cd upstream-cookiecloud/api
+            API_ROOT=/cc PORT=18088 node app.js >"$log" 2>&1
+          ) &
+          upstream_pid=$!
+          cleanup() {
+            kill "$upstream_pid" >/dev/null 2>&1 || true
+            wait "$upstream_pid" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18088/cc/ >/dev/null; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$upstream_pid" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" -ne 1 ]]; then
+            cat "$log" >&2 || true
+            exit 1
+          fi
+          cd packbreaker
+          uv run python scripts/check_cookiecloud_upstream_docker.py \
+            http://127.0.0.1:18088/cc
+
   release:
     runs-on: ubuntu-latest
-    needs: arm64-validation
+    needs: [arm64-validation, cookiecloud-upstream-validation]
     outputs:
       image: ${{ steps.release_meta.outputs.image }}
       version: ${{ steps.release_meta.outputs.version }}
