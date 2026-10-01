@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CANDIDATE_SHA: 6319263b24fa9c53ea9eb2708d5fa94ffe187cab
+  CANDIDATE_SHA: 51c28463105e2ac1705faafb24d037109c9f74ea
   CANDIDATE_VERSION: 1.0.5
   IMAGE: ghcr.io/yyxiaoma/packbreaker
 

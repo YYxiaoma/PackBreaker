@@ -26,7 +26,7 @@ def test_v105_candidate_delivery_is_restricted_branch_and_version_pinned() -> No
     assert push["branches"] == ["delivery/v1.0.5-candidate-image"]
 
     env = workflow["env"]
-    assert env["CANDIDATE_SHA"] == "6319263b24fa9c53ea9eb2708d5fa94ffe187cab"
+    assert env["CANDIDATE_SHA"] == "51c28463105e2ac1705faafb24d037109c9f74ea"
     assert env["CANDIDATE_VERSION"] == "1.0.5"
     assert env["IMAGE"] == "ghcr.io/yyxiaoma/packbreaker"
 
