@@ -1,4 +1,4 @@
-# PackBreaker v1.0.5 候选已知限制
+# PackBreaker v1.0.5 已知限制
 
 本页记录当前实现中有意保留的边界和尚未取得的发布证据。它们不是绕过安全门的理由；相反，PackBreaker 在这些条件下应保持人工确认、只读、阻断或显式手工运维。
 
@@ -10,11 +10,11 @@
 
 ## 2. 发布与容器证据
 
-- 最新正式 v1.0.4 镜像支持 `linux/amd64` 和 `linux/arm64`（aarch64）；ARMv7 和其他平台不在正式支持范围内。v1.0.5 当前仍是 candidate。
+- 最新正式 v1.0.5 镜像支持 `linux/amd64` 和 `linux/arm64`（aarch64）；ARMv7 和其他平台不在正式支持范围内。
 - 当前开发 Runner 无 Docker daemon；GitHub Actions 持续承担容器、备份/恢复和 updater 的真实 Docker 门禁。Release workflow run `35429394091` 已为 `v0.1.9` 提供真实 Docker 构建、`v0.1.8 → v0.1.9 → v0.1.8` 升级/回滚与 updater helper E2E 证据，并继续覆盖既有 Compose labels 与 docker.sock 保留要求。
-- 当前最新正式 Release 为 [v1.0.4](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.4)，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3d1dd66e0482d1f9fe5572cbfc32bc8e1adfad98e09866039e9d073e75ba56fa`。
-- v1.0.5 的本地 `scripts/check.py`、`scripts/test.py`、迁移回归和版本关系门已经通过，但当前开发 Runner 没有 Docker daemon；v1.0.4 → v1.0.5 的真实 Candidate Docker E2E、Web updater、自动回滚和双架构候选运行必须在 GitHub Actions Docker Runner 完成。
-- v1.0.5 updater E2E 已增加独立 `/downloads`、`/downloads2` bind mount 在容器替换后仍保持 source 与文件内容不变的断言；在推送前只能完成脚本语法、结构和 updater replacement plan 单元回归，不能宣称真实 Docker replacement 已执行。
+- 当前最新正式 Release 为 [v1.0.5](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.5)，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:a617829574ef972f2118fb04bc6e08e973a94a44476f9ba8f32a82303b250a7c`。
+- v1.0.5 正式 Release run `36856714824` 已在 GitHub Actions Docker Runner 完成 v1.0.4 → v1.0.5 相邻升级/回滚、正式 Web updater、失败自动回滚、AMD64、隔离 QEMU ARM64 与原生 ARM64 的同一不可变 digest 验证。
+- v1.0.5 updater E2E 的独立 `/downloads`、`/downloads2` bind mount 保留断言已经在真实 Docker Runner 的候选与正式发布门中通过；这不保证任意跨 mount Hardlink 一定可用，仍以真实路径诊断为准。
 - [正式恢复发布 run `35507181886`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35507181886) 已用原已推送镜像在独立 AMD64、QEMU ARM64 与原生 ARM64 Runner 完成运行验证，AMD64 v0.1.9→v1.0.0→v0.1.9 正式相邻升级/回滚通过，Release 资产上传回读和 `stable/latest` 与原不可变摘要一致。后续版本的 `release-baseline.json` 已推进到 v1.0.0 双架构镜像。
 - **历史失败记录（已恢复）**：2026-09-20 的首次 [Release run `35504683200`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35504683200) 在 QEMU ARM64 运行检查处失败，原生 ARM64 摘要运行及 GitHub Release 资产发布当时被跳过。后续恢复单独完成全部门禁，没有事后更改该失败记录，亦未覆盖已推送的版本镜像。首次失败根因仍无完整原始错误日志，不能断言已确诊；详见 [发布流程与恢复记录](./release-process.md)。
 - [独立诊断 run `35506113046`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506113046) 已在原生 ARM64 与 QEMU 上使用相同正式 index digest 通过完整启动/备份门禁，首次 QEMU 失败未稳定复现，仍无权推断具体根因。独立诊断只是恢复发布的前置证据，不应与正式发布资产成功混淆。

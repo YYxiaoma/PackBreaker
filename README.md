@@ -10,8 +10,8 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11"></a>
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64%20%7C%20linux%2Farm64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64 and linux/arm64"></a>
-  <img src="https://img.shields.io/badge/latest_release-v1.0.4-2563EB" alt="latest release v1.0.4">
-  <img src="https://img.shields.io/badge/main-v1.0.5_candidate-F59E0B" alt="main v1.0.5 candidate">
+  <img src="https://img.shields.io/badge/latest_release-v1.0.5-2563EB" alt="latest release v1.0.5">
+  <img src="https://img.shields.io/badge/main-v1.0.5_released-16A34A" alt="main v1.0.5 released">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 
@@ -430,22 +430,23 @@ uv run python scripts/test.py
 
 ## 📊 当前状态
 
-**最新正式版本为 v1.0.4**，支持单个 Docker 镜像在 `linux/amd64` 和 `linux/arm64`（aarch64）上运行。[v1.0.4 GitHub Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.4) 已公开发布；生产安装和升级建议使用完整不可变 digest，而不是把可移动的 `stable/latest` 当作镜像身份。
+**最新正式版本为 v1.0.5**，支持单个 Docker 镜像在 `linux/amd64` 和 `linux/arm64`（aarch64）上运行。[v1.0.5 GitHub Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.5) 已正式发布；生产安装和升级建议使用完整不可变 digest，而不是把可移动的 `stable/latest` 当作镜像身份。
 
-- 正式源码 commit：`bf33b03c761c28aa8f798a46d7a1a205c400dbe8`。
-- 正式镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:3d1dd66e0482d1f9fe5572cbfc32bc8e1adfad98e09866039e9d073e75ba56fa`。
-- v1.0.4 已完成 AMD64、隔离 QEMU ARM64、原生 ARM64 的不可变镜像回读、Web updater、失败自动回滚、匿名卷保留以及 Release 资产校验；详见 [v1.0.4 正式发布与受控恢复记录](./docs/v1.0.4-release.md)。
+- 正式源码 commit：`43a05a375be71dc89d32ec6eb0de4addda03799c`。
+- 正式镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:a617829574ef972f2118fb04bc6e08e973a94a44476f9ba8f32a82303b250a7c`。
+- 正式 Release workflow run：`36856714824`，已完成 AMD64、隔离 QEMU ARM64、原生 ARM64 的同一不可变 digest 回读、v1.0.4 → v1.0.5 升级/回滚、Web updater、失败自动回滚、匿名卷与独立下载器挂载保留、CookieCloud 固定 upstream 协议门以及 Release 资产回读。
+- `stable` 与 `latest` 已在 GitHub Release 资产回读成功后推进到同一 v1.0.5 正式 digest。
 
-**当前 `main` 正在开发 v1.0.5 candidate，尚未正式发布。** 本轮重点包括：
+v1.0.5 重点包括：
 
 - 当前 11 个内置站点全部解除历史未验证门禁，可按真实配置状态参与拆包任务；
 - 对接 easychen/CookieCloud，支持本地解密、测试连接、立即同步与自动同步；
 - 下载器来源路径不再强制位于 `/data`，可直接授权 `/downloads`、`/mnt/media` 等独立挂载目录；
-- v1.0.4 → v1.0.5 数据库迁移、版本关系、静态质量门和完整测试已通过；
-- 正式候选 Docker E2E 将继续验证 v1.0.4 → v1.0.5 Web updater、自动回滚、双架构运行，以及独立 `/downloads` / `/downloads2` 挂载在容器重建后仍原样保留；
+- 数据库 head 升级为 `0032_cookiecloud_v105`，v1.0.4 → v1.0.5 迁移与正式升级/回滚已通过；
+- 独立 `/downloads` / `/downloads2` 等下载器挂载在 Web updater 重建容器后会原样保留；
 - 真实外部 CookieCloud 服务验收需要专用的本地 `runtime/cookiecloud-acceptance.secret`，不会把凭据写入仓库。
 
-研发与验收细节见 [v1.0.5 研发设计与验收文档](./docs/v1.0.5-development.md)。
+研发与验收细节见 [v1.0.5 研发设计与验收文档](./docs/v1.0.5-development.md) 和 [v1.0.5 正式发布记录](./docs/v1.0.5-release.md)。
 
 完整支持边界和已知限制请看：
 

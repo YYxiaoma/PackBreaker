@@ -1,4 +1,4 @@
-# PackBreaker v1.0.5 候选支持矩阵
+# PackBreaker v1.0.5 支持矩阵
 
 本页定义当前明确支持或已经现场验证的运行边界。未列为“支持”的组合不等于一定不可用，但在取得对应协议、恢复和真实环境证据前不得作为正式兼容承诺。
 
@@ -6,8 +6,8 @@
 
 | 项目 | 当前状态 | 说明 |
 | --- | --- | --- |
-| Linux `amd64` 容器 | v1.0.4 正式支持；v1.0.5 candidate | v1.0.4 正式镜像已发布；v1.0.5 本地质量门已通过，推送后仍需 Candidate Docker E2E / Release gate。 |
-| Linux `arm64` / aarch64 容器 | v1.0.4 正式支持；v1.0.5 candidate | v1.0.4 已通过原生 ARM64 与隔离 QEMU 的同一不可变摘要运行；v1.0.5 仍需候选双架构 CI。 |
+| Linux `amd64` 容器 | v1.0.5 正式支持 | 正式不可变 digest 已通过 v1.0.4 → v1.0.5 相邻升级/回滚、Web updater 与独立运行。 |
+| Linux `arm64` / aarch64 容器 | v1.0.5 正式支持 | 同一正式不可变 digest 已通过原生 ARM64 与隔离 QEMU ARM64 回读、原生 updater 与匿名卷保留。 |
 | Linux 其他架构（含 ARMv7） | 未声明支持 | 尚无正式镜像及相应构建、恢复验收矩阵。 |
 | Windows / macOS 原生生产运行 | 未声明支持 | 可用于开发，但 v1.0 生产部署以 Linux 容器为边界。 |
 
@@ -47,7 +47,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 **GitHub Release 上传后回读一致性门禁（提交 `0c31045`，CI run `35501276565` 离线回归通过）**：Release workflow 在上传后读回正式 Release 元数据及实际下载的三份资产，再与独立 tag/commit/不可变镜像 digest、SBOM 和 SHA256SUMS 交叉核验；失败不会推进 stable/latest。移动通道前再次确认 GitHub 最新正式 tag 仍为当前版本。新增单元测试以模拟 CLI/合成资产验证失败关闭，不等于正式 v1.0.0 资产已发布或真实双架构运行。
 
-当前开发 Runner 没有 Docker daemon，真实容器验收由 GitHub Actions 独立 Runner 承担。当前最新正式 Release 为 [v1.0.4](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.4)，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:3d1dd66e0482d1f9fe5572cbfc32bc8e1adfad98e09866039e9d073e75ba56fa`。双架构运行、v1.0.3→v1.0.4 Web updater/失败回滚、匿名卷候选恢复和发布资产回读证据详见 [受控恢复 run `36669688184`](https://github.com/YYxiaoma/PackBreaker/actions/runs/36669688184)；首次失败的 Release run `36668291164` 保留原始 QEMU 失败记录。v1.0.3 及更早正式镜像和发布证据继续保留。
+当前开发 Runner 没有 Docker daemon，真实容器验收由 GitHub Actions 独立 Runner 承担。当前最新正式 Release 为 [v1.0.5](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.5)，公开 GHCR 不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:a617829574ef972f2118fb04bc6e08e973a94a44476f9ba8f32a82303b250a7c`。正式 Release run `36856714824` 已通过双架构运行、v1.0.4→v1.0.5 Web updater/失败回滚、匿名卷和独立下载器挂载保留、CookieCloud 固定 upstream 门以及发布资产回读；v1.0.4 及更早正式镜像和发布证据继续保留。
 
 ## 2. 下载器
 
@@ -68,7 +68,7 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 在 v1.0.1 中，候选 Profile Registry 另列出以下**当时尚不能配置**的类型：KeepFrds（`https://pt.keepfrds.com`）、HDHome（`https://hdhome.org`）、UBits（`https://ubits.club`）、HDFans（`https://hdfans.org`）、BTSCHOOL（`https://pt.btschool.club`）、PTTime（`https://www.pttime.org`）、Rousi Pro（`https://rousi.pro`）和聆音Club（`https://pt.soulvoice.club`）。前六项及聆音Club按 NexusPHP/Cookie profile 建模，各有**一个**真实 Torrent 读取与元信息解析成功样本；这不是全部种子类型或真实任务验收。Rousi Pro 以 API Key 搜索、独立 Cookie 取种，已有固定同源真实只读认证、搜索及**一次 Cookie-only 取种**的有效 v1 单文件元信息证据，且有合成的双凭据/分析至模拟 Transmission 添加、强制校验、做种与释放链路；独立 `fetch_details()` 仍未验收，完整真实任务与受控下载器现场证据仍不足。其 Cookie 不得冒充 API Key，API Key 也不具有已证实的取种权限。所有这些 profile 的 `support_status` 均为 `PENDING_ADAPTER`，数据库能容纳新站点类型不代表允许启用；只有逐站满足协议、错误归类、权限安全和必要真实任务验收后才能扩大上表的正式支持集合。详见 [v1.0.1 研发记录](./v1.0.1-development.md)。
 
-**v1.0.5 candidate**：当前 11 个内置 `SiteKind` 均可配置、启用并进入正式任务 Adapter Registry。历史 `PENDING_ADAPTER` / `PENDING_REAL_VALIDATION` 不再阻止任务执行；但这不等于每个站点都拥有相同深度的真实现场证据。真实鉴权失败、站点不可用、限流、网络错误、凭据缺失和内容验证失败仍按实际结果失败关闭。Rousi Pro 继续使用 API Key 搜索/API + 独立下载 Cookie 的双凭据模型，Cookie 不得覆盖 API Key。
+**v1.0.5 正式版本**：当前 11 个内置 `SiteKind` 均可配置、启用并进入正式任务 Adapter Registry。历史 `PENDING_ADAPTER` / `PENDING_REAL_VALIDATION` 不再阻止任务执行；但这不等于每个站点都拥有相同深度的真实现场证据。真实鉴权失败、站点不可用、限流、网络错误、凭据缺失和内容验证失败仍按实际结果失败关闭。Rousi Pro 继续使用 API Key 搜索/API + 独立下载 Cookie 的双凭据模型，Cookie 不得覆盖 API Key。
 
 站点凭证只写入加密 secret store，管理 API/UI 不回显已保存明文。站点临时故障、鉴权失败和限流不会成为放宽 torrent 内容验证的理由。
 
@@ -85,12 +85,12 @@ Transmission 的较大合成样本曾暴露自动校验期间首次停止请求�
 
 ## 5. 升级与回滚
 
-- 当前 v1.0.5 candidate 数据库 head 为 `0032_cookiecloud_v105`；自动化矩阵覆盖历史 revision（包括 `0024_task_center_v015`）到当前 head。
+- 当前 v1.0.5 正式数据库 head 为 `0032_cookiecloud_v105`；自动化矩阵覆盖历史 revision（包括 `0024_task_center_v015`）到当前 head。
 - 生产升级使用不可变 `<image>@sha256:<digest>`；`stable` 只用于发现，不是部署身份。
 - 数据库升级先创建 `pre-upgrade` 一致性快照，在同文件系统临时副本完成迁移与验证后再原子切换。
 - 生产回滚不依赖 Alembic 原地 downgrade；旧镜像不能读取新 schema 时必须恢复兼容的升级前/离线备份。
 - `v0.1.2` Release workflow run `34937718889` 已真实跑绿 `v0.1.1` 基线启动/备份 → `v0.1.2` 候选接管/readiness → 用 `v0.1.1` 镜像恢复旧备份 → `v0.1.1` 再次 readiness，并额外通过独立 updater helper 的真实成功升级与故障候选自动数据库/容器回滚。
-- `release-baseline.json` 当前固定正式 `v1.0.4` 双架构不可变 digest；后续候选版本必须以该最新 published baseline 做相邻版本升级/回滚及 Web updater 门禁后才允许进入正式发布。已发布的 v1.0.0-v1.0.3 历史镜像和证据继续保留；不能虚构无对应镜像的历史跨架构升级路径。
+- `release-baseline.json` 当前固定正式 `v1.0.5` 双架构不可变 digest；后续候选版本必须以该最新 published baseline 做相邻版本升级/回滚及 Web updater 门禁后才允许进入正式发布。已发布的 v1.0.0-v1.0.4 历史镜像和证据继续保留；不能虚构无对应镜像的历史跨架构升级路径。
 - `v0.1.2` 正式提供独立 updater helper 的 Web 一键升级链路；`v0.1.7` 起正式支持显式挂载 docker.sock 的 Compose 单容器使用同一 Web 升级链，并保留 Compose labels。自动容器替换仍只承诺单个 PackBreaker 容器、唯一可写 `/config`、官方 GHCR 镜像、可安全重建的端口/环境/挂载/restart policy 和单网络配置。复杂 namespace、多网络、显式静态 IP/MAC 或 AutoRemove 容器继续失败关闭。
 
 ## 6. 兼容承诺原则
