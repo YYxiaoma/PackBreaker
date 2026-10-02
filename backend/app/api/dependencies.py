@@ -9,6 +9,7 @@ from backend.app.application.ai_telegram import AITelegramService
 from backend.app.application.auth import AuthIdentity, AuthService
 from backend.app.application.cookiecloud import CookieCloudService
 from backend.app.application.downloaders import DownloaderService
+from backend.app.application.movie_dedup import MovieDedupService
 from backend.app.application.notifications import NotificationService
 from backend.app.application.sites import SiteService
 from backend.app.application.task_actions import TaskActionService
@@ -40,6 +41,10 @@ def downloader_service(request: Request) -> DownloaderService:
 
 def notification_service(request: Request) -> NotificationService:
     return cast(NotificationService, request.app.state.notification_service)
+
+
+def movie_dedup_service(request: Request) -> MovieDedupService:
+    return cast(MovieDedupService, request.app.state.movie_dedup_service)
 
 
 def admin_notification_service(request: Request) -> AdminNotificationService:

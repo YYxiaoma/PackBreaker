@@ -407,6 +407,109 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/movie-dedup/jobs': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Movie Dedup Jobs */
+    get: operations['list_movie_dedup_jobs_api_v1_movie_dedup_jobs_get'];
+    put?: never;
+    /** Create Movie Dedup Job */
+    post: operations['create_movie_dedup_job_api_v1_movie_dedup_jobs_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/movie-dedup/jobs/{job_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Movie Dedup Job */
+    get: operations['get_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/movie-dedup/jobs/{job_id}/execute': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Execute Movie Dedup Pairs */
+    post: operations['execute_movie_dedup_pairs_api_v1_movie_dedup_jobs__job_id__execute_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/movie-dedup/jobs/{job_id}/pairs': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Movie Dedup Pairs */
+    get: operations['list_movie_dedup_pairs_api_v1_movie_dedup_jobs__job_id__pairs_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/movie-dedup/jobs/{job_id}/start': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Start Movie Dedup Job */
+    post: operations['start_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__start_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/movie-dedup/precheck': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Precheck Movie Dedup */
+    post: operations['precheck_movie_dedup_api_v1_movie_dedup_precheck_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/notification-channels': {
     parameters: {
       query?: never;
@@ -2200,6 +2303,204 @@ export interface components {
       source_relative_path: string;
       /** Torrent Path */
       torrent_path: string;
+    };
+    /**
+     * MovieDedupCrossFilesystemPolicy
+     * @enum {string}
+     */
+    MovieDedupCrossFilesystemPolicy: 'STOP' | 'SYMLINK';
+    /** MovieDedupExecuteRequest */
+    MovieDedupExecuteRequest: {
+      /** Pair Ids */
+      pair_ids: string[];
+    };
+    /** MovieDedupJobCreateRequest */
+    MovieDedupJobCreateRequest: {
+      /** @default STOP */
+      cross_filesystem_policy: components['schemas']['MovieDedupCrossFilesystemPolicy'];
+      /**
+       * Include Subdirectories
+       * @default true
+       */
+      include_subdirectories: boolean;
+      /**
+       * Min Size Bytes
+       * @default 0
+       */
+      min_size_bytes: number;
+      /** @default AUTO */
+      mode: components['schemas']['MovieDedupMode'];
+      /** Name */
+      name: string;
+      /** Source Root */
+      source_root: string;
+      /** Target Root */
+      target_root: string;
+      /** Video Extensions */
+      video_extensions?: string[];
+    };
+    /** MovieDedupJobListResponse */
+    MovieDedupJobListResponse: {
+      /** Items */
+      items: components['schemas']['MovieDedupJobResponse'][];
+    };
+    /** MovieDedupJobResponse */
+    MovieDedupJobResponse: {
+      /** Candidate Count */
+      candidate_count: number;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Cross Filesystem Policy */
+      cross_filesystem_policy: string;
+      /** Deduplicated Count */
+      deduplicated_count: number;
+      /** Error Code */
+      error_code: string | null;
+      /** Estimated Reclaimable Bytes */
+      estimated_reclaimable_bytes: number;
+      /** Failed Count */
+      failed_count: number;
+      /** Finished At */
+      finished_at: string | null;
+      /** Id */
+      id: string;
+      /** Include Subdirectories */
+      include_subdirectories: boolean;
+      /** Logical Duplicate Bytes */
+      logical_duplicate_bytes: number;
+      /** Min Size Bytes */
+      min_size_bytes: number;
+      /** Mode */
+      mode: string;
+      /** Name */
+      name: string;
+      /** Phase */
+      phase: string;
+      /** Source File Count */
+      source_file_count: number;
+      /** Source Root */
+      source_root: string;
+      /** Source Scan Cursor */
+      source_scan_cursor: string | null;
+      /** Status */
+      status: string;
+      /** Target File Count */
+      target_file_count: number;
+      /** Target Root */
+      target_root: string;
+      /** Target Scan Cursor */
+      target_scan_cursor: string | null;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+      /** Verified Count */
+      verified_count: number;
+      /** Version */
+      version: number;
+      /** Video Extensions */
+      video_extensions: string[];
+    };
+    /**
+     * MovieDedupMode
+     * @enum {string}
+     */
+    MovieDedupMode: 'AUTO' | 'HARDLINK' | 'SYMLINK' | 'SCAN_ONLY';
+    /** MovieDedupPairListResponse */
+    MovieDedupPairListResponse: {
+      /** Items */
+      items: components['schemas']['MovieDedupPairResponse'][];
+    };
+    /** MovieDedupPairResponse */
+    MovieDedupPairResponse: {
+      /** Error Code */
+      error_code: string | null;
+      /** Error Message */
+      error_message: string | null;
+      /** Estimated Reclaimable Bytes */
+      estimated_reclaimable_bytes: number;
+      /** Full Hash Match */
+      full_hash_match: boolean;
+      /** Id */
+      id: string;
+      /** Metadata Match */
+      metadata_match: boolean;
+      /** Quick Hash Match */
+      quick_hash_match: boolean;
+      /** Resolved Action */
+      resolved_action: string;
+      /** Size Match */
+      size_match: boolean;
+      /** Source Device */
+      source_device: number;
+      /** Source Inode */
+      source_inode: number;
+      /** Source Link Count */
+      source_link_count: number;
+      /** Source Media Metadata */
+      source_media_metadata: {
+        [key: string]: unknown;
+      };
+      /** Source Mtime Ns */
+      source_mtime_ns: string;
+      /** Source Relative Path */
+      source_relative_path: string;
+      /** Source Sha256 */
+      source_sha256: string | null;
+      /** Source Size Bytes */
+      source_size_bytes: number;
+      /** Status */
+      status: string;
+      /** Target Device */
+      target_device: number;
+      /** Target Inode */
+      target_inode: number;
+      /** Target Link Count */
+      target_link_count: number;
+      /** Target Media Metadata */
+      target_media_metadata: {
+        [key: string]: unknown;
+      };
+      /** Target Mtime Ns */
+      target_mtime_ns: string;
+      /** Target Relative Path */
+      target_relative_path: string;
+      /** Target Sha256 */
+      target_sha256: string | null;
+      /** Target Size Bytes */
+      target_size_bytes: number;
+    };
+    /** MovieDedupPrecheckRequest */
+    MovieDedupPrecheckRequest: {
+      /** @default STOP */
+      cross_filesystem_policy: components['schemas']['MovieDedupCrossFilesystemPolicy'];
+      /** @default AUTO */
+      mode: components['schemas']['MovieDedupMode'];
+      /** Source Root */
+      source_root: string;
+      /** Target Root */
+      target_root: string;
+    };
+    /** MovieDedupPrecheckResponse */
+    MovieDedupPrecheckResponse: {
+      /** Blocked Reasons */
+      blocked_reasons: string[];
+      /** Resolved Action */
+      resolved_action: string;
+      /** Same Filesystem */
+      same_filesystem: boolean;
+      /** Source Device */
+      source_device: number;
+      /** Source Root */
+      source_root: string;
+      /** Target Device */
+      target_device: number;
+      /** Target Root */
+      target_root: string;
     };
     /** NotificationChannelActionRequest */
     NotificationChannelActionRequest: {
@@ -5288,6 +5589,258 @@ export interface operations {
         };
         content: {
           'application/json': unknown;
+        };
+      };
+    };
+  };
+  list_movie_dedup_jobs_api_v1_movie_dedup_jobs_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MovieDedupJobListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  create_movie_dedup_job_api_v1_movie_dedup_jobs_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['MovieDedupJobCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MovieDedupJobResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        job_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MovieDedupJobResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  execute_movie_dedup_pairs_api_v1_movie_dedup_jobs__job_id__execute_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'Idempotency-Key'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        job_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['MovieDedupExecuteRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MovieDedupJobResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_movie_dedup_pairs_api_v1_movie_dedup_jobs__job_id__pairs_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+      };
+      header?: never;
+      path: {
+        job_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MovieDedupPairListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  start_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__start_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        job_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MovieDedupJobResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  precheck_movie_dedup_api_v1_movie_dedup_precheck_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['MovieDedupPrecheckRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MovieDedupPrecheckResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
         };
       };
     };

@@ -88,7 +88,7 @@ def test_v104_database_upgrades_to_cookiecloud_schema_without_touching_sites(
             }
             assert "cookiecloud_setting" not in table_names
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "0032_cookiecloud_v105")
 
         with engine.connect() as connection:
             revision = connection.execute(

@@ -20,6 +20,10 @@ import {
 } from '../api/system';
 import {
   BACKGROUND_RELEASE_CHECK_INTERVAL_MS,
+  LAST_RELOADED_UPGRADE_REQUEST_KEY,
+  PENDING_UPGRADE_SESSION_KEY,
+  parsePendingUpgradeRequest,
+  shouldReloadAfterUpgrade,
   shouldMarkUpdateUnseen,
 } from '../versionUpdateIndicator';
 
@@ -36,6 +40,32 @@ const quietReleaseLoading = ref(false);
 const unseenUpdate = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let releaseCheckTimer: ReturnType<typeof setInterval> | undefined;
+
+function persistPendingUpgrade(
+  idempotencyKey: string,
+  targetVersion: string,
+  targetDigest: string,
+): void {
+  sessionStorage.setItem(
+    PENDING_UPGRADE_SESSION_KEY,
+    JSON.stringify({ idempotencyKey, targetVersion, targetDigest }),
+  );
+}
+
+function clearPendingUpgrade(): void {
+  sessionStorage.removeItem(PENDING_UPGRADE_SESSION_KEY);
+}
+
+function restorePendingUpgrade(): void {
+  const pending = parsePendingUpgradeRequest(sessionStorage.getItem(PENDING_UPGRADE_SESSION_KEY));
+  if (!pending) {
+    clearPendingUpgrade();
+    return;
+  }
+  pendingIdempotencyKey.value = pending.idempotencyKey;
+  targetInFlight.value = pending.targetVersion;
+  upgradeResultUnknown.value = true;
+}
 
 const activePhases = new Set<UpdaterStatus['phase']>([
   'accepted',
@@ -171,20 +201,35 @@ async function refreshReleaseQuietly(): Promise<void> {
     releaseChecked.value = true;
     if (shouldMarkUpdateUnseen(next.update_available, visible.value)) unseenUpdate.value = true;
     const phase = next.helper_status?.phase;
+    const helperRequestId = next.helper_status?.request_id ?? undefined;
+    const helperTargetVersion = next.helper_status?.target_version ?? undefined;
+    if (phase && activePhases.has(phase)) {
+      if (helperTargetVersion) targetInFlight.value = helperTargetVersion;
+      upgradeResultUnknown.value = false;
+    }
     if (phase && !activePhases.has(phase) && phase !== 'idle') {
       upgradeResultUnknown.value = false;
       if (phase !== 'succeeded') {
         targetInFlight.value = '';
         pendingIdempotencyKey.value = '';
+        clearPendingUpgrade();
       }
     }
     if (
-      targetInFlight.value &&
-      next.current_version === targetInFlight.value &&
-      phase === 'succeeded'
+      shouldReloadAfterUpgrade(
+        phase,
+        helperRequestId,
+        next.current_version,
+        helperTargetVersion,
+        sessionStorage.getItem(LAST_RELOADED_UPGRADE_REQUEST_KEY),
+      )
     ) {
+      if (helperRequestId) {
+        sessionStorage.setItem(LAST_RELOADED_UPGRADE_REQUEST_KEY, helperRequestId);
+      }
       targetInFlight.value = '';
       pendingIdempotencyKey.value = '';
+      clearPendingUpgrade();
       ElMessage.success(`PackBreaker 已升级到 v${next.current_version}，正在刷新页面。`);
       window.setTimeout(() => window.location.reload(), 600);
     }
@@ -202,6 +247,7 @@ async function startUpgrade(): Promise<void> {
 
   if (!upgradeResultUnknown.value) {
     pendingIdempotencyKey.value = `pb-upgrade-${crypto.randomUUID()}`;
+    persistPendingUpgrade(pendingIdempotencyKey.value, targetVersion, targetDigest);
   }
 
   const idempotencyKey = pendingIdempotencyKey.value;
@@ -238,6 +284,7 @@ async function startUpgrade(): Promise<void> {
       pendingIdempotencyKey.value = '';
       targetInFlight.value = '';
       upgradeResultUnknown.value = false;
+      clearPendingUpgrade();
       ElMessage.error(problem.message);
     }
   } finally {
@@ -257,6 +304,7 @@ watch(visible, (isVisible) => {
   }
 });
 onMounted(() => {
+  restorePendingUpgrade();
   void loadCurrentVersion();
   void refreshReleaseQuietly();
   releaseCheckTimer = setInterval(() => {

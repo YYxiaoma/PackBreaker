@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import hashlib
 import os
 import stat
 import unicodedata
@@ -73,6 +74,41 @@ class RepairIsolationApplyResult:
     recovered_after_replace: bool
 
 
+@dataclass(frozen=True, slots=True)
+class DedupExchangeResult:
+    target_snapshot: FilesystemSnapshot
+    original_target_snapshot: FilesystemSnapshot
+    temporary_relative_path: str
+    recovered_after_exchange: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MovieFileSnapshot:
+    device: int
+    inode: int
+    size: int
+    allocated_bytes: int
+    mtime_ns: int
+    ctime_ns: int
+    link_count: int
+    mode: int
+    uid: int
+    gid: int
+
+    def filesystem_snapshot(self) -> FilesystemSnapshot:
+        return FilesystemSnapshot(
+            device=self.device,
+            inode=self.inode,
+            size=self.size,
+            mtime_ns=self.mtime_ns,
+            file_type="regular",
+            link_count=self.link_count,
+        )
+
+    def stable_identity(self) -> tuple[int, int, int, int, int]:
+        return (self.device, self.inode, self.size, self.mtime_ns, self.ctime_ns)
+
+
 class SafeFilesystemGateway:
     """M3 文件系统安全边界；所有写操作都要求调用方先持久化 journal intent。"""
 
@@ -82,6 +118,103 @@ class SafeFilesystemGateway:
     def normalize_relative_path(self, value: str, *, allow_root: bool = False) -> str:
         normalized, _ = _normalize_relative_path(value, allow_root=allow_root)
         return normalized
+
+    def inspect_movie_file(self, *, relative_path: str) -> MovieFileSnapshot:
+        _, parts = _normalize_relative_path(relative_path)
+        parent_fd = _open_directory_chain(self._data_root, parts[:-1])
+        file_fd: int | None = None
+        try:
+            file_fd = _open_regular_file_at(parent_fd, parts[-1], write=False)
+            return _movie_snapshot_from_stat(os.fstat(file_fd))
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+            os.close(parent_fd)
+
+    def inspect_symlink_target(self, *, relative_path: str) -> str:
+        _, parts = _normalize_relative_path(relative_path)
+        parent_fd = _open_directory_chain(self._data_root, parts[:-1])
+        try:
+            snapshot = _stat_at(parent_fd, parts[-1])
+            if snapshot is None or snapshot.file_type != "symlink":
+                raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "影片去重目标不是预期软链接")
+            return _readlink_at(parent_fd, parts[-1])
+        finally:
+            os.close(parent_fd)
+
+    def movie_quick_fingerprint(
+        self,
+        *,
+        relative_path: str,
+        expected_snapshot: MovieFileSnapshot,
+        sample_size: int = 1024 * 1024,
+    ) -> str:
+        if sample_size <= 0:
+            raise ValueError("sample_size 必须大于 0")
+        _, parts = _normalize_relative_path(relative_path)
+        parent_fd = _open_directory_chain(self._data_root, parts[:-1])
+        file_fd: int | None = None
+        try:
+            file_fd = _open_regular_file_at(parent_fd, parts[-1], write=False)
+            before = _movie_snapshot_from_stat(os.fstat(file_fd))
+            _assert_movie_snapshot_stable(before, expected_snapshot)
+            size = before.size
+            offsets = tuple(
+                dict.fromkeys(
+                    (
+                        0,
+                        max(0, (size // 2) - (sample_size // 2)),
+                        max(0, size - sample_size),
+                    )
+                )
+            )
+            digest = hashlib.sha256()
+            digest.update(size.to_bytes(16, "big", signed=False))
+            for offset in offsets:
+                digest.update(offset.to_bytes(16, "big", signed=False))
+                digest.update(os.pread(file_fd, min(sample_size, max(0, size - offset)), offset))
+            after = _movie_snapshot_from_stat(os.fstat(file_fd))
+            _assert_movie_snapshot_stable(after, expected_snapshot)
+            return digest.hexdigest()
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+            os.close(parent_fd)
+
+    def movie_full_sha256(
+        self,
+        *,
+        relative_path: str,
+        expected_snapshot: MovieFileSnapshot,
+        chunk_size: int = 4 * 1024 * 1024,
+    ) -> str:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size 必须大于 0")
+        _, parts = _normalize_relative_path(relative_path)
+        parent_fd = _open_directory_chain(self._data_root, parts[:-1])
+        file_fd: int | None = None
+        try:
+            file_fd = _open_regular_file_at(parent_fd, parts[-1], write=False)
+            before = _movie_snapshot_from_stat(os.fstat(file_fd))
+            _assert_movie_snapshot_stable(before, expected_snapshot)
+            digest = hashlib.sha256()
+            offset = 0
+            while offset < before.size:
+                block = os.pread(file_fd, min(chunk_size, before.size - offset), offset)
+                if not block:
+                    raise DomainViolation(
+                        ErrorCode.SOURCE_CHANGED,
+                        "影片文件在完整校验期间提前结束",
+                    )
+                digest.update(block)
+                offset += len(block)
+            after = _movie_snapshot_from_stat(os.fstat(file_fd))
+            _assert_movie_snapshot_stable(after, expected_snapshot)
+            return digest.hexdigest()
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+            os.close(parent_fd)
 
     def assert_source_matches(
         self,
@@ -913,6 +1046,325 @@ class SafeFilesystemGateway:
             os.close(source_parent_fd)
             os.close(target_parent_fd)
 
+    def exchange_duplicate_with_hardlink(
+        self,
+        *,
+        source_relative_path: str,
+        target_relative_path: str,
+        expected_source_snapshot: FilesystemSnapshot,
+        expected_target_snapshot: FilesystemSnapshot,
+        operation_token: str,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> DedupExchangeResult:
+        """以临时 hardlink + RENAME_EXCHANGE 原子替换已存在的重复目标。
+
+        调用方必须先持久化 dedup journal intent。本方法故意保留交换后的旧目标
+        临时路径，由调用方持久化 EXCHANGED/VERIFIED 后再显式清理。
+        """
+
+        _validate_operation_token(operation_token)
+        _, source_parts = _normalize_relative_path(source_relative_path)
+        _, target_parts = _normalize_relative_path(target_relative_path)
+        source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
+        target_parent_fd = _open_directory_chain(self._data_root, target_parts[:-1])
+        try:
+            source_name = source_parts[-1]
+            target_name = target_parts[-1]
+            source = _stat_at(source_parent_fd, source_name)
+            if source is None or source.file_type != "regular":
+                raise DomainViolation(ErrorCode.SOURCE_CHANGED, "影片去重源文件已不可用")
+            _assert_regular_identity(
+                source,
+                expected_source_snapshot,
+                code=ErrorCode.SOURCE_CHANGED,
+                detail="影片去重源文件与验证快照不一致",
+            )
+
+            target_parent = _fstat_snapshot(target_parent_fd)
+            if source.device != target_parent.device:
+                raise DomainViolation(
+                    ErrorCode.CROSS_DEVICE_LINK,
+                    "保留文件与去重目标不在同一文件系统，不能创建硬链接",
+                )
+
+            temporary_name = f".packbreaker-dedup-{operation_token}.swap"
+            temporary_relative = (
+                temporary_name
+                if len(target_parts) == 1
+                else "/".join((*target_parts[:-1], temporary_name))
+            )
+            temporary = _stat_at(target_parent_fd, temporary_name, missing_ok=True)
+            target = _stat_at(target_parent_fd, target_name, missing_ok=True)
+
+            if temporary is None:
+                if target is None:
+                    raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重目标文件已消失")
+                _assert_regular_identity(
+                    target,
+                    expected_target_snapshot,
+                    code=ErrorCode.TARGET_CONFLICT,
+                    detail="影片去重目标文件与验证快照不一致",
+                )
+                try:
+                    os.link(
+                        source_name,
+                        temporary_name,
+                        src_dir_fd=source_parent_fd,
+                        dst_dir_fd=target_parent_fd,
+                        follow_symlinks=False,
+                    )
+                except FileExistsError as exc:
+                    raise DomainViolation(
+                        ErrorCode.TARGET_CONFLICT, "影片去重临时硬链接并发出现"
+                    ) from exc
+                except OSError as exc:
+                    code = (
+                        ErrorCode.CROSS_DEVICE_LINK
+                        if exc.errno == errno.EXDEV
+                        else ErrorCode.PATH_MAPPING_INVALID
+                    )
+                    raise DomainViolation(code, "无法安全创建影片去重临时硬链接") from exc
+                _call_fault_hook(fault_hook, "after_dedup_temp_link_created")
+                temporary = _stat_at(target_parent_fd, temporary_name)
+
+            if temporary is None or temporary.file_type != "regular":
+                raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重临时路径状态异常")
+
+            target = _stat_at(target_parent_fd, target_name, missing_ok=True)
+            if target is None:
+                raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重目标文件已消失")
+
+            recovered = False
+            if _same_file_identity(target, source) and _same_file_identity(
+                temporary, expected_target_snapshot
+            ):
+                recovered = True
+            else:
+                _assert_regular_identity(
+                    target,
+                    expected_target_snapshot,
+                    code=ErrorCode.TARGET_CONFLICT,
+                    detail="影片去重目标文件在原子交换前已变化",
+                )
+                if not _same_file_identity(temporary, source):
+                    raise DomainViolation(
+                        ErrorCode.TARGET_CONFLICT,
+                        "影片去重临时硬链接与权威源 inode 不一致",
+                    )
+                current_source = _stat_at(source_parent_fd, source_name)
+                if current_source is None:
+                    raise DomainViolation(ErrorCode.SOURCE_CHANGED, "影片去重源文件已消失")
+                _assert_regular_identity(
+                    current_source,
+                    expected_source_snapshot,
+                    code=ErrorCode.SOURCE_CHANGED,
+                    detail="影片去重源文件在原子交换前已变化",
+                )
+                _rename_exchange(
+                    source_dir_fd=target_parent_fd,
+                    source_name=temporary_name,
+                    target_dir_fd=target_parent_fd,
+                    target_name=target_name,
+                )
+                _call_fault_hook(fault_hook, "after_dedup_exchange")
+
+            final_target = _stat_at(target_parent_fd, target_name)
+            old_target = _stat_at(target_parent_fd, temporary_name)
+            if final_target is None or not _same_file_identity(final_target, source):
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "影片去重原子交换后目标未指向权威源 inode",
+                )
+            if old_target is None:
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "影片去重原子交换后原目标临时路径缺失",
+                )
+            _assert_regular_identity(
+                old_target,
+                expected_target_snapshot,
+                code=ErrorCode.TARGET_CONFLICT,
+                detail="影片去重交换后的原目标快照不一致",
+            )
+            return DedupExchangeResult(
+                target_snapshot=final_target,
+                original_target_snapshot=old_target,
+                temporary_relative_path=temporary_relative,
+                recovered_after_exchange=recovered,
+            )
+        finally:
+            os.close(source_parent_fd)
+            os.close(target_parent_fd)
+
+    def exchange_duplicate_with_symlink(
+        self,
+        *,
+        source_relative_path: str,
+        target_relative_path: str,
+        expected_source_snapshot: FilesystemSnapshot,
+        expected_target_snapshot: FilesystemSnapshot,
+        operation_token: str,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> DedupExchangeResult:
+        """以临时 symlink + RENAME_EXCHANGE 原子替换已存在的重复目标。"""
+
+        _validate_operation_token(operation_token)
+        source_relative, source_parts = _normalize_relative_path(source_relative_path)
+        _, target_parts = _normalize_relative_path(target_relative_path)
+        source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
+        target_parent_fd = _open_directory_chain(self._data_root, target_parts[:-1])
+        symlink_target = str(self._data_root / source_relative)
+        try:
+            source_name = source_parts[-1]
+            target_name = target_parts[-1]
+            source = _stat_at(source_parent_fd, source_name)
+            if source is None or source.file_type != "regular":
+                raise DomainViolation(ErrorCode.SOURCE_CHANGED, "影片去重源文件已不可用")
+            _assert_regular_identity(
+                source,
+                expected_source_snapshot,
+                code=ErrorCode.SOURCE_CHANGED,
+                detail="影片去重源文件与验证快照不一致",
+            )
+
+            temporary_name = f".packbreaker-dedup-{operation_token}.swap"
+            temporary_relative = (
+                temporary_name
+                if len(target_parts) == 1
+                else "/".join((*target_parts[:-1], temporary_name))
+            )
+            temporary = _stat_at(target_parent_fd, temporary_name, missing_ok=True)
+            target = _stat_at(target_parent_fd, target_name, missing_ok=True)
+
+            if temporary is None:
+                if target is None:
+                    raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重目标文件已消失")
+                _assert_regular_identity(
+                    target,
+                    expected_target_snapshot,
+                    code=ErrorCode.TARGET_CONFLICT,
+                    detail="影片去重目标文件与验证快照不一致",
+                )
+                try:
+                    os.symlink(symlink_target, temporary_name, dir_fd=target_parent_fd)
+                except FileExistsError as exc:
+                    raise DomainViolation(
+                        ErrorCode.TARGET_CONFLICT, "影片去重临时软链接并发出现"
+                    ) from exc
+                except OSError as exc:
+                    raise DomainViolation(
+                        ErrorCode.PATH_MAPPING_INVALID, "无法安全创建影片去重临时软链接"
+                    ) from exc
+                _call_fault_hook(fault_hook, "after_dedup_temp_link_created")
+                temporary = _stat_at(target_parent_fd, temporary_name)
+
+            if temporary is None:
+                raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重临时路径状态异常")
+            target = _stat_at(target_parent_fd, target_name, missing_ok=True)
+            if target is None:
+                raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重目标文件已消失")
+
+            recovered = False
+            if (
+                target.file_type == "symlink"
+                and _readlink_at(target_parent_fd, target_name) == symlink_target
+                and _same_file_identity(temporary, expected_target_snapshot)
+            ):
+                recovered = True
+            else:
+                _assert_regular_identity(
+                    target,
+                    expected_target_snapshot,
+                    code=ErrorCode.TARGET_CONFLICT,
+                    detail="影片去重目标文件在原子交换前已变化",
+                )
+                if (
+                    temporary.file_type != "symlink"
+                    or _readlink_at(target_parent_fd, temporary_name) != symlink_target
+                ):
+                    raise DomainViolation(
+                        ErrorCode.TARGET_CONFLICT,
+                        "影片去重临时软链接目标与权威源不一致",
+                    )
+                current_source = _stat_at(source_parent_fd, source_name)
+                if current_source is None:
+                    raise DomainViolation(ErrorCode.SOURCE_CHANGED, "影片去重源文件已消失")
+                _assert_regular_identity(
+                    current_source,
+                    expected_source_snapshot,
+                    code=ErrorCode.SOURCE_CHANGED,
+                    detail="影片去重源文件在原子交换前已变化",
+                )
+                _rename_exchange(
+                    source_dir_fd=target_parent_fd,
+                    source_name=temporary_name,
+                    target_dir_fd=target_parent_fd,
+                    target_name=target_name,
+                )
+                _call_fault_hook(fault_hook, "after_dedup_exchange")
+
+            final_target = _stat_at(target_parent_fd, target_name)
+            old_target = _stat_at(target_parent_fd, temporary_name)
+            if (
+                final_target is None
+                or final_target.file_type != "symlink"
+                or _readlink_at(target_parent_fd, target_name) != symlink_target
+            ):
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "影片去重原子交换后软链接目标异常",
+                )
+            if old_target is None:
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "影片去重原子交换后原目标临时路径缺失",
+                )
+            _assert_regular_identity(
+                old_target,
+                expected_target_snapshot,
+                code=ErrorCode.TARGET_CONFLICT,
+                detail="影片去重交换后的原目标快照不一致",
+            )
+            return DedupExchangeResult(
+                target_snapshot=final_target,
+                original_target_snapshot=old_target,
+                temporary_relative_path=temporary_relative,
+                recovered_after_exchange=recovered,
+            )
+        finally:
+            os.close(source_parent_fd)
+            os.close(target_parent_fd)
+
+    def remove_exchanged_original_if_matches(
+        self,
+        *,
+        temporary_relative_path: str,
+        expected_original_snapshot: FilesystemSnapshot,
+    ) -> bool:
+        """只清理仍严格匹配 journal 记录的交换前 B inode。"""
+
+        _, parts = _normalize_relative_path(temporary_relative_path)
+        parent_fd = _open_directory_chain(self._data_root, parts[:-1])
+        try:
+            current = _stat_at(parent_fd, parts[-1], missing_ok=True)
+            if current is None:
+                return False
+            _assert_regular_identity(
+                current,
+                expected_original_snapshot,
+                code=ErrorCode.ROLLBACK_BLOCKED,
+                detail="影片去重原文件临时路径已变化，禁止自动删除",
+            )
+            try:
+                os.unlink(parts[-1], dir_fd=parent_fd)
+            except OSError as exc:
+                raise DomainViolation(
+                    ErrorCode.ROLLBACK_BLOCKED, "无法安全删除影片去重原文件"
+                ) from exc
+            return True
+        finally:
+            os.close(parent_fd)
+
     def remove_hardlink_if_matches(
         self,
         *,
@@ -1232,6 +1684,31 @@ def _snapshot_from_stat(result: os.stat_result) -> FilesystemSnapshot:
     )
 
 
+def _movie_snapshot_from_stat(result: os.stat_result) -> MovieFileSnapshot:
+    if not stat.S_ISREG(result.st_mode):
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "影片去重对象必须是普通文件")
+    return MovieFileSnapshot(
+        device=result.st_dev,
+        inode=result.st_ino,
+        size=result.st_size,
+        allocated_bytes=max(0, int(getattr(result, "st_blocks", 0)) * 512),
+        mtime_ns=result.st_mtime_ns,
+        ctime_ns=result.st_ctime_ns,
+        link_count=result.st_nlink,
+        mode=stat.S_IMODE(result.st_mode),
+        uid=result.st_uid,
+        gid=result.st_gid,
+    )
+
+
+def _assert_movie_snapshot_stable(
+    observed: MovieFileSnapshot,
+    expected: MovieFileSnapshot,
+) -> None:
+    if observed.stable_identity() != expected.stable_identity():
+        raise DomainViolation(ErrorCode.SOURCE_CHANGED, "影片文件在内容校验期间发生变化")
+
+
 def _open_directory_chain(root: Path, parts: tuple[str, ...]) -> int:
     flags = (
         os.O_RDONLY
@@ -1277,6 +1754,24 @@ def _stat_at(fd: int, name: str, *, missing_ok: bool = False) -> FilesystemSnaps
     except OSError as exc:
         raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "无法读取文件系统目标状态") from exc
     return _snapshot_from_stat(result)
+
+
+def _readlink_at(fd: int, name: str) -> str:
+    try:
+        return os.readlink(name, dir_fd=fd)
+    except OSError as exc:
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "无法读取影片去重软链接目标") from exc
+
+
+def _assert_regular_identity(
+    observed: FilesystemSnapshot,
+    expected: FilesystemSnapshot,
+    *,
+    code: ErrorCode,
+    detail: str,
+) -> None:
+    if not _same_file_identity(observed, expected):
+        raise DomainViolation(code, detail)
 
 
 def _assert_filesystem_snapshot(
@@ -1515,3 +2010,40 @@ def _rename_noreplace(
     if error_number == errno.EXDEV:
         raise DomainViolation(ErrorCode.CROSS_DEVICE_LINK, "硬链接原子落位跨越不同设备")
     raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "硬链接无法安全原子落位")
+
+
+def _rename_exchange(
+    *,
+    source_dir_fd: int,
+    source_name: str,
+    target_dir_fd: int,
+    target_name: str,
+) -> None:
+    renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if renameat2 is None:
+        raise DomainViolation(
+            ErrorCode.PATH_MAPPING_INVALID,
+            "当前系统缺少 renameat2，不能安全执行影片去重原子交换",
+        )
+    result = renameat2(
+        ctypes.c_int(source_dir_fd),
+        ctypes.c_char_p(os.fsencode(source_name)),
+        ctypes.c_int(target_dir_fd),
+        ctypes.c_char_p(os.fsencode(target_name)),
+        ctypes.c_uint(2),
+    )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EXDEV:
+        raise DomainViolation(ErrorCode.CROSS_DEVICE_LINK, "影片去重原子交换跨越不同设备")
+    if error_number in {errno.ENOENT, errno.EEXIST}:
+        raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重原子交换目标状态已变化")
+    raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "影片去重无法安全执行原子交换")
+
+
+def _validate_operation_token(operation_token: str) -> None:
+    if len(operation_token) != 64 or any(
+        character not in "0123456789abcdef" for character in operation_token
+    ):
+        raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "影片去重操作 token 无效")

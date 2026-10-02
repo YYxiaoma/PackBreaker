@@ -46,6 +46,7 @@ import {
 } from '../api/taskDefinitions';
 import { taskEventTranslation } from '../taskExecutionEvents';
 import { taskLifecycleAdvanceFeedback } from '../taskLifecycleFeedback';
+import MovieDedupPanel from './MovieDedupPanel.vue';
 import TaskExecutionEvidencePanel from './TaskExecutionEvidencePanel.vue';
 
 const emit = defineEmits<{ navigate: [page: string] }>();
@@ -56,6 +57,7 @@ const ARCHIVE_EXTENSIONS = ['.rar', '.zip', '.7z', '.tar', '.gz'];
 const TEMP_PATTERNS = ['*.part', '*.tmp', '*.crdownload', '*.!qB', '*.aria2'];
 type CronInputMode = 'VISUAL' | 'CRON';
 type CronVisualKind = 'EVERY_MINUTES' | 'EVERY_HOURS' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
+type TaskCenterKind = TaskDefinitionKind | 'MOVIE_DEDUP';
 
 interface Draft {
   name: string;
@@ -94,8 +96,10 @@ interface Draft {
 const definitions = ref<TaskDefinition[]>([]);
 const sites = ref<Site[]>([]);
 const downloaders = ref<Downloader[]>([]);
-const activeKind = ref<TaskDefinitionKind>('MANUAL');
+const activeKind = ref<TaskCenterKind>('MANUAL');
 const loading = ref(false);
+const movieDedupPanelRef = ref<InstanceType<typeof MovieDedupPanel> | null>(null);
+const movieDedupStats = ref({ total: 0, running: 0, review: 0, completed: 0 });
 const saving = ref(false);
 const editingDefinitionId = ref<string | null>(null);
 const hydratingDraft = ref(false);
@@ -201,7 +205,9 @@ const monitorStats = computed(() => {
   };
 });
 const visibleDefinitions = computed(() =>
-  definitions.value.filter((item) => item.kind === activeKind.value),
+  activeKind.value === 'MOVIE_DEDUP'
+    ? []
+    : definitions.value.filter((item) => item.kind === activeKind.value),
 );
 const configuredSites = computed(() => sites.value);
 const configuredDownloaders = computed(() => downloaders.value);
@@ -386,9 +392,11 @@ async function refresh(): Promise<void> {
   }
 }
 
-function openCreate(kind: TaskDefinitionKind = activeKind.value): void {
+function openCreate(kind?: TaskDefinitionKind): void {
+  const resolvedKind: TaskDefinitionKind =
+    kind ?? (activeKind.value === 'MONITOR' ? 'MONITOR' : 'MANUAL');
   editingDefinitionId.value = null;
-  Object.assign(draft, freshDraft(), { kind });
+  Object.assign(draft, freshDraft(), { kind: resolvedKind });
   cronInputMode.value = 'CRON';
   cronPreview.value = null;
   cronPreviewError.value = '';
@@ -396,6 +404,22 @@ function openCreate(kind: TaskDefinitionKind = activeKind.value): void {
   directoryPreview.value = null;
   selectedDirectoryPaths.value = [];
   dialogVisible.value = true;
+}
+
+function openActiveCreate(): void {
+  if (activeKind.value === 'MOVIE_DEDUP') {
+    movieDedupPanelRef.value?.openCreate();
+    return;
+  }
+  openCreate(activeKind.value);
+}
+
+async function refreshActive(): Promise<void> {
+  if (activeKind.value === 'MOVIE_DEDUP') {
+    await movieDedupPanelRef.value?.refresh();
+    return;
+  }
+  await refresh();
 }
 
 function openEdit(item: TaskDefinition): void {
@@ -674,7 +698,8 @@ function siteLabel(site: Site): string {
   return `${site.name} · ${state}`;
 }
 
-function kindLabel(kind: TaskDefinitionKind): string {
+function kindLabel(kind: TaskCenterKind): string {
+  if (kind === 'MOVIE_DEDUP') return '影片去重';
   return kind === 'MANUAL' ? '手动拆包' : '监控拆包';
 }
 
@@ -1296,8 +1321,10 @@ async function decideApproval(
         <p>任务定义与每次执行分离；扫描、计划、授权、执行与校验逐步收口到统一安全生命周期。</p>
       </div>
       <div class="toolbar-actions">
-        <el-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</el-button>
-        <el-button type="primary" @click="openCreate()"><Plus :size="15" />新增任务</el-button>
+        <el-button :loading="loading" @click="refreshActive"
+          ><RefreshCw :size="15" />刷新</el-button
+        >
+        <el-button type="primary" @click="openActiveCreate"><Plus :size="15" />新增任务</el-button>
       </div>
     </div>
 
@@ -1330,9 +1357,23 @@ async function decideApproval(
         </span>
         <strong>{{ monitorCount }}</strong>
       </button>
+      <button
+        :class="['kind-card', { active: activeKind === 'MOVIE_DEDUP' }]"
+        @click="activeKind = 'MOVIE_DEDUP'"
+      >
+        <span class="kind-icon"><FolderSearch :size="21" /></span>
+        <span>
+          <b>影片去重</b>
+          <small>
+            运行中 {{ movieDedupStats.running }} · 待审核 {{ movieDedupStats.review }} · 已完成
+            {{ movieDedupStats.completed }}
+          </small>
+        </span>
+        <strong>{{ movieDedupStats.total }}</strong>
+      </button>
     </div>
 
-    <div class="table-card" v-loading="loading">
+    <div v-show="activeKind !== 'MOVIE_DEDUP'" class="table-card" v-loading="loading">
       <div class="table-card-head">
         <div>
           <b>{{ kindLabel(activeKind) }}</b>
@@ -1459,6 +1500,12 @@ async function decideApproval(
         </el-table-column>
       </el-table>
     </div>
+
+    <MovieDedupPanel
+      v-if="activeKind === 'MOVIE_DEDUP'"
+      ref="movieDedupPanelRef"
+      @stats="movieDedupStats = $event"
+    />
 
     <el-dialog
       v-model="dialogVisible"
@@ -2500,7 +2547,7 @@ async function decideApproval(
 }
 .task-kind-cards {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 .kind-card {

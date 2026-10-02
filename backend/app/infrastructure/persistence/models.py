@@ -16,6 +16,17 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.domain.ai_agent import AIConnectionStatus, AIProviderKind
+from backend.app.domain.movie_dedup import (
+    MovieDedupCrossFilesystemPolicy,
+    MovieDedupInventorySide,
+    MovieDedupInventoryStatus,
+    MovieDedupJobPhase,
+    MovieDedupJobStatus,
+    MovieDedupJournalStatus,
+    MovieDedupMode,
+    MovieDedupPairStatus,
+    MovieDedupResolvedAction,
+)
 from backend.app.domain.notification import (
     NotificationChannelKind,
     NotificationDeliveryState,
@@ -79,6 +90,19 @@ _TASK_EXECUTION_STATUS_SQL = ", ".join(f"'{value.value}'" for value in TaskExecu
 _TASK_EXECUTION_PHASE_SQL = ", ".join(f"'{value.value}'" for value in TaskExecutionPhase)
 _TASK_APPROVAL_STATE_SQL = ", ".join(f"'{value.value}'" for value in TaskApprovalState)
 _TASK_APPROVAL_SOURCE_SQL = ", ".join(f"'{value.value}'" for value in TaskApprovalDecisionSource)
+_MOVIE_DEDUP_MODE_SQL = ", ".join(f"'{value.value}'" for value in MovieDedupMode)
+_MOVIE_DEDUP_CROSS_FS_SQL = ", ".join(
+    f"'{value.value}'" for value in MovieDedupCrossFilesystemPolicy
+)
+_MOVIE_DEDUP_JOB_STATUS_SQL = ", ".join(f"'{value.value}'" for value in MovieDedupJobStatus)
+_MOVIE_DEDUP_JOB_PHASE_SQL = ", ".join(f"'{value.value}'" for value in MovieDedupJobPhase)
+_MOVIE_DEDUP_INVENTORY_SIDE_SQL = ", ".join(f"'{value.value}'" for value in MovieDedupInventorySide)
+_MOVIE_DEDUP_INVENTORY_STATUS_SQL = ", ".join(
+    f"'{value.value}'" for value in MovieDedupInventoryStatus
+)
+_MOVIE_DEDUP_PAIR_STATUS_SQL = ", ".join(f"'{value.value}'" for value in MovieDedupPairStatus)
+_MOVIE_DEDUP_ACTION_SQL = ", ".join(f"'{value.value}'" for value in MovieDedupResolvedAction)
+_MOVIE_DEDUP_JOURNAL_STATUS_SQL = ", ".join(f"'{value.value}'" for value in MovieDedupJournalStatus)
 
 
 class BackupPolicy(Base):
@@ -659,6 +683,171 @@ class TaskExecutionEvent(Base):
     trace_id: Mapped[str] = mapped_column(String(36), nullable=False)
     context: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class MovieDedupJob(Base):
+    __tablename__ = "movie_dedup_job"
+    __table_args__ = (
+        CheckConstraint(f"mode IN ({_MOVIE_DEDUP_MODE_SQL})", name="mode"),
+        CheckConstraint(
+            f"cross_filesystem_policy IN ({_MOVIE_DEDUP_CROSS_FS_SQL})",
+            name="cross_filesystem_policy",
+        ),
+        CheckConstraint(f"status IN ({_MOVIE_DEDUP_JOB_STATUS_SQL})", name="status"),
+        CheckConstraint(f"phase IN ({_MOVIE_DEDUP_JOB_PHASE_SQL})", name="phase"),
+        CheckConstraint("min_size_bytes >= 0", name="min_size_nonnegative"),
+        CheckConstraint("source_file_count >= 0", name="source_file_count_nonnegative"),
+        CheckConstraint("target_file_count >= 0", name="target_file_count_nonnegative"),
+        CheckConstraint("candidate_count >= 0", name="candidate_count_nonnegative"),
+        CheckConstraint("verified_count >= 0", name="verified_count_nonnegative"),
+        CheckConstraint("deduplicated_count >= 0", name="deduplicated_count_nonnegative"),
+        CheckConstraint("failed_count >= 0", name="failed_count_nonnegative"),
+        CheckConstraint("logical_duplicate_bytes >= 0", name="logical_duplicate_bytes_nonnegative"),
+        CheckConstraint(
+            "estimated_reclaimable_bytes >= 0", name="estimated_reclaimable_bytes_nonnegative"
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        Index("ix_movie_dedup_job_status_updated", "status", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_root: Mapped[str] = mapped_column(Text, nullable=False)
+    target_root: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    cross_filesystem_policy: Mapped[str] = mapped_column(String(16), nullable=False)
+    include_subdirectories: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    min_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    video_extensions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_scan_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_scan_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_file_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    target_file_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    candidate_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    verified_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    deduplicated_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    logical_duplicate_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    estimated_reclaimable_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    trace_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class MovieDedupFileInventory(Base):
+    __tablename__ = "movie_dedup_file_inventory"
+    __table_args__ = (
+        CheckConstraint(f"side IN ({_MOVIE_DEDUP_INVENTORY_SIDE_SQL})", name="side"),
+        CheckConstraint(
+            f"scan_status IN ({_MOVIE_DEDUP_INVENTORY_STATUS_SQL})", name="scan_status"
+        ),
+        CheckConstraint("size_bytes >= 0", name="size_nonnegative"),
+        CheckConstraint("allocated_bytes >= 0", name="allocated_nonnegative"),
+        CheckConstraint("link_count >= 1", name="link_count_positive"),
+        UniqueConstraint("job_id", "side", "relative_path", name="uq_movie_dedup_inventory_path"),
+        Index("ix_movie_dedup_inventory_job_side_size", "job_id", "side", "size_bytes"),
+        Index("ix_movie_dedup_inventory_full_sha256", "job_id", "full_sha256"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("movie_dedup_job.id", ondelete="CASCADE"), nullable=False
+    )
+    side: Mapped[str] = mapped_column(String(8), nullable=False)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    basename: Mapped[str] = mapped_column(Text, nullable=False)
+    extension: Mapped[str] = mapped_column(String(32), nullable=False)
+    device: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inode: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    allocated_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    link_count: Mapped[int] = mapped_column(nullable=False)
+    mtime_ns: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ctime_ns: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    mode: Mapped[int] = mapped_column(nullable=False)
+    uid: Mapped[int] = mapped_column(nullable=False)
+    gid: Mapped[int] = mapped_column(nullable=False)
+    media_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    quick_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    full_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scan_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class MovieDedupPair(Base):
+    __tablename__ = "movie_dedup_pair"
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_MOVIE_DEDUP_PAIR_STATUS_SQL})", name="status"),
+        CheckConstraint(f"resolved_action IN ({_MOVIE_DEDUP_ACTION_SQL})", name="resolved_action"),
+        CheckConstraint(
+            "estimated_reclaimable_bytes >= 0", name="estimated_reclaimable_bytes_nonnegative"
+        ),
+        UniqueConstraint(
+            "job_id", "source_file_id", "target_file_id", name="uq_movie_dedup_pair_files"
+        ),
+        Index("ix_movie_dedup_pair_job_status", "job_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("movie_dedup_job.id", ondelete="CASCADE"), nullable=False
+    )
+    source_file_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("movie_dedup_file_inventory.id", ondelete="CASCADE"), nullable=False
+    )
+    target_file_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("movie_dedup_file_inventory.id", ondelete="CASCADE"), nullable=False
+    )
+    match_level: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    metadata_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    size_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    quick_hash_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    full_hash_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    resolved_action: Mapped[str] = mapped_column(String(16), nullable=False)
+    estimated_reclaimable_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class MovieDedupOperationJournal(Base):
+    __tablename__ = "movie_dedup_operation_journal"
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_MOVIE_DEDUP_JOURNAL_STATUS_SQL})", name="status"),
+        UniqueConstraint("idempotency_key", name="uq_movie_dedup_journal_idempotency_key"),
+        Index("ix_movie_dedup_journal_job_status", "job_id", "status"),
+        Index("ix_movie_dedup_journal_pair_created", "pair_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("movie_dedup_job.id", ondelete="CASCADE"), nullable=False
+    )
+    pair_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("movie_dedup_pair.id", ondelete="CASCADE"), nullable=False
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    target_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    temporary_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    temporary_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    after_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
 class UnpackTask(Base):

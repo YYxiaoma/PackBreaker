@@ -15,6 +15,7 @@ from backend.app.api.auth import router as auth_router
 from backend.app.api.cookiecloud import router as cookiecloud_router
 from backend.app.api.downloaders import router as downloader_router
 from backend.app.api.health import router as health_router
+from backend.app.api.movie_dedup import router as movie_dedup_router
 from backend.app.api.notifications import router as notification_router
 from backend.app.api.sites import router as site_router
 from backend.app.api.system import router as system_router
@@ -40,6 +41,8 @@ from backend.app.application.downloader_operations import (
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
 from backend.app.application.filesystem_operations import FilesystemOperationService
+from backend.app.application.movie_dedup import MovieDedupService
+from backend.app.application.movie_dedup_driver import MovieDedupDriver
 from backend.app.application.notification_driver import NotificationDriver
 from backend.app.application.notifications import NotificationService
 from backend.app.application.repair_downloader_operations import RepairDownloadOperationService
@@ -91,6 +94,7 @@ _HTTP_EXACT_RESOURCE_LABELS: dict[str, str] = {
     "/api/v1/system/health": "系统健康状态",
     "/api/v1/system/logs": "运行日志列表",
     "/api/v1/downloaders": "下载器列表",
+    "/api/v1/movie-dedup/jobs": "影片去重任务列表",
     "/api/v1/sites": "站点列表",
     "/api/v1/task-definitions": "任务定义列表",
 }
@@ -103,6 +107,7 @@ _HTTP_RESOURCE_LABELS: tuple[tuple[str, str], ...] = (
     ("/api/v1/system/logs", "运行日志"),
     ("/api/v1/system/backups", "备份配置"),
     ("/api/v1/system/upgrade", "系统升级"),
+    ("/api/v1/movie-dedup", "影片去重"),
     ("/api/v1/health/live", "服务存活状态"),
     ("/api/v1/health/ready", "服务就绪状态"),
     ("/api/v1/task-definitions", "任务定义"),
@@ -207,6 +212,11 @@ def create_app(
         app.state.ai_agent_service = ai_agent_service
         notification_service = NotificationService(resolved_runtime.session_factory, secret_store)
         app.state.notification_service = notification_service
+        movie_dedup_service = MovieDedupService(
+            resolved_runtime.session_factory,
+            data_root=resolved_settings.data_dir,
+        )
+        app.state.movie_dedup_service = movie_dedup_service
         downloader_service = DownloaderService(
             resolved_runtime.session_factory,
             secret_store,
@@ -430,6 +440,16 @@ def create_app(
         )
         app.state.task_definition_driver = task_definition_driver
         task_definition_driver.start()
+        movie_dedup_driver = MovieDedupDriver(
+            movie_dedup_service,
+            interval_seconds=resolved_settings.movie_dedup_driver_interval_seconds,
+            job_limit=resolved_settings.movie_dedup_driver_job_limit,
+            scan_batch_size=resolved_settings.movie_dedup_scan_batch_size,
+            match_batch_size=resolved_settings.movie_dedup_match_batch_size,
+            verify_batch_size=resolved_settings.movie_dedup_verify_batch_size,
+        )
+        app.state.movie_dedup_driver = movie_dedup_driver
+        movie_dedup_driver.start()
         notification_driver = NotificationDriver(
             notification_service,
             interval_seconds=resolved_settings.notification_driver_interval_seconds,
@@ -491,6 +511,7 @@ def create_app(
             await backup_driver.stop()
             await cookiecloud_driver.stop()
             await notification_driver.stop()
+            await movie_dedup_driver.stop()
             await task_definition_driver.stop()
             await task_driver.stop()
             resolved_runtime.stop()
@@ -582,6 +603,7 @@ def create_app(
     app.include_router(cookiecloud_router, prefix="/api/v1")
     app.include_router(downloader_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(movie_dedup_router, prefix="/api/v1")
     app.include_router(notification_router, prefix="/api/v1")
     app.include_router(site_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")

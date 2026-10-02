@@ -5,7 +5,7 @@ import pytest
 
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.verification import FileSnapshot
-from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
+from backend.app.infrastructure.safe_filesystem import FilesystemSnapshot, SafeFilesystemGateway
 
 
 def _snapshot(path: Path) -> FileSnapshot:
@@ -15,6 +15,18 @@ def _snapshot(path: Path) -> FileSnapshot:
         inode=result.st_ino,
         size=result.st_size,
         mtime_ns=result.st_mtime_ns,
+    )
+
+
+def _filesystem_snapshot(path: Path) -> FilesystemSnapshot:
+    result = path.stat(follow_symlinks=False)
+    return FilesystemSnapshot(
+        device=result.st_dev,
+        inode=result.st_ino,
+        size=result.st_size,
+        mtime_ns=result.st_mtime_ns,
+        file_type="regular",
+        link_count=result.st_nlink,
     )
 
 
@@ -262,3 +274,101 @@ def test_repair_target_inspection_rejects_symlink_target(tmp_path: Path) -> None
         )
 
     assert failure.value.code is ErrorCode.PATH_MAPPING_INVALID
+
+
+def test_movie_dedup_hardlink_exchange_keeps_old_target_until_explicit_cleanup(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "a" / "movie.mkv"
+    target = tmp_path / "b" / "movie.mkv"
+    source.parent.mkdir()
+    target.parent.mkdir()
+    source.write_bytes(b"same-content")
+    target.write_bytes(b"same-content")
+    source_expected = _filesystem_snapshot(source)
+    target_expected = _filesystem_snapshot(target)
+    gateway = SafeFilesystemGateway(tmp_path)
+
+    result = gateway.exchange_duplicate_with_hardlink(
+        source_relative_path="a/movie.mkv",
+        target_relative_path="b/movie.mkv",
+        expected_source_snapshot=source_expected,
+        expected_target_snapshot=target_expected,
+        operation_token="a" * 64,
+    )
+
+    temporary = tmp_path / result.temporary_relative_path
+    assert source.stat(follow_symlinks=False).st_ino == target.stat(follow_symlinks=False).st_ino
+    assert temporary.stat(follow_symlinks=False).st_ino == target_expected.inode
+    assert result.recovered_after_exchange is False
+    assert gateway.remove_exchanged_original_if_matches(
+        temporary_relative_path=result.temporary_relative_path,
+        expected_original_snapshot=result.original_target_snapshot,
+    )
+    assert not temporary.exists()
+    assert target.read_bytes() == b"same-content"
+
+
+def test_movie_dedup_hardlink_exchange_recovers_after_exchange_crash(tmp_path: Path) -> None:
+    source = tmp_path / "a" / "movie.mkv"
+    target = tmp_path / "b" / "movie.mkv"
+    source.parent.mkdir()
+    target.parent.mkdir()
+    source.write_bytes(b"same-content")
+    target.write_bytes(b"same-content")
+    source_expected = _filesystem_snapshot(source)
+    target_expected = _filesystem_snapshot(target)
+    gateway = SafeFilesystemGateway(tmp_path)
+
+    def crash(checkpoint: str) -> None:
+        if checkpoint == "after_dedup_exchange":
+            raise RuntimeError(checkpoint)
+
+    with pytest.raises(RuntimeError, match="after_dedup_exchange"):
+        gateway.exchange_duplicate_with_hardlink(
+            source_relative_path="a/movie.mkv",
+            target_relative_path="b/movie.mkv",
+            expected_source_snapshot=source_expected,
+            expected_target_snapshot=target_expected,
+            operation_token="b" * 64,
+            fault_hook=crash,
+        )
+
+    recovered = gateway.exchange_duplicate_with_hardlink(
+        source_relative_path="a/movie.mkv",
+        target_relative_path="b/movie.mkv",
+        expected_source_snapshot=source_expected,
+        expected_target_snapshot=target_expected,
+        operation_token="b" * 64,
+    )
+    assert recovered.recovered_after_exchange is True
+    assert source.stat(follow_symlinks=False).st_ino == target.stat(follow_symlinks=False).st_ino
+    assert (tmp_path / recovered.temporary_relative_path).stat().st_ino == target_expected.inode
+
+
+def test_movie_dedup_symlink_exchange_uses_stable_data_root_path(tmp_path: Path) -> None:
+    source = tmp_path / "a" / "movie.mkv"
+    target = tmp_path / "b" / "movie.mkv"
+    source.parent.mkdir()
+    target.parent.mkdir()
+    source.write_bytes(b"same-content")
+    target.write_bytes(b"same-content")
+    gateway = SafeFilesystemGateway(tmp_path)
+
+    result = gateway.exchange_duplicate_with_symlink(
+        source_relative_path="a/movie.mkv",
+        target_relative_path="b/movie.mkv",
+        expected_source_snapshot=_filesystem_snapshot(source),
+        expected_target_snapshot=_filesystem_snapshot(target),
+        operation_token="c" * 64,
+    )
+
+    assert target.is_symlink()
+    assert os.readlink(target) == str(tmp_path / "a/movie.mkv")
+    temporary = tmp_path / result.temporary_relative_path
+    assert temporary.is_file()
+    assert gateway.remove_exchanged_original_if_matches(
+        temporary_relative_path=result.temporary_relative_path,
+        expected_original_snapshot=result.original_target_snapshot,
+    )
+    assert not temporary.exists()
