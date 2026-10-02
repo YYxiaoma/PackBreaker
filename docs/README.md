@@ -45,6 +45,7 @@
 | [v1.0.4 正式发布与受控恢复记录](./v1.0.4-release.md) | 正式 Tag、双架构不可变 digest、QEMU 隔离恢复、供应链资产和下版升级基线 | v1.0.4 |
 | [v1.0.5 研发设计与验收文档](./v1.0.5-development.md) | 全站点运行门禁开放、easychen/CookieCloud 同步与下载器任意挂载路径授权模型 | v1.0.5 |
 | [v1.0.5 正式发布记录](./v1.0.5-release.md) | 正式 Tag、双架构不可变 digest、CookieCloud upstream 门、升级/回滚、发布资产与下版基线 | v1.0.5 |
+| [v1.0.6 研发与发布前验收记录](./v1.0.6-development.md) | 在线升级进度反馈、自动刷新、v1.0.5→v1.0.6 updater 与双架构候选验收 | v1.0.6 |
 | [部署、运维与安全](./deployment.md) | 约定容器、卷、备份、升级和密钥管理 | M1/M6 |
 | [本地开发指南](./local-development.md) | 统一工具链、命令、配置和日常工作流 | M1 |
 | [研发路线图](./development-roadmap.md) | 将 M0-M6 拆成可交付工作包与退出条件 | 全阶段 |
