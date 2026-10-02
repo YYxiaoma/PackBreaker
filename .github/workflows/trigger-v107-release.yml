@@ -1,0 +1,43 @@
+name: Trigger v1.0.7 Release
+
+on:
+  push:
+    branches:
+      - "release/v1.0.7-trigger"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  trigger:
+    if: github.repository == 'YYxiaoma/PackBreaker'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create audited v1.0.7 tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='97e864779eef807507f59135d383fc08ff40c9c8'
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.0.7" --jq .object.sha 2>/dev/null || true)"
+          if [[ -n "$existing" ]]; then
+            if [[ "$existing" != "$target" ]]; then
+              echo "::error::v1.0.7 already points to unexpected commit $existing" >&2
+              exit 1
+            fi
+            echo "v1.0.7 already exists at audited commit $target"
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs"               -f ref='refs/tags/v1.0.7'               -f sha="$target" >/dev/null
+            echo "Created v1.0.7 at $target"
+          fi
+      - name: Dispatch formal Release workflow at v1.0.7
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml --ref v1.0.7
+          echo "Dispatched Release workflow for v1.0.7"
