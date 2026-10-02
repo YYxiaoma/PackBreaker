@@ -42,5 +42,5 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh workflow run release.yml --ref v1.0.7
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref v1.0.7
           echo "Dispatched Release workflow for v1.0.7"
