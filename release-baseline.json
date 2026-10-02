@@ -1,16 +1,16 @@
 {
   "format_version": 2,
-  "version": "1.0.6",
-  "tag": "v1.0.6",
-  "commit": "23d705cb165c29a8f0c81bf56632ac06c73cbf3f",
+  "version": "1.0.7",
+  "tag": "v1.0.7",
+  "commit": "97e864779eef807507f59135d383fc08ff40c9c8",
   "platform": "multi",
   "platforms": [
     "linux/amd64",
     "linux/arm64"
   ],
   "image": "ghcr.io/yyxiaoma/packbreaker",
-  "image_digest": "sha256:c4718acf45a0a2ee2e3cae78f7684ab7272064bae630e7a457e5a1a1444e0a82",
-  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:c4718acf45a0a2ee2e3cae78f7684ab7272064bae630e7a457e5a1a1444e0a82",
-  "alembic_revision": "0032_cookiecloud_v105",
-  "release_workflow_run_id": 36984709719
+  "image_digest": "sha256:701de027b970aa2cee1e53250ce65af05304407f0949c3c338ca49628403f2c5",
+  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:701de027b970aa2cee1e53250ce65af05304407f0949c3c338ca49628403f2c5",
+  "alembic_revision": "0033_movie_dedup_v107",
+  "release_workflow_run_id": 37017014256
 }
