@@ -1,4 +1,4 @@
-"""The v1.0.3 version popover hides manual rollback but retains safe auto rollback."""
+"""Version popover keeps v1.0.3 rollback safety while applying the v1.0.6 upgrade UX."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ COMPONENT = (
 BROWSER_GATE = Path(__file__).resolve().parents[2] / "scripts" / "check-prototype.cjs"
 
 
-def test_popover_removes_manual_rollback_without_disabling_safe_upgrade() -> None:
+def test_popover_keeps_safe_upgrade_without_reintroducing_manual_rollback() -> None:
     source = COMPONENT.read_text(encoding="utf-8")
     assert "版本回退" not in source
     assert "rollbackOpen" not in source
@@ -18,14 +18,21 @@ def test_popover_removes_manual_rollback_without_disabling_safe_upgrade() -> Non
     assert "version-action-row" not in source
     assert "立即升级到 v" in source
     assert "健康失败自动回滚" in source
-    assert "ElMessageBox.confirm" in source
+    assert "ElMessageBox.confirm" not in source
     assert "pendingIdempotencyKey" in source
+    assert 'role="progressbar"' in source
+    assert 'aria-label="在线升级进度"' in source
+    assert "helperProgress" in source
+    assert "helperDetailText" in source
+    assert "window.location.reload()" in source
     assert "UPDATER_DOCKER_SOCKET_PERMISSION_DENIED" in source
     assert "UPDATER_TARGET_CONTAINER_UNAVAILABLE" in source
 
 
-def test_browser_gate_expects_removed_manual_rollback_but_keeps_failure_recovery() -> None:
+def test_browser_gate_covers_v106_upgrade_progress_without_manual_rollback() -> None:
     source = BROWSER_GATE.read_text(encoding="utf-8")
     assert "getByRole('button',{name:'版本回退',exact:true}).click()" not in source
     assert "getByRole('button',{name:'版本回退',exact:true}).count(),0" in source
-    assert "健康检查失败时会自动恢复旧容器和数据库" in source
+    assert "立即升级不得再弹出二次确认框" in source
+    assert "getByRole('progressbar',{name:'在线升级进度'})" in source
+    assert "升级请求已由独立 helper 接管" in source

@@ -8,7 +8,7 @@ import {
   RefreshCw,
   TriangleAlert,
 } from '@lucide/vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 
 import { toApiProblem } from '../api/client';
 import {
@@ -100,6 +100,27 @@ const helperPhaseText = computed(() => {
     manual_recovery_required: '需要人工恢复',
   }[phase];
 });
+const helperProgress = computed(() => {
+  const phase = upgrade.value?.helper_status?.phase;
+  if (!phase) return 0;
+  return {
+    idle: 0,
+    accepted: 8,
+    pulling: 28,
+    stopping: 52,
+    starting: 72,
+    verifying: 90,
+    succeeded: 100,
+    rolling_back: 65,
+    rolled_back: 100,
+    failed: 100,
+    manual_recovery_required: 100,
+  }[phase];
+});
+const helperDetailText = computed(() => {
+  const message = upgrade.value?.helper_status?.message?.trim();
+  return message || helperPhaseText.value;
+});
 const releaseUrl = computed(() => {
   const tag = upgrade.value?.target_tag;
   return tag
@@ -180,19 +201,6 @@ async function startUpgrade(): Promise<void> {
   if (!targetVersion || !targetDigest) return;
 
   if (!upgradeResultUnknown.value) {
-    try {
-      await ElMessageBox.confirm(
-        `升级到 v${targetVersion}？PackBreaker 会先执行安全预检和一致性备份，再启动一个临时 updater 接管容器切换。升级期间页面会短暂断开；新版本健康检查失败时会自动恢复旧容器和数据库。`,
-        '确认一键升级',
-        {
-          confirmButtonText: `立即升级到 v${targetVersion}`,
-          cancelButtonText: '取消',
-          type: 'warning',
-        },
-      );
-    } catch {
-      return;
-    }
     pendingIdempotencyKey.value = `pb-upgrade-${crypto.randomUUID()}`;
   }
 
@@ -316,6 +324,23 @@ defineExpose({ open });
         <p v-if="statusKind === 'error'" class="version-error-detail">
           {{ upgrade?.release_error_code ?? 'RELEASE_LOOKUP_FAILED' }}
         </p>
+        <div v-if="upgradeActive" class="version-current-upgrade" aria-live="polite">
+          <div class="version-progress-heading">
+            <span>{{ helperPhaseText }}</span>
+            <strong>{{ helperProgress }}%</strong>
+          </div>
+          <div
+            class="version-progress-track"
+            role="progressbar"
+            aria-label="在线升级进度"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-valuenow="helperProgress"
+          >
+            <span class="version-progress-bar" :style="{ width: `${helperProgress}%` }"></span>
+          </div>
+          <p class="version-progress-detail">{{ helperDetailText }}</p>
+        </div>
         <a class="release-link" :href="releaseUrl" target="_blank" rel="noreferrer">
           <GitBranch :size="19" />查看发布<ExternalLink :size="13" />
         </a>
@@ -337,13 +362,12 @@ defineExpose({ open });
               : `立即升级到 v${upgrade.latest_version ?? ''}`
           }}
         </button>
-        <p v-if="upgradeActive" class="version-upgrade-progress">
-          <RefreshCw :size="14" class="spinning" />{{ helperPhaseText }}
-        </p>
-        <p v-else-if="automaticUpgradeHint" class="version-upgrade-hint">
+        <p v-if="!upgradeActive && automaticUpgradeHint" class="version-upgrade-hint">
           {{ automaticUpgradeHint }}
         </p>
-        <p v-else class="version-upgrade-hint">自动备份 · 临时 helper 接管 · 健康失败自动回滚</p>
+        <p v-else-if="!upgradeActive" class="version-upgrade-hint">
+          自动备份 · 临时 helper 接管 · 健康失败自动回滚
+        </p>
       </section>
     </div>
   </el-popover>
@@ -500,6 +524,54 @@ defineExpose({ open });
   font-size: 10px;
 }
 
+.version-current-upgrade {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  margin-top: 16px;
+  text-align: left;
+}
+
+.version-progress-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.version-progress-heading strong {
+  flex: none;
+  font-size: 11px;
+}
+
+.version-progress-track {
+  position: relative;
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.version-progress-bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2f6df6, #6c5ce7);
+  transition: width 0.28s ease;
+}
+
+.version-progress-detail {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
 .release-link {
   display: inline-flex;
   align-items: center;
@@ -555,22 +627,12 @@ defineExpose({ open });
   opacity: 0.48;
 }
 
-.version-upgrade-hint,
-.version-upgrade-progress {
+.version-upgrade-hint {
   margin: 0;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.55;
   text-align: center;
-}
-
-.version-upgrade-progress {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  color: var(--blue);
-  font-weight: 650;
 }
 
 .spinning {
