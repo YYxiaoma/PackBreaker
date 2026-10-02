@@ -749,6 +749,9 @@ def test_directory_stability_wait_schedules_follow_up_before_next_cron(tmp_path:
         incoming.mkdir(parents=True)
         (incoming / "Stable.Movie.2026.1080p.mkv").write_bytes(b"stable-video")
         payload = _monitor_payload(site_id)
+        # Keep the regular cron comfortably after the stability follow-up so this
+        # test isolates the immediate rescan path even near a cron minute boundary.
+        payload["cron_expression"] = f"{(datetime.now(UTC).minute + 10) % 60} * * * *"
         payload["execution_policy"] = {
             "stability_detection_enabled": True,
             "stability_wait_seconds": 60,
@@ -1022,6 +1025,9 @@ def test_directory_monitor_debounce_waits_for_mtime_quiet_window(tmp_path: Path)
         file_stat = movie.stat()
         modified_at = datetime.fromtimestamp(file_stat.st_mtime_ns / 1_000_000_000, tz=UTC)
         payload = _monitor_payload(site_id)
+        # Keep cron out of the debounce window; otherwise a test started just
+        # before the cron minute can legitimately be classified as CRON.
+        payload["cron_expression"] = f"{(datetime.now(UTC).minute + 10) % 60} * * * *"
         payload["execution_policy"] = {
             "stability_detection_enabled": False,
             "initial_scope": "INCLUDE_EXISTING",
