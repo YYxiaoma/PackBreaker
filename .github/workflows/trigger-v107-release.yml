@@ -22,7 +22,10 @@ jobs:
         run: |
           set -euo pipefail
           target='97e864779eef807507f59135d383fc08ff40c9c8'
-          existing="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.0.7" --jq .object.sha 2>/dev/null || true)"
+          existing=''
+          if value="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.0.7" --jq .object.sha 2>/dev/null)"; then
+            existing="$value"
+          fi
           if [[ -n "$existing" ]]; then
             if [[ "$existing" != "$target" ]]; then
               echo "::error::v1.0.7 already points to unexpected commit $existing" >&2
