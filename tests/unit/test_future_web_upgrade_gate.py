@@ -26,8 +26,11 @@ def test_formal_transient_gate_starts_at_published_release_not_candidate() -> No
 def test_synthetic_arm64_mode_remains_distinct_from_cross_version_upgrade() -> None:
     script = (ROOT / "scripts/check-updater-e2e.sh").read_text(encoding="utf-8")
     assert 'if [[ "$baseline_mode" == formal ]]; then' in script
-    assert 'transient_start_image="$local_candidate_tag"' in script
+    assert 'transient_start_image="$local_baseline_tag"' in script
+    assert 'transient_start_image="$local_candidate_tag"' not in script
     assert 'baseline_version="$candidate_version"' in script
+    assert 'test "$baseline_version" = "$candidate_version"' in script
+    assert 'test "$baseline_image_id" != "$candidate_image_id"' in script
     assert "Synthetic ARM64 mode remains a same-version replacement" in script
 
 
@@ -56,7 +59,7 @@ def test_future_updater_gate_preserves_arbitrary_downloader_mounts() -> None:
     assert 'Path("/downloads2/.packbreaker-e2e-standalone-probe").read_text()' in script
 
 
-def test_native_arm64_ci_runs_real_synthetic_implicit_volume_replacement() -> None:
+def test_native_arm64_ci_runs_real_synthetic_explicit_mount_replacement() -> None:
     import yaml  # type: ignore[import-untyped]
 
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
@@ -64,7 +67,7 @@ def test_native_arm64_ci_runs_real_synthetic_implicit_volume_replacement() -> No
     synthetic = next(
         s
         for s in steps
-        if s.get("name") == "Exercise native ARM64 synthetic anonymous-volume replacement"
+        if s.get("name") == "Exercise native ARM64 synthetic explicit-mount replacement"
     )
     assert synthetic["run"] == (
         "bash scripts/check-updater-e2e.sh packbreaker:ci-arm64 --synthetic-arm64-baseline"
