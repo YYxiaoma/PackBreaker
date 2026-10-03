@@ -13,6 +13,7 @@ from pathlib import Path
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.repair import RepairTargetEvidence
 from backend.app.domain.verification import FileSnapshot
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 
 REPAIR_OWNER_XATTR = "user.packbreaker.repair_owner"
 _REPAIR_OWNER_MARKER_PREFIX = b"packbreaker-repair-owner-v1:"
@@ -112,15 +113,75 @@ class MovieFileSnapshot:
 class SafeFilesystemGateway:
     """M3 文件系统安全边界；所有写操作都要求调用方先持久化 journal intent。"""
 
-    def __init__(self, data_root: Path) -> None:
-        self._data_root = data_root
+    def __init__(
+        self,
+        data_root: Path,
+        *,
+        path_scope: AuthorizedPathScope | None = None,
+    ) -> None:
+        self._legacy_data_root = data_root.absolute()
+        self._path_scope = path_scope
+        self._data_root = Path("/") if path_scope is not None else data_root
 
     def normalize_relative_path(self, value: str, *, allow_root: bool = False) -> str:
+        normalized, _ = self._normalize_path(value, allow_root=allow_root)
+        return normalized
+
+    def normalize_child_relative_path(self, value: str, *, allow_root: bool = False) -> str:
         normalized, _ = _normalize_relative_path(value, allow_root=allow_root)
         return normalized
 
+    def resolve_path(self, value: str, *, allow_root: bool = False) -> Path:
+        if self._path_scope is None:
+            normalized, parts = _normalize_relative_path(value, allow_root=allow_root)
+            return self._data_root if normalized == "." else self._data_root.joinpath(*parts)
+
+        normalized = unicodedata.normalize("NFC", value.strip())
+        if normalized.startswith("/"):
+            reference = self._path_scope.normalize_reference(normalized)
+            return Path(reference)
+
+        legacy_reference, legacy_parts = _normalize_relative_path(
+            normalized,
+            allow_root=allow_root,
+        )
+        candidate = (
+            self._legacy_data_root
+            if legacy_reference == "."
+            else self._legacy_data_root.joinpath(*legacy_parts)
+        ).absolute()
+        self._path_scope.assert_authorized(candidate)
+        return candidate
+
+    def _normalize_path(
+        self,
+        value: str,
+        *,
+        allow_root: bool = False,
+    ) -> tuple[str, tuple[str, ...]]:
+        if self._path_scope is None:
+            return _normalize_relative_path(value, allow_root=allow_root)
+
+        normalized_input = unicodedata.normalize("NFC", value.strip())
+        if normalized_input.startswith("/"):
+            resolved = self.resolve_path(normalized_input, allow_root=allow_root)
+            parts = resolved.parts[1:]
+            if not parts:
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID,
+                    "容器根目录 / 不能直接作为任务文件系统路径",
+                )
+            return resolved.as_posix(), tuple(parts)
+
+        legacy_reference, _ = _normalize_relative_path(
+            normalized_input,
+            allow_root=allow_root,
+        )
+        resolved = self.resolve_path(legacy_reference, allow_root=allow_root)
+        return legacy_reference, tuple(resolved.parts[1:])
+
     def inspect_movie_file(self, *, relative_path: str) -> MovieFileSnapshot:
-        _, parts = _normalize_relative_path(relative_path)
+        _, parts = self._normalize_path(relative_path)
         parent_fd = _open_directory_chain(self._data_root, parts[:-1])
         file_fd: int | None = None
         try:
@@ -132,7 +193,7 @@ class SafeFilesystemGateway:
             os.close(parent_fd)
 
     def inspect_symlink_target(self, *, relative_path: str) -> str:
-        _, parts = _normalize_relative_path(relative_path)
+        _, parts = self._normalize_path(relative_path)
         parent_fd = _open_directory_chain(self._data_root, parts[:-1])
         try:
             snapshot = _stat_at(parent_fd, parts[-1])
@@ -151,7 +212,7 @@ class SafeFilesystemGateway:
     ) -> str:
         if sample_size <= 0:
             raise ValueError("sample_size 必须大于 0")
-        _, parts = _normalize_relative_path(relative_path)
+        _, parts = self._normalize_path(relative_path)
         parent_fd = _open_directory_chain(self._data_root, parts[:-1])
         file_fd: int | None = None
         try:
@@ -190,7 +251,7 @@ class SafeFilesystemGateway:
     ) -> str:
         if chunk_size <= 0:
             raise ValueError("chunk_size 必须大于 0")
-        _, parts = _normalize_relative_path(relative_path)
+        _, parts = self._normalize_path(relative_path)
         parent_fd = _open_directory_chain(self._data_root, parts[:-1])
         file_fd: int | None = None
         try:
@@ -223,7 +284,7 @@ class SafeFilesystemGateway:
         expected_source_snapshot: FileSnapshot,
     ) -> FilesystemSnapshot:
         root, _ = self._require_data_root()
-        _, source_parts = _normalize_relative_path(source_relative_path)
+        _, source_parts = self._normalize_path(source_relative_path)
         _, snapshot = self._require_regular_file(root, source_parts)
         _assert_source_snapshot(snapshot, expected_source_snapshot)
         return snapshot
@@ -237,7 +298,7 @@ class SafeFilesystemGateway:
         """重新确认 `/data` 内目录链不含符号链接，并可锁定设备身份。"""
 
         root, root_snapshot = self._require_data_root()
-        _, parts = _normalize_relative_path(relative_path, allow_root=True)
+        _, parts = self._normalize_path(relative_path, allow_root=True)
         _, snapshot = self._require_directory_chain(root, parts, root_snapshot)
         if expected_device is not None and snapshot.device != expected_device:
             raise DomainViolation(ErrorCode.CROSS_DEVICE_LINK, "目标目录设备与执行计划不一致")
@@ -260,7 +321,7 @@ class SafeFilesystemGateway:
             raise ValueError("repair target source 路径与快照必须同时提供")
 
         root, root_snapshot = self._require_data_root()
-        _, target_root_parts = _normalize_relative_path(
+        _, target_root_parts = self._normalize_path(
             target_root_relative_path,
             allow_root=True,
         )
@@ -274,7 +335,7 @@ class SafeFilesystemGateway:
         source_device: int | None = None
         source_inode: int | None = None
         if source_relative_path is not None and expected_source_snapshot is not None:
-            _, source_parts = _normalize_relative_path(source_relative_path)
+            _, source_parts = self._normalize_path(source_relative_path)
             _, source_snapshot = self._require_regular_file(root, source_parts)
             _assert_source_snapshot(source_snapshot, expected_source_snapshot)
             source_device = source_snapshot.device
@@ -336,8 +397,8 @@ class SafeFilesystemGateway:
     ) -> RepairIsolationInspection:
         """只读证明待隔离 target 仍是 journal-owned hardlink，且临时名尚未占用。"""
 
-        source_relative, source_parts = _normalize_relative_path(source_relative_path)
-        target_root_relative, target_root_parts = _normalize_relative_path(
+        source_relative, source_parts = self._normalize_path(source_relative_path)
+        target_root_relative, target_root_parts = self._normalize_path(
             target_root_relative_path,
             allow_root=True,
         )
@@ -423,8 +484,8 @@ class SafeFilesystemGateway:
         失败关闭，不会猜测临时文件归属。
         """
 
-        _, source_parts = _normalize_relative_path(source_relative_path)
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, source_parts = self._normalize_path(source_relative_path)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, target_parts = _normalize_relative_path(target_relative_path)
         temporary_name = _repair_isolation_temporary_name(operation_token)
 
@@ -650,8 +711,8 @@ class SafeFilesystemGateway:
     ) -> FilesystemSnapshot:
         """证明已 APPLIED 的隔离结果仍是独立、字节一致且未修改源文件的 inode。"""
 
-        _, source_parts = _normalize_relative_path(source_relative_path)
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, source_parts = self._normalize_path(source_relative_path)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, target_parts = _normalize_relative_path(target_relative_path)
         source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
         target_parent_fd = _open_directory_chain(
@@ -706,8 +767,8 @@ class SafeFilesystemGateway:
 
         if expected_length < 0:
             raise ValueError("repair target expected_length 不能为负数")
-        _, source_parts = _normalize_relative_path(source_relative_path)
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, source_parts = self._normalize_path(source_relative_path)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, target_parts = _normalize_relative_path(target_relative_path)
         source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
         target_parent_fd = _open_directory_chain(
@@ -800,8 +861,8 @@ class SafeFilesystemGateway:
         expected_source_snapshot: FileSnapshot,
     ) -> HardlinkInspection:
         root, root_snapshot = self._require_data_root()
-        source_relative, source_parts = _normalize_relative_path(source_relative_path)
-        target_root_relative, target_root_parts = _normalize_relative_path(
+        source_relative, source_parts = self._normalize_path(source_relative_path)
+        target_root_relative, target_root_parts = self._normalize_path(
             target_root_relative_path, allow_root=True
         )
         target_relative, target_parts = _normalize_relative_path(target_relative_path)
@@ -886,7 +947,7 @@ class SafeFilesystemGateway:
         directory_relative_path: str,
     ) -> DirectoryCreationInspection:
         root, root_snapshot = self._require_data_root()
-        target_root_relative, target_root_parts = _normalize_relative_path(
+        target_root_relative, target_root_parts = self._normalize_path(
             target_root_relative_path,
             allow_root=True,
         )
@@ -925,7 +986,7 @@ class SafeFilesystemGateway:
     ) -> FilesystemSnapshot:
         """只创建一个目录层级；调用前必须已经提交对应 operation journal intent。"""
 
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, directory_parts = _normalize_relative_path(directory_relative_path)
         parent_parts = target_root_parts + directory_parts[:-1]
         parent_fd = _open_directory_chain(self._data_root, parent_parts)
@@ -963,8 +1024,8 @@ class SafeFilesystemGateway:
     ) -> FilesystemSnapshot:
         """以 deterministic 临时硬链接 + renameat2(NOREPLACE) 原子落位。"""
 
-        _, source_parts = _normalize_relative_path(source_relative_path)
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, source_parts = self._normalize_path(source_relative_path)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, target_parts = _normalize_relative_path(target_relative_path)
         if len(operation_token) != 64 or any(
             character not in "0123456789abcdef" for character in operation_token
@@ -1063,8 +1124,8 @@ class SafeFilesystemGateway:
         """
 
         _validate_operation_token(operation_token)
-        _, source_parts = _normalize_relative_path(source_relative_path)
-        _, target_parts = _normalize_relative_path(target_relative_path)
+        _, source_parts = self._normalize_path(source_relative_path)
+        target_reference, target_parts = self._normalize_path(target_relative_path)
         source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
         target_parent_fd = _open_directory_chain(self._data_root, target_parts[:-1])
         try:
@@ -1088,11 +1149,7 @@ class SafeFilesystemGateway:
                 )
 
             temporary_name = f".packbreaker-dedup-{operation_token}.swap"
-            temporary_relative = (
-                temporary_name
-                if len(target_parts) == 1
-                else "/".join((*target_parts[:-1], temporary_name))
-            )
+            temporary_relative = (Path(target_reference).parent / temporary_name).as_posix()
             temporary = _stat_at(target_parent_fd, temporary_name, missing_ok=True)
             target = _stat_at(target_parent_fd, target_name, missing_ok=True)
 
@@ -1209,11 +1266,11 @@ class SafeFilesystemGateway:
         """以临时 symlink + RENAME_EXCHANGE 原子替换已存在的重复目标。"""
 
         _validate_operation_token(operation_token)
-        source_relative, source_parts = _normalize_relative_path(source_relative_path)
-        _, target_parts = _normalize_relative_path(target_relative_path)
+        _, source_parts = self._normalize_path(source_relative_path)
+        target_reference, target_parts = self._normalize_path(target_relative_path)
         source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
         target_parent_fd = _open_directory_chain(self._data_root, target_parts[:-1])
-        symlink_target = str(self._data_root / source_relative)
+        symlink_target = self.resolve_path(source_relative_path).as_posix()
         try:
             source_name = source_parts[-1]
             target_name = target_parts[-1]
@@ -1228,11 +1285,7 @@ class SafeFilesystemGateway:
             )
 
             temporary_name = f".packbreaker-dedup-{operation_token}.swap"
-            temporary_relative = (
-                temporary_name
-                if len(target_parts) == 1
-                else "/".join((*target_parts[:-1], temporary_name))
-            )
+            temporary_relative = (Path(target_reference).parent / temporary_name).as_posix()
             temporary = _stat_at(target_parent_fd, temporary_name, missing_ok=True)
             target = _stat_at(target_parent_fd, target_name, missing_ok=True)
 
@@ -1343,7 +1396,7 @@ class SafeFilesystemGateway:
     ) -> bool:
         """只清理仍严格匹配 journal 记录的交换前 B inode。"""
 
-        _, parts = _normalize_relative_path(temporary_relative_path)
+        _, parts = self._normalize_path(temporary_relative_path)
         parent_fd = _open_directory_chain(self._data_root, parts[:-1])
         try:
             current = _stat_at(parent_fd, parts[-1], missing_ok=True)
@@ -1372,7 +1425,7 @@ class SafeFilesystemGateway:
         target_relative_path: str,
         expected_snapshot: FilesystemSnapshot,
     ) -> bool:
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, target_parts = _normalize_relative_path(target_relative_path)
         parent_fd = _open_directory_chain(
             self._data_root,
@@ -1405,7 +1458,7 @@ class SafeFilesystemGateway:
     ) -> bool:
         """只删除仍匹配 isolation journal inode + xattr ownership marker 的 target。"""
 
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, target_parts = _normalize_relative_path(target_relative_path)
         parent_fd = _open_directory_chain(
             self._data_root,
@@ -1468,7 +1521,7 @@ class SafeFilesystemGateway:
     ) -> None:
         """只读证明 repair target 当前不存在；用于 cleanup APPLIED 重放。"""
 
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, target_parts = _normalize_relative_path(target_relative_path)
         parent_fd = _open_directory_chain(
             self._data_root,
@@ -1490,7 +1543,7 @@ class SafeFilesystemGateway:
         target_relative_path: str,
         expected_snapshot: FilesystemSnapshot,
     ) -> FilesystemSnapshot:
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, target_parts = _normalize_relative_path(target_relative_path)
         parent_fd = _open_directory_chain(
             self._data_root,
@@ -1513,7 +1566,7 @@ class SafeFilesystemGateway:
         directory_relative_path: str,
         expected_snapshot: FilesystemSnapshot,
     ) -> bool:
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, directory_parts = _normalize_relative_path(directory_relative_path)
         parent_fd = _open_directory_chain(
             self._data_root,
@@ -1545,7 +1598,7 @@ class SafeFilesystemGateway:
         directory_relative_path: str,
         expected_snapshot: FilesystemSnapshot,
     ) -> FilesystemSnapshot:
-        _, target_root_parts = _normalize_relative_path(target_root_relative_path, allow_root=True)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
         _, directory_parts = _normalize_relative_path(directory_relative_path)
         parent_fd = _open_directory_chain(
             self._data_root,

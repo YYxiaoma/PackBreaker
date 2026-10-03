@@ -147,6 +147,29 @@ def test_replacement_plan_can_preserve_docker_socket_for_single_container_upgrad
     assert "/var/run/docker.sock:/var/run/docker.sock" in host["Binds"]
 
 
+def test_replacement_plan_preserves_direct_uid_gid_and_docker_socket_group_add() -> None:
+    container = _container()
+    container["Config"]["User"] = "1026:100"
+    container["Config"]["Env"] = [
+        "PUID=1026",
+        "PGID=100",
+        "PACKBREAKER_TIMEZONE=Asia/Shanghai",
+    ]
+    container["HostConfig"]["GroupAdd"] = ["998"]
+
+    plan = build_replacement_plan(
+        container,
+        _old_image(),
+        target_image=_TARGET,
+        allowed_image=_OFFICIAL,
+        preserve_docker_socket=True,
+    )
+
+    assert plan.create_payload["User"] == "1026:100"
+    assert plan.create_payload["HostConfig"]["GroupAdd"] == ["998"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" in plan.create_payload["HostConfig"]["Binds"]
+
+
 def test_replacement_plan_preserves_arbitrary_downloader_bind_mounts() -> None:
     container = _container()
     container["HostConfig"]["Binds"].extend(

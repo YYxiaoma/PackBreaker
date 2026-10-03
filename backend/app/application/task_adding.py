@@ -34,6 +34,7 @@ from backend.app.infrastructure.adapters.downloaders import (
     TransmissionTorrentState,
 )
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.models import TaskExecutionPlanRecord
 from backend.app.infrastructure.persistence.preflight_repositories import (
     PreflightSnapshotRepository,
@@ -125,6 +126,7 @@ class TaskAddingCoordinator:
         transmission_operations: TransmissionAddOperationService | None = None,
         *,
         data_root: Path,
+        path_scope: AuthorizedPathScope | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._site_service = site_service
@@ -132,7 +134,7 @@ class TaskAddingCoordinator:
         self._qbit_operations = qbit_operations
         self._transmission_operations = transmission_operations
         self._data_root = data_root
-        self._filesystem = SafeFilesystemGateway(data_root)
+        self._filesystem = SafeFilesystemGateway(data_root, path_scope=path_scope)
 
     async def execute(
         self,
@@ -360,14 +362,7 @@ class TaskAddingCoordinator:
             )
 
     def _assert_source_inventory_current(self, authorized: _AuthorizedAdd) -> None:
-        normalized = self._filesystem.normalize_relative_path(
-            authorized.source_root, allow_root=True
-        )
-        root = (
-            self._data_root
-            if normalized == "."
-            else self._data_root.joinpath(*normalized.split("/"))
-        )
+        root = self._filesystem.resolve_path(authorized.source_root, allow_root=True)
         try:
             observed = source_inventory_digest(scan_source_inventory(root))
         except DomainViolation as exc:
@@ -411,14 +406,9 @@ class TaskAddingCoordinator:
                 title="目标下载器配置已变化",
                 detail="execution plan 授权后的目标下载器已不可用于安全写入",
             ) from exc
-        normalized_target = self._filesystem.normalize_relative_path(
+        target_path = self._filesystem.resolve_path(
             authorized.target_root,
             allow_root=True,
-        )
-        target_path = (
-            self._data_root
-            if normalized_target == "."
-            else self._data_root.joinpath(*normalized_target.split("/"))
         )
         try:
             remote_save_path = binding.remote_save_path(target_path)

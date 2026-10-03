@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import re
-import stat
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
+from backend.app.domain.errors import DomainViolation
 from backend.app.domain.movie_dedup import (
     MovieDedupCrossFilesystemPolicy,
     MovieDedupInventorySide,
@@ -23,6 +23,7 @@ from backend.app.domain.movie_dedup import (
     resolve_movie_dedup_action,
 )
 from backend.app.domain.task_definition import DEFAULT_VIDEO_EXTENSIONS
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.models import (
     MovieDedupFileInventory,
     MovieDedupJob,
@@ -123,10 +124,18 @@ class MovieDedupPairView:
 
 
 class MovieDedupService:
-    def __init__(self, session_factory: sessionmaker[Session], *, data_root: Path) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        *,
+        data_root: Path,
+        path_scope: AuthorizedPathScope | None = None,
+    ) -> None:
         self._session_factory = session_factory
         self._data_root = data_root
-        self._filesystem = SafeFilesystemGateway(data_root)
+        self._runtime_path_scope = path_scope
+        self._path_scope = path_scope or AuthorizedPathScope.legacy_only(legacy_data_root=data_root)
+        self._filesystem = SafeFilesystemGateway(data_root, path_scope=path_scope)
 
     def precheck(
         self,
@@ -669,7 +678,7 @@ class MovieDedupService:
                     detail="B 路径没有与 A 共享 inode",
                 )
         else:
-            expected_link = str(self._data_root / source_path)
+            expected_link = self._filesystem.resolve_path(source_path).as_posix()
             actual_link = self._filesystem.inspect_symlink_target(relative_path=target_path)
             if actual_link != expected_link:
                 raise ApplicationError(
@@ -1106,28 +1115,16 @@ class MovieDedupService:
         return record
 
     def _resolve_existing_directory(self, value: str, field_name: str) -> tuple[str, Path]:
-        normalized = self._normalize_relative_path(value, field_name)
         try:
-            base_stat = self._data_root.stat(follow_symlinks=False)
-            base = self._data_root.resolve(strict=True)
-        except OSError as exc:
-            raise self._invalid("授权数据目录不可用") from exc
-        if stat.S_ISLNK(base_stat.st_mode) or not stat.S_ISDIR(base_stat.st_mode):
-            raise self._invalid("授权数据目录必须是真实目录且不能是符号链接")
-        current = self._data_root
-        parts = () if normalized == "." else tuple(normalized.split("/"))
-        for part in parts:
-            current = current / part
-            try:
-                item_stat = current.stat(follow_symlinks=False)
-            except OSError as exc:
-                raise self._invalid(f"{field_name}不存在或不可读取") from exc
-            if stat.S_ISLNK(item_stat.st_mode) or not stat.S_ISDIR(item_stat.st_mode):
-                raise self._invalid(f"{field_name}不能经过符号链接或非目录路径")
-        resolved = current.resolve(strict=True)
-        if not resolved.is_relative_to(base):
-            raise self._invalid(f"{field_name}越过 PackBreaker 授权数据目录")
-        return normalized, resolved
+            if not value.strip().startswith("/"):
+                normalized = self._filesystem.normalize_relative_path(value, allow_root=True)
+                _absolute_reference, resolved = self._path_scope.resolve_existing_directory(
+                    normalized
+                )
+                return normalized, resolved
+            return self._path_scope.resolve_existing_directory(value)
+        except DomainViolation as exc:
+            raise self._invalid(f"{field_name}无效：{exc}") from exc
 
     @staticmethod
     def _require_disjoint_roots(source: Path, target: Path) -> None:
@@ -1135,17 +1132,6 @@ class MovieDedupService:
             raise MovieDedupService._invalid(
                 "保留目录 A 与去重目录 B 不能相同或互相包含，避免扫描与替换范围重叠"
             )
-
-    @staticmethod
-    def _normalize_relative_path(value: str, field_name: str) -> str:
-        normalized = value.strip().replace("\\", "/")
-        if not normalized:
-            raise MovieDedupService._invalid(f"{field_name}不能为空")
-        path = PurePosixPath(normalized)
-        if path.is_absolute() or ".." in path.parts or "\x00" in normalized:
-            raise MovieDedupService._invalid(f"{field_name}必须使用授权数据目录内的相对路径")
-        result = path.as_posix()
-        return "." if result in {"", "."} else result
 
     @staticmethod
     def _normalize_extensions(values: tuple[str, ...]) -> tuple[str, ...]:

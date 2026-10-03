@@ -80,13 +80,18 @@ frontend/src/api/generated/  OpenAPI 生成的 TypeScript 类型
 
 必须拒绝：
 
-- 绝对路径
+- 未位于显式授权挂载根内的绝对路径
 - `..` 路径穿越
 - NUL
 - 越过允许根目录
 - 不受信符号链接
 - 不可证明 ownership 的目标覆盖
 - 跨设备 Hardlink
+
+v1.0.8 起路径命名空间以容器根 `/` 为起点，允许用户直接使用
+`/downloads`、`/downloads2` 等管理员显式挂载的绝对目录。容器根 `/`
+本身不是文件副作用授权根；`/config`、系统目录、未挂载路径与符号链接逃逸
+继续失败关闭。历史相对路径继续按 `PACKBREAKER_DATA_DIR` 解释以兼容旧任务。
 
 文件系统副作用必须有 preflight、snapshot、journal 与幂等恢复证据。
 

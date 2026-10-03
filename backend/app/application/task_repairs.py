@@ -66,6 +66,7 @@ from backend.app.infrastructure.adapters.downloaders import (
     TransmissionTorrentState,
 )
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.models import OperationJournal
 from backend.app.infrastructure.persistence.repositories import (
     OperationJournalRepository,
@@ -183,12 +184,13 @@ class TaskRepairPlanService:
         downloader_service: DownloaderBindingProvider,
         *,
         data_root: Path,
+        path_scope: AuthorizedPathScope | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._site_service = site_service
         self._downloader_service = downloader_service
         self._data_root = data_root
-        self._filesystem = SafeFilesystemGateway(data_root)
+        self._filesystem = SafeFilesystemGateway(data_root, path_scope=path_scope)
 
     async def generate(self, unit_id: str, *, mode: RepairMode) -> RepairPlanView:
         authorized = self._load_authorized(unit_id)
@@ -655,7 +657,7 @@ class TaskRepairPlanService:
                 title="修复目标环境已变化",
                 detail="target root 或下载器 binding 已不能证明与 execution plan 一致",
             ) from exc
-        target_path = _data_path(self._data_root, authorized.target_root, allow_root=True)
+        target_path = self._filesystem.resolve_path(authorized.target_root, allow_root=True)
         try:
             remote_save_path = binding.remote_save_path(target_path)
         except DomainViolation as exc:
@@ -768,7 +770,7 @@ class TaskRepairPlanService:
         return meta
 
     def _assert_source_inventory(self, authorized: _AuthorizedRepair) -> None:
-        source_path = _data_path(self._data_root, authorized.source_root, allow_root=True)
+        source_path = self._filesystem.resolve_path(authorized.source_root, allow_root=True)
         try:
             inventory = scan_source_inventory(source_path)
         except DomainViolation as exc:
@@ -868,9 +870,8 @@ class TaskRepairPlanService:
                     detail=f"目标文件系统证据失败：{exc.code.value}",
                 ) from exc
             evidence.append(target)
-            target_path = _data_path(
-                self._data_root,
-                _join_relative_root(authorized.target_root, torrent_file.path),
+            target_path = self._filesystem.resolve_path(
+                _join_relative_root(authorized.target_root, torrent_file.path)
             )
             if target.target_exists and target.target_size == torrent_file.length:
                 mappings.append(
@@ -1597,12 +1598,6 @@ def _filesystem_snapshot(payload: dict[str, Any]) -> FilesystemSnapshot:
 
 def _is_nonnegative_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _data_path(data_root: Path, relative: str, *, allow_root: bool = False) -> Path:
-    gateway = SafeFilesystemGateway(data_root)
-    normalized = gateway.normalize_relative_path(relative, allow_root=allow_root)
-    return data_root if normalized == "." else data_root.joinpath(*normalized.split("/"))
 
 
 def _join_relative_root(root: str, relative: str) -> str:

@@ -15,6 +15,7 @@ from backend.app.domain.movie_dedup import (
     MovieDedupResolvedAction,
     resolve_movie_dedup_action,
 )
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.database import (
     create_session_factory,
@@ -113,6 +114,69 @@ def test_movie_dedup_job_create_and_list(tmp_path: Path) -> None:
         assert created.phase is MovieDedupJobPhase.PENDING
         assert service.get(created.id).id == created.id
         assert [item.id for item in service.list()] == [created.id]
+    finally:
+        engine.dispose()
+
+
+def test_movie_dedup_absolute_authorized_mounts_execute_without_data_alias(tmp_path: Path) -> None:
+    source_root = tmp_path / "downloads"
+    target_root = tmp_path / "downloads2"
+    source_root.mkdir()
+    target_root.mkdir()
+    name = "Absolute.Movie.2026.1080p-GROUP.mkv"
+    content = b"absolute-authorized-path" * 4096
+    (source_root / name).write_bytes(content)
+    (target_root / name).write_bytes(content)
+
+    engine = create_sqlite_engine(tmp_path / "movie-dedup-absolute.db")
+    Base.metadata.create_all(engine)
+    scope = AuthorizedPathScope(
+        legacy_data_root=tmp_path / "data",
+        config_dir=tmp_path / "config",
+        authorized_roots=(source_root, target_root),
+    )
+    service = MovieDedupService(
+        create_session_factory(engine),
+        data_root=tmp_path / "data",
+        path_scope=scope,
+    )
+    try:
+        job = service.create(
+            MovieDedupJobCreate(
+                name="绝对挂载去重",
+                source_root=source_root.as_posix(),
+                target_root=target_root.as_posix(),
+                mode=MovieDedupMode.AUTO,
+                cross_filesystem_policy=MovieDedupCrossFilesystemPolicy.STOP,
+                video_extensions=(".mkv",),
+            ),
+            trace_id="trace-absolute",
+        )
+        assert job.source_root == source_root.as_posix()
+        assert job.target_root == target_root.as_posix()
+        service.start(job.id)
+        current = service.get(job.id)
+        for _ in range(20):
+            if current.status is MovieDedupJobStatus.REVIEW_REQUIRED:
+                break
+            current = service.advance(
+                job.id,
+                scan_batch_size=1,
+                match_batch_size=1,
+                verify_batch_size=1,
+            )
+        assert current.status is MovieDedupJobStatus.REVIEW_REQUIRED
+        pair = next(
+            item
+            for item in service.list_pairs(job.id)
+            if item.status is MovieDedupPairStatus.VERIFIED_DUPLICATE
+        )
+        service.execute_pairs(
+            job.id,
+            pair_ids=(pair.id,),
+            idempotency_key="absolute-authorized-hardlink",
+        )
+        assert (source_root / name).stat().st_ino == (target_root / name).stat().st_ino
     finally:
         engine.dispose()
 

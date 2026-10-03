@@ -227,10 +227,12 @@ const selectedDirectorySize = computed(() =>
   selectedDirectoryFiles.value.reduce((total, item) => total + item.size_bytes, 0),
 );
 const directoryParentPath = computed(() => {
-  if (directoryBrowserPath.value === '.') return null;
-  const parts = directoryBrowserPath.value.split('/');
+  if (directoryBrowserPath.value === '.' || directoryBrowserPath.value === '/') return null;
+  const absolute = directoryBrowserPath.value.startsWith('/');
+  const parts = directoryBrowserPath.value.split('/').filter(Boolean);
   parts.pop();
-  return parts.length ? parts.join('/') : '.';
+  if (!parts.length) return absolute ? '/' : '.';
+  return `${absolute ? '/' : ''}${parts.join('/')}`;
 });
 
 onMounted(() => void refresh());
@@ -570,7 +572,7 @@ function filterPayload(): TaskFilterInput {
 async function openDirectoryDrawer(target: 'source' | 'output'): Promise<void> {
   directoryTarget.value = target;
   const current = target === 'source' ? draft.directoryPath : draft.outputDirectory;
-  directoryBrowserPath.value = current.trim() || '.';
+  directoryBrowserPath.value = current.trim() || '/';
   directoryDrawerVisible.value = true;
   await loadDirectoryEntries();
 }
@@ -579,7 +581,7 @@ async function loadDirectoryEntries(path = directoryBrowserPath.value): Promise<
   directoryBrowserLoading.value = true;
   try {
     const result = await browseTaskDirectories(path);
-    directoryBrowserPath.value = path;
+    directoryBrowserPath.value = result.current_path;
     directoryEntries.value = result.entries;
   } catch (caught) {
     ElMessage.error(toApiProblem(caught).message);
@@ -589,8 +591,8 @@ async function loadDirectoryEntries(path = directoryBrowserPath.value): Promise<
 }
 
 function chooseCurrentDirectory(): void {
-  if (directoryTarget.value === 'output' && directoryBrowserPath.value === '.') {
-    ElMessage.warning('输出目录不能直接使用 /data 根目录，请选择或填写子目录');
+  if (directoryBrowserPath.value === '/' || directoryBrowserPath.value === '.') {
+    ElMessage.warning('路径命名空间根不能直接作为任务目录，请选择一个已授权挂载目录');
     return;
   }
   if (directoryTarget.value === 'source') draft.directoryPath = directoryBrowserPath.value;
@@ -1630,10 +1632,7 @@ async function decideApproval(
           <template v-else>
             <el-form-item label="来源目录" required>
               <div class="directory-field">
-                <el-input
-                  v-model="draft.directoryPath"
-                  placeholder="相对于 /data，例如 downloads/movies"
-                />
+                <el-input v-model="draft.directoryPath" placeholder="例如 /downloads/movies" />
                 <el-button @click="openDirectoryDrawer('source')">选择目录</el-button>
                 <el-button
                   v-if="draft.kind === 'MANUAL'"
@@ -1722,7 +1721,7 @@ async function decideApproval(
           <div class="form-grid two">
             <el-form-item label="输出目录" required>
               <div class="directory-field">
-                <el-input v-model="draft.outputDirectory" placeholder="相对于 /data，例如 output" />
+                <el-input v-model="draft.outputDirectory" placeholder="例如 /downloads2/output" />
                 <el-button @click="openDirectoryDrawer('output')">选择目录</el-button>
               </div>
             </el-form-item>
@@ -2340,7 +2339,7 @@ async function decideApproval(
     >
       <div class="directory-browser" v-loading="directoryBrowserLoading">
         <div class="directory-browser-toolbar">
-          <code>/data/{{ directoryBrowserPath === '.' ? '' : directoryBrowserPath }}</code>
+          <code>{{ directoryBrowserPath }}</code>
           <el-button
             :disabled="directoryParentPath === null"
             @click="directoryParentPath && loadDirectoryEntries(directoryParentPath)"

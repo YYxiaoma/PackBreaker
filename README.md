@@ -301,22 +301,24 @@ services:
     image: ghcr.io/yyxiaoma/packbreaker:latest
     container_name: packbreaker
     restart: unless-stopped
-    user: "0:0"
+    user: "${PUID:-1000}:${PGID:-1000}"
     ports:
       - "8000:8000"
     environment:
-      PUID: "0"
-      PGID: "0"
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
       PACKBREAKER_TIMEZONE: "Asia/Shanghai"
     volumes:
-      - /root/packbreaker/config:/config
-      # 可选：目录来源 / 默认输出继续使用统一 /data 根。
-      - /path/to/common/storage:/data
-      # v1.0.5：下载器来源也可直接使用独立挂载，无需重复挂到 /data 下。
+      - /path/to/packbreaker/config:/config
+      # v1.0.8：目录任务、下载器来源与影片去重都可直接使用显式挂载绝对路径。
       - /volume2/videos/downloads:/downloads
       - /volume3/videos2/downloads:/downloads2
-      # 可选：需要在 Web 中一键升级时挂载。
-      - /var/run/docker.sock:/var/run/docker.sock
+      # 旧任务仍兼容显式 /data 挂载，但新部署不再要求 /data。
+      # - /path/to/common/storage:/data
+      # 可选：需要 Web 一键升级时，同时挂载 socket 并配置下面的 group_add。
+      # - /var/run/docker.sock:/var/run/docker.sock
+    # group_add:
+    #   - "${DOCKER_GID}"
     healthcheck:
       test: ["CMD", "python", "-m", "backend.app.healthcheck"]
       interval: 30s
@@ -327,7 +329,19 @@ services:
       - no-new-privileges:true
 ```
 
-`/data` 仍适合目录来源和默认输出目录，但下载器来源不再依赖它。若下载器自身保存到 `/downloads` / `/downloads2`，只要同一宿主目录直接挂载到 PackBreaker 的对应路径，并在下载器配置里建立 `/downloads → /downloads` 等映射即可。源文件与 Hardlink 目标是否可链接仍以真实路径诊断和 `st_dev` 为准，跨文件系统会因 `EXDEV` 失败。
+v1.0.8 起，路径选择器以容器 `/` 为命名空间根，只展示 PackBreaker 可证明的显式目录挂载；`/downloads`、`/downloads2` 可直接用于目录拆包、输出和影片去重，不需要重复挂到 `/data`。容器根 `/` 本身、`/config` 和系统目录不属于媒体任务授权根。历史相对路径继续按 `PACKBREAKER_DATA_DIR=/data` 解释。
+
+直接使用数字 UID/GID 时，宿主 bind 的配置目录必须先归属同一身份，例如 Synology：
+
+```bash
+sudo chown -R 1026:100 /volume1/docker/packbreaker/config
+```
+
+若启用 Web 一键升级，先读取 docker.sock 的数字 GID，再传给 Compose：
+
+```bash
+export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+```
 
 启动：
 
@@ -363,20 +377,23 @@ http://<服务器IP>:8000
 docker run -d \
   --name packbreaker \
   --restart unless-stopped \
-  --user 0:0 \
-  -e PUID=0 \
-  -e PGID=0 \
+  --user 1000:1000 \
+  -e PUID=1000 \
+  -e PGID=1000 \
   -e PACKBREAKER_TIMEZONE="Asia/Shanghai" \
   -p 8000:8000 \
-  -v /root/packbreaker/config:/config \
-  -v /path/to/common/storage:/data \
+  -v /path/to/packbreaker/config:/config \
   -v /volume2/videos/downloads:/downloads \
   -v /volume3/videos2/downloads:/downloads2 \
+  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/yyxiaoma/packbreaker:latest
 ```
 
-挂载 `docker.sock` 后可以使用单容器一键升级；它等价于 Docker 主机级管理权限，只应在受信任宿主机上启用。不希望授予该权限时，请参考 [部署文档](./docs/deployment.md) 使用手工 digest 升级或独立 updater helper。
+示例中的 `--group-add` 只用于 docker.sock；不需要 Web 一键升级时应同时删除
+`--group-add` 和 socket 挂载。挂载 `docker.sock` 等价于 Docker 主机级管理权限，
+只应在受信任宿主机上启用。不希望授予该权限时，请参考
+[部署文档](./docs/deployment.md) 使用手工 digest 升级或独立 updater helper。
 
 ### 第一次登录
 

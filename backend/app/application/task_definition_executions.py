@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -55,6 +54,7 @@ from backend.app.domain.task_lifecycle import (
 )
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, TaskUnit, identify_task_units
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.models import (
     OperationJournal,
     Site,
@@ -630,6 +630,7 @@ class TaskDefinitionExecutionService:
         task_analysis_service: TaskAnalysisService,
         *,
         data_root: Path,
+        path_scope: AuthorizedPathScope | None = None,
         directory_scan_batch_size: int = 250,
     ) -> None:
         self._session_factory = session_factory
@@ -637,6 +638,7 @@ class TaskDefinitionExecutionService:
         self._task_action_service = task_action_service
         self._task_analysis_service = task_analysis_service
         self._data_root = data_root.resolve(strict=False)
+        self._path_scope = path_scope or AuthorizedPathScope.legacy_only(legacy_data_root=data_root)
         if directory_scan_batch_size <= 0:
             raise ValueError("directory_scan_batch_size 必须大于 0")
         self._directory_scan_batch_size = directory_scan_batch_size
@@ -2990,32 +2992,11 @@ class TaskDefinitionExecutionService:
             return self._item_view(item)
 
     def _resolve_directory_root(self, directory_path: str) -> Path:
-        current = self._data_root
-        parts = () if directory_path == "." else tuple(directory_path.split("/"))
         try:
-            base_stat = self._data_root.stat(follow_symlinks=False)
-            base = self._data_root.resolve(strict=True)
-        except OSError as exc:
-            raise self._source_invalid("授权数据根目录不可用") from exc
-        if stat.S_ISLNK(base_stat.st_mode) or not stat.S_ISDIR(base_stat.st_mode):
-            raise self._source_invalid("授权数据根目录必须是真实目录且不能是符号链接")
-        for part in parts:
-            if not part or part in {".", ".."}:
-                raise self._source_invalid("来源目录包含不安全路径段")
-            current = current / part
-            try:
-                item_stat = current.stat(follow_symlinks=False)
-            except OSError as exc:
-                raise self._source_invalid("来源目录不存在或不可读取") from exc
-            if stat.S_ISLNK(item_stat.st_mode) or not stat.S_ISDIR(item_stat.st_mode):
-                raise self._source_invalid("来源目录不能经过符号链接或非目录路径")
-        try:
-            resolved = current.resolve(strict=True)
-        except OSError as exc:
-            raise self._source_invalid("来源目录不存在或不可读取") from exc
-        if not resolved.is_relative_to(base):
-            raise self._source_invalid("来源目录越过授权数据根目录")
-        return resolved
+            _reference, resolved = self._path_scope.resolve_existing_directory(directory_path)
+            return resolved
+        except DomainViolation as exc:
+            raise self._source_invalid(str(exc)) from exc
 
     def _inventory_for_path(self, path: Path) -> tuple[Path, tuple[SourceFileCandidate, ...]]:
         if path.is_dir():

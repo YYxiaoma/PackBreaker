@@ -66,6 +66,7 @@ from backend.app.domain.verification import (
     VerificationLevel,
 )
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.downloader_repositories import DownloaderRepository
 from backend.app.infrastructure.persistence.models import (
     PreflightSnapshotRecord,
@@ -459,7 +460,7 @@ class _ScopedAnalysisSiteProvider:
 
 
 class TaskAnalysisService:
-    """任务级 M2 入口：安全定位 /data、持久化 unit/candidate，并判断 preflight 当前性。"""
+    """任务级 M2 入口：安全定位授权挂载、持久化 unit/candidate，并判断 preflight 当前性。"""
 
     def __init__(
         self,
@@ -467,10 +468,12 @@ class TaskAnalysisService:
         site_service: AnalysisSiteProvider,
         *,
         data_root: Path,
+        path_scope: AuthorizedPathScope | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._site_service = site_service
         self._data_root = data_root
+        self._path_scope = path_scope or AuthorizedPathScope.legacy_only(legacy_data_root=data_root)
         self._analysis = AnalysisService(session_factory, site_service)
 
     def list_tasks(self, *, status: TaskStatus | None = None, limit: int = 100) -> list[TaskView]:
@@ -1626,24 +1629,21 @@ class TaskAnalysisService:
         actions: tuple[ExecutionPlanAction, ...],
     ) -> _TargetLayout:
         try:
-            data_root_stat = self._data_root.stat(follow_symlinks=False)
-        except OSError as exc:
+            base = self._path_scope.authorization_root(target_root)
+            base_stat = base.stat(follow_symlinks=False)
+            target_parts = target_root.relative_to(base).parts
+        except (DomainViolation, OSError, ValueError) as exc:
             raise ApplicationError(
                 code="EXECUTION_PLAN_TARGET_ROOT_NOT_FOUND",
                 status=404,
                 title="目标根目录不可用",
-                detail="数据根目录在执行计划检查期间不可见",
+                detail="目标目录不在当前显式挂载授权范围内，或授权挂载当前不可见",
             ) from exc
-        if stat.S_ISLNK(data_root_stat.st_mode) or not stat.S_ISDIR(data_root_stat.st_mode):
-            raise _execution_target_root_invalid("数据根目录必须是真实目录且不能是符号链接")
-        try:
-            base = self._data_root.resolve(strict=True)
-            target_parts = target_root.relative_to(base).parts
-        except (OSError, ValueError) as exc:
-            raise _execution_target_root_invalid("target_root 必须位于数据根目录内") from exc
+        if stat.S_ISLNK(base_stat.st_mode) or not stat.S_ISDIR(base_stat.st_mode):
+            raise _execution_target_root_invalid("授权挂载根必须是真实目录且不能是符号链接")
 
         current_root = base
-        device = data_root_stat.st_dev
+        device = base_stat.st_dev
         directories: set[str] = set()
         blockers: set[ExecutionPlanBlockReason] = set()
         missing_root = False
@@ -1829,7 +1829,6 @@ class TaskAnalysisService:
             remote_save_path = reverse_map_container_path_unique(
                 resolved_target,
                 list(mappings),
-                allowed_root=self._data_root,
             )
             binding_digest = downloader_execution_binding_digest(
                 downloader_id=record.id,
@@ -2139,47 +2138,35 @@ class TaskAnalysisService:
         )
         if not normalized or "\x00" in normalized or "\\" in normalized or has_windows_drive:
             raise _source_root_invalid("source_root 必须是安全 POSIX 路径")
+
         if normalized.startswith("/"):
-            if task_id is None:
-                raise _source_root_invalid("绝对 source_root 只能由下载器任务的路径映射授权")
-            return self._resolve_downloader_source_root(task_id, normalized)
+            if task_id is not None and self._task_uses_downloader_source(task_id):
+                return self._resolve_downloader_source_root(task_id, normalized)
+            try:
+                return self._path_scope.resolve_existing_directory(normalized)
+            except DomainViolation as exc:
+                raise _source_root_invalid(str(exc)) from exc
+
         if normalized == ".":
-            parts: tuple[str, ...] = ()
+            reference = "."
         else:
             parts = tuple(normalized.split("/"))
             if any(not part or part in {".", ".."} for part in parts):
                 raise _source_root_invalid("source_root 包含不安全路径段")
+            reference = "/".join(parts)
+        try:
+            _absolute_reference, resolved = self._path_scope.resolve_existing_directory(reference)
+        except DomainViolation as exc:
+            raise _source_root_invalid(str(exc)) from exc
+        return reference, resolved
 
-        try:
-            base_stat = self._data_root.stat(follow_symlinks=False)
-        except OSError as exc:
-            raise _source_root_invalid("数据根目录不可用") from exc
-        if stat.S_ISLNK(base_stat.st_mode) or not stat.S_ISDIR(base_stat.st_mode):
-            raise _source_root_invalid("数据根目录必须是真实目录且不能是符号链接")
-        try:
-            base = self._data_root.resolve(strict=True)
-        except OSError as exc:
-            raise _source_root_invalid("数据根目录不可用") from exc
-        current = self._data_root
-        for index, part in enumerate(parts):
-            current = current / part
-            try:
-                item_stat = current.stat(follow_symlinks=False)
-            except OSError as exc:
-                raise ApplicationError(
-                    code="ANALYSIS_SOURCE_ROOT_NOT_FOUND",
-                    status=404,
-                    title="源目录不存在",
-                    detail="source_root 指向的目录不可见",
-                ) from exc
-            if stat.S_ISLNK(item_stat.st_mode):
-                raise _source_root_invalid("source_root 不能经过符号链接")
-            if index < len(parts) - 1 and not stat.S_ISDIR(item_stat.st_mode):
-                raise _source_root_invalid("source_root 的中间路径不是目录")
-        resolved = current.resolve(strict=True)
-        if not resolved.is_relative_to(base) or not resolved.is_dir():
-            raise _source_root_invalid("source_root 必须解析到授权数据目录内的真实目录")
-        return ("." if not parts else "/".join(parts), resolved)
+    def _task_uses_downloader_source(self, task_id: str) -> bool:
+        with self._session_factory() as session:
+            task = TaskRepository(session).get(task_id)
+            if task is None:
+                raise _task_not_found()
+            source_kind = (task.checkpoint or {}).get("source_kind")
+            return bool(task.source_downloader_id) and source_kind != "DIRECTORY"
 
     def _resolve_downloader_source_root(self, task_id: str, value: str) -> tuple[str, Path]:
         requested = Path(value)
@@ -2261,58 +2248,26 @@ class TaskAnalysisService:
         has_windows_drive = (
             len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":"
         )
-        if (
-            not normalized
-            or "\x00" in normalized
-            or "\\" in normalized
-            or normalized.startswith("/")
-            or has_windows_drive
-        ):
-            raise _execution_target_root_invalid("target_root 必须是 /data 下的 POSIX 相对目录")
-        if normalized == ".":
-            parts: tuple[str, ...] = ()
+        if not normalized or "\x00" in normalized or "\\" in normalized or has_windows_drive:
+            raise _execution_target_root_invalid("target_root 必须是安全 POSIX 目录")
+
+        if normalized.startswith("/"):
+            reference = normalized
+        elif normalized == ".":
+            reference = "."
         else:
             parts = tuple(normalized.split("/"))
             if any(not part or part in {".", ".."} for part in parts):
                 raise _execution_target_root_invalid("target_root 包含不安全路径段")
+            reference = "/".join(parts)
 
         try:
-            base_stat = self._data_root.stat(follow_symlinks=False)
-        except OSError as exc:
-            raise _execution_target_root_invalid("数据根目录不可用") from exc
-        if stat.S_ISLNK(base_stat.st_mode) or not stat.S_ISDIR(base_stat.st_mode):
-            raise _execution_target_root_invalid("数据根目录必须是真实目录且不能是符号链接")
-        try:
-            base = self._data_root.resolve(strict=True)
-        except OSError as exc:
-            raise _execution_target_root_invalid("数据根目录不可用") from exc
-
-        current = base
-        missing_started = False
-        for index, part in enumerate(parts):
-            current = current / part
-            if missing_started:
-                continue
-            try:
-                item_stat = current.stat(follow_symlinks=False)
-            except FileNotFoundError:
-                missing_started = True
-                continue
-            except OSError as exc:
-                raise _execution_target_root_invalid("target_root 无法安全检查") from exc
-            if stat.S_ISLNK(item_stat.st_mode):
-                raise _execution_target_root_invalid("target_root 不能经过符号链接")
-            if not stat.S_ISDIR(item_stat.st_mode):
-                detail = (
-                    "target_root 的中间路径不是目录"
-                    if index < len(parts) - 1
-                    else "target_root 必须指向目录"
-                )
-                raise _execution_target_root_invalid(detail)
-        resolved = base.joinpath(*parts)
-        if not resolved.is_relative_to(base):
-            raise _execution_target_root_invalid("target_root 必须解析到 /data 内")
-        return ("." if not parts else "/".join(parts), resolved)
+            absolute_reference, _anchor, _exists = self._path_scope.resolve_output_anchor(reference)
+        except DomainViolation as exc:
+            raise _execution_target_root_invalid(str(exc)) from exc
+        return (absolute_reference if normalized.startswith("/") else reference), Path(
+            absolute_reference
+        )
 
     @staticmethod
     def _unit_view(record: Any) -> TaskUnitView:

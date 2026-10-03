@@ -743,8 +743,8 @@ function showError(error: unknown): void {
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="目标根（相对于 /data，目录必须已存在）">
-          <el-input v-model="targetRoot" placeholder="例如 seeding/movies" />
+        <el-form-item label="目标根（容器内已授权挂载路径）">
+          <el-input v-model="targetRoot" placeholder="例如 /downloads2/seeding/movies" />
         </el-form-item>
       </el-form>
       <template v-if="executionPlan">

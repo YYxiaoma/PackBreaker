@@ -9,6 +9,7 @@ from backend.app.container_entrypoint import (
     _chown_config_tree,
     _docker_socket_supplementary_groups,
     _numeric_id,
+    _validate_non_root_runtime,
 )
 
 
@@ -128,3 +129,82 @@ def test_unmapped_socket_gid_does_not_prevent_web_service_privilege_drop(
         ("gid", 100),
         ("uid", 1026),
     ]
+
+
+def test_non_root_runtime_keeps_compose_identity_and_supplementary_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config"
+    config.mkdir()
+    monkeypatch.setenv("PACKBREAKER_CONFIG_DIR", str(config))
+    monkeypatch.setenv("PUID", "1026")
+    monkeypatch.setenv("PGID", "100")
+    monkeypatch.setattr(os, "geteuid", lambda: 1026)
+    monkeypatch.setattr(os, "getegid", lambda: 100)
+    monkeypatch.setattr(os, "access", lambda *_args: True)
+    calls: list[str] = []
+    monkeypatch.setattr(entrypoint, "_chown_config_tree", lambda *_args: calls.append("chown"))
+    monkeypatch.setattr(os, "setgroups", lambda _v: calls.append("setgroups"))
+    monkeypatch.setattr(os, "setgid", lambda _v: calls.append("setgid"))
+    monkeypatch.setattr(os, "setuid", lambda _v: calls.append("setuid"))
+
+    entrypoint._drop_privileges_if_needed()
+
+    assert calls == []
+
+
+def test_non_root_runtime_rejects_uid_gid_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config"
+    config.mkdir()
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(os, "getegid", lambda: 1000)
+
+    with pytest.raises(RuntimeError, match="当前 1000:1000，配置 1026:100"):
+        _validate_non_root_runtime(config, 1026, 100)
+
+
+def test_non_root_runtime_reports_config_permission_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config"
+    config.mkdir()
+    monkeypatch.setattr(os, "geteuid", lambda: 1026)
+    monkeypatch.setattr(os, "getegid", lambda: 100)
+    monkeypatch.setattr(os, "access", lambda *_args: False)
+
+    with pytest.raises(RuntimeError, match="chown -R 1026:100"):
+        _validate_non_root_runtime(config, 1026, 100)
+
+
+def test_non_root_runtime_reports_existing_logs_permission_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config"
+    logs = config / "logs"
+    logs.mkdir(parents=True)
+    monkeypatch.setattr(os, "geteuid", lambda: 1026)
+    monkeypatch.setattr(os, "getegid", lambda: 100)
+    monkeypatch.setattr(
+        os,
+        "access",
+        lambda path, _mode: Path(path) != logs,
+    )
+
+    with pytest.raises(RuntimeError, match=r"logs.*chown -R 1026:100"):
+        _validate_non_root_runtime(config, 1026, 100)
+
+
+def test_non_root_runtime_rejects_symlink_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_config = tmp_path / "real-config"
+    real_config.mkdir()
+    config = tmp_path / "config"
+    config.symlink_to(real_config, target_is_directory=True)
+    monkeypatch.setattr(os, "geteuid", lambda: 1026)
+    monkeypatch.setattr(os, "getegid", lambda: 100)
+
+    with pytest.raises(RuntimeError, match="不能是符号链接"):
+        _validate_non_root_runtime(config, 1026, 100)

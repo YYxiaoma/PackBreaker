@@ -37,6 +37,7 @@ from backend.app.domain.task_definition import (
     next_cron_run,
     normalize_cron_expression,
 )
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.models import (
     Downloader,
     Site,
@@ -223,28 +224,39 @@ class TaskDefinitionService:
         *,
         data_root: Path,
         timezone: str,
+        path_scope: AuthorizedPathScope | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._data_root = data_root
         self._timezone = timezone
+        self._runtime_path_scope = path_scope
+        self._path_scope = path_scope or AuthorizedPathScope.legacy_only(legacy_data_root=data_root)
 
     def browse_directories(self, *, path: str = ".") -> tuple[TaskDirectoryEntryView, ...]:
-        normalized, resolved = self._resolve_existing_directory(path)
-        entries: list[TaskDirectoryEntryView] = []
-        try:
-            scandir_entries = tuple(os.scandir(resolved))
-        except OSError as exc:
-            raise self._invalid("无法读取所选目录") from exc
-        for entry in sorted(scandir_entries, key=lambda item: item.name.casefold()):
+        if not path.strip().startswith("/"):
+            normalized, resolved = self._resolve_existing_directory(path)
+            entries: list[TaskDirectoryEntryView] = []
             try:
-                item_stat = entry.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            if stat.S_ISLNK(item_stat.st_mode) or not stat.S_ISDIR(item_stat.st_mode):
-                continue
-            child = entry.name if normalized == "." else f"{normalized}/{entry.name}"
-            entries.append(TaskDirectoryEntryView(name=entry.name, path=child))
-        return tuple(entries)
+                scandir_entries = tuple(os.scandir(resolved))
+            except OSError as exc:
+                raise self._invalid("无法读取所选目录") from exc
+            for entry in sorted(scandir_entries, key=lambda item: item.name.casefold()):
+                try:
+                    item_stat = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISLNK(item_stat.st_mode) or not stat.S_ISDIR(item_stat.st_mode):
+                    continue
+                child = entry.name if normalized == "." else f"{normalized}/{entry.name}"
+                entries.append(TaskDirectoryEntryView(name=entry.name, path=child))
+            return tuple(entries)
+        try:
+            _current, authorized_entries = self._path_scope.browse_directories(path)
+        except DomainViolation as exc:
+            raise self._invalid(str(exc)) from exc
+        return tuple(
+            TaskDirectoryEntryView(name=item.name, path=item.path) for item in authorized_entries
+        )
 
     def preview_directory(
         self,
@@ -345,10 +357,7 @@ class TaskDefinitionService:
                 (
                     f"输出目录 {normalized_output} 已存在且可安全访问"
                     if output_exists
-                    else (
-                        "输出目录尚不存在；将从安全父目录 "
-                        f"{output_anchor.relative_to(self._data_root)} 创建"
-                    )
+                    else (f"输出目录尚不存在；将从安全父目录 {output_anchor.as_posix()} 创建")
                 ),
             )
 
@@ -429,13 +438,10 @@ class TaskDefinitionService:
                             )
                             for item in downloader.path_mappings
                         ]
-                        intended_output = (self._data_root / normalized_output).resolve(
-                            strict=False
-                        )
+                        intended_output = self._path_scope.resolve_path(normalized_output)
                         remote_output = reverse_map_container_path_unique(
                             intended_output,
                             mappings,
-                            allowed_root=self._data_root,
                         )
                     except (DomainViolation, KeyError, TypeError, ValueError):
                         add(
@@ -536,10 +542,9 @@ class TaskDefinitionService:
             raise self._invalid("任务名称不能超过 120 个字符")
         self._validate_output_policy(request.output_policy)
         filters = self._normalize_filters(request.filters)
-        output_directory = self._normalize_relative_path(
+        output_directory = self._normalize_directory_reference(
             request.output_policy.output_directory,
             field_name="输出目录",
-            allow_root=False,
         )
         cron_expression: str | None = None
         if request.kind is TaskDefinitionKind.MONITOR:
@@ -794,10 +799,9 @@ class TaskDefinitionService:
 
         filters = self._normalize_filters(request.filters)
         self._validate_output_policy(request.output_policy)
-        output_directory = self._normalize_relative_path(
+        output_directory = self._normalize_directory_reference(
             request.output_policy.output_directory,
             field_name="输出目录",
-            allow_root=False,
         )
 
         with self._session_factory() as session:
@@ -929,70 +933,50 @@ class TaskDefinitionService:
             return view
 
     def _resolve_existing_directory(self, value: str) -> tuple[str, Path]:
-        normalized = self._normalize_relative_path(value, field_name="目录", allow_root=True)
         try:
-            base = self._data_root.resolve(strict=True)
-            base_stat = self._data_root.stat(follow_symlinks=False)
-        except OSError as exc:
-            raise self._invalid("授权数据目录不可用") from exc
-        if stat.S_ISLNK(base_stat.st_mode) or not stat.S_ISDIR(base_stat.st_mode):
-            raise self._invalid("授权数据目录必须是真实目录且不能是符号链接")
-        current = self._data_root
-        parts = () if normalized == "." else tuple(normalized.split("/"))
-        for part in parts:
-            current = current / part
-            try:
-                item_stat = current.stat(follow_symlinks=False)
-            except OSError as exc:
-                raise self._invalid("所选目录不存在或不可读取") from exc
-            if stat.S_ISLNK(item_stat.st_mode) or not stat.S_ISDIR(item_stat.st_mode):
-                raise self._invalid("目录浏览不能经过符号链接或非目录路径")
-        resolved = current.resolve(strict=True)
-        if not resolved.is_relative_to(base):
-            raise self._invalid("所选目录越过 PackBreaker 授权数据目录")
-        return normalized, resolved
+            if not value.strip().startswith("/"):
+                normalized = self._normalize_relative_path(
+                    value,
+                    field_name="目录",
+                    allow_root=True,
+                )
+                _absolute_reference, resolved = self._path_scope.resolve_existing_directory(
+                    normalized
+                )
+                return normalized, resolved
+            return self._path_scope.resolve_existing_directory(value)
+        except DomainViolation as exc:
+            raise self._invalid(str(exc)) from exc
 
     def _resolve_output_anchor(self, value: str) -> tuple[str, Path, bool]:
         """Resolve a safe existing anchor for an output path without creating anything."""
 
-        normalized = self._normalize_relative_path(value, field_name="输出目录", allow_root=False)
         try:
-            base_stat = self._data_root.stat(follow_symlinks=False)
-            base = self._data_root.resolve(strict=True)
-        except OSError as exc:
-            raise self._invalid("授权数据目录不可用") from exc
-        if stat.S_ISLNK(base_stat.st_mode) or not stat.S_ISDIR(base_stat.st_mode):
-            raise self._invalid("授权数据目录必须是真实目录且不能是符号链接")
-
-        current = self._data_root
-        parts = tuple(normalized.split("/"))
-        for index, part in enumerate(parts):
-            candidate = current / part
-            try:
-                item_stat = candidate.stat(follow_symlinks=False)
-            except FileNotFoundError:
-                # The remaining path may be created later by the journal-backed executor.
-                return normalized, current.resolve(strict=True), False
-            except OSError as exc:
-                raise self._invalid("输出目录或其父目录不可访问") from exc
-            if stat.S_ISLNK(item_stat.st_mode):
-                raise self._invalid("输出目录不能经过符号链接")
-            if not stat.S_ISDIR(item_stat.st_mode):
-                detail = (
-                    "输出目录的中间路径不是目录"
-                    if index < len(parts) - 1
-                    else "输出目录必须指向目录"
+            if not value.strip().startswith("/"):
+                normalized = self._normalize_relative_path(
+                    value,
+                    field_name="输出目录",
+                    allow_root=False,
                 )
-                raise self._invalid(detail)
-            current = candidate
+                _absolute_reference, anchor, exists = self._path_scope.resolve_output_anchor(
+                    normalized
+                )
+                return normalized, anchor, exists
+            return self._path_scope.resolve_output_anchor(value)
+        except DomainViolation as exc:
+            raise self._invalid(str(exc)) from exc
 
+    def _normalize_directory_reference(self, value: str, *, field_name: str) -> str:
+        if not value.strip().startswith("/"):
+            return self._normalize_relative_path(
+                value,
+                field_name=field_name,
+                allow_root=False,
+            )
         try:
-            resolved = current.resolve(strict=True)
-        except OSError as exc:
-            raise self._invalid("输出目录不可访问") from exc
-        if not resolved.is_relative_to(base):
-            raise self._invalid("输出目录越过 PackBreaker 授权数据目录")
-        return normalized, resolved, True
+            return self._path_scope.normalize_reference(value)
+        except DomainViolation as exc:
+            raise self._invalid(f"{field_name}无效：{exc}") from exc
 
     def _selected_downloader_source_devices(
         self,
@@ -1046,14 +1030,10 @@ class TaskDefinitionService:
             )
         if request.downloader_id is not None:
             raise self._invalid("目录来源不能同时指定下载器")
-        directory_path = self._normalize_relative_path(
-            request.directory_path or "", field_name="来源目录", allow_root=True
+        directory_path = self._normalize_directory_reference(
+            request.directory_path or "",
+            field_name="来源目录",
         )
-        resolved = (self._data_root / directory_path).resolve(strict=False)
-        try:
-            resolved.relative_to(self._data_root.resolve())
-        except ValueError as exc:
-            raise self._invalid("来源目录必须位于 PackBreaker 授权数据目录内") from exc
         config = dict(request.config or {})
         target_downloader_id = config.get("target_downloader_id")
         if target_downloader_id is not None:

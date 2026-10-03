@@ -78,6 +78,7 @@ from backend.app.application.transmission_operations import (
     TransmissionVerifyOperationService,
 )
 from backend.app.config import AppSettings
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
 from backend.app.infrastructure.runtime import RuntimeManager
 from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
@@ -198,6 +199,11 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolved_runtime.start()
         app.state.runtime = resolved_runtime
+        path_scope = AuthorizedPathScope.from_runtime(
+            legacy_data_root=resolved_settings.data_dir,
+            config_dir=resolved_settings.config_dir,
+        )
+        app.state.authorized_path_scope = path_scope
         app.state.auth_service = AuthService(resolved_runtime.session_factory)
         app.state.admin_notification_service = AdminNotificationService(
             resolved_runtime.session_factory
@@ -215,6 +221,7 @@ def create_app(
         movie_dedup_service = MovieDedupService(
             resolved_runtime.session_factory,
             data_root=resolved_settings.data_dir,
+            path_scope=path_scope,
         )
         app.state.movie_dedup_service = movie_dedup_service
         downloader_service = DownloaderService(
@@ -287,11 +294,13 @@ def create_app(
             resolved_runtime.session_factory,
             data_root=resolved_settings.data_dir,
             timezone=resolved_settings.timezone,
+            path_scope=path_scope,
         )
         task_analysis_service = TaskAnalysisService(
             resolved_runtime.session_factory,
             site_service,
             data_root=resolved_settings.data_dir,
+            path_scope=path_scope,
         )
         app.state.task_analysis_service = task_analysis_service
         task_repair_plan_service = TaskRepairPlanService(
@@ -299,12 +308,13 @@ def create_app(
             site_service,
             downloader_service,
             data_root=resolved_settings.data_dir,
+            path_scope=path_scope,
         )
         app.state.task_repair_plan_service = task_repair_plan_service
         app.state.task_event_service = TaskEventService(resolved_runtime.session_factory)
         filesystem_operations = FilesystemOperationService(
             resolved_runtime.session_factory,
-            SafeFilesystemGateway(resolved_settings.data_dir),
+            SafeFilesystemGateway(resolved_settings.data_dir, path_scope=path_scope),
         )
         app.state.filesystem_operation_service = filesystem_operations
         task_repair_isolation_coordinator = TaskRepairIsolationCoordinator(
@@ -335,6 +345,7 @@ def create_app(
             task_analysis_service,
             filesystem_operations,
             data_root=resolved_settings.data_dir,
+            path_scope=path_scope,
         )
         app.state.task_linking_coordinator = task_linking_coordinator
         task_adding_coordinator = TaskAddingCoordinator(
@@ -344,6 +355,7 @@ def create_app(
             qbit_operations,
             transmission_add_operations,
             data_root=resolved_settings.data_dir,
+            path_scope=path_scope,
         )
         app.state.task_adding_coordinator = task_adding_coordinator
         task_client_verification_coordinator = TaskClientVerificationCoordinator(
@@ -353,6 +365,7 @@ def create_app(
             transmission_verify_operations,
             repair_download_operations,
             data_root=resolved_settings.data_dir,
+            path_scope=path_scope,
         )
         app.state.task_client_verification_coordinator = task_client_verification_coordinator
         task_seeding_coordinator = TaskSeedingCoordinator(
@@ -361,6 +374,7 @@ def create_app(
             qbit_start_operations,
             transmission_start_operations,
             data_root=resolved_settings.data_dir,
+            path_scope=path_scope,
         )
         app.state.task_seeding_coordinator = task_seeding_coordinator
         task_cancellation_coordinator = TaskCancellationCoordinator(
@@ -384,6 +398,7 @@ def create_app(
             task_action_service,
             task_analysis_service,
             data_root=resolved_settings.data_dir,
+            path_scope=path_scope,
             directory_scan_batch_size=resolved_settings.task_definition_directory_scan_batch_size,
         )
         app.state.task_definition_execution_service = task_definition_execution_service

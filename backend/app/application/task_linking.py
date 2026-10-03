@@ -20,6 +20,7 @@ from backend.app.domain.execution_plan import (
     execution_plan_actions_from_payload,
 )
 from backend.app.domain.task_state import TaskStatus
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.models import TaskExecutionPlanRecord
 from backend.app.infrastructure.persistence.preflight_repositories import (
     PreflightSnapshotRepository,
@@ -93,6 +94,7 @@ class TaskLinkingCoordinator:
         filesystem_operations: FilesystemOperationService,
         *,
         data_root: Path,
+        path_scope: AuthorizedPathScope | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._plan_provider = plan_provider
@@ -103,6 +105,7 @@ class TaskLinkingCoordinator:
         # absolute() 只规范化路径表示，不解析/跟随符号链接；后续安全检查仍由
         # SafeFilesystemGateway 和 no-follow inventory 扫描负责。
         self._data_root = data_root.absolute()
+        self._filesystem = SafeFilesystemGateway(self._data_root, path_scope=path_scope)
 
     def execute(self, unit_id: str, *, execution_plan_id: str) -> TaskLinkingResult:
         status = self._load_task_status(unit_id, execution_plan_id)
@@ -443,15 +446,7 @@ class TaskLinkingCoordinator:
         return authorized
 
     def _assert_source_inventory_current(self, plan: _AuthorizedPlan) -> None:
-        normalized_root = SafeFilesystemGateway(self._data_root).normalize_relative_path(
-            plan.source_root,
-            allow_root=True,
-        )
-        source_root = (
-            self._data_root
-            if normalized_root == "."
-            else self._data_root.joinpath(*normalized_root.split("/"))
-        )
+        source_root = self._filesystem.resolve_path(plan.source_root, allow_root=True)
         try:
             observed = source_inventory_digest(scan_source_inventory(source_root))
         except DomainViolation as exc:

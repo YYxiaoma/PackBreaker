@@ -159,7 +159,7 @@ class FilesystemOperationService:
             request.target_root_relative_path,
             allow_root=True,
         )
-        target_relative = self._gateway.normalize_relative_path(request.target_relative_path)
+        target_relative = self._gateway.normalize_child_relative_path(request.target_relative_path)
         target_parts = target_relative.split("/")
         directory_journal_ids = self._ensure_target_root_directories(
             request,
@@ -808,7 +808,7 @@ class FilesystemOperationService:
             _required_text(hardlink.target, "target_root"),
             allow_root=True,
         )
-        target_relative = self._gateway.normalize_relative_path(
+        target_relative = self._gateway.normalize_child_relative_path(
             _required_text(hardlink.target, "relative_path")
         )
         source_relative = self._gateway.normalize_relative_path(
@@ -887,7 +887,7 @@ class FilesystemOperationService:
             _required_text(isolation.target, "target_root"),
             allow_root=True,
         )
-        target_relative = self._gateway.normalize_relative_path(
+        target_relative = self._gateway.normalize_child_relative_path(
             _required_text(isolation.target, "relative_path")
         )
         snapshot = _filesystem_snapshot_from_payload(isolation.after_snapshot)

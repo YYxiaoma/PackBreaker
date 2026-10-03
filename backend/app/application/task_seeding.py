@@ -35,6 +35,7 @@ from backend.app.domain.idempotency import candidate_execution_key
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.verification import DownloaderKind, VerificationLevel
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.models import OperationJournal, TaskExecutionPlanRecord
 from backend.app.infrastructure.persistence.repositories import (
     OperationJournalRepository,
@@ -108,13 +109,14 @@ class TaskSeedingCoordinator:
         transmission_start_operations: TransmissionStartOperationService | None = None,
         *,
         data_root: Path,
+        path_scope: AuthorizedPathScope | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._downloader_service = downloader_service
         self._start_operations = start_operations
         self._transmission_start_operations = transmission_start_operations
         self._data_root = data_root
-        self._filesystem = SafeFilesystemGateway(data_root)
+        self._filesystem = SafeFilesystemGateway(data_root, path_scope=path_scope)
 
     async def execute(
         self,
@@ -373,14 +375,9 @@ class TaskSeedingCoordinator:
             raise _seeding_binding_changed(
                 "target root 或目标下载器已不能证明与 execution plan 一致"
             ) from exc
-        normalized_target = self._filesystem.normalize_relative_path(
+        target_path = self._filesystem.resolve_path(
             authorized.target_root,
             allow_root=True,
-        )
-        target_path = (
-            self._data_root
-            if normalized_target == "."
-            else self._data_root.joinpath(*normalized_target.split("/"))
         )
         try:
             remote_save_path = binding.remote_save_path(target_path)
@@ -407,14 +404,9 @@ class TaskSeedingCoordinator:
         return binding
 
     def _assert_source_inventory_current(self, authorized: _AuthorizedSeeding) -> None:
-        normalized = self._filesystem.normalize_relative_path(
+        source_path = self._filesystem.resolve_path(
             authorized.source_root,
             allow_root=True,
-        )
-        source_path = (
-            self._data_root
-            if normalized == "."
-            else self._data_root.joinpath(*normalized.split("/"))
         )
         try:
             observed = source_inventory_digest(scan_source_inventory(source_path))

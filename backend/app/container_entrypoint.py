@@ -48,12 +48,65 @@ def _docker_socket_supplementary_groups(
     return []
 
 
+def _validate_non_root_runtime(config_dir: Path, uid: int, gid: int) -> None:
+    current_uid = os.geteuid()
+    current_gid = os.getegid()
+    if current_uid != uid or current_gid != gid:
+        raise RuntimeError(
+            "容器当前运行身份与 PUID/PGID 不一致："
+            f"当前 {current_uid}:{current_gid}，配置 {uid}:{gid}；"
+            '请在 Compose 中使用与 PUID/PGID 相同的 user: "UID:GID"'
+        )
+    try:
+        config_stat = config_dir.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise RuntimeError(
+            f"配置目录 {config_dir} 不可访问；请先在宿主机创建目录并将所有权调整为 {uid}:{gid}"
+        ) from exc
+    if stat.S_ISLNK(config_stat.st_mode) or not stat.S_ISDIR(config_stat.st_mode):
+        raise RuntimeError(f"配置目录 {config_dir} 必须是真实目录且不能是符号链接")
+    if not os.access(config_dir, os.R_OK | os.W_OK | os.X_OK):
+        raise RuntimeError(
+            f"配置目录 {config_dir} 对运行用户 {uid}:{gid} 不可读写；"
+            f"请在宿主机调整目录所有权/权限，例如 chown -R {uid}:{gid} <config-directory>"
+        )
+    critical_paths = (
+        ("目录", config_dir / "logs", os.R_OK | os.W_OK | os.X_OK),
+        ("目录", config_dir / "backups", os.R_OK | os.W_OK | os.X_OK),
+        ("目录", config_dir / "updater", os.R_OK | os.W_OK | os.X_OK),
+        ("文件", config_dir / "packbreaker.db", os.R_OK | os.W_OK),
+        ("文件", config_dir / "packbreaker.db-wal", os.R_OK | os.W_OK),
+        ("文件", config_dir / "packbreaker.db-shm", os.R_OK | os.W_OK),
+        ("文件", config_dir / "packbreaker.lock", os.R_OK | os.W_OK),
+        ("文件", config_dir / "secret.key", os.R_OK | os.W_OK),
+    )
+    for kind, path, access_mode in critical_paths:
+        try:
+            item_stat = path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RuntimeError(
+                f"配置{kind} {path} 无法安全检查；"
+                f"请在宿主机执行 chown -R {uid}:{gid} <config-directory>"
+            ) from exc
+        expected_type = stat.S_ISDIR if kind == "目录" else stat.S_ISREG
+        if stat.S_ISLNK(item_stat.st_mode) or not expected_type(item_stat.st_mode):
+            raise RuntimeError(f"配置{kind} {path} 类型异常或为符号链接，拒绝启动")
+        if not os.access(path, access_mode):
+            raise RuntimeError(
+                f"配置{kind} {path} 对运行用户 {uid}:{gid} 权限不足；"
+                f"请在宿主机执行 chown -R {uid}:{gid} <config-directory>"
+            )
+
+
 def _drop_privileges_if_needed() -> None:
-    if os.geteuid() != 0:
-        return
     uid = _numeric_id("PUID", 1000)
     gid = _numeric_id("PGID", 1000)
     config_dir = Path(os.environ.get("PACKBREAKER_CONFIG_DIR", "/config"))
+    if os.geteuid() != 0:
+        _validate_non_root_runtime(config_dir, uid, gid)
+        return
     _chown_config_tree(config_dir, uid, gid)
     # Compose's user: "0:0" only applies to this entrypoint. The application
     # subsequently drops to PUID/PGID, so blindly clearing supplementary groups

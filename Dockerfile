@@ -21,7 +21,7 @@ COPY backend ./backend
 RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.11.16-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84 AS runtime
-ARG VERSION=1.0.7
+ARG VERSION=1.0.8
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 LABEL org.opencontainers.image.title="PackBreaker" \
@@ -59,6 +59,6 @@ COPY --chown=packbreaker:packbreaker LICENSE README.md ./
 
 USER packbreaker
 EXPOSE 8000
-VOLUME ["/config", "/data"]
+VOLUME ["/config"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["python", "-m", "backend.app.healthcheck"]
 CMD ["python", "-m", "backend.app.container_entrypoint"]

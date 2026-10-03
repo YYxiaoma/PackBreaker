@@ -88,6 +88,40 @@ def test_monitor_task_definition_persists_v015_defaults_and_cron(tmp_path: Path)
         client.__exit__(None, None, None)
 
 
+def test_directory_task_accepts_absolute_authorized_path_namespace(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        site_id = _create_ready_site(app)
+        incoming = app.state.settings.data_dir / "incoming"
+        output = app.state.settings.data_dir / "output"
+        incoming.mkdir()
+        output.mkdir()
+
+        browsed = client.get(
+            "/api/v1/task-definitions/source-directories",
+            params={"path": app.state.settings.data_dir.as_posix()},
+        )
+        assert browsed.status_code == 200
+        assert any(item["path"] == incoming.as_posix() for item in browsed.json()["entries"])
+
+        payload = _monitor_payload(site_id)
+        payload["source"] = {
+            "kind": "DIRECTORY",
+            "directory_path": incoming.as_posix(),
+        }
+        payload["output_policy"] = {"output_directory": output.as_posix()}
+        created = client.post(
+            "/api/v1/task-definitions",
+            headers=_csrf(client),
+            json=payload,
+        )
+        assert created.status_code == 201
+        assert created.json()["source_directory"] == incoming.as_posix()
+        assert created.json()["output_directory"] == output.as_posix()
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_task_definition_requires_user_name_and_valid_monitor_cron(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:

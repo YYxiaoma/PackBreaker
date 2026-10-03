@@ -48,7 +48,7 @@ const pairs = ref<MovieDedupPair[]>([]);
 const selectedPairIds = ref<string[]>([]);
 const directoryPickerVisible = ref(false);
 const directoryPickerTarget = ref<'source' | 'target'>('source');
-const directoryPath = ref('.');
+const directoryPath = ref('/');
 const directoryEntries = ref<TaskDirectoryEntry[]>([]);
 const directoryLoading = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -277,7 +277,7 @@ async function executeSelected(): Promise<void> {
 
 async function openDirectoryPicker(target: 'source' | 'target'): Promise<void> {
   directoryPickerTarget.value = target;
-  directoryPath.value = target === 'source' ? draft.sourceRoot || '.' : draft.targetRoot || '.';
+  directoryPath.value = target === 'source' ? draft.sourceRoot || '/' : draft.targetRoot || '/';
   directoryPickerVisible.value = true;
   await loadDirectory(directoryPath.value);
 }
@@ -296,13 +296,19 @@ async function loadDirectory(path: string): Promise<void> {
 }
 
 function directoryParent(path: string): string | null {
-  if (path === '.') return null;
-  const parts = path.split('/');
+  if (path === '.' || path === '/') return null;
+  const absolute = path.startsWith('/');
+  const parts = path.split('/').filter(Boolean);
   parts.pop();
-  return parts.length ? parts.join('/') : '.';
+  if (!parts.length) return absolute ? '/' : '.';
+  return `${absolute ? '/' : ''}${parts.join('/')}`;
 }
 
 function selectCurrentDirectory(): void {
+  if (directoryPath.value === '/' || directoryPath.value === '.') {
+    ElMessage.warning('请选择一个已授权挂载目录，不能直接使用路径命名空间根');
+    return;
+  }
   if (directoryPickerTarget.value === 'source') draft.sourceRoot = directoryPath.value;
   else draft.targetRoot = directoryPath.value;
   precheckResult.value = null;
@@ -477,7 +483,7 @@ defineExpose({ openCreate, refresh });
               <div class="directory-field">
                 <el-input
                   v-model="draft.sourceRoot"
-                  placeholder="相对于 /data，例如 movies-main"
+                  placeholder="例如 /downloads/movies-main"
                   @input="precheckResult = null"
                 />
                 <el-button @click="openDirectoryPicker('source')">选择目录</el-button>
@@ -488,7 +494,7 @@ defineExpose({ openCreate, refresh });
               <div class="directory-field">
                 <el-input
                   v-model="draft.targetRoot"
-                  placeholder="相对于 /data，例如 movies-copy"
+                  placeholder="例如 /downloads2/movies-copy"
                   @input="precheckResult = null"
                 />
                 <el-button @click="openDirectoryPicker('target')">选择目录</el-button>
@@ -556,10 +562,10 @@ defineExpose({ openCreate, refresh });
         <div class="directory-toolbar">
           <el-button
             :disabled="directoryParent(directoryPath) === null"
-            @click="loadDirectory(directoryParent(directoryPath) || '.')"
+            @click="loadDirectory(directoryParent(directoryPath) || '/')"
             >返回上级</el-button
           >
-          <code>/data/{{ directoryPath === '.' ? '' : directoryPath }}</code>
+          <code>{{ directoryPath }}</code>
         </div>
         <el-table :data="directoryEntries" height="360">
           <el-table-column label="目录">

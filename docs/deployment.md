@@ -2,7 +2,7 @@
 
 ## 1. 部署目标
 
-v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linux/arm64`（aarch64）两种 Linux Docker 平台；单容器内运行 FastAPI、前端静态资源、调度器和单进程 worker。SQLite、日志、密钥与备份保存在 `/config`。`/data` 仍是目录来源与默认输出目录的管理根；v1.0.5 起，下载器来源也可以通过下载器路径映射授权到 `/downloads`、`/mnt/media` 等其它显式挂载目录。v0.1.9 及更早正式版本仅有 AMD64 镜像，ARM64 没有旧版本可用于跨架构回滚；部署须选择主机对应的平台并记录完整正式 digest。
+v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linux/arm64`（aarch64）两种 Linux Docker 平台；单容器内运行 FastAPI、前端静态资源、调度器和单进程 worker。SQLite、日志、密钥与备份保存在 `/config`。v1.0.8 起，目录来源、输出和影片去重直接使用 `/downloads`、`/mnt/media` 等显式挂载的容器绝对路径；`/data` 仅保留为历史相对任务的兼容根。v0.1.9 及更早正式版本仅有 AMD64 镜像，ARM64 没有旧版本可用于跨架构回滚；部署须选择主机对应的平台并记录完整正式 digest。
 
 首版不支持 Kubernetes、多副本或共享数据库。容器必须使用 init/锁机制确保同一 `/config` 只有一个活动 worker。
 
@@ -16,7 +16,7 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 
 运行镜像要求：
 
-- 镜像默认 `USER packbreaker`（UID/GID 1000）。Compose 为初始化 named `/config` 卷可短暂以 root 运行入口包装器；包装器只递归调整应用专属 `/config` 所有权，再按 `PUID`/`PGID` 永久降权后才导入/启动服务。`/data` 不自动 chown。已发布 v1.0.2 及以前入口会清空全部附加组；v1.0.3 研发候选仅在确有需要且可证实为 Unix socket 时保留挂载的 `docker.sock` 数字组，其余附加组继续清空。
+- 镜像默认 `USER packbreaker`（UID/GID 1000）。v1.0.8 推荐 Compose 直接以最终 `PUID:PGID` 运行，不再要求 `user: "0:0"`。非 root 入口不会 chown `/config` 或清除 Compose 注入的 supplementary groups；当前 UID/GID 与 PUID/PGID 不一致、`/config` 不是安全真实目录或不可读写时直接给出明确启动错误。旧 root-entrypoint 部署仍兼容，但只作为迁移路径保留。
 - 只包含运行依赖，不包含测试工具、源码缓存、Node modules 和真实配置。
 - 基础 Node/Python 镜像使用精确补丁版本 + sha256 digest 固定；正式发布按最终镜像 digest 生成 SPDX JSON SBOM。可移动 `stable` 只作发现通道，不能作为生产部署身份。
 - OCI 标签包含版本、Git revision、构建时间、源码地址和许可证。
@@ -28,11 +28,12 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 | 容器路径 | 内容 | 权限 |
 | --- | --- | --- |
 | `/config` | SQLite、加密密钥文件、日志、备份、运行锁 | 应用用户读写，目录建议 0700 |
-| `/data` | 默认目录来源、输出目录、受控 staging | 按路径策略读/写；不能包含应用秘密 |
+| `/downloads`、`/downloads2` 等显式挂载 | 目录来源、输出、影片去重与下载器可见媒体 | 仅显式 mountpoint 及其安全子路径可进入任务文件操作 |
+| `/data` | 旧相对路径兼容根；新部署不要求挂载 | 仅旧任务/明确挂载时使用 |
 | `/tmp` | 临时解析和导出 | 容器临时空间，定期清理 |
 | `/var/run/docker.sock` | 单容器一键升级或独立 `packbreaker-updater` helper 使用 | 挂载即拥有 Docker 主机级管理权限，只应在受信宿主机启用 |
 
-硬链接要求源与目标在内核允许的同一挂载/文件系统内。目录来源和默认输出仍可使用 `/data`；下载器来源可挂载到任意显式绝对路径，并由对应下载器的路径映射授权。若源、目标跨不同 mount，仍可能产生 `EXDEV`，即使宿主机底层存储相同，因此必须以 PackBreaker 路径诊断结果为准。
+硬链接要求源与目标在内核允许的同一挂载/文件系统内。v1.0.8 起目录来源、输出目录与影片去重 A/B 都可直接使用 `/downloads`、`/downloads2` 等容器显式挂载绝对路径。路径选择器以 `/` 为命名空间根，但 `/` 本身不是授权根；`/config`、系统目录、未挂载绝对路径和符号链接逃逸均失败关闭。若源、目标跨不同 mount，仍可能产生 `EXDEV`，因此必须以真实路径诊断结果为准。
 
 应用启动和保存下载器配置时执行路径诊断：容器可见性、device ID、普通文件、权限、符号链接、创建临时硬链接和清理测试。诊断未通过的映射不能启用自动执行。
 
@@ -54,7 +55,7 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 
 若已有 `/volume2/videos/downloads` → `/downloads`、`/volume3/videos2/downloads` → `/downloads2`，v1.0.5 可以直接把下载器路径映射配置为 `/downloads → /downloads`、`/downloads2 → /downloads2`，无需为了下载器来源校验再追加 `/data/downloads`、`/data/downloads2` 的重复挂载。
 
-`/config` 与已有 `/data` 卷（若使用）仍应保持原身份；本版本不会自动移动媒体、删除卷或改宿主目录。目录来源与默认输出仍使用 `PACKBREAKER_DATA_DIR`，因此是否继续挂载 `/data` 取决于这些功能是否需要访问该数据根。
+`/config` 与已有 `/data` 卷（若使用）仍应保持原身份；v1.0.8 不会自动移动媒体、删除卷或改宿主目录。历史相对路径继续按 `PACKBREAKER_DATA_DIR` 解释，新任务则推荐直接保存显式挂载的绝对容器路径。
 
 原宿主目录分别位于 `/volume2`、`/volume3` 时，不能假定两个目录间允许硬链接。即使在同一个宿主文件系统，Docker 不同 bind mount 之间也可能遇到 `EXDEV`；必须执行受控路径诊断，以真实 hardlink probe 结果决定是否允许执行。
 
@@ -67,7 +68,7 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 | `PACKBREAKER_HOST` | `0.0.0.0` | 监听地址 |
 | `PACKBREAKER_PORT` | `8000` | HTTP 端口 |
 | `PACKBREAKER_CONFIG_DIR` | `/config` | 配置与状态目录 |
-| `PACKBREAKER_DATA_DIR` | `/data` | 数据根目录 |
+| `PACKBREAKER_DATA_DIR` | `/data` | 历史相对任务兼容根；v1.0.8 新绝对路径任务不依赖该单一根 |
 | `PACKBREAKER_FRONTEND_DIR` | 镜像内 `/app/frontend/dist`；源码运行默认空 | 前端静态构建目录；设置时必须为绝对路径且包含 `index.html`/`assets` |
 | `PACKBREAKER_SECRET_KEY_FILE` | `/config/secret.key` | 主密钥文件；首次启动安全生成 |
 | `PACKBREAKER_LOG_LEVEL` | `INFO` | 日志级别 |
@@ -84,13 +85,14 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 仓库根目录 `compose.yaml` 可直接用于本地构建/启动：
 
 ```bash
-export PACKBREAKER_DATA_PATH=/path/to/common/storage
-export PUID=1000  # 可设为 0，以 root UID 运行服务进程
-export PGID=1000  # 可设为 0，以 root GID 运行服务进程
+export PUID=1000
+export PGID=1000
+# 如启用 Web 一键升级：
+# export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
 docker compose up --build -d
 ```
 
-Compose 使用 `packbreaker-config` named volume 保存 SQLite、主密钥和锁，数据根通过 `PACKBREAKER_DATA_PATH` 显式 bind mount 到 `/data`；默认 HTTP 端口为 8000，可用 `PACKBREAKER_HTTP_PORT` 修改宿主机端口。容器设置 `no-new-privileges`，健康检查执行 `python -m backend.app.healthcheck`，只请求本机 `/api/v1/health/ready`。
+Compose 默认直接以 `${PUID}:${PGID}` 运行。named `/config` 卷可直接使用；若换成宿主 bind mount，首次启动前应由管理员把宿主配置目录所有权调整为同一数字 UID/GID。媒体可直接挂到 `/downloads`、`/downloads2` 等任意明确路径；仓库示例中的 `/data` 只保留为旧任务兼容示例，不是新部署要求。默认 HTTP 端口为 8000，可用 `PACKBREAKER_HTTP_PORT` 修改宿主机端口。
 
 生产部署建议把实际运行版本记录为正式 Release manifest 中的不可变 digest。Compose 用户可以选择两种升级方式：不挂载 Docker socket 时由宿主机显式更新 digest；显式挂载 `/var/run/docker.sock` 时允许从 Web 发起一键升级。Web updater 会保留 Compose labels、端口、环境变量、挂载、restart policy 和受支持的单网络配置，但不会修改宿主机上的 `compose.yaml`，因此 Web 升级后必须把 YAML 中的 `image:` 同步到新 Release digest，避免后续 `docker compose up` 按旧声明重新创建旧版本。
 
@@ -100,21 +102,24 @@ Compose 使用 `packbreaker-config` named volume 保存 SQLite、主密钥和锁
 docker run -d \
   --name packbreaker \
   --restart unless-stopped \
-  --user 0:0 \
-  -e PUID=0 \
-  -e PGID=0 \
+  --user 1000:1000 \
+  -e PUID=1000 \
+  -e PGID=1000 \
   -e PACKBREAKER_TIMEZONE="Asia/Shanghai" \
   -p 8000:8000 \
-  -v /root/packbreaker/config:/config \
+  -v /path/to/packbreaker/config:/config \
+  -v /volume2/videos/downloads:/downloads \
+  -v /volume3/videos2/downloads:/downloads2 \
+  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/yyxiaoma/packbreaker:latest
 ```
 
-需要访问媒体目录时，可继续使用 `/data` 作为统一数据根，也可将下载器来源直接挂载为 `/downloads`、`/mnt/media` 等路径并在下载器配置中建立对应映射。`docker.sock` 等价于 Docker 主机级管理权限，因此该易用模式只应部署在受信宿主机；PackBreaker 的升级 API 仍只接受官方 Release 的 `ghcr.io/yyxiaoma/packbreaker@sha256:<digest>`，并只重建名为 `packbreaker` 的受支持单容器拓扑。
+上例的 `--group-add` 只在挂载 docker.sock 时需要；它把宿主 socket 的数字 GID 作为附加组传入，而不是修改 socket 权限。无需 Web 一键升级时，应同时移除 `--group-add` 与 socket 挂载。`docker.sock` 等价于 Docker 主机级管理权限，只应在受信宿主机启用。
 
 若不愿把 Docker socket 授予主容器，仍可采用兼容的最小权限模式：主 PackBreaker 不挂 docker.sock，另外常驻 `packbreaker-updater`，二者共享同一个 `/config`。独立 helper 使用 `/config/updater/updater.sock` + 随机 token 接受受限升级请求。该模式继续受支持，但不再是独立 `docker run` 的默认易用部署。
 
-如果使用自定义 `PUID`/`PGID`，应确保 `/data` 以及所有下载器显式映射目录中需要读取的源文件和允许创建目标链接的目录对该数字身份有适当权限；Web 一键升级还要求主进程身份能够访问挂载的 Docker socket。`0` 是有效值；`PUID=0`、`PGID=0` 时服务进程保持 root 身份运行。入口不会为了方便而修改媒体树所有权。默认仓库 `compose.yaml` 不授予 Docker 管理权限；需要 Web 升级时可由用户显式取消 docker.sock 挂载注释。
+如果使用自定义 `PUID`/`PGID`，应确保 `/config`、媒体源和目标目录都对该数字身份具备所需权限。bind-mounted `/config` 的推荐一次性准备方式是宿主机 `chown -R PUID:PGID <config-dir>`，不要使用 `chmod -R 777`。Web 一键升级还要求通过 `group_add` 访问 docker.sock；updater 会保留容器的 `User`、`GroupAdd`、socket 与媒体挂载。
 
 **v1.0.3 正式版的 socket 权限修复与现场排查：** Compose 的 `user: "0:0"` 并不意味着 Web 进程一直是 root：入口可能根据 `PUID`/`PGID` 降权。已发布的 v1.0.1/v1.0.2 即使挂载 `docker.sock`，也可能因该降权清除 socket 数字组导致一键升级失败；v1.0.3 已在隔离 Docker E2E 中覆盖并修复此种情况，但尚未验证用户 NAS 的实际 socket 模式和 Docker API 策略。可以仅执行以下只读诊断，核对 Docker socket 类型、权限及**实际 Web 进程**的有效身份/附加组（`docker exec` 新建的进程不代表 Web 进程权限）：
 
