@@ -259,9 +259,13 @@ jobs:
           }
           trap cleanup EXIT
           mkdir -m 700 "$sandbox/config" "$sandbox/data"
+          runtime_uid="$(id -u)"
+          runtime_gid="$(id -g)"
+          runtime_user="$runtime_uid:$runtime_gid"
           docker run --detach \
             --name "$container" \
-            --user "$(id -u):$(id -g)" \
+            --env PUID="$runtime_uid" \
+            --env PGID="$runtime_gid" \
             --publish "127.0.0.1:18000:8000" \
             --volume "$sandbox/config:/config" \
             --volume "$sandbox/data:/data" \
@@ -276,9 +280,12 @@ jobs:
             sleep 1
           done
           curl --fail --silent http://127.0.0.1:18000/ | grep --quiet '<div id="app"></div>'
-          test "$(docker image inspect packbreaker:ci --format '{{.Config.User}}')" = "packbreaker"
+          test "$(docker image inspect packbreaker:ci --format '{{.Config.User}}')" = "root"
+          docker exec --user 0:0 \
+            --env PB_EXPECT_UID="$runtime_uid" \
+            --env PB_EXPECT_GID="$runtime_gid" \
+            "$container" python -c 'import os; from pathlib import Path; fields={line.split(":",1)[0]: line.split(":",1)[1].strip().split() for line in Path("/proc/1/status").read_text(encoding="utf-8").splitlines() if ":" in line}; uid=os.environ["PB_EXPECT_UID"]; gid=os.environ["PB_EXPECT_GID"]; assert fields["Uid"] == [uid,uid,uid,uid], fields["Uid"]; assert fields["Gid"] == [gid,gid,gid,gid], fields["Gid"]'
 
-          runtime_user="$(id -u):$(id -g)"
           docker exec --user "$runtime_user" "$container" \
             python -m backend.app.maintenance preflight
           docker exec --user "$runtime_user" "$container" \

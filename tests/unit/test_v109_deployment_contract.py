@@ -55,3 +55,13 @@ def test_ci_exercises_default_root_bootstrap_without_user_or_group_add() -> None
     assert "--group-add" not in probe
     assert "docker exec --interactive --user 0:0" in probe
     assert "Path('/proc/1/status')" in probe
+    assert (
+        'test "$(docker image inspect packbreaker:ci --format \'{{.Config.User}}\')" = "root"' in ci
+    )
+    container_smoke = ci.split("- name: Smoke test image and health endpoint", 1)[1].split(
+        "  updater-e2e:", 1
+    )[0]
+    assert '--env PUID="$runtime_uid"' in container_smoke
+    assert '--env PGID="$runtime_gid"' in container_smoke
+    assert '--user "$(id -u):$(id -g)"' not in container_smoke
+    assert 'Path("/proc/1/status")' in container_smoke
