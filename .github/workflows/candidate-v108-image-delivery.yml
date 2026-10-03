@@ -17,7 +17,7 @@ concurrency:
 
 env:
   CANDIDATE_SHA: 4648fbb24420c10f0d41efbc6c8c71a1d49b2a66
-  CANDIDATE_VERSION: 1.0.6
+  CANDIDATE_VERSION: 1.0.8
   IMAGE: ghcr.io/yyxiaoma/packbreaker
 
 jobs:
