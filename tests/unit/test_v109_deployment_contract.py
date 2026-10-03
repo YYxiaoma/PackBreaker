@@ -65,3 +65,27 @@ def test_ci_exercises_default_root_bootstrap_without_user_or_group_add() -> None
     assert '--env PGID="$runtime_gid"' in container_smoke
     assert '--user "$(id -u):$(id -g)"' not in container_smoke
     assert 'Path("/proc/1/status")' in container_smoke
+
+
+def test_v109_candidate_delivery_is_dual_registry_and_manual_only() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "candidate-v109-image-delivery.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "workflow_dispatch:" in workflow
+    assert "candidate_sha:" in workflow
+    assert "push:" not in workflow.split("permissions:", 1)[0]
+    assert "ghcr.io/yyxiaoma/packbreaker" in workflow
+    assert "docker.io/yyxiaoma/packbreaker" in workflow
+    assert "DOCKERHUB_USERNAME" in workflow
+    assert "DOCKERHUB_TOKEN" in workflow
+    assert "Refuse existing candidate tags in either registry" in workflow
+    assert "Build and push one multi-arch candidate to both registries" in workflow
+    assert "Verify both candidate tags resolve to the same immutable index" in workflow
+    assert "linux/amd64,linux/arm64" in workflow
+    assert ":latest" not in workflow
+    assert ":stable" not in workflow
+    assert "gh release" not in workflow
+    assert 'test "$dockerhub_digest" = "$digest"' in workflow
+    assert '"$DOCKERHUB_IMAGE@$digest" linux/amd64 v1.0.9' in workflow
+    assert '"$DOCKERHUB_IMAGE@$digest" linux/arm64 v1.0.9' in workflow
