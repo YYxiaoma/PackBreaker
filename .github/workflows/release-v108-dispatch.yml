@@ -22,13 +22,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          existing="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha 2>/dev/null || true)"
-          if [ -n "$existing" ]; then
+          if existing_json="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" 2>/dev/null)"; then
+            existing="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["object"]["sha"])' <<<"$existing_json")"
             test "$existing" = "$TARGET_SHA"
           else
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs"               -f ref="refs/tags/$RELEASE_TAG"               -f sha="$TARGET_SHA"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA"
           fi
           actual="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)"
           test "$actual" = "$TARGET_SHA"
-          gh api --method POST             "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches"             -f ref="$RELEASE_TAG"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" -f ref="$RELEASE_TAG"
           echo "Formal release dispatched for $RELEASE_TAG at $TARGET_SHA" >> "$GITHUB_STEP_SUMMARY"
