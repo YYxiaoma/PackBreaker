@@ -507,7 +507,10 @@ if [[ "$baseline_mode" == formal ]]; then
   test "$baseline_version" != "$candidate_version"
 else
   # ARM64 synthetic mode proves only replacement, not cross-version upgrade.
-  transient_start_image="$local_candidate_tag"
+  # Keep the distinct synthetic baseline image identity as the transient start
+  # image; replacing candidate -> the exact same candidate image cannot prove
+  # container replacement semantics.
+  test "$baseline_version" = "$candidate_version"
 fi
 test "$(docker run --rm "$candidate_image" python -c 'from backend.app.versioning import app_version; print(app_version())')" = "$candidate_version"
 
