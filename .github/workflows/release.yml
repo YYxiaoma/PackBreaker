@@ -221,10 +221,12 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          dockerhub_image="docker.io/yyxiaoma/packbreaker"
           version="${GITHUB_REF_NAME#v}"
           created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           mkdir -p release
           echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_image=$dockerhub_image" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "created=$created" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3
@@ -234,14 +236,33 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Require Docker Hub mirror credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DOCKERHUB_USERNAME"
+          test -n "$DOCKERHUB_TOKEN"
+      - uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Refuse an existing immutable version image
         shell: bash
         run: |
           set -euo pipefail
           image="${{ steps.release_meta.outputs.image }}"
+          dockerhub_image="${{ steps.release_meta.outputs.dockerhub_image }}"
           version="${{ steps.release_meta.outputs.version }}"
           if docker buildx imagetools inspect "$image:$version" >/dev/null 2>&1; then
             echo "::error::release image already exists: $image:$version"
+            exit 1
+          fi
+          if docker buildx imagetools inspect "$dockerhub_image:$version" >/dev/null 2>&1; then
+            echo "::error::Docker Hub release image already exists: $dockerhub_image:$version"
             exit 1
           fi
       - name: Build and publish target architecture image index
@@ -254,6 +275,7 @@ jobs:
           provenance: mode=max
           tags: |
             ${{ steps.release_meta.outputs.image }}:${{ steps.release_meta.outputs.version }}
+            ${{ steps.release_meta.outputs.dockerhub_image }}:${{ steps.release_meta.outputs.version }}
           build-args: |
             VERSION=${{ steps.release_meta.outputs.version }}
             VCS_REF=${{ github.sha }}
@@ -271,6 +293,15 @@ jobs:
             --tag "$GITHUB_REF_NAME" \
             --commit "$GITHUB_SHA" \
             "${platform_args[@]}"
+      - name: Verify Docker Hub immutable mirror matches the GHCR release digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ steps.build.outputs.digest }}"
+          actual="$(docker buildx imagetools inspect \
+            "${{ steps.release_meta.outputs.dockerhub_image }}:${{ steps.release_meta.outputs.version }}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$actual" = "$expected"
       - name: Exercise immutable published AMD64 image in isolated runtime
         shell: bash
         run: |
@@ -379,6 +410,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Ensure native runtime-verified published digest still matches the version tag
         shell: bash
         run: |
@@ -476,12 +512,29 @@ jobs:
             --tag "${{ needs.release.outputs.image }}:stable" \
             --tag "${{ needs.release.outputs.image }}:latest" \
             "${{ needs.release.outputs.image }}@${{ needs.release.outputs.digest }}"
+          dockerhub_image="docker.io/yyxiaoma/packbreaker"
+          version="${{ needs.release.outputs.version }}"
+          dockerhub_version_digest="$(docker buildx imagetools inspect \
+            "$dockerhub_image:$version" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$dockerhub_version_digest" = "${{ needs.release.outputs.digest }}"
+          docker buildx imagetools create \
+            --tag "$dockerhub_image:stable" \
+            --tag "$dockerhub_image:latest" \
+            "$dockerhub_image:$version"
           for channel in stable latest; do
             actual="$(docker buildx imagetools inspect \
               "${{ needs.release.outputs.image }}:$channel" \
               --format '{{json .Manifest.Digest}}' | tr -d '"')"
             if [ "$actual" != "${{ needs.release.outputs.digest }}" ]; then
               echo "::error::$channel channel digest mismatch; manual reconciliation required"
+              exit 1
+            fi
+            dockerhub_actual="$(docker buildx imagetools inspect \
+              "$dockerhub_image:$channel" \
+              --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            if [ "$dockerhub_actual" != "${{ needs.release.outputs.digest }}" ]; then
+              echo "::error::Docker Hub $channel channel digest mismatch; manual reconciliation required"
               exit 1
             fi
           done

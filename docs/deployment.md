@@ -16,12 +16,12 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 
 运行镜像要求：
 
-- 镜像默认 `USER packbreaker`（UID/GID 1000）。v1.0.8 推荐 Compose 直接以最终 `PUID:PGID` 运行，不再要求 `user: "0:0"`。非 root 入口不会 chown `/config` 或清除 Compose 注入的 supplementary groups；当前 UID/GID 与 PUID/PGID 不一致、`/config` 不是安全真实目录或不可读写时直接给出明确启动错误。旧 root-entrypoint 部署仍兼容，但只作为迁移路径保留。
+- v1.0.9 镜像默认以 root 进入 `container_entrypoint`，但 root 只用于读取 `PUID`/`PGID`、初始化 `/config` 和识别 docker.sock supplementary GID；应用服务在 import/start 前必须永久 `setgid`/`setuid` 到最终身份。媒体挂载和宿主 docker.sock 绝不自动 chmod/chown。显式 Compose `user:` 仍兼容旧部署，但不再是官方默认。
 - 只包含运行依赖，不包含测试工具、源码缓存、Node modules 和真实配置。
 - 基础 Node/Python 镜像使用精确补丁版本 + sha256 digest 固定；正式发布按最终镜像 digest 生成 SPDX JSON SBOM。可移动 `stable` 只作发现通道，不能作为生产部署身份。
 - OCI 标签包含版本、Git revision、构建时间、源码地址和许可证。
 - 入口先验证配置和迁移，再启动应用；迁移失败不得启动 worker。
-- tag 发布由 `.github/workflows/release.yml` 生成最终 GHCR image digest、SPDX JSON SBOM、release manifest、`SHA256SUMS` 与 GitHub Release notes；生产部署记录必须使用 release manifest 的完整 `<image>@sha256:<digest>`。
+- tag 发布由 `.github/workflows/release.yml` 生成最终 GHCR image digest、SPDX JSON SBOM、release manifest、`SHA256SUMS` 与 GitHub Release notes，并把同一版本/同一多架构 manifest 同步发布到 Docker Hub `yyxiaoma/packbreaker`。GHCR 仍是 release manifest 和生产不可变身份的主源。
 
 ## 3. 目录与权限
 
@@ -87,12 +87,10 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 ```bash
 export PUID=1000
 export PGID=1000
-# 如启用 Web 一键升级：
-# export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
 docker compose up --build -d
 ```
 
-Compose 默认直接以 `${PUID}:${PGID}` 运行。named `/config` 卷可直接使用；若换成宿主 bind mount，首次启动前应由管理员把宿主配置目录所有权调整为同一数字 UID/GID。媒体可直接挂到 `/downloads`、`/downloads2` 等任意明确路径；仓库示例中的 `/data` 只保留为旧任务兼容示例，不是新部署要求。默认 HTTP 端口为 8000，可用 `PACKBREAKER_HTTP_PORT` 修改宿主机端口。
+Compose 默认不声明 `user:`。镜像入口读取 `${PUID}:${PGID}`，完成 `/config` 初始化后永久降权运行应用；named `/config` 卷可直接使用，宿主 bind mount 也只会针对 `/config` 调整所有权。媒体可直接挂到 `/downloads`、`/downloads2` 等任意明确路径，且不会被入口修改权限；仓库示例中的 `/data` 只保留为旧任务兼容示例。默认 HTTP 端口为 8000，可用 `PACKBREAKER_HTTP_PORT` 修改宿主机端口。
 
 生产部署建议把实际运行版本记录为正式 Release manifest 中的不可变 digest。Compose 用户可以选择两种升级方式：不挂载 Docker socket 时由宿主机显式更新 digest；显式挂载 `/var/run/docker.sock` 时允许从 Web 发起一键升级。Web updater 会保留 Compose labels、端口、环境变量、挂载、restart policy 和受支持的单网络配置，但不会修改宿主机上的 `compose.yaml`，因此 Web 升级后必须把 YAML 中的 `image:` 同步到新 Release digest，避免后续 `docker compose up` 按旧声明重新创建旧版本。
 
@@ -102,7 +100,6 @@ Compose 默认直接以 `${PUID}:${PGID}` 运行。named `/config` 卷可直接�
 docker run -d \
   --name packbreaker \
   --restart unless-stopped \
-  --user 1000:1000 \
   -e PUID=1000 \
   -e PGID=1000 \
   -e PACKBREAKER_TIMEZONE="Asia/Shanghai" \
@@ -110,16 +107,15 @@ docker run -d \
   -v /path/to/packbreaker/config:/config \
   -v /volume2/videos/downloads:/downloads \
   -v /volume3/videos2/downloads:/downloads2 \
-  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/yyxiaoma/packbreaker:latest
+  yyxiaoma/packbreaker:latest
 ```
 
-上例的 `--group-add` 只在挂载 docker.sock 时需要；它把宿主 socket 的数字 GID 作为附加组传入，而不是修改 socket 权限。无需 Web 一键升级时，应同时移除 `--group-add` 与 socket 挂载。`docker.sock` 等价于 Docker 主机级管理权限，只应在受信宿主机启用。
+v1.0.9 入口会在 root 初始化阶段读取已挂载 docker.sock 的数字 GID，并只在其组权限允许读写时保留为应用 supplementary group，因此不再要求用户手动 `--group-add`。入口不会修改 socket 权限。无需 Web 一键升级时应移除 socket 挂载；`docker.sock` 等价于 Docker 主机级管理权限，只应在受信宿主机启用。
 
 若不愿把 Docker socket 授予主容器，仍可采用兼容的最小权限模式：主 PackBreaker 不挂 docker.sock，另外常驻 `packbreaker-updater`，二者共享同一个 `/config`。独立 helper 使用 `/config/updater/updater.sock` + 随机 token 接受受限升级请求。该模式继续受支持，但不再是独立 `docker run` 的默认易用部署。
 
-如果使用自定义 `PUID`/`PGID`，应确保 `/config`、媒体源和目标目录都对该数字身份具备所需权限。bind-mounted `/config` 的推荐一次性准备方式是宿主机 `chown -R PUID:PGID <config-dir>`，不要使用 `chmod -R 777`。Web 一键升级还要求通过 `group_add` 访问 docker.sock；updater 会保留容器的 `User`、`GroupAdd`、socket 与媒体挂载。
+如果使用自定义 `PUID`/`PGID`，媒体源和目标目录仍必须由宿主机管理员赋予该数字身份所需权限；PackBreaker 只会初始化 `/config`，不会递归修改媒体目录。不要使用 `chmod -R 777`。Web 一键升级时 updater 会保留 socket 与媒体挂载；新式 v1.0.9 部署不需要额外 `User`/`GroupAdd` 覆盖。
 
 **v1.0.3 正式版的 socket 权限修复与现场排查：** Compose 的 `user: "0:0"` 并不意味着 Web 进程一直是 root：入口可能根据 `PUID`/`PGID` 降权。已发布的 v1.0.1/v1.0.2 即使挂载 `docker.sock`，也可能因该降权清除 socket 数字组导致一键升级失败；v1.0.3 已在隔离 Docker E2E 中覆盖并修复此种情况，但尚未验证用户 NAS 的实际 socket 模式和 Docker API 策略。可以仅执行以下只读诊断，核对 Docker socket 类型、权限及**实际 Web 进程**的有效身份/附加组（`docker exec` 新建的进程不代表 Web 进程权限）：
 

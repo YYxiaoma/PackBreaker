@@ -52,6 +52,8 @@ jobs:
           python scripts/check_candidate_image_identity.py \
             --image packbreaker:ci-arm64 \
             --platform linux/arm64 --commit "$GITHUB_SHA"
+      - name: Exercise v1.0.9 default PUID/PGID bootstrap on native ARM64
+        run: bash scripts/check-v109-default-entrypoint.sh packbreaker:ci-arm64
       - name: Exercise native ARM64 container startup and backup
         run: |
           set -euo pipefail

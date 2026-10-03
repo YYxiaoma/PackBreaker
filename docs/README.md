@@ -51,6 +51,7 @@
 | [v1.0.7 正式发布记录](./v1.0.7-release.md) | 正式 Tag、双架构不可变 digest、影片去重 NAS 验收、升级/回滚、供应链资产与下版基线 | v1.0.7 |
 | [v1.0.8 研发设计](./v1.0.8-development.md) | 去除单一 /data 根限制、显式挂载绝对路径与直接非 root 运行模型 | v1.0.8 |
 | [v1.0.8 正式发布记录](./v1.0.8-release.md) | 正式 Tag、双架构不可变 digest、非 root/绝对挂载路径、升级/回滚、供应链资产与下版基线 | v1.0.8 |
+| [v1.0.9 研发设计](./v1.0.9-development.md) | GHCR + Docker Hub 双 Registry 发布，以及只配置 PUID/PGID 的自动降权启动模型 | v1.0.9 |
 | [部署、运维与安全](./deployment.md) | 约定容器、卷、备份、升级和密钥管理 | M1/M6 |
 | [本地开发指南](./local-development.md) | 统一工具链、命令、配置和日常工作流 | M1 |
 | [研发路线图](./development-roadmap.md) | 将 M0-M6 拆成可交付工作包与退出条件 | 全阶段 |

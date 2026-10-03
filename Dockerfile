@@ -21,7 +21,7 @@ COPY backend ./backend
 RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.11.16-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84 AS runtime
-ARG VERSION=1.0.8
+ARG VERSION=1.0.9
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 LABEL org.opencontainers.image.title="PackBreaker" \
@@ -57,8 +57,11 @@ COPY --chown=packbreaker:packbreaker docs ./docs
 COPY --from=frontend-builder --chown=packbreaker:packbreaker /build/frontend/dist ./frontend/dist
 COPY --chown=packbreaker:packbreaker LICENSE README.md ./
 
-USER packbreaker
+# v1.0.9: PID 1 starts as root only long enough to initialize /config,
+# resolve the docker.sock supplementary GID and permanently drop to PUID/PGID
+# before importing the application server.
+USER root
 EXPOSE 8000
 VOLUME ["/config"]
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["python", "-m", "backend.app.healthcheck"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["python", "-m", "backend.app.container_healthcheck"]
 CMD ["python", "-m", "backend.app.container_entrypoint"]

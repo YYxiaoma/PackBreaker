@@ -20,6 +20,12 @@ _IMAGE_REPOSITORY_PATTERN = (
 )
 _DOCKER_DIGEST_IMAGE = re.compile(rf"^(?P<repo>{_IMAGE_REPOSITORY_PATTERN})@sha256:[0-9a-f]{{64}}$")
 _IMAGE_REPOSITORY = re.compile(rf"^{_IMAGE_REPOSITORY_PATTERN}$")
+_OFFICIAL_CURRENT_IMAGE_ALIASES: dict[str, tuple[str, ...]] = {
+    "ghcr.io/yyxiaoma/packbreaker": (
+        "yyxiaoma/packbreaker",
+        "docker.io/yyxiaoma/packbreaker",
+    )
+}
 _HOST_CONFIG_KEYS = (
     "Binds",
     "Mounts",
@@ -73,6 +79,22 @@ class DockerUpdaterError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(message)
+
+
+def _image_reference_matches_repository(reference: str, repository: str) -> bool:
+    normalized = reference.lower()
+    repo = repository.lower()
+    return (
+        normalized == repo or normalized.startswith(f"{repo}:") or normalized.startswith(f"{repo}@")
+    )
+
+
+def _current_image_is_trusted(reference: str, allowed_image: str) -> bool:
+    repositories = (
+        allowed_image.lower(),
+        *_OFFICIAL_CURRENT_IMAGE_ALIASES.get(allowed_image.lower(), ()),
+    )
+    return any(_image_reference_matches_repository(reference, repo) for repo in repositories)
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,12 +390,7 @@ def build_replacement_plan(
             "显式静态 MAC 地址无法在保留旧容器用于回滚时安全复用",
         )
     old_image_reference = _required_string(config, "Image", "当前镜像引用无效")
-    normalized_old = old_image_reference.lower()
-    if not (
-        normalized_old == allowed_image.lower()
-        or normalized_old.startswith(f"{allowed_image.lower()}:")
-        or normalized_old.startswith(f"{allowed_image.lower()}@")
-    ):
+    if not _current_image_is_trusted(old_image_reference, allowed_image):
         raise DockerUpdaterError(
             "UPGRADE_CURRENT_IMAGE_UNTRUSTED", "当前容器不是官方 PackBreaker 镜像"
         )

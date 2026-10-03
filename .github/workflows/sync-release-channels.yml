@@ -27,6 +27,7 @@ jobs:
           baseline_tag="$(python -c 'import json,sys; print(json.load(sys.stdin)["tag"])' <<<"$baseline_json")"
           image="$(python -c 'import json,sys; print(json.load(sys.stdin)["image"])' <<<"$baseline_json")"
           digest="$(python -c 'import json,sys; print(json.load(sys.stdin)["image_digest"])' <<<"$baseline_json")"
+          version="$(python -c 'import json,sys; print(json.load(sys.stdin)["version"])' <<<"$baseline_json")"
           latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
           if [ "$baseline_tag" != "$latest_tag" ]; then
             echo "::error::release baseline $baseline_tag is not latest published release $latest_tag"
@@ -34,22 +35,52 @@ jobs:
           fi
           echo "image=$image" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_image=docker.io/yyxiaoma/packbreaker" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Require Docker Hub mirror credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DOCKERHUB_USERNAME"
+          test -n "$DOCKERHUB_TOKEN"
+      - uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Sync stable and latest to the formal release digest
         shell: bash
         run: |
           set -euo pipefail
           image="${{ steps.release.outputs.image }}"
           digest="${{ steps.release.outputs.digest }}"
+          version="${{ steps.release.outputs.version }}"
+          dockerhub_image="${{ steps.release.outputs.dockerhub_image }}"
+          dockerhub_version_digest="$(docker buildx imagetools inspect \
+            "$dockerhub_image:$version" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$dockerhub_version_digest" = "$digest"
           docker buildx imagetools create \
             --tag "$image:stable" \
             --tag "$image:latest" \
             "$image@$digest"
+          docker buildx imagetools create \
+            --tag "$dockerhub_image:stable" \
+            --tag "$dockerhub_image:latest" \
+            "$dockerhub_image:$version"
           stable_digest="$(docker buildx imagetools inspect "$image:stable" | awk '/^Digest:/ {print $2; exit}')"
           latest_digest="$(docker buildx imagetools inspect "$image:latest" | awk '/^Digest:/ {print $2; exit}')"
           test "$stable_digest" = "$digest"
           test "$latest_digest" = "$digest"
+          dockerhub_stable_digest="$(docker buildx imagetools inspect "$dockerhub_image:stable" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          dockerhub_latest_digest="$(docker buildx imagetools inspect "$dockerhub_image:latest" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          test "$dockerhub_stable_digest" = "$digest"
+          test "$dockerhub_latest_digest" = "$digest"

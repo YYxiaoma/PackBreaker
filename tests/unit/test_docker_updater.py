@@ -355,6 +355,46 @@ def test_replacement_plan_accepts_private_registry_with_port_for_isolated_e2e() 
     assert plan.create_payload["Image"] == target
 
 
+@pytest.mark.parametrize(
+    "current_image",
+    [
+        "yyxiaoma/packbreaker:latest",
+        "docker.io/yyxiaoma/packbreaker:1.0.9",
+    ],
+)
+def test_replacement_plan_accepts_official_docker_hub_mirror_as_current_image(
+    current_image: str,
+) -> None:
+    container = _container()
+    container["Config"]["Image"] = current_image
+
+    plan = build_replacement_plan(
+        container,
+        _old_image(),
+        target_image=_TARGET,
+        allowed_image=_OFFICIAL,
+    )
+
+    assert plan.old_image_reference == current_image
+    assert plan.create_payload["Image"] == _TARGET
+
+
+def test_replacement_plan_still_requires_ghcr_release_digest_as_upgrade_target() -> None:
+    container = _container()
+    container["Config"]["Image"] = "yyxiaoma/packbreaker:latest"
+    dockerhub_target = "docker.io/yyxiaoma/packbreaker@sha256:" + "8" * 64
+
+    with pytest.raises(DockerUpdaterError) as exc_info:
+        build_replacement_plan(
+            container,
+            _old_image(),
+            target_image=dockerhub_target,
+            allowed_image=_OFFICIAL,
+        )
+
+    assert exc_info.value.code == "UPGRADE_TARGET_IMAGE_UNTRUSTED"
+
+
 def test_replacement_plan_rejects_invalid_private_registry_port() -> None:
     repository = "127.0.0.1:99999/packbreaker"
     container = _container()

@@ -21,6 +21,7 @@ on:
       - "scripts/check-updater-e2e.sh"
       - "scripts/check-release-upgrade.sh"
       - "scripts/check-immutable-image-runtime.sh"
+      - "scripts/check-v109-default-entrypoint.sh"
       - "scripts/check_candidate_image_identity.py"
       - "scripts/ci_release_relation.py"
       - "scripts/verify_release_platforms.py"
@@ -136,6 +137,9 @@ jobs:
           python3 scripts/check_candidate_image_identity.py \
             --image packbreaker:candidate-docker-e2e \
             --platform linux/amd64 --commit "$GITHUB_SHA"
+
+      - name: Exercise v1.0.9 default PUID/PGID bootstrap without user or group_add
+        run: bash scripts/check-v109-default-entrypoint.sh packbreaker:candidate-docker-e2e
 
       - name: Exercise previous-release upgrade and rollback
         if: steps.release_relation.outputs.candidate_newer == 'true'

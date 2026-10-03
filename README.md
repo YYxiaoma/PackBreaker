@@ -298,10 +298,9 @@ PackBreaker 对“自动化”采用偏保守的设计：
 ```yaml
 services:
   packbreaker:
-    image: ghcr.io/yyxiaoma/packbreaker:latest
+    image: yyxiaoma/packbreaker:latest
     container_name: packbreaker
     restart: unless-stopped
-    user: "${PUID:-1000}:${PGID:-1000}"
     ports:
       - "8000:8000"
     environment:
@@ -315,12 +314,10 @@ services:
       - /volume3/videos2/downloads:/downloads2
       # 旧任务仍兼容显式 /data 挂载，但新部署不再要求 /data。
       # - /path/to/common/storage:/data
-      # 可选：需要 Web 一键升级时，同时挂载 socket 并配置下面的 group_add。
+      # 可选：需要 Web 一键升级时挂载 socket；v1.0.9 会自动识别其数字 GID。
       # - /var/run/docker.sock:/var/run/docker.sock
-    # group_add:
-    #   - "${DOCKER_GID}"
     healthcheck:
-      test: ["CMD", "python", "-m", "backend.app.healthcheck"]
+      test: ["CMD", "python", "-m", "backend.app.container_healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -331,16 +328,12 @@ services:
 
 v1.0.8 起，路径选择器以容器 `/` 为命名空间根，只展示 PackBreaker 可证明的显式目录挂载；`/downloads`、`/downloads2` 可直接用于目录拆包、输出和影片去重，不需要重复挂到 `/data`。容器根 `/` 本身、`/config` 和系统目录不属于媒体任务授权根。历史相对路径继续按 `PACKBREAKER_DATA_DIR=/data` 解释。
 
+v1.0.9 起，Compose 不再要求 `user:` 或 `group_add:`。容器入口读取 `PUID`/`PGID`，只对 `/config` 做必要初始化，识别已挂载 docker.sock 的可用组后，在导入应用服务前永久降权。媒体目录和 docker.sock 本身不会被 chmod/chown。Docker Hub `yyxiaoma/packbreaker` 与 GHCR `ghcr.io/yyxiaoma/packbreaker` 同步发布相同版本；GHCR 仍作为正式供应链主源。
+
 直接使用数字 UID/GID 时，宿主 bind 的配置目录必须先归属同一身份，例如 Synology：
 
 ```bash
 sudo chown -R 1026:100 /volume1/docker/packbreaker/config
-```
-
-若启用 Web 一键升级，先读取 docker.sock 的数字 GID，再传给 Compose：
-
-```bash
-export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
 ```
 
 启动：
