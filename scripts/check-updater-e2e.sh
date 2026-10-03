@@ -52,6 +52,7 @@ transient_start_image="$local_baseline_tag"
 transient_start_version="$baseline_version"
 transient_start_image_id=""
 transient_original_data_volume=""
+transient_baseline_declares_data_volume=0
 
 cleanup() {
   docker ps -aq --filter "name=$suffix" | xargs -r docker rm --force >/dev/null 2>&1 || true
@@ -373,23 +374,24 @@ prepare_transient_case() {
   printf "standalone-downloads\n" > "$transient_downloads/.packbreaker-e2e-standalone-probe"
   printf "standalone-downloads2\n" > "$transient_downloads2/.packbreaker-e2e-standalone-probe"
   # The already-published v1.0.3 launcher does not contain the future volume
-  # recovery fix: a v1.0.3 -> candidate upgrade requires explicitly mounted
-  # /data. Later formal baselines still prove preservation of their historical
-  # anonymous /data volume. The synthetic ARM64 case starts from the current
-  # candidate image, which no longer declares VOLUME /data, so it must prove
-  # preservation of only the explicit nested binds without inventing a root
-  # /data volume.
-  local transient_mount_args=()
+  # recovery fix, so v1.0.3 -> candidate still requires an explicit /data bind.
+  # For every later baseline, inspect the published image config instead of
+  # inferring VOLUME /data from its version number. v1.0.8 deliberately no
+  # longer declares /data, while older formal images may still have an
+  # anonymous /data volume that must be preserved exactly.
+  transient_baseline_declares_data_volume="$(
+    docker image inspect "$transient_start_image" --format '{{json .Config.Volumes}}' |
+      python3 -c 'import json,sys; volumes=json.load(sys.stdin) or {}; print(1 if "/data" in volumes else 0)'
+  )"
+  local transient_mount_args=(
+    --volume "$transient_data/downloads:/data/downloads"
+    --volume "$transient_data/downloads2:/data/downloads2"
+  )
+  printf "isolated-downloads\n" > "$transient_data/downloads/.packbreaker-e2e-bind-probe"
+  printf "isolated-downloads2\n" > "$transient_data/downloads2/.packbreaker-e2e-bind-probe"
   if [[ "$baseline_mode" == formal && "$baseline_version" == 1.0.3 ]]; then
     transient_mount_args=(--volume "$transient_data:/data")
     printf "isolated-persistent-volume\n" > "$transient_data/.packbreaker-e2e-volume-probe"
-  else
-    transient_mount_args=(
-      --volume "$transient_data/downloads:/data/downloads"
-      --volume "$transient_data/downloads2:/data/downloads2"
-    )
-    printf "isolated-downloads\n" > "$transient_data/downloads/.packbreaker-e2e-bind-probe"
-    printf "isolated-downloads2\n" > "$transient_data/downloads2/.packbreaker-e2e-bind-probe"
   fi
 
   docker run --detach \
@@ -420,12 +422,14 @@ prepare_transient_case() {
   transient_start_image_id="$(docker inspect "$transient_main" --format '{{.Image}}')"
   test "$transient_start_image_id" = "$(docker image inspect "$transient_start_image" --format '{{.Id}}')"
   test "$(docker exec --user 0:0 "$transient_main" python -c 'from backend.app.versioning import app_version; print(app_version())')" = "$transient_start_version"
-  if [[ "$baseline_mode" == formal && "$baseline_version" != 1.0.3 ]]; then
+  if [[ "$baseline_mode" == formal && "$baseline_version" == 1.0.3 ]]; then
+    test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}')" = "$transient_data"
+  elif [[ "$transient_baseline_declares_data_volume" == 1 ]]; then
     transient_original_data_volume="$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')"
     test -n "$transient_original_data_volume"
     test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}{{end}}{{end}}')" = volume
     docker exec --user 0:0 "$transient_main" python -c 'from pathlib import Path; Path("/data/.packbreaker-e2e-volume-probe").write_text("isolated-persistent-volume\n")'
-  elif [[ "$baseline_mode" == --synthetic-arm64-baseline ]]; then
+  else
     test -z "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')"
     test -z "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}')"
   fi
@@ -611,12 +615,12 @@ docker exec --user 0:0 "$transient_main" python -c 'from pathlib import Path; as
 if [[ "$baseline_mode" == formal && "$baseline_version" == 1.0.3 ]]; then
   test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}')" = "$transient_data"
   docker exec --user 0:0 "$transient_main" python -c 'from pathlib import Path; assert Path("/data/.packbreaker-e2e-volume-probe").read_text() == "isolated-persistent-volume\n"'
-elif [[ "$baseline_mode" == formal ]]; then
-  test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')" = "$transient_original_data_volume"
-  test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data/downloads"}}{{.Source}}{{end}}{{end}}')" = "$transient_data/downloads"
-  test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data/downloads2"}}{{.Source}}{{end}}{{end}}')" = "$transient_data/downloads2"
-  docker exec --user 0:0 "$transient_main" python -c 'from pathlib import Path; assert Path("/data/.packbreaker-e2e-volume-probe").read_text() == "isolated-persistent-volume\n"; assert Path("/data/downloads/.packbreaker-e2e-bind-probe").read_text() == "isolated-downloads\n"; assert Path("/data/downloads2/.packbreaker-e2e-bind-probe").read_text() == "isolated-downloads2\n"'
-else
+  elif [[ "$transient_baseline_declares_data_volume" == 1 ]]; then
+    test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')" = "$transient_original_data_volume"
+    test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data/downloads"}}{{.Source}}{{end}}{{end}}')" = "$transient_data/downloads"
+    test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data/downloads2"}}{{.Source}}{{end}}{{end}}')" = "$transient_data/downloads2"
+    docker exec --user 0:0 "$transient_main" python -c 'from pathlib import Path; assert Path("/data/.packbreaker-e2e-volume-probe").read_text() == "isolated-persistent-volume\n"; assert Path("/data/downloads/.packbreaker-e2e-bind-probe").read_text() == "isolated-downloads\n"; assert Path("/data/downloads2/.packbreaker-e2e-bind-probe").read_text() == "isolated-downloads2\n"'
+  else
   test -z "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')"
   test -z "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}')"
   test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/data/downloads"}}{{.Source}}{{end}}{{end}}')" = "$transient_data/downloads"
