@@ -153,6 +153,28 @@ def test_non_root_runtime_keeps_compose_identity_and_supplementary_groups(
     assert calls == []
 
 
+def test_non_root_runtime_defaults_missing_puid_pgid_to_current_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config"
+    config.mkdir()
+    monkeypatch.setenv("PACKBREAKER_CONFIG_DIR", str(config))
+    monkeypatch.delenv("PUID", raising=False)
+    monkeypatch.delenv("PGID", raising=False)
+    monkeypatch.setattr(os, "geteuid", lambda: 1026)
+    monkeypatch.setattr(os, "getegid", lambda: 100)
+    monkeypatch.setattr(os, "access", lambda *_args: True)
+    calls: list[str] = []
+    monkeypatch.setattr(entrypoint, "_chown_config_tree", lambda *_args: calls.append("chown"))
+    monkeypatch.setattr(os, "setgroups", lambda _v: calls.append("setgroups"))
+    monkeypatch.setattr(os, "setgid", lambda _v: calls.append("setgid"))
+    monkeypatch.setattr(os, "setuid", lambda _v: calls.append("setuid"))
+
+    entrypoint._drop_privileges_if_needed()
+
+    assert calls == []
+
+
 def test_non_root_runtime_rejects_uid_gid_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

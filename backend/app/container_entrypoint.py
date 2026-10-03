@@ -101,12 +101,15 @@ def _validate_non_root_runtime(config_dir: Path, uid: int, gid: int) -> None:
 
 
 def _drop_privileges_if_needed() -> None:
-    uid = _numeric_id("PUID", 1000)
-    gid = _numeric_id("PGID", 1000)
     config_dir = Path(os.environ.get("PACKBREAKER_CONFIG_DIR", "/config"))
-    if os.geteuid() != 0:
+    current_uid = os.geteuid()
+    if current_uid != 0:
+        uid = _numeric_id("PUID", current_uid)
+        gid = _numeric_id("PGID", os.getegid())
         _validate_non_root_runtime(config_dir, uid, gid)
         return
+    uid = _numeric_id("PUID", 1000)
+    gid = _numeric_id("PGID", 1000)
     _chown_config_tree(config_dir, uid, gid)
     # Compose's user: "0:0" only applies to this entrypoint. The application
     # subsequently drops to PUID/PGID, so blindly clearing supplementary groups
