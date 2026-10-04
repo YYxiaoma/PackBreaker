@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Isolated, no-port runtime smoke test of an immutable GHCR release image.
+# Isolated, no-port runtime smoke test of an immutable trusted-registry release image.
 # The current Release job runs amd64 natively and arm64 through QEMU; its
 # native ARM64 candidate job remains a separate gate.
 set -euo pipefail
 
 if [[ "$#" -ne 4 ]]; then
-  echo "Usage: check-immutable-image-runtime.sh <ghcr-image@sha256:digest> <linux/amd64|linux/arm64> <vX.Y.Z> <40-char-commit>" >&2
+  echo "Usage: check-immutable-image-runtime.sh <trusted-image@sha256:digest> <linux/amd64|linux/arm64> <vX.Y.Z> <40-char-commit>" >&2
   exit 2
 fi
 image="$1"
 target_platform="$2"
 release_tag="$3"
 release_commit="$4"
-if [[ ! "$image" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || \
+if [[ ! "$image" =~ ^(ghcr\.io|docker\.io)/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || \
    [[ "$image" == *..* ]] || \
    [[ "$target_platform" != linux/amd64 && "$target_platform" != linux/arm64 ]] || \
    [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
@@ -86,4 +86,4 @@ docker exec --user "$(id -u):$(id -g)" "$container" \
   python -m backend.app.maintenance backup >/dev/null
 mapfile -t backups < <(find "$sandbox/config/backups" -maxdepth 1 -type f -name 'packbreaker-*.db' -printf '%f\n')
 test "${#backups[@]}" -eq 1
-echo "Immutable GHCR image runtime smoke passed: $target_platform $release_tag (ephemeral config and database)"
+echo "Immutable image runtime smoke passed: $target_platform $release_tag (ephemeral config and database)"

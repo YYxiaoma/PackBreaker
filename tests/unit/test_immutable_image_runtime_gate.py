@@ -8,6 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check-immutable-image-runtime.sh"
 IMAGE = "ghcr.io/yyxiaoma/packbreaker@sha256:" + "a" * 64
+DOCKERHUB_IMAGE = "docker.io/yyxiaoma01/packbreaker@sha256:" + "a" * 64
 COMMIT = "b" * 40
 
 
@@ -18,6 +19,7 @@ COMMIT = "b" * 40
         ["ghcr.io/yyxiaoma/packbreaker:latest", "linux/amd64", "v1.0.0", COMMIT],
         ["ghcr.io/yyxiaoma/packbreaker@sha256:short", "linux/amd64", "v1.0.0", COMMIT],
         ["ghcr.io/yyxiaoma/../packbreaker@sha256:" + "a" * 64, "linux/amd64", "v1.0.0", COMMIT],
+        ["quay.io/yyxiaoma/packbreaker@sha256:" + "a" * 64, "linux/amd64", "v1.0.0", COMMIT],
         [IMAGE, "linux/arm/v7", "v1.0.0", COMMIT],
         [IMAGE, "linux/amd64", "0.1.9", COMMIT],
         [IMAGE, "linux/amd64", "v1.0.0", "unknown"],
@@ -38,6 +40,13 @@ def test_immutable_runtime_gate_rejects_invalid_inputs_before_any_docker(args: l
 
 def test_immutable_runtime_gate_script_syntax() -> None:
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True, timeout=8)
+
+
+def test_immutable_runtime_gate_allows_only_ghcr_and_docker_hub_registries() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert "ghcr\\.io|docker\\.io" in script
+    assert "quay\\.io" not in script
+    assert DOCKERHUB_IMAGE.startswith("docker.io/yyxiaoma01/packbreaker@sha256:")
 
 
 def test_immutable_runtime_gate_uses_temporary_data_and_no_host_ports() -> None:
