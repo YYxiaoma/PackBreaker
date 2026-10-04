@@ -52,8 +52,7 @@ jobs:
               echo "Docker Hub repository yyxiaoma/packbreaker exists and is accessible."
               ;;
             404)
-              echo "::error::Docker Hub repository yyxiaoma/packbreaker does not exist yet."
-              exit 1
+              echo "Docker Hub repository yyxiaoma/packbreaker does not exist yet; first authenticated push may create it automatically."
               ;;
             401|403)
               echo "::error::Docker Hub credentials cannot access yyxiaoma/packbreaker (HTTP $code)."
