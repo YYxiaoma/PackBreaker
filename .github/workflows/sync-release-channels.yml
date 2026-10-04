@@ -36,7 +36,7 @@ jobs:
           echo "image=$image" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "dockerhub_image=docker.io/yyxiaoma/packbreaker" >> "$GITHUB_OUTPUT"
+          echo "dockerhub_image=docker.io/yyxiaoma01/packbreaker" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io

@@ -22,7 +22,7 @@ env:
   CANDIDATE_SHA: ${{ inputs.candidate_sha }}
   CANDIDATE_VERSION: 1.0.9
   GHCR_IMAGE: ghcr.io/yyxiaoma/packbreaker
-  DOCKERHUB_IMAGE: docker.io/yyxiaoma/packbreaker
+  DOCKERHUB_IMAGE: docker.io/yyxiaoma01/packbreaker
 
 jobs:
   publish-candidate:

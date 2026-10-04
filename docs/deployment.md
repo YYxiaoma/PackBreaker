@@ -21,7 +21,7 @@ v1.0.0 通过**同一不可变 OCI index digest** 提供 `linux/amd64` 与 `linu
 - 基础 Node/Python 镜像使用精确补丁版本 + sha256 digest 固定；正式发布按最终镜像 digest 生成 SPDX JSON SBOM。可移动 `stable` 只作发现通道，不能作为生产部署身份。
 - OCI 标签包含版本、Git revision、构建时间、源码地址和许可证。
 - 入口先验证配置和迁移，再启动应用；迁移失败不得启动 worker。
-- tag 发布由 `.github/workflows/release.yml` 生成最终 GHCR image digest、SPDX JSON SBOM、release manifest、`SHA256SUMS` 与 GitHub Release notes，并把同一版本/同一多架构 manifest 同步发布到 Docker Hub `yyxiaoma/packbreaker`。GHCR 仍是 release manifest 和生产不可变身份的主源。
+- tag 发布由 `.github/workflows/release.yml` 生成最终 GHCR image digest、SPDX JSON SBOM、release manifest、`SHA256SUMS` 与 GitHub Release notes，并把同一版本/同一多架构 manifest 同步发布到 Docker Hub `yyxiaoma01/packbreaker`。GHCR 仍是 release manifest 和生产不可变身份的主源。
 
 ## 3. 目录与权限
 
@@ -108,7 +108,7 @@ docker run -d \
   -v /volume2/videos/downloads:/downloads \
   -v /volume3/videos2/downloads:/downloads2 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  yyxiaoma/packbreaker:latest
+  yyxiaoma01/packbreaker:latest
 ```
 
 v1.0.9 入口会在 root 初始化阶段读取已挂载 docker.sock 的数字 GID，并只在其组权限允许读写时保留为应用 supplementary group，因此不再要求用户手动 `--group-add`。入口不会修改 socket 权限。无需 Web 一键升级时应移除 socket 挂载；`docker.sock` 等价于 Docker 主机级管理权限，只应在受信宿主机启用。

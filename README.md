@@ -298,7 +298,7 @@ PackBreaker 对“自动化”采用偏保守的设计：
 ```yaml
 services:
   packbreaker:
-    image: yyxiaoma/packbreaker:latest
+    image: yyxiaoma01/packbreaker:latest
     container_name: packbreaker
     restart: unless-stopped
     ports:
@@ -328,7 +328,7 @@ services:
 
 v1.0.8 起，路径选择器以容器 `/` 为命名空间根，只展示 PackBreaker 可证明的显式目录挂载；`/downloads`、`/downloads2` 可直接用于目录拆包、输出和影片去重，不需要重复挂到 `/data`。容器根 `/` 本身、`/config` 和系统目录不属于媒体任务授权根。历史相对路径继续按 `PACKBREAKER_DATA_DIR=/data` 解释。
 
-v1.0.9 起，Compose 不再要求 `user:` 或 `group_add:`。容器入口读取 `PUID`/`PGID`，只对 `/config` 做必要初始化，识别已挂载 docker.sock 的可用组后，在导入应用服务前永久降权。媒体目录和 docker.sock 本身不会被 chmod/chown。Docker Hub `yyxiaoma/packbreaker` 与 GHCR `ghcr.io/yyxiaoma/packbreaker` 同步发布相同版本；GHCR 仍作为正式供应链主源。
+v1.0.9 起，Compose 不再要求 `user:` 或 `group_add:`。容器入口读取 `PUID`/`PGID`，只对 `/config` 做必要初始化，识别已挂载 docker.sock 的可用组后，在导入应用服务前永久降权。媒体目录和 docker.sock 本身不会被 chmod/chown。Docker Hub `yyxiaoma01/packbreaker` 与 GHCR `ghcr.io/yyxiaoma/packbreaker` 同步发布相同版本；GHCR 仍作为正式供应链主源。
 
 直接使用数字 UID/GID 时，宿主 bind 的配置目录必须先归属同一身份，例如 Synology：
 

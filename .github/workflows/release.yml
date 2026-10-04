@@ -221,7 +221,7 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          dockerhub_image="docker.io/yyxiaoma/packbreaker"
+          dockerhub_image="docker.io/yyxiaoma01/packbreaker"
           version="${GITHUB_REF_NAME#v}"
           created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           mkdir -p release
@@ -512,7 +512,7 @@ jobs:
             --tag "${{ needs.release.outputs.image }}:stable" \
             --tag "${{ needs.release.outputs.image }}:latest" \
             "${{ needs.release.outputs.image }}@${{ needs.release.outputs.digest }}"
-          dockerhub_image="docker.io/yyxiaoma/packbreaker"
+          dockerhub_image="docker.io/yyxiaoma01/packbreaker"
           version="${{ needs.release.outputs.version }}"
           dockerhub_version_digest="$(docker buildx imagetools inspect \
             "$dockerhub_image:$version" \

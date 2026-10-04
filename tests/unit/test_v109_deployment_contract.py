@@ -25,12 +25,12 @@ def test_release_workflow_publishes_same_version_to_ghcr_and_docker_hub() -> Non
         encoding="utf-8"
     )
 
-    assert "docker.io/yyxiaoma/packbreaker" in workflow
+    assert "docker.io/yyxiaoma01/packbreaker" in workflow
     assert "DOCKERHUB_USERNAME" in workflow
     assert "DOCKERHUB_TOKEN" in workflow
     assert "Verify Docker Hub immutable mirror matches the GHCR release digest" in workflow
     assert "Docker Hub $channel channel digest mismatch" in workflow
-    assert "docker.io/yyxiaoma/packbreaker" in sync
+    assert "docker.io/yyxiaoma01/packbreaker" in sync
     assert "DOCKERHUB_USERNAME" in sync
     assert "DOCKERHUB_TOKEN" in sync
     assert 'test "$dockerhub_version_digest" = "$digest"' in sync
@@ -76,7 +76,7 @@ def test_v109_candidate_delivery_is_dual_registry_and_manual_only() -> None:
     assert "candidate_sha:" in workflow
     assert "push:" not in workflow.split("permissions:", 1)[0]
     assert "ghcr.io/yyxiaoma/packbreaker" in workflow
-    assert "docker.io/yyxiaoma/packbreaker" in workflow
+    assert "docker.io/yyxiaoma01/packbreaker" in workflow
     assert "DOCKERHUB_USERNAME" in workflow
     assert "DOCKERHUB_TOKEN" in workflow
     assert "Refuse existing candidate tags in either registry" in workflow
