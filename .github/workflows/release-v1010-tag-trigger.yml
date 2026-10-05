@@ -1,0 +1,45 @@
+name: Create v1.0.10 Release Tag
+
+on:
+  push:
+    branches:
+      - "release/v1.0.10-trigger"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: packbreaker-v1010-tag-trigger
+  cancel-in-progress: false
+
+jobs:
+  create-release-tag:
+    if: github.repository == 'YYxiaoma/PackBreaker'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out trigger branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create immutable v1.0.10 tag
+        env:
+          CANDIDATE_SHA: a74ed6c05d84446db5eb842c3ea518395025c1c0
+          RELEASE_TAG: v1.0.10
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin main --force --no-tags
+          test "$(git rev-parse origin/main)" = "$CANDIDATE_SHA"
+          git cat-file -e "$CANDIDATE_SHA^{commit}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::$RELEASE_TAG already exists; refusing to move or overwrite it"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$RELEASE_TAG" "$CANDIDATE_SHA"
+          git push origin "refs/tags/$RELEASE_TAG"
