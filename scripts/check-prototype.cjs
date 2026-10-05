@@ -60,7 +60,7 @@ const path = require('node:path');
     let retentionAttempts=0;
     let retentionPurged=false;
     let executeAttempts=0;
-    let siteResetCalls=0;
+    let siteHealthReads=0;
     let siteEnableCalls=0;
     let siteTestCalls=0;
     let siteProfileReads=0;
@@ -539,7 +539,10 @@ const path = require('node:path');
       if(!match)return route.fallback();
       const tail=match[1]||'';
       if(request.method()==='GET'&&!tail)return fulfillJson(route,e2eSite);
-      if(request.method()==='GET'&&tail==='health')return fulfillJson(route,e2eSiteHealth);
+      if(request.method()==='GET'&&tail==='health'){
+        siteHealthReads+=1;
+        return fulfillJson(route,e2eSiteHealth);
+      }
       if(request.method()==='GET'&&tail==='profile'){
         siteProfileReads+=1;
         return fulfillJson(route,{code:'NOT_FOUND',detail:'站点用户详情功能已取消'},404);
@@ -553,20 +556,13 @@ const path = require('node:path');
       if(request.method()==='POST'&&tail==='actions'){
         const body=request.postDataJSON();
         assert.equal(request.headers()['if-match'],`"${e2eSite.version}"`,'站点动作必须绑定当前强 If-Match');
-        if(body.action==='reset_circuit'){
-          siteResetCalls+=1;
-          e2eSiteHealth={...e2eSiteHealth,circuit_state:'CLOSED',failure_count:0,retry_after_seconds:null,half_open_probe_in_flight:false,last_error_code:null};
-          return fulfillJson(route,e2eSiteHealth);
-        }
         if(body.action==='enable'){
           siteEnableCalls+=1;
           e2eSite.enabled=true;e2eSite.version+=1;e2eSite.updated_at=now();
-          e2eSiteHealth={...e2eSiteHealth,config_version:e2eSite.version,circuit_state:'CLOSED',failure_count:0,last_error_code:null};
           return fulfillJson(route,e2eSite);
         }
         if(body.action==='disable'){
           e2eSite.enabled=false;e2eSite.version+=1;e2eSite.updated_at=now();
-          e2eSiteHealth={...e2eSiteHealth,config_version:e2eSite.version};
           return fulfillJson(route,e2eSite);
         }
       }
@@ -968,21 +964,21 @@ const path = require('node:path');
     await definitionDrawer.locator('.el-drawer__close-btn').click();
     await definitionDrawer.waitFor({state:'hidden'});
 
-    // 真实站点管理：health 不伪造、reset 仅重置熔断器、启用使用当前强版本，保存凭证不回显。
+    // v1.0.10 站点管理：前端不消费 health/circuit，不提供 reset-circuit；启用仍使用当前强版本，保存凭证不回显。
     await page.locator('nav').getByRole('button',{name:'站点管理',exact:true}).click();
     await page.locator('.site-toolbar').waitFor();
     const siteCard=page.locator('.connection-card').filter({hasText:'M-Team E2E'});
-    await siteCard.getByText('熔断 已打开',{exact:true}).waitFor();
+    await siteCard.waitFor();
+    assert.equal(await siteCard.locator('.site-status-dot').getAttribute('title'),'已停用','停用状态应只通过简洁状态点表达');
+    assert.equal(siteHealthReads,0,'打开站点列表不得读取内部 health/circuit 状态');
+    assert.equal(await siteCard.getByText(/熔断/).count(),0,'站点卡片不得显示熔断状态');
+    assert.equal(await siteCard.getByText('可靠性错误',{exact:true}).count(),0,'站点卡片不得显示内部可靠性错误');
+    assert.equal(await siteCard.getByRole('button',{name:'重置熔断',exact:true}).count(),0,'站点管理不得提供重置熔断入口');
     assert.equal(await siteCard.getByRole('button',{name:'详情',exact:true}).count(),0,'站点用户详情入口必须已移除');
     assert.equal(await page.locator('.el-dialog').filter({hasText:'用户详情'}).count(),0,'站点用户详情弹窗必须已移除');
     assert.equal(siteProfileReads,0,'打开站点列表不得访问已删除的用户个人资料接口');
     assert.equal(await page.getByText(siteCanary,{exact:true}).count(),0,'站点页不得回显已保存凭证明文');
     assert.equal(await page.getByRole('button',{name:/HHClub/}).count(),0,'HHClub 未确认前不得出现可执行创建动作');
-    await page.getByRole('button',{name:'重置熔断',exact:true}).click();
-    await page.locator('.el-message-box').getByRole('button',{name:'仅重置熔断器',exact:true}).click();
-    await page.getByText('熔断器已重置；站点是否恢复以之后的请求或连接测试为准',{exact:true}).waitFor();
-    assert.equal(siteResetCalls,1,'reset-circuit 应只调用一次');
-    await siteCard.getByText('熔断 关闭',{exact:true}).waitFor();
     const siteSwitch=siteCard.getByRole('switch',{name:'启用M-Team E2E',exact:true});
     assert.equal(await siteSwitch.getAttribute('aria-checked'),'false','站点初始应保持停用');
     await siteCard.locator('.el-switch').click();
@@ -992,7 +988,8 @@ const path = require('node:path');
     await siteCard.getByRole('button',{name:'测试连接',exact:true}).click();
     await page.getByText('M-Team E2E 只读连接测试通过',{exact:true}).waitFor();
     assert.equal(siteTestCalls,1,'站点连接测试应只调用一次');
-    assert.equal(await page.getByText(/连接恢复/).count(),0,'reset-circuit 不得伪造远端连接恢复文案');
+    assert.equal(siteHealthReads,0,'站点连接测试后前端仍不得读取内部 health/circuit 状态');
+    assert.equal(await siteCard.getByText(/熔断/).count(),0,'连接测试后也不得显示熔断状态');
 
     for(const name of ['总览','任务中心','站点管理','下载器','日志','系统设置','关于']){
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
