@@ -1,4 +1,4 @@
-name: Create v1.0.10 Release Tag
+name: Dispatch v1.0.10 Release
 
 on:
   push:
@@ -6,14 +6,15 @@ on:
       - "release/v1.0.10-trigger"
 
 permissions:
-  contents: write
+  contents: read
+  actions: write
 
 concurrency:
-  group: packbreaker-v1010-tag-trigger
+  group: packbreaker-v1010-release-dispatch
   cancel-in-progress: false
 
 jobs:
-  create-release-tag:
+  dispatch-release:
     if: github.repository == 'YYxiaoma/PackBreaker'
     runs-on: ubuntu-latest
     steps:
@@ -22,8 +23,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create immutable v1.0.10 tag
+      - name: Verify immutable tag and dispatch Release workflow
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CANDIDATE_SHA: a74ed6c05d84446db5eb842c3ea518395025c1c0
           RELEASE_TAG: v1.0.10
         shell: bash
@@ -32,14 +34,8 @@ jobs:
 
           git fetch origin main --force --no-tags
           test "$(git rev-parse origin/main)" = "$CANDIDATE_SHA"
-          git cat-file -e "$CANDIDATE_SHA^{commit}"
 
-          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "::error::$RELEASE_TAG already exists; refusing to move or overwrite it"
-            exit 1
-          fi
+          remote_tag_sha="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')"
+          test "$remote_tag_sha" = "$CANDIDATE_SHA"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "$RELEASE_TAG" "$CANDIDATE_SHA"
-          git push origin "refs/tags/$RELEASE_TAG"
+          gh workflow run release.yml --ref "$RELEASE_TAG"
