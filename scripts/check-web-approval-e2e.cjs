@@ -85,11 +85,11 @@ function start(command, args, options = {}) {
     const definition = page.locator('.definition-table .el-table__row')
       .filter({ hasText: '隔离浏览器审批任务' });
     await definition.getByRole('button', { name: '查看', exact: true }).click();
-    const definitionDrawer = page.locator('.el-drawer').filter({ hasText: '任务详情 · 隔离浏览器审批任务' });
+    const definitionDrawer = page.locator('.el-dialog').filter({ hasText: '任务详情 · 隔离浏览器审批任务' });
     await definitionDrawer.getByRole('tab', { name: '执行记录' }).click();
     await definitionDrawer.locator('.execution-history-toolbar').waitFor();
     await definitionDrawer.locator('.el-table__row').getByRole('button', { name: '查看', exact: true }).click();
-    const executionDrawer = page.locator('.el-drawer').filter({ hasText: '执行记录详情' });
+    const executionDrawer = page.locator('.el-dialog').filter({ hasText: '执行记录详情' });
     await executionDrawer.getByRole('tab', { name: '审核 / 对账' }).click();
     await page.getByRole('heading', { name: '审核、校验与对账' }).waitFor();
     await page.getByRole('textbox', { name: '源目录相对路径' }).fill('web-review-source');
