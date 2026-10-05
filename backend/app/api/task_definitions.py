@@ -146,7 +146,7 @@ class TaskDirectoryFileResponse(BaseModel):
     size_bytes: int
     device: int
     inode: int
-    mtime_ns: int
+    mtime_ns: str
 
 
 class TaskDirectoryPreviewResponse(BaseModel):

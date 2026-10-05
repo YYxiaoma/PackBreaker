@@ -210,7 +210,7 @@ export interface TaskDirectoryFile {
   size_bytes: number;
   device: number;
   inode: number;
-  mtime_ns: number;
+  mtime_ns: string;
 }
 
 export interface TaskDirectoryPreview {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Clock3, FolderSearch, Plus, RefreshCw, RotateCcw } from '@lucide/vue';
+import { Clock3, FolderSearch, Plus, RefreshCw } from '@lucide/vue';
 
 import { toApiProblem } from '../api/client';
 import { createClientNonce } from '../clientNonce';
@@ -110,6 +110,8 @@ const retrying = ref<Record<string, boolean>>({});
 const advancingExecution = ref(false);
 const decidingApproval = ref<Record<string, boolean>>({});
 const togglingPause = ref<Record<string, boolean>>({});
+const createTypeDialogVisible = ref(false);
+const createTypeSelection = ref<TaskCenterKind>('MANUAL');
 const dialogVisible = ref(false);
 const definitionDrawerVisible = ref(false);
 const detailDefinition = ref<TaskDefinition | null>(null);
@@ -410,11 +412,20 @@ function openCreate(kind?: TaskDefinitionKind): void {
 }
 
 function openActiveCreate(): void {
-  if (activeKind.value === 'MOVIE_DEDUP') {
+  createTypeSelection.value = activeKind.value;
+  createTypeDialogVisible.value = true;
+}
+
+async function confirmCreateType(): Promise<void> {
+  const selected = createTypeSelection.value;
+  createTypeDialogVisible.value = false;
+  activeKind.value = selected;
+  await nextTick();
+  if (selected === 'MOVIE_DEDUP') {
     movieDedupPanelRef.value?.openCreate();
     return;
   }
-  openCreate(activeKind.value);
+  openCreate(selected);
 }
 
 async function refreshActive(): Promise<void> {
@@ -755,6 +766,145 @@ function phaseText(item: TaskDefinition): string {
     SKIPPED: '已跳过',
   };
   return labels[phase] ?? phase;
+}
+
+function executionStatusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    PENDING: '等待处理',
+    RUNNING: '运行中',
+    COMPLETED: '已完成',
+    PARTIAL_FAILED: '部分失败',
+    FAILED: '失败',
+    CANCELLED: '已取消',
+  };
+  return labels[value] ?? value;
+}
+
+function executionPhaseLabel(value: string): string {
+  const labels: Record<string, string> = {
+    WAITING: '等待执行',
+    DISCOVERING: '发现源数据',
+    ANALYZING: '分析文件',
+    SCANNING_SITE: '扫描站点',
+    PREPARING: '准备执行',
+    UNPACKING: '正在拆包',
+    OUTPUTTING: '写入输出',
+    VERIFYING: '验证结果',
+    COMPLETED: '已完成',
+    FAILED: '失败',
+    SKIPPED: '已跳过',
+  };
+  return labels[value] ?? value;
+}
+
+function lifecycleStageLabel(value: string): string {
+  const labels: Record<string, string> = {
+    DISCOVER: '发现对象',
+    ANALYZE: '分析与预检',
+    REVIEW: '候选审核',
+    PLAN: '生成执行计划',
+    AUTHORIZE: '风险授权',
+    EXECUTE: '执行副作用',
+    VERIFY: '结果校验',
+    FINALIZE: '收尾与对账',
+    COMPLETE: '已完成',
+  };
+  return labels[value] ?? value;
+}
+
+function riskLevelLabel(value: string): string {
+  const labels: Record<string, string> = {
+    UNKNOWN: '待评估',
+    LOW: '低风险',
+    HIGH: '高风险',
+  };
+  return labels[value] ?? value;
+}
+
+function authorizationLabel(value: string): string {
+  const labels: Record<string, string> = {
+    NOT_READY: '尚未进入授权阶段',
+    REVIEW_REQUIRED: '等待候选确认',
+    AUTO_AUTHORIZED: '已自动授权',
+    APPROVAL_REQUIRED: '等待高风险授权',
+    REJECTED: '已拒绝',
+    BLOCKED: '已阻断',
+    AUTHORIZED: '已授权',
+    COMPLETE: '授权流程完成',
+  };
+  return labels[value] ?? value;
+}
+
+function riskReasonLabel(value: string): string {
+  const labels: Record<string, string> = {
+    LOW_RISK_ACTION_SET: '仅包含低风险动作',
+    RISK_UNKNOWN: '风险尚未明确',
+    PLAN_BLOCKED: '执行计划存在阻断项',
+    HIGH_RISK_ACTION_SET: '包含高风险动作',
+  };
+  return labels[value] ?? value;
+}
+
+function approvalStateLabel(value: string): string {
+  const labels: Record<string, string> = {
+    PENDING: '等待批准',
+    APPROVED: '已批准',
+    REJECTED: '已拒绝',
+  };
+  return labels[value] ?? value;
+}
+
+function decisionSourceLabel(value: string | null): string {
+  if (!value) return '';
+  const labels: Record<string, string> = {
+    WEB: 'Web',
+    PREAUTHORIZED: '任务预授权',
+    TELEGRAM: 'Telegram',
+  };
+  return labels[value] ?? value;
+}
+
+function closureStatusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    PENDING: '等待收尾',
+    COMPLETE: '收尾完成',
+    ATTENTION_REQUIRED: '需要人工关注',
+    OK: '正常',
+    UNKNOWN: '未知',
+    NOT_APPLICABLE: '不适用',
+  };
+  return labels[value] ?? value;
+}
+
+function closureIssueLabel(value: string): string {
+  const labels: Record<string, string> = {
+    UNPACK_TASK_NOT_FOUND: '底层安全 Run 不存在',
+    TASK_STATUS_UNKNOWN: '底层任务状态未知',
+    OPERATION_INTENT_INCOMPLETE: '存在未完成的操作意图',
+    OPERATION_ROLLBACK_PENDING: '存在等待回滚的操作',
+    OPERATION_RECONCILE_REQUIRED: '需要执行状态对账',
+    OPERATION_ROLLBACK_BLOCKED: '回滚已被安全规则阻断',
+    OPERATION_KIND_UNKNOWN: '存在未知操作类型',
+  };
+  return labels[value] ?? value;
+}
+
+function resultLabel(value: string): string {
+  const labels: Record<string, string> = {
+    SUCCESS: '成功',
+    FAILED: '失败',
+    SKIPPED: '已跳过',
+    CANCELLED: '已取消',
+  };
+  return labels[value] ?? value;
+}
+
+async function runDefinition(item: TaskDefinition): Promise<void> {
+  if (item.kind === 'MANUAL') {
+    await executeDefinition(item);
+    return;
+  }
+  await scanDefinition(item);
 }
 
 function recentActivityTime(item: TaskDefinition): string | null {
@@ -1338,7 +1488,7 @@ async function decideApproval(
       >
         <span class="kind-icon"><FolderSearch :size="21" /></span>
         <span>
-          <b>手动拆包任务</b>
+          <b>手动拆包</b>
           <small>
             运行中 {{ manualStats.running }} · 等待 {{ manualStats.waiting }} · 失败
             {{ manualStats.failed }} · 今日完成 {{ manualStats.completedToday }}
@@ -1352,7 +1502,7 @@ async function decideApproval(
       >
         <span class="kind-icon"><Clock3 :size="21" /></span>
         <span>
-          <b>监控拆包任务</b>
+          <b>监控拆包</b>
           <small>
             启用 {{ monitorStats.enabled }} · 暂停 {{ monitorStats.paused }} · 异常
             {{ monitorStats.error }} · 今日触发 {{ monitorStats.triggeredToday }}
@@ -1385,7 +1535,7 @@ async function decideApproval(
       </div>
       <el-empty v-if="!loading && !visibleDefinitions.length" description="暂无任务定义" />
       <el-table v-else :data="visibleDefinitions" class="definition-table">
-        <el-table-column label="任务名称" min-width="190">
+        <el-table-column label="任务名称" min-width="190" show-overflow-tooltip>
           <template #default="scope">
             <div class="primary-cell">
               <b>{{ scope.row.name }}</b
@@ -1393,7 +1543,7 @@ async function decideApproval(
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="来源" min-width="160">
+        <el-table-column label="来源" min-width="160" show-overflow-tooltip>
           <template #default="scope">
             <div class="primary-cell">
               <b>{{ sourceText(scope.row) }}</b>
@@ -1401,7 +1551,7 @@ async function decideApproval(
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="扫描站点" min-width="150">
+        <el-table-column label="扫描站点" min-width="150" show-overflow-tooltip>
           <template #default="scope">
             <div class="primary-cell">
               <b>{{ scope.row.site_name || '站点已删除' }}</b>
@@ -1439,7 +1589,7 @@ async function decideApproval(
             <span>{{ phaseText(scope.row) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="输出" min-width="160">
+        <el-table-column label="输出" min-width="160" show-overflow-tooltip>
           <template #default="scope">
             <div class="primary-cell">
               <b>{{ scope.row.output_directory }}</b
@@ -1452,53 +1602,49 @@ async function decideApproval(
             formatOptionalTime(recentActivityTime(scope.row))
           }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="330" fixed="right">
+        <el-table-column label="操作" width="255" fixed="right">
           <template #default="scope">
             <el-button link type="primary" @click="openDefinitionDetail(scope.row)">查看</el-button>
             <el-button
-              v-if="scope.row.kind === 'MANUAL'"
               link
               type="success"
-              :loading="Boolean(executing[scope.row.id])"
+              :loading="
+                scope.row.kind === 'MANUAL'
+                  ? Boolean(executing[scope.row.id])
+                  : Boolean(scanning[scope.row.id])
+              "
               :disabled="scope.row.status !== 'ENABLED'"
-              @click="executeDefinition(scope.row)"
+              @click="runDefinition(scope.row)"
             >
               执行
             </el-button>
-            <el-button
-              v-if="scope.row.kind === 'MONITOR'"
-              link
-              type="primary"
-              :loading="Boolean(scanning[scope.row.id])"
-              :disabled="scope.row.status !== 'ENABLED'"
-              @click="scanDefinition(scope.row)"
-            >
-              立即扫描
-            </el-button>
-            <el-button
-              v-if="scope.row.kind === 'MONITOR'"
-              link
-              :type="scope.row.status === 'PAUSED' ? 'success' : 'info'"
-              :loading="Boolean(togglingPause[scope.row.id])"
-              :disabled="scope.row.status === 'SITE_UNAVAILABLE' || scope.row.status === 'ERROR'"
-              @click="toggleMonitorPaused(scope.row)"
-            >
-              {{ scope.row.status === 'PAUSED' ? '恢复' : '暂停' }}
-            </el-button>
-            <el-button
-              link
-              type="warning"
-              :loading="Boolean(retrying[scope.row.id])"
-              :disabled="
-                !scope.row.latest_execution || scope.row.latest_execution.failed_count === 0
-              "
-              @click="retryFailed(scope.row)"
-            >
-              <RotateCcw :size="13" />重试
-            </el-button>
-            <el-button link @click="openEdit(scope.row)">编辑</el-button>
-            <el-button link @click="openClone(scope.row)">克隆</el-button>
             <el-button link type="danger" @click="removeDefinition(scope.row)">删除</el-button>
+            <el-dropdown trigger="click">
+              <el-button link>更多</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-if="scope.row.kind === 'MONITOR'"
+                    :disabled="
+                      scope.row.status === 'SITE_UNAVAILABLE' || scope.row.status === 'ERROR'
+                    "
+                    @click="toggleMonitorPaused(scope.row)"
+                  >
+                    {{ scope.row.status === 'PAUSED' ? '恢复任务' : '暂停任务' }}
+                  </el-dropdown-item>
+                  <el-dropdown-item
+                    :disabled="
+                      !scope.row.latest_execution || scope.row.latest_execution.failed_count === 0
+                    "
+                    @click="retryFailed(scope.row)"
+                  >
+                    重试失败对象
+                  </el-dropdown-item>
+                  <el-dropdown-item @click="openEdit(scope.row)">编辑</el-dropdown-item>
+                  <el-dropdown-item @click="openClone(scope.row)">克隆</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -1509,6 +1655,26 @@ async function decideApproval(
       ref="movieDedupPanelRef"
       @stats="movieDedupStats = $event"
     />
+
+    <el-dialog
+      v-model="createTypeDialogVisible"
+      title="新增任务"
+      width="min(620px, 92vw)"
+      append-to-body
+    >
+      <div class="create-type-dialog">
+        <p>选择任务类型。无论当前选中哪个任务卡片，这里都可以创建任意一种任务。</p>
+        <el-radio-group v-model="createTypeSelection" class="create-type-options">
+          <el-radio-button label="MANUAL">手动拆包</el-radio-button>
+          <el-radio-button label="MONITOR">监控拆包</el-radio-button>
+          <el-radio-button label="MOVIE_DEDUP">影片去重</el-radio-button>
+        </el-radio-group>
+      </div>
+      <template #footer>
+        <el-button @click="createTypeDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmCreateType">下一步</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="dialogVisible"
@@ -1638,7 +1804,7 @@ async function decideApproval(
                 <el-button
                   v-if="draft.kind === 'MANUAL'"
                   type="primary"
-                  plain
+                  class="scan-preview-button"
                   :loading="directoryPreviewLoading"
                   @click="scanDirectoryPreview"
                 >
@@ -1832,11 +1998,13 @@ async function decideApproval(
       </template>
     </el-dialog>
 
-    <el-drawer
+    <el-dialog
       v-model="definitionDrawerVisible"
       :title="detailDefinition ? `任务详情 · ${detailDefinition.name}` : '任务详情'"
-      size="min(1120px, 96vw)"
+      width="min(1120px, 96vw)"
+      top="4vh"
       append-to-body
+      destroy-on-close
     >
       <template v-if="detailDefinition">
         <div class="definition-detail-head">
@@ -2032,7 +2200,9 @@ async function decideApproval(
               <el-table-column label="成功" width="72" prop="success_count" />
               <el-table-column label="失败" width="72" prop="failed_count" />
               <el-table-column label="跳过" width="72" prop="skipped_count" />
-              <el-table-column label="状态" width="120" prop="status" />
+              <el-table-column label="状态" width="120">
+                <template #default="scope">{{ executionStatusLabel(scope.row.status) }}</template>
+              </el-table-column>
               <el-table-column label="耗时" width="120">
                 <template #default="scope">{{ executionDuration(scope.row) }}</template>
               </el-table-column>
@@ -2069,13 +2239,15 @@ async function decideApproval(
           </el-tab-pane>
         </el-tabs>
       </template>
-    </el-drawer>
+    </el-dialog>
 
-    <el-drawer
+    <el-dialog
       v-model="executionDrawerVisible"
       title="执行记录详情"
-      size="min(980px, 94vw)"
+      width="min(1100px, 96vw)"
+      top="4vh"
       append-to-body
+      destroy-on-close
     >
       <template v-if="activeExecution">
         <el-alert
@@ -2151,27 +2323,27 @@ async function decideApproval(
               <el-table-column label="生命周期" min-width="155">
                 <template #default="scope">
                   <div class="primary-cell">
-                    <b>{{ scope.row.lifecycle_stage }}</b>
-                    <small>{{ scope.row.phase }}</small>
+                    <b>{{ lifecycleStageLabel(scope.row.lifecycle_stage) }}</b>
+                    <small>{{ executionPhaseLabel(scope.row.phase) }}</small>
                   </div>
                 </template>
               </el-table-column>
               <el-table-column label="风险 / 授权" min-width="170">
                 <template #default="scope">
                   <div class="primary-cell">
-                    <b>{{ scope.row.risk_level }}</b>
-                    <small>{{ scope.row.authorization_status }}</small>
+                    <b>{{ riskLevelLabel(scope.row.risk_level) }}</b>
+                    <small>{{ authorizationLabel(scope.row.authorization_status) }}</small>
                     <small v-if="scope.row.risk_summary">
-                      {{ scope.row.risk_summary.reason_codes.join(', ') }}
+                      {{ scope.row.risk_summary.reason_codes.map(riskReasonLabel).join('、') }}
                     </small>
                     <small v-if="scope.row.execution_plan_id">
                       Plan: {{ scope.row.execution_plan_id }} ·
-                      {{ scope.row.execution_plan_ready ? 'READY' : 'NOT_READY' }}
+                      {{ scope.row.execution_plan_ready ? '计划已就绪' : '计划未就绪' }}
                     </small>
                     <small v-if="scope.row.approval">
-                      Approval: {{ scope.row.approval.state }}
+                      审批：{{ approvalStateLabel(scope.row.approval.state) }}
                       <template v-if="scope.row.approval.decision_source">
-                        · {{ scope.row.approval.decision_source }}
+                        · {{ decisionSourceLabel(scope.row.approval.decision_source) }}
                       </template>
                     </small>
                   </div>
@@ -2180,21 +2352,22 @@ async function decideApproval(
               <el-table-column label="校验 / 收尾" min-width="190">
                 <template #default="scope">
                   <div class="primary-cell">
-                    <b>{{ scope.row.closure.status }}</b>
+                    <b>{{ closureStatusLabel(scope.row.closure.status) }}</b>
                     <small>
-                      FS {{ scope.row.closure.filesystem_status }} · DL
-                      {{ scope.row.closure.downloader_status }}
+                      文件系统 {{ closureStatusLabel(scope.row.closure.filesystem_status) }} ·
+                      下载器
+                      {{ closureStatusLabel(scope.row.closure.downloader_status) }}
                     </small>
                     <small v-if="scope.row.closure.operation_attention_count">
-                      Attention {{ scope.row.closure.operation_attention_count }} · Reconcile
-                      {{ scope.row.closure.reconcile_required_count }} · Blocked
+                      待关注 {{ scope.row.closure.operation_attention_count }} · 待对账
+                      {{ scope.row.closure.reconcile_required_count }} · 回滚阻断
                       {{ scope.row.closure.rollback_blocked_count }}
                     </small>
                     <small v-if="scope.row.closure.retention_candidate_count">
-                      Retention candidate {{ scope.row.closure.retention_candidate_count }}
+                      可保留候选 {{ scope.row.closure.retention_candidate_count }}
                     </small>
                     <small v-if="scope.row.closure.issue_codes.length" class="execution-error">
-                      {{ scope.row.closure.issue_codes.join(', ') }}
+                      {{ scope.row.closure.issue_codes.map(closureIssueLabel).join('、') }}
                     </small>
                   </div>
                 </template>
@@ -2207,15 +2380,19 @@ async function decideApproval(
               <el-table-column label="结果 / 错误" min-width="210">
                 <template #default="scope">
                   {{
-                    scope.row.result ||
-                    (scope.row.authorization_status === 'REVIEW_REQUIRED'
-                      ? '等待候选确认'
-                      : scope.row.authorization_status === 'APPROVAL_REQUIRED'
-                        ? '等待高风险授权'
-                        : '处理中')
+                    scope.row.result
+                      ? resultLabel(scope.row.result)
+                      : scope.row.authorization_status === 'REVIEW_REQUIRED'
+                        ? '等待候选确认'
+                        : scope.row.authorization_status === 'APPROVAL_REQUIRED'
+                          ? '等待高风险授权'
+                          : '处理中'
                   }}
                   <small v-if="scope.row.error_summary_zh" class="execution-error">
-                    {{ scope.row.error_code }} · {{ scope.row.error_summary_zh }}
+                    {{ scope.row.error_summary_zh }}
+                    <template v-if="scope.row.error_code">
+                      · 技术码 {{ scope.row.error_code }}</template
+                    >
                   </small>
                   <small v-if="scope.row.technical_detail" class="execution-technical-detail">
                     {{ scope.row.technical_detail }}
@@ -2270,7 +2447,7 @@ async function decideApproval(
                 <el-option
                   v-for="item in executionEvidenceItems"
                   :key="item.itemId"
-                  :label="`${item.name} · ${item.closure.status}`"
+                  :label="`${item.name} · ${closureStatusLabel(item.closure.status)}`"
                   :value="item.taskId"
                 />
               </el-select>
@@ -2330,7 +2507,7 @@ async function decideApproval(
           </el-button>
         </div>
       </template>
-    </el-drawer>
+    </el-dialog>
 
     <el-drawer
       v-model="directoryDrawerVisible"
@@ -2373,10 +2550,11 @@ async function decideApproval(
       </div>
     </el-drawer>
 
-    <el-drawer
+    <el-dialog
       v-model="directoryPreviewVisible"
       title="目录扫描预览"
-      size="min(980px, 94vw)"
+      width="min(980px, 94vw)"
+      top="5vh"
       append-to-body
     >
       <template v-if="directoryPreview">
@@ -2410,7 +2588,7 @@ async function decideApproval(
           <el-button type="primary" @click="directoryPreviewVisible = false">确认选择</el-button>
         </div>
       </template>
-    </el-drawer>
+    </el-dialog>
 
     <el-drawer
       v-model="torrentDrawerVisible"
@@ -2564,10 +2742,21 @@ async function decideApproval(
   cursor: pointer;
   transition: 0.16s ease;
 }
-.kind-card:hover,
-.kind-card.active {
+.kind-card:hover {
   border-color: var(--blue);
   box-shadow: 0 8px 26px rgba(31, 93, 255, 0.08);
+}
+.kind-card.active {
+  border-color: var(--blue);
+  background: var(--soft-blue);
+  box-shadow:
+    0 0 0 2px rgba(31, 93, 255, 0.14),
+    0 10px 28px rgba(31, 93, 255, 0.12);
+  transform: translateY(-1px);
+}
+.kind-card.active .kind-icon {
+  background: var(--blue);
+  color: #fff;
 }
 .kind-icon {
   display: grid;
@@ -2621,6 +2810,43 @@ async function decideApproval(
 }
 .primary-cell code {
   font-size: 11px;
+}
+.definition-table :deep(.cell) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.definition-table .primary-cell {
+  display: block;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.definition-table .primary-cell > b,
+.definition-table .primary-cell > small,
+.definition-table .primary-cell > code {
+  display: inline;
+}
+.definition-table .primary-cell > small {
+  margin-left: 6px;
+}
+.create-type-dialog {
+  display: grid;
+  gap: 16px;
+}
+.create-type-dialog p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.create-type-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.create-type-options :deep(.el-radio-button),
+.create-type-options :deep(.el-radio-button__inner) {
+  width: 100%;
 }
 .create-form {
   max-height: 70vh;
@@ -2685,6 +2911,9 @@ async function decideApproval(
 }
 .directory-field :deep(.el-input) {
   flex: 1;
+}
+.scan-preview-button {
+  color: #fff !important;
 }
 .directory-browser,
 .directory-preview-table {

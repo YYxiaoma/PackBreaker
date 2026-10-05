@@ -67,8 +67,8 @@ def test_ci_exercises_default_root_bootstrap_without_user_or_group_add() -> None
     assert 'Path("/proc/1/status")' in container_smoke
 
 
-def test_v1011_candidate_delivery_is_dual_registry_and_manual_only() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "candidate-v1011-image-delivery.yml").read_text(
+def test_v1012_candidate_delivery_is_dual_registry_and_manual_only() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "candidate-v1012-image-delivery.yml").read_text(
         encoding="utf-8"
     )
 
@@ -83,11 +83,11 @@ def test_v1011_candidate_delivery_is_dual_registry_and_manual_only() -> None:
     assert "Build and push one multi-arch candidate to both registries" in workflow
     assert "Verify both candidate tags resolve to the same immutable index" in workflow
     assert "linux/amd64,linux/arm64" in workflow
-    assert "CANDIDATE_VERSION: 1.0.11" in workflow
-    assert "candidate-v1.0.11-" in workflow
+    assert "CANDIDATE_VERSION: 1.0.12" in workflow
+    assert "candidate-v1.0.12-" in workflow
     assert ":latest" not in workflow
     assert ":stable" not in workflow
     assert "gh release" not in workflow
     assert 'test "$dockerhub_digest" = "$digest"' in workflow
-    assert '"$DOCKERHUB_IMAGE@$digest" linux/amd64 v1.0.11' in workflow
-    assert '"$DOCKERHUB_IMAGE@$digest" linux/arm64 v1.0.11' in workflow
+    assert '"$DOCKERHUB_IMAGE@$digest" linux/amd64 v1.0.12' in workflow
+    assert '"$DOCKERHUB_IMAGE@$digest" linux/arm64 v1.0.12' in workflow

@@ -208,9 +208,12 @@ onMounted(() => {
         <div>
           <template v-if="entry.source === 'TASK_EVENT'">
             <b>{{ taskEventTranslation(entry.event_code).title }}</b>
+            <small class="event-description">
+              {{ taskEventTranslation(entry.event_code).description }}
+            </small>
             <small class="technical-message">{{ entry.message }}</small>
             <small class="event-meta">
-              {{ entry.event_code }}
+              技术事件码：{{ entry.event_code }}
               <template v-if="!taskEventTranslation(entry.event_code).translated">
                 · 未翻译事件</template
               >
@@ -224,12 +227,12 @@ onMounted(() => {
           </template>
           <small
             >{{ operationalLoggerLabel(entry.logger)
-            }}<template v-if="entry.exception"> · exception={{ entry.exception }}</template></small
+            }}<template v-if="entry.exception"> · 异常：{{ entry.exception }}</template></small
           >
           <small v-if="entry.source === 'TASK_EVENT'" class="log-links">
             <template v-if="entry.task_name">任务：{{ entry.task_name }}</template>
-            <template v-if="entry.execution_id"> · execution={{ entry.execution_id }}</template>
-            <template v-if="entry.trace_id"> · trace={{ entry.trace_id }}</template>
+            <template v-if="entry.execution_id"> · 执行记录：{{ entry.execution_id }}</template>
+            <template v-if="entry.trace_id"> · Trace：{{ entry.trace_id }}</template>
           </small>
           <small v-if="formatOperationalLogFields(entry)" class="log-fields">
             {{ formatOperationalLogFields(entry) }}
@@ -329,6 +332,10 @@ onMounted(() => {
 }
 .technical-message {
   color: inherit !important;
+  font-size: 11px !important;
+}
+.event-description {
+  color: var(--text) !important;
   font-size: 11px !important;
 }
 .event-meta,

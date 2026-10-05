@@ -7,6 +7,7 @@ import { createClientNonce } from '../clientNonce';
 import { browseTaskDirectories, type TaskDirectoryEntry } from '../api/taskDefinitions';
 import {
   createMovieDedupJob,
+  deleteMovieDedupJob,
   executeMovieDedupPairs,
   listMovieDedupJobs,
   listMovieDedupPairs,
@@ -114,6 +115,21 @@ function openCreate(): void {
   createVisible.value = true;
 }
 
+function cloneJob(job: MovieDedupJob): void {
+  Object.assign(draft, {
+    name: `${job.name} - 副本`,
+    sourceRoot: job.source_root,
+    targetRoot: job.target_root,
+    mode: job.mode,
+    crossFilesystemPolicy: job.cross_filesystem_policy,
+    includeSubdirectories: job.include_subdirectories,
+    minSizeMb: job.min_size_bytes / 1024 / 1024,
+    videoExtensions: job.video_extensions.join(', '),
+  });
+  precheckResult.value = null;
+  createVisible.value = true;
+}
+
 async function runPrecheck(): Promise<MovieDedupPrecheck | null> {
   if (!draft.sourceRoot.trim() || !draft.targetRoot.trim()) {
     ElMessage.warning('请先选择保留目录 A 和去重目录 B');
@@ -188,6 +204,50 @@ async function startJob(job: MovieDedupJob): Promise<void> {
     const next = { ...starting.value };
     delete next[job.id];
     starting.value = next;
+  }
+}
+
+async function runJob(job: MovieDedupJob): Promise<void> {
+  if (job.status === 'PENDING') {
+    await startJob(job);
+    return;
+  }
+  await openPairs(job);
+}
+
+function canDeleteJob(job: MovieDedupJob): boolean {
+  return !['RUNNING', 'REVIEW_REQUIRED', 'RECOVERY_REQUIRED'].includes(job.status);
+}
+
+async function removeJob(job: MovieDedupJob): Promise<void> {
+  if (!canDeleteJob(job)) {
+    ElMessage.warning('运行中、待审核或待恢复任务不能删除');
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认删除影片去重任务“${job.name}”？只删除 PackBreaker 中的任务记录，不会删除 A/B 目录中的影片文件。`,
+      '删除影片去重任务',
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+      },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await deleteMovieDedupJob(job.id);
+    if (activeJob.value?.id === job.id) {
+      activeJob.value = null;
+      pairDrawerVisible.value = false;
+      pairs.value = [];
+    }
+    ElMessage.success('影片去重任务记录已删除，媒体文件未做任何修改');
+    await refresh();
+  } catch (caught) {
+    ElMessage.error(toApiProblem(caught).message);
   }
 }
 
@@ -348,6 +408,20 @@ function phaseLabel(value: string): string {
   return labels[value] ?? value;
 }
 
+function statusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    PENDING: '等待执行',
+    RUNNING: '运行中',
+    REVIEW_REQUIRED: '待审核',
+    COMPLETED: '已完成',
+    PARTIAL_FAILED: '部分失败',
+    FAILED: '失败',
+    CANCELLED: '已取消',
+    RECOVERY_REQUIRED: '需要恢复',
+  };
+  return labels[value] ?? value;
+}
+
 function statusType(value: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
   if (value === 'COMPLETED') return 'success';
   if (value === 'FAILED' || value === 'RECOVERY_REQUIRED') return 'danger';
@@ -406,8 +480,8 @@ defineExpose({ openCreate, refresh });
         <small>最终自动替换必须完整 SHA-256 一致；默认优先硬链接，跨文件系统不会静默降级。</small>
       </div>
       <el-empty v-if="!loading && !jobs.length" description="暂无影片去重任务" />
-      <el-table v-else :data="jobs">
-        <el-table-column label="任务名称" min-width="180">
+      <el-table v-else :data="jobs" class="movie-job-table">
+        <el-table-column label="任务名称" min-width="180" show-overflow-tooltip>
           <template #default="scope">
             <div class="primary-cell">
               <b>{{ scope.row.name }}</b>
@@ -415,12 +489,12 @@ defineExpose({ openCreate, refresh });
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="保留目录 A" min-width="190">
+        <el-table-column label="保留目录 A" min-width="190" show-overflow-tooltip>
           <template #default="scope"
             ><code>{{ scope.row.source_root }}</code></template
           >
         </el-table-column>
-        <el-table-column label="去重目录 B" min-width="190">
+        <el-table-column label="去重目录 B" min-width="190" show-overflow-tooltip>
           <template #default="scope"
             ><code>{{ scope.row.target_root }}</code></template
           >
@@ -442,7 +516,7 @@ defineExpose({ openCreate, refresh });
         <el-table-column label="状态" width="125">
           <template #default="scope">
             <el-tag :type="statusType(scope.row.status)" effect="light">{{
-              scope.row.status
+              statusLabel(scope.row.status)
             }}</el-tag>
           </template>
         </el-table-column>
@@ -451,17 +525,32 @@ defineExpose({ openCreate, refresh });
             formatBytes(scope.row.estimated_reclaimable_bytes)
           }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" width="255" fixed="right">
           <template #default="scope">
+            <el-button link type="primary" @click="openPairs(scope.row)">查看</el-button>
             <el-button
-              v-if="scope.row.status === 'PENDING'"
               link
-              type="primary"
+              type="success"
               :loading="Boolean(starting[scope.row.id])"
-              @click="startJob(scope.row)"
-              >开始扫描</el-button
+              :disabled="scope.row.status === 'RUNNING'"
+              @click="runJob(scope.row)"
+              >执行</el-button
             >
-            <el-button link type="primary" @click="openPairs(scope.row)">查看候选</el-button>
+            <el-button
+              link
+              type="danger"
+              :disabled="!canDeleteJob(scope.row)"
+              @click="removeJob(scope.row)"
+              >删除</el-button
+            >
+            <el-dropdown trigger="click">
+              <el-button link>更多</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item @click="cloneJob(scope.row)">复制任务</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -584,11 +673,13 @@ defineExpose({ openCreate, refresh });
       </template>
     </el-dialog>
 
-    <el-drawer
+    <el-dialog
       v-model="pairDrawerVisible"
       title="影片去重候选"
-      size="min(1180px, 96vw)"
+      width="min(1180px, 96vw)"
+      top="4vh"
       append-to-body
+      destroy-on-close
     >
       <template v-if="activeJob">
         <div class="summary-grid">
@@ -713,7 +804,7 @@ defineExpose({ openCreate, refresh });
           </el-table-column>
         </el-table>
       </template>
-    </el-drawer>
+    </el-dialog>
   </div>
 </template>
 
@@ -753,6 +844,25 @@ defineExpose({ openCreate, refresh });
 .primary-cell {
   display: grid;
   gap: 3px;
+}
+.movie-job-table :deep(.cell) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.movie-job-table .primary-cell {
+  display: block;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.movie-job-table .primary-cell > b,
+.movie-job-table .primary-cell > small {
+  display: inline;
+}
+.movie-job-table .primary-cell > small {
+  margin-left: 6px;
 }
 .create-form {
   display: grid;

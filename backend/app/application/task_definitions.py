@@ -204,7 +204,7 @@ class TaskDirectoryFileView:
     size_bytes: int
     device: int
     inode: int
-    mtime_ns: int
+    mtime_ns: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +277,9 @@ class TaskDefinitionService:
                 size_bytes=item.length,
                 device=item.snapshot.device,
                 inode=item.snapshot.inode,
-                mtime_ns=item.snapshot.mtime_ns,
+                # 纳秒时间戳已超出 JavaScript Number 的安全整数范围。
+                # 以十进制字符串跨 API 传输，避免前端往返后低位精度丢失。
+                mtime_ns=str(item.snapshot.mtime_ns),
             )
             for item in matched
         )
@@ -1056,12 +1058,28 @@ class TaskDefinitionService:
                 normalized_relative = self._normalize_relative_path(
                     relative_path, field_name="文件相对路径", allow_root=False
                 )
-                snapshot_values: dict[str, int] = {}
-                for key in ("size_bytes", "device", "inode", "mtime_ns"):
+                snapshot_values: dict[str, int | str] = {}
+                for key in ("size_bytes", "device", "inode"):
                     value = item.get(key)
-                    if not isinstance(value, int) or value < 0:
+                    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                         raise self._invalid("手动目录任务的文件快照字段无效")
                     snapshot_values[key] = value
+                mtime_ns = item.get("mtime_ns")
+                if isinstance(mtime_ns, str):
+                    normalized_mtime = mtime_ns.strip()
+                    try:
+                        parsed_mtime = int(normalized_mtime)
+                    except ValueError as exc:
+                        raise self._invalid("手动目录任务的文件快照字段无效") from exc
+                    if parsed_mtime < 0:
+                        raise self._invalid("手动目录任务的文件快照字段无效")
+                    snapshot_values["mtime_ns"] = str(parsed_mtime)
+                elif isinstance(mtime_ns, int) and not isinstance(mtime_ns, bool) and mtime_ns >= 0:
+                    # 保留旧版整数形态，执行阶段才能识别并应用 JS Number
+                    # 确定性舍入兼容规则。
+                    snapshot_values["mtime_ns"] = mtime_ns
+                else:
+                    raise self._invalid("手动目录任务的文件快照字段无效")
                 if normalized_relative in seen_paths:
                     continue
                 seen_paths.add(normalized_relative)

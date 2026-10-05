@@ -29,6 +29,27 @@ const FIELD_LABELS: Record<string, string> = {
   error_code: '错误代码',
   downloader_id: '下载器 ID',
   site_id: '站点 ID',
+  source_kind: '来源类型',
+  source_object_key: '来源对象',
+  technical_detail: '技术详情',
+  items: '对象总数',
+  ready: '可执行',
+  failed: '失败',
+  skipped: '跳过',
+  discovered: '扫描发现',
+  new: '新增对象',
+  risk_level: '风险等级',
+  blocked_reasons: '阻断原因',
+  execution_item_id: '执行对象 ID',
+  unpack_task_id: '安全 Run ID',
+  source_execution_id: '原执行记录 ID',
+  execution_plan_id: '执行计划 ID',
+  approval_id: '审批 ID',
+  from_phase: '原阶段',
+  to_phase: '新阶段',
+  from_result: '原结果',
+  to_result: '新结果',
+  trigger: '触发方式',
 };
 
 const EXACT_RESOURCE_LABELS: Record<string, string> = {
@@ -171,13 +192,70 @@ export function operationalLoggerLabel(logger: string): string {
 
 function fieldValue(key: string, value: unknown): string {
   if (key === 'duration_ms' && typeof value === 'number') return `${value.toFixed(1)} ms`;
-  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map((item) => String(item)).join('、');
+  if (typeof value === 'string') {
+    const labels: Record<string, Record<string, string>> = {
+      source_kind: { DIRECTORY: '目录', DOWNLOADER: '下载器' },
+      risk_level: { UNKNOWN: '待评估', LOW: '低风险', HIGH: '高风险' },
+      trigger: {
+        MANUAL: '手动执行',
+        CRON: 'Cron 调度',
+        IMMEDIATE_SCAN: '立即扫描',
+        FAILED_RETRY: '失败重试',
+        SYSTEM_RECOVERY: '系统恢复',
+      },
+      from_phase: {
+        WAITING: '等待执行',
+        DISCOVERING: '发现源数据',
+        ANALYZING: '分析文件',
+        SCANNING_SITE: '扫描站点',
+        PREPARING: '准备执行',
+        UNPACKING: '正在拆包',
+        OUTPUTTING: '写入输出',
+        VERIFYING: '验证结果',
+        COMPLETED: '已完成',
+        FAILED: '失败',
+        SKIPPED: '已跳过',
+      },
+      to_phase: {
+        WAITING: '等待执行',
+        DISCOVERING: '发现源数据',
+        ANALYZING: '分析文件',
+        SCANNING_SITE: '扫描站点',
+        PREPARING: '准备执行',
+        UNPACKING: '正在拆包',
+        OUTPUTTING: '写入输出',
+        VERIFYING: '验证结果',
+        COMPLETED: '已完成',
+        FAILED: '失败',
+        SKIPPED: '已跳过',
+      },
+      from_result: {
+        SUCCESS: '成功',
+        FAILED: '失败',
+        SKIPPED: '已跳过',
+        CANCELLED: '已取消',
+      },
+      to_result: {
+        SUCCESS: '成功',
+        FAILED: '失败',
+        SKIPPED: '已跳过',
+        CANCELLED: '已取消',
+      },
+    };
+    return labels[key]?.[value] ?? value;
+  }
   return JSON.stringify(value);
 }
 
 export function formatOperationalLogFields(entry: OperationalLogEntry): string {
   return Object.entries(entry.fields)
-    .slice(0, 8)
+    .filter(
+      ([key]) =>
+        entry.source !== 'TASK_EVENT' ||
+        !['event_code', 'trace_id', 'execution_id', 'task_id'].includes(key),
+    )
+    .slice(0, 12)
     .map(([key, value]) => `${FIELD_LABELS[key] ?? key}：${fieldValue(key, value)}`)
     .join(' · ');
 }

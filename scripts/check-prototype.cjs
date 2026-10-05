@@ -847,10 +847,44 @@ const path = require('node:path');
     await page.getByRole('button',{name:'任务中心',exact:true}).click();
     await page.getByRole('heading',{name:'任务中心',exact:true,level:2}).waitFor();
     await page.getByText('手动拆包 E2E',{exact:true}).waitFor();
-    await page.getByText('监控拆包任务',{exact:true}).click();
+    const manualKindCard=page.locator('.kind-card').filter({hasText:'手动拆包'}).first();
+    const monitorKindCard=page.locator('.kind-card').filter({hasText:'监控拆包'}).first();
+    const movieDedupKindCard=page.locator('.kind-card').filter({hasText:'影片去重'}).first();
+    assert.equal(await manualKindCard.evaluate(el=>el.classList.contains('active')),true,'任务中心默认必须选中手动拆包');
+    assert.equal(await monitorKindCard.evaluate(el=>el.classList.contains('active')),false);
+    assert.equal(await movieDedupKindCard.evaluate(el=>el.classList.contains('active')),false);
+    await monitorKindCard.click();
+    assert.equal(await monitorKindCard.evaluate(el=>el.classList.contains('active')),true,'点击后监控拆包卡片应具有明确选中态');
     await page.getByText('监控拆包 E2E',{exact:true}).waitFor();
-    assert.equal(await page.getByRole('button',{name:'立即扫描',exact:true}).count(),1,'监控拆包任务应提供立即扫描入口');
-    await page.getByText('手动拆包任务',{exact:true}).click();
+    const monitorDefinitionRow=page.locator('.el-table__row').filter({hasText:'监控拆包 E2E'}).first();
+    for(const action of ['查看','执行','删除','更多']){
+      assert.equal(await monitorDefinitionRow.getByRole('button',{name:action,exact:true}).count(),1,`监控任务列表应固定提供 ${action}`);
+    }
+    assert.equal(await monitorDefinitionRow.getByRole('button',{name:'立即扫描',exact:true}).count(),0,'监控任务列表不再单独暴露“立即扫描”，统一使用“执行”');
+
+    // v1.0.12 顶部新增入口必须与当前卡片解耦：当前选中监控拆包时仍可直接创建手动拆包。
+    await page.getByRole('button',{name:'新增任务',exact:true}).click();
+    const createTypeDialog=page.locator('.el-dialog').filter({hasText:'选择任务类型。无论当前选中哪个任务卡片，这里都可以创建任意一种任务。'}).last();
+    await createTypeDialog.waitFor({state:'visible'});
+    for(const kind of ['手动拆包','监控拆包','影片去重']){
+      assert.equal(await createTypeDialog.getByText(kind,{exact:true}).count(),1,`统一新增任务必须提供 ${kind}`);
+    }
+    await createTypeDialog.getByText('手动拆包',{exact:true}).click();
+    await createTypeDialog.getByRole('button',{name:'下一步',exact:true}).click();
+    const createDefinitionDialog=page.locator('.el-dialog').filter({hasText:'新增拆包任务'}).last();
+    await createDefinitionDialog.waitFor({state:'visible'});
+    await createDefinitionDialog.locator('.source-kind-switch .el-radio-button').filter({hasText:'目录'}).click();
+    const scanPreviewButton=createDefinitionDialog.getByRole('button',{name:'扫描预览',exact:true});
+    await scanPreviewButton.waitFor({state:'visible'});
+    const scanPreviewStyle=await scanPreviewButton.evaluate(el=>{
+      const style=getComputedStyle(el);
+      return {color:style.color,backgroundColor:style.backgroundColor};
+    });
+    assert.notEqual(scanPreviewStyle.backgroundColor,'rgba(0, 0, 0, 0)','扫描预览按钮默认背景必须可见');
+    assert.notEqual(scanPreviewStyle.color,scanPreviewStyle.backgroundColor,'扫描预览按钮文字与背景必须具有可见对比');
+    await createDefinitionDialog.locator('.el-dialog__headerbtn').click();
+    await createDefinitionDialog.waitFor({state:'hidden'});
+    assert.equal(await manualKindCard.evaluate(el=>el.classList.contains('active')),true,'跨卡片新增手动任务后应切回手动拆包');
 
     // v0.1.8 已移除独立“预演与确认 / 清理与对账”入口；审核、执行、对账和收尾都必须从任务中心当前 Run 进入。
     assert.equal(await page.locator('nav').getByRole('button',{name:'预演与确认',exact:true}).count(),0,'旧“预演与确认”导航必须删除');
@@ -861,12 +895,18 @@ const path = require('node:path');
 
     // 真实动作 UI：从统一“任务执行详情 → 审核 / 对账”进入；首次 execute 响应丢失后必须复用同一幂等键，随后由 TaskEvent SSE 自动收敛到 DONE。
     const definitionRow=page.locator('.el-table__row').filter({hasText:'手动拆包 E2E'}).first();
+    for(const action of ['查看','执行','删除','更多']){
+      assert.equal(await definitionRow.getByRole('button',{name:action,exact:true}).count(),1,`手动任务列表应固定提供 ${action}`);
+    }
+    assert.equal(await definitionRow.locator('.primary-cell').first().evaluate(el=>getComputedStyle(el).whiteSpace),'nowrap','任务列表主字段必须保持单行显示');
     await definitionRow.getByRole('button',{name:'查看',exact:true}).click();
-    const definitionDrawer=page.locator('.el-drawer').filter({hasText:'任务详情 · 手动拆包 E2E'}).last();
+    const definitionDrawer=page.locator('.el-dialog').filter({hasText:'任务详情 · 手动拆包 E2E'}).last();
+    assert.equal(await page.locator('.el-drawer').filter({hasText:'任务详情 · 手动拆包 E2E'}).count(),0,'任务详情必须使用 Dialog 而不是 Drawer');
     await definitionDrawer.getByRole('tab',{name:'执行记录',exact:true}).click();
     const executionHistoryRow=definitionDrawer.locator('.el-table__row').filter({hasText:'手动执行'}).first();
     await executionHistoryRow.getByRole('button',{name:'查看',exact:true}).click();
-    const executionDrawer=page.locator('.el-drawer').filter({hasText:'执行记录详情'}).last();
+    const executionDrawer=page.locator('.el-dialog').filter({hasText:'执行记录详情'}).last();
+    assert.equal(await page.locator('.el-drawer').filter({hasText:'执行记录详情'}).count(),0,'执行记录详情必须使用 Dialog 而不是 Drawer');
     await executionDrawer.getByRole('tab',{name:'审核 / 对账',exact:true}).click();
     await executionDrawer.getByRole('heading',{name:'审核、校验与对账',exact:true,level:3}).waitFor();
     // 浏览器可选择两种已连接且凭据/路径安全门通过的目标。改变选择时
@@ -966,9 +1006,9 @@ const path = require('node:path');
     assert.equal(retentionBodies[0].retention_days,30);
     assert.equal(await page.getByRole('button',{name:'清理历史 payload',exact:true}).count(),0,'purge 确认后实时预览不得继续显示已清理 journal');
 
-    await executionDrawer.locator('.el-drawer__close-btn').click();
+    await executionDrawer.locator('.el-dialog__headerbtn').click();
     await executionDrawer.waitFor({state:'hidden'});
-    await definitionDrawer.locator('.el-drawer__close-btn').click();
+    await definitionDrawer.locator('.el-dialog__headerbtn').click();
     await definitionDrawer.waitFor({state:'hidden'});
 
     // v1.0.10 站点管理：前端不消费 health/circuit，不提供 reset-circuit；启用仍使用当前强版本，保存凭证不回显。

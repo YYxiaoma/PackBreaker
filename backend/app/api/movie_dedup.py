@@ -256,6 +256,15 @@ async def get_movie_dedup_job(
     return _job_response(movie_dedup_service(request).get(job_id))
 
 
+@router.delete("/movie-dedup/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_movie_dedup_job(
+    job_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+) -> None:
+    movie_dedup_service(request).delete(job_id)
+
+
 @router.post("/movie-dedup/jobs/{job_id}/start", response_model=MovieDedupJobResponse)
 async def start_movie_dedup_job(
     job_id: str,

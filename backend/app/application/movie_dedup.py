@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
@@ -238,6 +238,36 @@ class MovieDedupService:
                     detail="未找到指定影片去重任务",
                 )
             return self._view(record)
+
+    def delete(self, job_id: str) -> None:
+        """Delete one movie-dedup task record without touching media files."""
+
+        with self._session_factory() as session:
+            record = self._require_job(session, job_id)
+            if record.status in {
+                MovieDedupJobStatus.RUNNING.value,
+                MovieDedupJobStatus.REVIEW_REQUIRED.value,
+                MovieDedupJobStatus.RECOVERY_REQUIRED.value,
+            }:
+                raise ApplicationError(
+                    code="MOVIE_DEDUP_DELETE_BLOCKED",
+                    status=409,
+                    title="当前影片去重任务不可删除",
+                    detail="运行中、待审核或待恢复任务必须先完成安全生命周期，避免丢失恢复与审计证据",
+                )
+            # 显式清理数据库记录，不依赖 SQLite 外键级联配置。这里绝不调用
+            # SafeFilesystemGateway，因此不会删除或修改 A/B 目录媒体文件。
+            session.execute(
+                delete(MovieDedupOperationJournal).where(
+                    MovieDedupOperationJournal.job_id == job_id
+                )
+            )
+            session.execute(delete(MovieDedupPair).where(MovieDedupPair.job_id == job_id))
+            session.execute(
+                delete(MovieDedupFileInventory).where(MovieDedupFileInventory.job_id == job_id)
+            )
+            session.delete(record)
+            session.commit()
 
     def start(self, job_id: str) -> MovieDedupJobView:
         with self._session_factory() as session:

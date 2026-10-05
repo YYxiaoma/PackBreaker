@@ -114,6 +114,40 @@ def test_movie_dedup_job_create_and_list(tmp_path: Path) -> None:
         assert created.phase is MovieDedupJobPhase.PENDING
         assert service.get(created.id).id == created.id
         assert [item.id for item in service.list()] == [created.id]
+
+        service.delete(created.id)
+        assert service.list() == ()
+        with pytest.raises(ApplicationError) as deleted:
+            service.get(created.id)
+        assert deleted.value.code == "MOVIE_DEDUP_JOB_NOT_FOUND"
+    finally:
+        engine.dispose()
+
+
+def test_movie_dedup_delete_blocks_active_job(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    (data_root / "movies-a").mkdir(parents=True)
+    (data_root / "movies-b").mkdir()
+    engine = create_sqlite_engine(tmp_path / "movie-dedup-delete-active.db")
+    Base.metadata.create_all(engine)
+    service = MovieDedupService(create_session_factory(engine), data_root=data_root)
+    try:
+        created = service.create(
+            MovieDedupJobCreate(
+                name="运行中不可删除",
+                source_root="movies-a",
+                target_root="movies-b",
+                mode=MovieDedupMode.AUTO,
+                cross_filesystem_policy=MovieDedupCrossFilesystemPolicy.STOP,
+                video_extensions=(".mkv",),
+            ),
+            trace_id="trace-delete-active",
+        )
+        service.start(created.id)
+        with pytest.raises(ApplicationError) as blocked:
+            service.delete(created.id)
+        assert blocked.value.code == "MOVIE_DEDUP_DELETE_BLOCKED"
+        assert service.get(created.id).status is MovieDedupJobStatus.RUNNING
     finally:
         engine.dispose()
 

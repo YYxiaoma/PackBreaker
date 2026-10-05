@@ -6089,7 +6089,7 @@
           },
           "mtime_ns": {
             "title": "Mtime Ns",
-            "type": "integer"
+            "type": "string"
           },
           "relative_path": {
             "title": "Relative Path",
@@ -8201,7 +8201,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.0.11"
+    "version": "1.0.12"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10515,6 +10515,87 @@
       }
     },
     "/api/v1/movie-dedup/jobs/{job_id}": {
+      "delete": {
+        "operationId": "delete_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Movie Dedup Job",
+        "tags": [
+          "movie-dedup"
+        ]
+      },
       "get": {
         "operationId": "get_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__get",
         "parameters": [

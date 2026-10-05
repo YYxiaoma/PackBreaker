@@ -59,4 +59,27 @@ describe('operational log presentation', () => {
     });
     expect(operationalLoggerLabel('alembic.runtime.migration')).toBe('数据库迁移');
   });
+
+  it('formats task execution context with Chinese field labels and enum values', () => {
+    const item = entry({
+      source: 'TASK_EVENT',
+      logger: 'packbreaker.task_execution',
+      event_code: 'TASK_EXECUTION_MATERIALIZED',
+      fields: {
+        event_code: 'TASK_EXECUTION_MATERIALIZED',
+        source_kind: 'DIRECTORY',
+        items: 43,
+        ready: 43,
+        failed: 0,
+        skipped: 0,
+        risk_level: 'LOW',
+      },
+    });
+    const formatted = formatOperationalLogFields(item);
+    expect(formatted).not.toContain('event_code');
+    expect(formatted).toContain('来源类型：目录');
+    expect(formatted).toContain('对象总数：43');
+    expect(formatted).toContain('可执行：43');
+    expect(formatted).toContain('风险等级：低风险');
+  });
 });

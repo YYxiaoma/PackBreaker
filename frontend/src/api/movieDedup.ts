@@ -114,6 +114,10 @@ export async function getMovieDedupJob(jobId: string): Promise<MovieDedupJob> {
   return response.data;
 }
 
+export async function deleteMovieDedupJob(jobId: string): Promise<void> {
+  await apiClient.delete(`/movie-dedup/jobs/${jobId}`);
+}
+
 export async function listMovieDedupPairs(jobId: string): Promise<MovieDedupPair[]> {
   const response = await apiClient.get<{ items: MovieDedupPair[] }>(
     `/movie-dedup/jobs/${jobId}/pairs`,

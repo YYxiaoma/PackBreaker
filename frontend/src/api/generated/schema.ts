@@ -436,7 +436,8 @@ export interface paths {
     get: operations['get_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__get'];
     put?: never;
     post?: never;
-    delete?: never;
+    /** Delete Movie Dedup Job */
+    delete: operations['delete_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__delete'];
     options?: never;
     head?: never;
     patch?: never;
@@ -3817,7 +3818,7 @@ export interface components {
       /** Inode */
       inode: number;
       /** Mtime Ns */
-      mtime_ns: number;
+      mtime_ns: string;
       /** Relative Path */
       relative_path: string;
       /** Size Bytes */
@@ -5698,6 +5699,40 @@ export interface operations {
         content: {
           'application/json': components['schemas']['MovieDedupJobResponse'];
         };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  delete_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__delete: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        job_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Validation Error */
       422: {

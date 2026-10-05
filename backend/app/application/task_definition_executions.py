@@ -86,6 +86,62 @@ from backend.app.infrastructure.source_inventory import (
 )
 
 _MONITOR_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_JS_MAX_SAFE_INTEGER = (1 << 53) - 1
+
+
+def _parse_snapshot_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        try:
+            return int(normalized)
+        except ValueError:
+            return None
+    return None
+
+
+def _mtime_snapshot_matches(expected: object, observed: int) -> bool:
+    parsed = _parse_snapshot_int(expected)
+    if parsed is None:
+        return False
+    if parsed == observed:
+        return True
+    # v1.0.11 及更早版本把 mtime_ns 作为 JSON number 交给浏览器。
+    # 对超出 2^53-1 的纳秒时间戳，JS Number 会发生确定性的 IEEE-754
+    # 舍入。仅对旧的整数快照接受“当前真实值经 JS Number 舍入后的值”，
+    # 从而兼容已保存任务；新版本字符串快照仍要求纳秒级精确一致。
+    return (
+        isinstance(expected, int)
+        and abs(observed) > _JS_MAX_SAFE_INTEGER
+        and parsed == int(float(observed))
+    )
+
+
+def _snapshot_change_detail(
+    raw: dict[str, Any],
+    current: SourceFileCandidate | None,
+) -> str:
+    if current is None:
+        return "来源文件已不存在或已不符合当前过滤规则"
+    changed: list[str] = []
+    comparisons = (
+        ("size_bytes", _parse_snapshot_int(raw.get("size_bytes")), current.length),
+        ("device", _parse_snapshot_int(raw.get("device")), current.snapshot.device),
+        ("inode", _parse_snapshot_int(raw.get("inode")), current.snapshot.inode),
+    )
+    for field, expected, observed in comparisons:
+        if expected != observed:
+            changed.append(f"{field}: 保存={expected!r}, 当前={observed!r}")
+    if not _mtime_snapshot_matches(raw.get("mtime_ns"), current.snapshot.mtime_ns):
+        changed.append(
+            f"mtime_ns: 保存={raw.get('mtime_ns')!r}, 当前={current.snapshot.mtime_ns!r}"
+        )
+    return "快照字段不一致：" + "；".join(changed)
 
 
 class SourceFilterSpec(Protocol):
@@ -536,7 +592,7 @@ def reconcile_task_execution(
                     id=new_uuid(),
                     execution_id=record.id,
                     event_code="TASK_EXECUTION_ITEM_STATE_CHANGED",
-                    message="Execution item state changed while reconciling the safe unpack run",
+                    message="执行对象状态已根据底层安全 Run 的最新状态完成对账",
                     trace_id=record.trace_id,
                     context={
                         "execution_item_id": item.id,
@@ -1032,7 +1088,7 @@ class TaskDefinitionExecutionService:
             self._append_lifecycle_event(
                 execution_id=execution_id,
                 event_code="TASK_LIFECYCLE_ANALYZED",
-                message="Lifecycle analysis and preflight completed without starting side effects",
+                message="生命周期分析与执行前检查已完成，尚未产生任何副作用",
                 context={"execution_item_id": item_id, "unpack_task_id": task.id},
             )
             task = self._load_unpack_task(task_id)
@@ -1046,7 +1102,7 @@ class TaskDefinitionExecutionService:
             self._append_lifecycle_event(
                 execution_id=execution_id,
                 event_code="TASK_LIFECYCLE_GATE_BLOCKED",
-                message="Lifecycle stopped because the execution gate is not eligible",
+                message="执行门禁未满足，生命周期已在副作用前安全停止",
                 context={
                     "execution_item_id": item_id,
                     "blocked_reasons": list(gate.blocked_reasons),
@@ -1066,7 +1122,7 @@ class TaskDefinitionExecutionService:
             self._append_lifecycle_event(
                 execution_id=execution_id,
                 event_code="TASK_LIFECYCLE_PLAN_BLOCKED",
-                message="Lifecycle stopped because the execution plan is not ready",
+                message="执行计划尚未就绪，生命周期已在副作用前安全停止",
                 context={
                     "execution_item_id": item_id,
                     "execution_plan_id": plan.id,
@@ -1079,7 +1135,7 @@ class TaskDefinitionExecutionService:
                 self._append_lifecycle_event(
                     execution_id=execution_id,
                     event_code="TASK_LIFECYCLE_APPROVAL_REJECTED",
-                    message="Lifecycle stopped because the current execution plan was rejected",
+                    message="当前执行计划已被拒绝，生命周期已停止",
                     context={
                         "execution_item_id": item_id,
                         "execution_plan_id": plan.id,
@@ -1097,7 +1153,7 @@ class TaskDefinitionExecutionService:
                         == TaskApprovalDecisionSource.PREAUTHORIZED.value
                         else "TASK_LIFECYCLE_APPROVED"
                     ),
-                    message="High-risk current execution plan has valid approval evidence",
+                    message="当前高风险执行计划已具备有效授权证据",
                     context={
                         "execution_item_id": item_id,
                         "execution_plan_id": plan.id,
@@ -1110,10 +1166,7 @@ class TaskDefinitionExecutionService:
                 self._append_lifecycle_event(
                     execution_id=execution_id,
                     event_code="TASK_LIFECYCLE_APPROVAL_REQUIRED",
-                    message=(
-                        "Lifecycle stopped before side effects because explicit approval "
-                        "is required"
-                    ),
+                    message="当前执行计划需要显式授权，已在副作用前安全停止",
                     context={
                         "execution_item_id": item_id,
                         "execution_plan_id": plan.id,
@@ -1205,8 +1258,11 @@ class TaskDefinitionExecutionService:
                 execution_id=execution_id,
                 trace_id=trace_id,
                 event_code="TASK_EXECUTION_STARTED",
-                message="Manual task source discovery started",
-                context={"task_definition_id": snapshot.definition.id},
+                message="手动拆包任务开始扫描并校验来源对象",
+                context={
+                    "task_definition_id": snapshot.definition.id,
+                    "source_kind": snapshot.source.kind,
+                },
             )
             session.commit()
 
@@ -1243,9 +1299,10 @@ class TaskDefinitionExecutionService:
                 execution_id=execution_id,
                 trace_id=trace_id,
                 event_code="TASK_EXECUTION_MATERIALIZED",
-                message="Source objects were materialized into safe unpack runs",
+                message="来源对象扫描完成，已生成可进入安全生命周期的执行对象",
                 context={
                     "items": len(items),
+                    "ready": len(items) - record.failed_count - record.skipped_count,
                     "failed": record.failed_count,
                     "skipped": record.skipped_count,
                 },
@@ -1943,7 +2000,7 @@ class TaskDefinitionExecutionService:
                     execution_id=retry_execution_id,
                     trace_id=trace_id,
                     event_code="TASK_FAILED_RETRY_STARTED",
-                    message="Retry execution for failed objects started",
+                    message="失败对象重试执行已开始",
                     context={"source_execution_id": execution_id, "items": len(retryable_items)},
                 )
                 session.commit()
@@ -2010,7 +2067,7 @@ class TaskDefinitionExecutionService:
                     execution_id=retry_execution_id,
                     trace_id=trace_id,
                     event_code="TASK_FAILED_OBJECT_RERUN_CREATED",
-                    message="Failed object was rerun through audited task action service",
+                    message="失败对象已通过审计任务动作服务创建新的安全 Run",
                     context={
                         "source_execution_item_id": source_item.id,
                         "parent_unpack_task_id": source_item.unpack_task_id,
@@ -2066,7 +2123,7 @@ class TaskDefinitionExecutionService:
                 execution_id=execution_id,
                 trace_id=trace_id,
                 event_code="TASK_FAILED_OBJECT_RERUN_REJECTED",
-                message="Failed object could not create an audited rerun",
+                message="失败对象无法创建新的审计安全 Run",
                 context={
                     "source_execution_item_id": source_item.id,
                     "parent_unpack_task_id": source_item.unpack_task_id,
@@ -2333,7 +2390,7 @@ class TaskDefinitionExecutionService:
                 execution_id=execution_id,
                 trace_id=trace_id,
                 event_code="TASK_MONITOR_SCAN_MATERIALIZING",
-                message="Monitor scan discovered new source objects",
+                message="监控拆包扫描发现新的来源对象",
                 context={
                     "task_definition_id": snapshot.definition.id,
                     "trigger": trigger.value,
@@ -2405,7 +2462,7 @@ class TaskDefinitionExecutionService:
                 execution_id=execution_id,
                 trace_id=trace_id,
                 event_code="TASK_MONITOR_SCAN_MATERIALIZED",
-                message="Monitor scan materialized new objects into safe unpack runs",
+                message="监控拆包新对象已生成安全 Run",
                 context={"items": len(materialized)},
             )
             session.commit()
@@ -2793,19 +2850,14 @@ class TaskDefinitionExecutionService:
                 if not isinstance(relative_path, str):
                     continue
                 current = current_by_path.get(relative_path)
-                expected = (
-                    raw.get("size_bytes"),
-                    raw.get("device"),
-                    raw.get("inode"),
-                    raw.get("mtime_ns"),
+                snapshot_matches = (
+                    current is not None
+                    and _parse_snapshot_int(raw.get("size_bytes")) == current.length
+                    and _parse_snapshot_int(raw.get("device")) == current.snapshot.device
+                    and _parse_snapshot_int(raw.get("inode")) == current.snapshot.inode
+                    and _mtime_snapshot_matches(raw.get("mtime_ns"), current.snapshot.mtime_ns)
                 )
-                observed = (
-                    current.length if current is not None else None,
-                    current.snapshot.device if current is not None else None,
-                    current.snapshot.inode if current is not None else None,
-                    current.snapshot.mtime_ns if current is not None else None,
-                )
-                if current is None or expected != observed:
+                if not snapshot_matches:
                     terminal_items.append(
                         self._record_terminal_item(
                             execution_id=execution_id,
@@ -2821,9 +2873,11 @@ class TaskDefinitionExecutionService:
                             result="FAILED",
                             error_code="SOURCE_SNAPSHOT_CHANGED",
                             error_summary_zh="文件已与保存任务时的扫描快照不一致",
+                            technical_detail=_snapshot_change_detail(raw, current),
                         )
                     )
                     continue
+                assert current is not None
                 selected_inventory.append(current)
             filtered = tuple(selected_inventory)
         units = identify_task_units(
@@ -2929,7 +2983,7 @@ class TaskDefinitionExecutionService:
                 execution_id=execution_id,
                 trace_id=trace_id,
                 event_code="TASK_UNPACK_RUN_MATERIALIZED",
-                message="Safe unpack run created and waiting for preflight",
+                message="安全拆包 Run 已创建，等待执行前检查",
                 context={
                     "unpack_task_id": task.id,
                     "source_object_key": source_object_key,
@@ -2985,8 +3039,12 @@ class TaskDefinitionExecutionService:
                 execution_id=execution_id,
                 trace_id=trace_id,
                 event_code="TASK_SOURCE_OBJECT_REJECTED",
-                message="Source object could not be materialized",
-                context={"source_object_key": source_object_key, "error_code": error_code},
+                message="来源对象无法进入安全执行阶段",
+                context={
+                    "source_object_key": source_object_key,
+                    "error_code": error_code,
+                    **({"technical_detail": technical_detail} if technical_detail else {}),
+                },
             )
             session.commit()
             return self._item_view(item)
@@ -3168,7 +3226,7 @@ class TaskDefinitionExecutionService:
                 execution_id=execution_id,
                 trace_id=trace_id,
                 event_code="TASK_EXECUTION_FAILED",
-                message="Task source materialization failed",
+                message="任务来源对象生成执行对象失败",
                 context={"error_type": type(exc).__name__, "detail": str(exc)},
             )
             session.commit()

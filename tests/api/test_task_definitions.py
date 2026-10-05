@@ -845,6 +845,93 @@ def test_directory_stability_wait_schedules_follow_up_before_next_cron(tmp_path:
         client.__exit__(None, None, None)
 
 
+def test_manual_directory_snapshot_round_trip_keeps_43_real_files_stable(tmp_path: Path) -> None:
+    """Regression for the v1.0.11 browser Number precision incident.
+
+    The production report contained 43 selected files and 41 false
+    SOURCE_SNAPSHOT_CHANGED failures immediately after saving.  Exercise the
+    same preview -> JSON round trip -> save -> execute path against 43 real
+    filesystem entries whose nanosecond mtimes cannot be represented exactly
+    by a JavaScript Number.
+    """
+
+    client, app = _authenticated_client(tmp_path)
+    try:
+        site_id = _create_ready_site(app)
+        target_downloader_id = _create_ready_qb_downloader(app)
+        incoming = app.state.settings.data_dir / "incoming-43"
+        incoming.mkdir(parents=True)
+        fixed_mtime_ns = 1_761_234_567_890_123_457
+        assert int(float(fixed_mtime_ns)) != fixed_mtime_ns
+
+        for index in range(43):
+            movie = incoming / f"Movie.{index:02d}.2026.1080p.mkv"
+            movie.write_bytes(f"directory-video-{index:02d}".encode())
+            os.utime(movie, ns=(fixed_mtime_ns, fixed_mtime_ns))
+            assert movie.stat().st_mtime_ns == fixed_mtime_ns
+
+        preview = client.post(
+            "/api/v1/task-definitions/directory-preview",
+            headers=_csrf(client),
+            json={"directory_path": "incoming-43"},
+        )
+        assert preview.status_code == 200
+        selected = preview.json()["files"]
+        assert len(selected) == 43
+        assert all(item["mtime_ns"] == str(fixed_mtime_ns) for item in selected)
+        assert all(isinstance(item["mtime_ns"], str) for item in selected)
+
+        created = client.post(
+            "/api/v1/task-definitions",
+            headers=_csrf(client),
+            json={
+                "name": "43 文件快照精度回归",
+                "kind": "MANUAL",
+                "site_id": site_id,
+                "source": {
+                    "kind": "DIRECTORY",
+                    "directory_path": "incoming-43",
+                    "config": {
+                        "selected_files": selected,
+                        "target_downloader_id": target_downloader_id,
+                    },
+                },
+                "output_policy": {"output_directory": "output"},
+            },
+        )
+        assert created.status_code == 201
+        executed = client.post(
+            f"/api/v1/task-definitions/{created.json()['id']}/executions",
+            headers=_csrf(client),
+        )
+        assert executed.status_code == 201
+        body = executed.json()
+        assert body["status"] == "PENDING"
+        assert body["discovered_count"] == 43
+        assert body["failed_count"] == 0
+        assert body["skipped_count"] == 0
+        assert len(body["items"]) == 43
+        assert all(item["error_code"] is None for item in body["items"])
+        assert not any(
+            event["event_code"] == "TASK_SOURCE_OBJECT_REJECTED"
+            and event["context"].get("error_code") == "SOURCE_SNAPSHOT_CHANGED"
+            for event in body["events"]
+        )
+        materialized = next(
+            event
+            for event in body["events"]
+            if event["event_code"] == "TASK_EXECUTION_MATERIALIZED"
+        )
+        assert materialized["context"] == {
+            "items": 43,
+            "ready": 43,
+            "failed": 0,
+            "skipped": 0,
+        }
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_directory_browser_preview_and_manual_snapshot_execution_are_safe(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
@@ -855,6 +942,10 @@ def test_directory_browser_preview_and_manual_snapshot_execution_are_safe(tmp_pa
         subdir.mkdir(parents=True)
         movie = incoming / "Movie.2026.1080p.mkv"
         movie.write_bytes(b"directory-video")
+        fixed_mtime_ns = 1_761_234_567_890_123_457
+        os.utime(movie, ns=(fixed_mtime_ns, fixed_mtime_ns))
+        assert movie.stat().st_mtime_ns == fixed_mtime_ns
+        assert int(float(fixed_mtime_ns)) != fixed_mtime_ns
         (incoming / "sample.mkv").write_bytes(b"sample")
 
         root = client.get("/api/v1/task-definitions/source-directories", params={"path": "."})
@@ -882,6 +973,7 @@ def test_directory_browser_preview_and_manual_snapshot_execution_are_safe(tmp_pa
         assert preview_body["matched_count"] == 1
         assert [item["relative_path"] for item in preview_body["files"]] == ["Movie.2026.1080p.mkv"]
         selected = preview_body["files"]
+        assert selected[0]["mtime_ns"] == str(fixed_mtime_ns)
 
         rejected_manual_preauthorization = client.post(
             "/api/v1/task-definitions",
@@ -985,6 +1077,38 @@ def test_directory_browser_preview_and_manual_snapshot_execution_are_safe(tmp_pa
         assert final_event["event_code"] == "TASK_EXECUTION_ITEM_STATE_CHANGED"
         assert final_event["context"]["to_phase"] == "COMPLETED"
         assert final_event["context"]["to_result"] == "SUCCESS"
+
+        # 兼容 v1.0.11 及更早版本：浏览器曾把纳秒时间戳作为 JS Number
+        # 保存，超出安全整数范围后会发生 IEEE-754 舍入。旧任务应按同样的
+        # 确定性舍入规则继续匹配，而不是误报 SOURCE_SNAPSHOT_CHANGED。
+        legacy_selected = [dict(selected[0])]
+        legacy_selected[0]["mtime_ns"] = int(float(fixed_mtime_ns))
+        legacy_definition = client.post(
+            "/api/v1/task-definitions",
+            headers=_csrf(client),
+            json={
+                "name": "旧版 JS 时间戳兼容任务",
+                "kind": "MANUAL",
+                "site_id": site_id,
+                "source": {
+                    "kind": "DIRECTORY",
+                    "directory_path": "incoming",
+                    "config": {
+                        "selected_files": legacy_selected,
+                        "target_downloader_id": target_downloader_id,
+                    },
+                },
+                "output_policy": {"output_directory": "output"},
+            },
+        )
+        assert legacy_definition.status_code == 201
+        legacy_execution = client.post(
+            f"/api/v1/task-definitions/{legacy_definition.json()['id']}/executions",
+            headers=_csrf(client),
+        )
+        assert legacy_execution.status_code == 201
+        assert legacy_execution.json()["status"] == "PENDING"
+        assert legacy_execution.json()["items"][0]["error_code"] is None
 
         changed_preview = client.post(
             "/api/v1/task-definitions/directory-preview",
