@@ -1,5 +1,4 @@
 from datetime import datetime
-from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
@@ -12,13 +11,7 @@ from backend.app.api.dependencies import (
     require_admin_csrf_principal,
     require_admin_principal,
 )
-from backend.app.application.downloaders import (
-    DownloaderUpdate,
-    DownloaderView,
-    PathDiagnosticProbe,
-    PathDiagnosticReport,
-    PathDiagnosticResult,
-)
+from backend.app.application.downloaders import DownloaderUpdate, DownloaderView
 from backend.app.application.errors import ApplicationError
 from backend.app.domain.downloader import (
     DownloaderCredential,
@@ -68,15 +61,6 @@ class DownloaderPatchRequest(BaseModel):
     path_mappings: list[PathMappingInput] | None = Field(default=None, max_length=64)
 
 
-class PathDiagnosticProbeInput(BaseModel):
-    remote_path: str = Field(min_length=1, max_length=8192)
-    target_directory: str = Field(min_length=1, max_length=8192)
-
-
-class PathDiagnosticRequest(BaseModel):
-    probes: list[PathDiagnosticProbeInput] = Field(min_length=1, max_length=64)
-
-
 class DownloaderActionRequest(BaseModel):
     action: Literal["enable", "disable", "refresh_capabilities"]
 
@@ -122,11 +106,9 @@ def _view(record: DownloaderView) -> dict[str, object]:
         ],
         "capabilities": record.capabilities,
         "connection_status": record.connection_status.value,
-        "path_mapping_status": record.path_mapping_status.value,
         "enabled": record.enabled,
         "version": record.version,
         "last_test_at": _timestamp(record.last_test_at),
-        "last_path_diagnostic_at": _timestamp(record.last_path_diagnostic_at),
         "created_at": _timestamp(record.created_at),
         "updated_at": _timestamp(record.updated_at),
     }
@@ -141,32 +123,6 @@ def _metrics(value: DownloaderRuntimeMetrics) -> dict[str, object]:
         "active_torrent_count": value.active_torrent_count,
         "total_torrent_count": value.total_torrent_count,
         "sampled_at": _timestamp(value.sampled_at),
-    }
-
-
-def _diagnostic_result(result: PathDiagnosticResult) -> dict[str, object]:
-    return {
-        "status": "ok" if result.ok else "blocked",
-        "rule_index": result.rule_index,
-        "container_visible": result.container_visible,
-        "regular_file": result.regular_file,
-        "readable": result.readable,
-        "target_writable": result.target_writable,
-        "round_trip": result.round_trip,
-        "source_device": result.source_device,
-        "target_device": result.target_device,
-        "same_device": result.same_device,
-        "hardlink_feasible": result.hardlink_feasible,
-        "error_code": result.error_code,
-    }
-
-
-def _diagnostic(report: PathDiagnosticReport) -> dict[str, object]:
-    return {
-        "status": "ok" if report.ok else "blocked",
-        "all_mappings_verified": report.all_mappings_verified,
-        "error_code": report.error_code,
-        "results": [_diagnostic_result(result) for result in report.results],
     }
 
 
@@ -316,26 +272,6 @@ async def test_downloader(
     _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
 ) -> dict[str, object]:
     return await downloader_service(request).test_connection(downloader_id)
-
-
-@router.post("/downloaders/{downloader_id}/path-diagnostics")
-async def diagnose_downloader_path(
-    downloader_id: str,
-    request: Request,
-    payload: PathDiagnosticRequest,
-    _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
-) -> dict[str, object]:
-    result = await downloader_service(request).path_diagnostics(
-        downloader_id,
-        probes=[
-            PathDiagnosticProbe(
-                remote_path=probe.remote_path,
-                target_directory=Path(probe.target_directory),
-            )
-            for probe in payload.probes
-        ],
-    )
-    return _diagnostic(result)
 
 
 @router.get("/downloaders/{downloader_id}/tasks")

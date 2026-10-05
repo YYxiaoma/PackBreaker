@@ -122,9 +122,44 @@ def test_v104_database_upgrades_to_cookiecloud_schema_without_touching_sites(
                 "last_sync_status",
                 "version",
             } <= columns
+            assert "sync_cron_expression" not in columns
             assert (
                 connection.execute(text("SELECT COUNT(*) FROM cookiecloud_setting")).scalar_one()
                 == 0
+            )
+            assert connection.execute(text("PRAGMA foreign_key_check")).fetchall() == []
+
+        command.upgrade(config, "0034_cookiecloud_cron_v1010")
+
+        with engine.connect() as connection:
+            revision = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+            assert revision == "0034_cookiecloud_cron_v1010"
+            columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(cookiecloud_setting)"))
+            }
+            assert {
+                "sync_cron_expression",
+                "source_domains",
+                "source_cookies",
+                "eligible_sites",
+                "unchanged_sites",
+            } <= columns
+            site = connection.execute(
+                text(
+                    "SELECT id, name, type, base_url, credential_kind, enabled, version "
+                    "FROM site WHERE id = 'v104-site'"
+                )
+            ).one()
+            assert tuple(site) == (
+                "v104-site",
+                "v1.0.4 KeepFrds",
+                "KEEPFRDS",
+                "https://pt.keepfrds.com",
+                "COOKIE",
+                0,
+                7,
             )
             assert connection.execute(text("PRAGMA foreign_key_check")).fetchall() == []
     finally:

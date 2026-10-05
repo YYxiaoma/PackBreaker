@@ -148,7 +148,7 @@ class SiteProfileListResponse(BaseModel):
 
 
 class SiteActionRequest(BaseModel):
-    action: Literal["enable", "disable", "refresh_capabilities", "reset_circuit"]
+    action: Literal["enable", "disable", "refresh_capabilities"]
 
 
 class SiteProbeResponse(BaseModel):
@@ -504,15 +504,6 @@ async def site_action(
     if payload.action == "refresh_capabilities":
         result = await site_service(request).test_connection(site_id)
         return JSONResponse(result)
-    if payload.action == "reset_circuit":
-        health = await site_service(request).reset_circuit(
-            site_id,
-            expected_version=_expected_version(if_match),
-        )
-        return JSONResponse(
-            _health(health).model_dump(mode="json"),
-            headers={"ETag": f'"{health.config_version}"'},
-        )
     record = site_service(request).set_enabled(
         site_id,
         expected_version=_expected_version(if_match),

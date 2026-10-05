@@ -166,6 +166,11 @@ def parse_cookiecloud_payload(value: object) -> CookieCloudPayload:
             if not isinstance(path, str):
                 path = "/"
             expiration_date = float(expiration) if isinstance(expiration, (int, float)) else None
+            # Browser session cookies normally omit expirationDate. Some
+            # exported/imported CookieCloud payloads use 0/-1 as the session
+            # sentinel; those cookies must not be discarded as already expired.
+            if expiration_date is not None and expiration_date <= 0:
+                expiration_date = None
             items.append(
                 CookieCloudCookie(
                     name=name,

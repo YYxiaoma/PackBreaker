@@ -435,16 +435,12 @@ class SystemHealthService:
         enabled = [downloader for downloader in downloaders if downloader.enabled]
         connection_failed = sum(item.connection_status == "FAILED" for item in enabled)
         connection_untested = sum(item.connection_status == "UNTESTED" for item in enabled)
-        mapping_failed = sum(item.path_mapping_status == "FAILED" for item in enabled)
-        mapping_untested = sum(item.path_mapping_status == "UNTESTED" for item in enabled)
-        warning = any((connection_failed, connection_untested, mapping_failed, mapping_untested))
+        warning = any((connection_failed, connection_untested))
         return SystemHealthCheck(
             "downloaders",
             "warning" if warning else "ok",
             "DOWNLOADER_ATTENTION_REQUIRED" if warning else "DOWNLOADER_OK",
-            "已启用下载器存在失败/未测试的连接或路径映射证据"
-            if warning
-            else "已启用下载器的已有连接与路径证据正常",
+            "已启用下载器存在失败或未测试的连接" if warning else "已启用下载器连接状态正常",
             {
                 "configured": len(downloaders),
                 "enabled": len(enabled),
@@ -453,8 +449,6 @@ class SystemHealthService:
                 ),
                 "connection_failed": connection_failed,
                 "connection_untested": connection_untested,
-                "path_mapping_failed": mapping_failed,
-                "path_mapping_untested": mapping_untested,
             },
         )
 

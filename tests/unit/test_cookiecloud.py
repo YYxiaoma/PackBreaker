@@ -5,6 +5,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import httpx2
 import pytest
@@ -17,6 +18,7 @@ from backend.app.domain.cookiecloud import (
     cookie_header_for_host,
     normalize_cookiecloud_server_url,
 )
+from backend.app.domain.site_config import SiteCredentialKind, SiteKind, site_profiles
 from backend.app.infrastructure.cookiecloud import (
     CookieCloudClient,
     CookieCloudError,
@@ -156,6 +158,75 @@ def test_cookie_header_filters_expired_and_unrelated_domains() -> None:
         crypto_type=CookieCloudCryptoType.AES_128_CBC_FIXED,
     )
     assert cookie_header_for_host(payload, "pt.example.com") == "session=ok"
+
+
+def test_cookiecloud_bulk_payload_recognizes_11_packbreaker_sites_from_18_domains() -> None:
+    all_profiles = list(site_profiles())
+    eligible_profiles = [
+        profile
+        for profile in all_profiles
+        if profile.credential_kind is SiteCredentialKind.COOKIE
+        or profile.kind is SiteKind.ROUSI_PRO
+    ]
+    assert len(all_profiles) == 11
+    assert len(eligible_profiles) == 10
+
+    cookie_data: dict[str, list[dict[str, object]]] = {}
+    for index, profile in enumerate(all_profiles):
+        host = urlsplit(profile.base_url).hostname
+        assert host is not None
+        cookie_data[f"https://{host}/"] = [
+            {
+                "name": f"session_{index}",
+                "value": f"cookie-{index}",
+                "domain": f"https://{host}/",
+                "path": "/",
+                "expirationDate": 0,
+            }
+        ]
+    for index in range(7):
+        host = f"outside-{index}.invalid"
+        cookie_data[host] = [
+            {
+                "name": f"foreign_{index}",
+                "value": "ignored",
+                "domain": host,
+                "path": "/",
+            }
+        ]
+
+    raw: dict[str, object] = {
+        "cookie_data": cookie_data,
+        "local_storage_data": {},
+        "update_time": "2026-10-05T02:00:00.000Z",
+    }
+    encrypted = _fixed_encrypt("bulk-uuid", "bulk-password", raw)
+    payload = decrypt_cookiecloud_payload(
+        uuid="bulk-uuid",
+        password="bulk-password",
+        encrypted=encrypted,
+        crypto_type=CookieCloudCryptoType.AES_128_CBC_FIXED,
+    )
+
+    assert len(payload.cookie_data) == 18
+
+    recognized_hosts = 0
+    for profile in all_profiles:
+        host = urlsplit(profile.base_url).hostname
+        assert host is not None
+        header = cookie_header_for_host(payload, host)
+        assert header is not None
+        assert "foreign_" not in header
+        recognized_hosts += 1
+    assert recognized_hosts == 11
+
+    eligible_headers = 0
+    for profile in eligible_profiles:
+        host = urlsplit(profile.base_url).hostname
+        assert host is not None
+        assert cookie_header_for_host(payload, host) is not None
+        eligible_headers += 1
+    assert eligible_headers == 10
 
 
 def test_server_url_preserves_easychen_api_root() -> None:

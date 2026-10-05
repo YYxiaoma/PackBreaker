@@ -20,6 +20,7 @@ from backend.app.domain.cookiecloud import (
     normalize_cookiecloud_uuid,
 )
 from backend.app.domain.site_config import SiteCredentialKind, SiteKind
+from backend.app.domain.task_definition import normalize_cron_expression
 from backend.app.infrastructure.cookiecloud import (
     CookieCloudClient,
     CookieCloudError,
@@ -40,15 +41,19 @@ class CookieCloudSettingView:
     uuid: str
     password_configured: bool
     auto_sync: bool
-    sync_interval_minutes: int
+    sync_cron_expression: str
     request_timeout_seconds: int
     connection_status: CookieCloudConnectionStatus
     last_test_at: datetime | None
     last_sync_at: datetime | None
     last_sync_status: CookieCloudSyncStatus
     last_sync_error_code: str | None
+    source_domains: int
+    source_cookies: int
+    eligible_sites: int
     matched_sites: int
     updated_sites: int
+    unchanged_sites: int
     unmatched_domains: int
     version: int
     created_at: datetime
@@ -61,7 +66,7 @@ class CookieCloudSettingUpdate:
     server_url: str
     uuid: str
     auto_sync: bool
-    sync_interval_minutes: int
+    sync_cron_expression: str
     request_timeout_seconds: int
     password_action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
     password: str | None = None
@@ -80,8 +85,12 @@ class CookieCloudProbeView:
 class CookieCloudSyncView:
     synced_at: datetime
     crypto_type: CookieCloudCryptoType
+    source_domains: int
+    source_cookies: int
+    eligible_sites: int
     matched_sites: int
     updated_sites: int
+    unchanged_sites: int
     unmatched_domains: int
     update_time: str | None
 
@@ -123,7 +132,8 @@ class CookieCloudService:
     ) -> CookieCloudSettingView:
         server_url = self._normalize_server_url(change.server_url)
         uuid = self._normalize_uuid(change.uuid)
-        self._validate_runtime(change.sync_interval_minutes, change.request_timeout_seconds)
+        sync_cron_expression = self._normalize_cron(change.sync_cron_expression)
+        self._validate_runtime(change.request_timeout_seconds)
         password = self._normalize_password(change.password)
         if change.password_action == "SET" and password is None:
             raise self._invalid("设置 CookieCloud 密码时必须提供非空值")
@@ -164,7 +174,7 @@ class CookieCloudService:
             record.uuid = uuid
             record.password_secret_id = new_secret_id
             record.auto_sync = change.auto_sync
-            record.sync_interval_minutes = change.sync_interval_minutes
+            record.sync_cron_expression = sync_cron_expression
             record.request_timeout_seconds = change.request_timeout_seconds
             if connection_changed:
                 record.connection_status = CookieCloudConnectionStatus.UNTESTED.value
@@ -267,6 +277,7 @@ class CookieCloudService:
             sites = self._site_service.list_sites()
             targets: dict[str, tuple[Literal["PRIMARY", "DOWNLOAD"], str]] = {}
             target_hosts: list[str] = []
+            eligible_sites = 0
             for site in sites:
                 host = urlsplit(site.base_url).hostname
                 if host is None:
@@ -276,6 +287,7 @@ class CookieCloudService:
                     and site.type is not SiteKind.ROUSI_PRO
                 ):
                     continue
+                eligible_sites += 1
                 target_hosts.append(host)
                 header = cookie_header_for_host(payload, host)
                 if header is None:
@@ -295,7 +307,10 @@ class CookieCloudService:
                 )
                 if not matched:
                     unmatched_domains += 1
+            source_domains = len(payload.cookie_data)
+            source_cookies = sum(len(items) for items in payload.cookie_data.values())
             updated_sites = self._site_service.sync_cookiecloud_credentials(targets)
+            unchanged_sites = max(0, len(targets) - updated_sites)
         except CookieCloudError as exc:
             self._store_sync_failure(
                 expected_version=version,
@@ -314,8 +329,12 @@ class CookieCloudService:
         view = self._store_sync_success(
             expected_version=version,
             synced_at=synced_at,
+            source_domains=source_domains,
+            source_cookies=source_cookies,
+            eligible_sites=eligible_sites,
             matched_sites=len(targets),
             updated_sites=updated_sites,
+            unchanged_sites=unchanged_sites,
             unmatched_domains=unmatched_domains,
         )
         return (
@@ -323,8 +342,12 @@ class CookieCloudService:
             CookieCloudSyncView(
                 synced_at=synced_at,
                 crypto_type=envelope.crypto_type,
+                source_domains=source_domains,
+                source_cookies=source_cookies,
+                eligible_sites=eligible_sites,
                 matched_sites=len(targets),
                 updated_sites=updated_sites,
+                unchanged_sites=unchanged_sites,
                 unmatched_domains=unmatched_domains,
                 update_time=payload.update_time,
             ),
@@ -354,8 +377,12 @@ class CookieCloudService:
         *,
         expected_version: int,
         synced_at: datetime,
+        source_domains: int,
+        source_cookies: int,
+        eligible_sites: int,
         matched_sites: int,
         updated_sites: int,
+        unchanged_sites: int,
         unmatched_domains: int,
     ) -> CookieCloudSettingView:
         with self._session_factory() as session:
@@ -367,8 +394,12 @@ class CookieCloudService:
             record.last_sync_at = synced_at
             record.last_sync_status = CookieCloudSyncStatus.SUCCESS.value
             record.last_sync_error_code = None
+            record.source_domains = source_domains
+            record.source_cookies = source_cookies
+            record.eligible_sites = eligible_sites
             record.matched_sites = matched_sites
             record.updated_sites = updated_sites
+            record.unchanged_sites = unchanged_sites
             record.unmatched_domains = unmatched_domains
             record.updated_at = datetime.now(UTC)
             session.commit()
@@ -421,15 +452,19 @@ class CookieCloudService:
             uuid=record.uuid,
             password_configured=record.password_secret_id is not None,
             auto_sync=record.auto_sync,
-            sync_interval_minutes=record.sync_interval_minutes,
+            sync_cron_expression=record.sync_cron_expression,
             request_timeout_seconds=record.request_timeout_seconds,
             connection_status=CookieCloudConnectionStatus(record.connection_status),
             last_test_at=record.last_test_at,
             last_sync_at=record.last_sync_at,
             last_sync_status=CookieCloudSyncStatus(record.last_sync_status),
             last_sync_error_code=record.last_sync_error_code,
+            source_domains=record.source_domains,
+            source_cookies=record.source_cookies,
+            eligible_sites=record.eligible_sites,
             matched_sites=record.matched_sites,
             updated_sites=record.updated_sites,
+            unchanged_sites=record.unchanged_sites,
             unmatched_domains=record.unmatched_domains,
             version=record.version,
             created_at=record.created_at,
@@ -462,10 +497,15 @@ class CookieCloudService:
             raise CookieCloudService._invalid("CookieCloud 密码格式无效")
         return value
 
+    @classmethod
+    def _normalize_cron(cls, value: str) -> str:
+        try:
+            return normalize_cron_expression(value)
+        except ValueError as exc:
+            raise cls._invalid(str(exc)) from exc
+
     @staticmethod
-    def _validate_runtime(sync_interval_minutes: int, request_timeout_seconds: int) -> None:
-        if not 5 <= sync_interval_minutes <= 10080:
-            raise CookieCloudService._invalid("CookieCloud 同步间隔必须在 5～10080 分钟之间")
+    def _validate_runtime(request_timeout_seconds: int) -> None:
         if not 1 <= request_timeout_seconds <= 120:
             raise CookieCloudService._invalid("CookieCloud 请求超时必须在 1～120 秒之间")
 

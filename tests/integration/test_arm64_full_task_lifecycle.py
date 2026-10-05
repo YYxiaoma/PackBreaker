@@ -171,7 +171,6 @@ async def _run_full_lifecycle(
         kind=kind,
         enabled=True,
         connection_status=ProbeStatus.OK,
-        path_mapping_status=ProbeStatus.OK,
         path_mappings=mappings,
         capabilities=capabilities,
     )

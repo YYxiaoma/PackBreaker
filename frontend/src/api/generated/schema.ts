@@ -177,6 +177,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/cookiecloud/cron-preview': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Preview Cookiecloud Cron */
+    post: operations['preview_cookiecloud_cron_api_v1_cookiecloud_cron_preview_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/cookiecloud/sync': {
     parameters: {
       query?: never;
@@ -293,23 +310,6 @@ export interface paths {
     get: operations['get_downloader_metrics_api_v1_downloaders__downloader_id__metrics_get'];
     put?: never;
     post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/v1/downloaders/{downloader_id}/path-diagnostics': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Diagnose Downloader Path */
-    post: operations['diagnose_downloader_path_api_v1_downloaders__downloader_id__path_diagnostics_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1924,6 +1924,22 @@ export interface components {
      * @enum {string}
      */
     CookieCloudConnectionStatus: 'UNTESTED' | 'OK' | 'FAILED';
+    /** CookieCloudCronPreviewRequest */
+    CookieCloudCronPreviewRequest: {
+      /** Cron Expression */
+      cron_expression: string;
+    };
+    /** CookieCloudCronPreviewResponse */
+    CookieCloudCronPreviewResponse: {
+      /** Cron Expression */
+      cron_expression: string;
+      /** Description */
+      description: string;
+      /** Next Runs */
+      next_runs: string[];
+      /** Timezone */
+      timezone: string;
+    };
     /**
      * CookieCloudCryptoType
      * @enum {string}
@@ -1961,6 +1977,8 @@ export interface components {
        * Format: date-time
        */
       created_at: string;
+      /** Eligible Sites */
+      eligible_sites: number;
       /** Enabled */
       enabled: boolean;
       /** Last Sync At */
@@ -1978,8 +1996,14 @@ export interface components {
       request_timeout_seconds: number;
       /** Server Url */
       server_url: string;
-      /** Sync Interval Minutes */
-      sync_interval_minutes: number;
+      /** Source Cookies */
+      source_cookies: number;
+      /** Source Domains */
+      source_domains: number;
+      /** Sync Cron Expression */
+      sync_cron_expression: string;
+      /** Unchanged Sites */
+      unchanged_sites: number;
       /** Unmatched Domains */
       unmatched_domains: number;
       /**
@@ -2025,10 +2049,10 @@ export interface components {
        */
       server_url: string;
       /**
-       * Sync Interval Minutes
-       * @default 30
+       * Sync Cron Expression
+       * @default *\/30 * * * *
        */
-      sync_interval_minutes: number;
+      sync_cron_expression: string;
       /**
        * Uuid
        * @default
@@ -2038,8 +2062,14 @@ export interface components {
     /** CookieCloudSyncResponse */
     CookieCloudSyncResponse: {
       crypto_type: components['schemas']['CookieCloudCryptoType'];
+      /** Eligible Sites */
+      eligible_sites: number;
       /** Matched Sites */
       matched_sites: number;
+      /** Source Cookies */
+      source_cookies: number;
+      /** Source Domains */
+      source_domains: number;
       /**
        * Status
        * @constant
@@ -2050,6 +2080,8 @@ export interface components {
        * Format: date-time
        */
       synced_at: string;
+      /** Unchanged Sites */
+      unchanged_sites: number;
       /** Unmatched Domains */
       unmatched_domains: number;
       /** Update Time */
@@ -2852,18 +2884,6 @@ export interface components {
        */
       password: string;
     };
-    /** PathDiagnosticProbeInput */
-    PathDiagnosticProbeInput: {
-      /** Remote Path */
-      remote_path: string;
-      /** Target Directory */
-      target_directory: string;
-    };
-    /** PathDiagnosticRequest */
-    PathDiagnosticRequest: {
-      /** Probes */
-      probes: components['schemas']['PathDiagnosticProbeInput'][];
-    };
     /** PathMappingInput */
     PathMappingInput: {
       /** Container Prefix */
@@ -3121,7 +3141,7 @@ export interface components {
        * Action
        * @enum {string}
        */
-      action: 'enable' | 'disable' | 'refresh_capabilities' | 'reset_circuit';
+      action: 'enable' | 'disable' | 'refresh_capabilities';
     };
     /** SiteCreateRequest */
     SiteCreateRequest: {
@@ -5028,6 +5048,41 @@ export interface operations {
       };
     };
   };
+  preview_cookiecloud_cron_api_v1_cookiecloud_cron_preview_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CookieCloudCronPreviewRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CookieCloudCronPreviewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   sync_cookiecloud_api_v1_cookiecloud_sync_post: {
     parameters: {
       query?: never;
@@ -5369,48 +5424,6 @@ export interface operations {
       };
     };
     requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': {
-            [key: string]: unknown;
-          };
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  diagnose_downloader_path_api_v1_downloaders__downloader_id__path_diagnostics_post: {
-    parameters: {
-      query?: never;
-      header?: {
-        'X-CSRF-Token'?: string | null;
-      };
-      path: {
-        downloader_id: string;
-      };
-      cookie?: {
-        packbreaker_session?: string | null;
-        packbreaker_csrf?: string | null;
-      };
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['PathDiagnosticRequest'];
-      };
-    };
     responses: {
       /** @description Successful Response */
       200: {

@@ -2,24 +2,13 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import {
-  Activity,
-  AlertTriangle,
-  Check,
-  HardDrive,
-  Plus,
-  RefreshCw,
-  Settings2,
-  Trash2,
-} from '@lucide/vue';
+import { Activity, HardDrive, Plus, RefreshCw, Settings2, Trash2 } from '@lucide/vue';
 import { ApiProblem, toApiProblem } from '../api/client';
 import type {
   Downloader,
   DownloaderCredential,
   DownloaderKind,
   DownloaderPatchInput,
-  PathDiagnosticProbeInput,
-  PathDiagnosticReport,
   PathMapping,
 } from '../api/downloaders';
 import { useDownloaderStore } from '../stores/downloaders';
@@ -41,19 +30,10 @@ interface DownloaderDraft {
   credentialConfigured: boolean;
 }
 
-interface DiagnosticDraft {
-  mapping: PathMapping;
-  remote_path: string;
-  target_directory: string;
-}
-
 const store = useDownloaderStore();
-const { items, loading, error, busy, diagnostics, metrics, metricErrors } = storeToRefs(store);
+const { items, loading, error, busy, metrics, metricErrors } = storeToRefs(store);
 const dialog = ref(false);
 const saving = ref(false);
-const diagnosticDialog = ref(false);
-const diagnosticTargetId = ref<string | null>(null);
-const diagnosticDrafts = ref<DiagnosticDraft[]>([]);
 
 const draft = reactive<DownloaderDraft>({
   id: null,
@@ -71,13 +51,6 @@ const draft = reactive<DownloaderDraft>({
 });
 
 const editing = computed(() => draft.id !== null);
-const diagnosticTarget = computed(() =>
-  items.value.find((item) => item.id === diagnosticTargetId.value),
-);
-const diagnosticReport = computed<PathDiagnosticReport | null>(() => {
-  if (!diagnosticTargetId.value) return null;
-  return diagnostics.value[diagnosticTargetId.value] ?? null;
-});
 
 let metricsTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -291,7 +264,7 @@ async function save() {
       ElMessage.success('下载器配置已保存；安全相关变更会自动重新要求探测');
     } else {
       await store.create({ ...common, monitor_rules: {}, ...(credential ? { credential } : {}) });
-      ElMessage.success('下载器配置已创建，默认保持停用');
+      ElMessage.success('下载器配置已创建并默认启用');
     }
     dialog.value = false;
   } catch (caught) {
@@ -384,44 +357,6 @@ async function testConnection(item: Downloader) {
   }
 }
 
-function openDiagnostics(item: Downloader) {
-  if (!item.path_mappings.length) {
-    ElMessage.warning('请先配置至少一条路径映射');
-    return;
-  }
-  diagnosticTargetId.value = item.id;
-  diagnosticDrafts.value = item.path_mappings.map((mapping) => ({
-    mapping: { ...mapping },
-    remote_path: '',
-    target_directory: '',
-  }));
-  diagnosticDialog.value = true;
-}
-
-async function runDiagnostics() {
-  const item = diagnosticTarget.value;
-  if (!item) return;
-  if (
-    diagnosticDrafts.value.some(
-      (probe) => !probe.remote_path.trim() || !probe.target_directory.trim(),
-    )
-  ) {
-    ElMessage.warning('每条路径映射都需要提供一个实际存在的测试文件和目标目录');
-    return;
-  }
-  const probes: PathDiagnosticProbeInput[] = diagnosticDrafts.value.map((probe) => ({
-    remote_path: probe.remote_path.trim(),
-    target_directory: probe.target_directory.trim(),
-  }));
-  try {
-    const report = await store.diagnose(item, probes);
-    if (report.status === 'ok') ElMessage.success('全部路径映射已通过文件系统诊断');
-    else ElMessage.warning(`路径诊断被阻断：${report.error_code ?? '未知原因'}`);
-  } catch (caught) {
-    await handleWriteProblem(caught);
-  }
-}
-
 async function toggleEnabled(item: Downloader, enabled: boolean) {
   if (item.enabled === enabled) return;
   try {
@@ -490,9 +425,6 @@ async function remove(item: Downloader) {
           <el-tag :type="statusTag(item.connection_status)">
             连接 {{ statusLabel(item.connection_status) }}
           </el-tag>
-          <el-tag :type="statusTag(item.path_mapping_status)">
-            路径 {{ statusLabel(item.path_mapping_status) }}
-          </el-tag>
           <el-tag :type="item.credential_configured ? 'success' : 'info'">
             {{ item.credential_configured ? '凭证已配置' : '未配置凭证' }}
           </el-tag>
@@ -539,9 +471,6 @@ async function remove(item: Downloader) {
           <el-button size="small" :loading="isBusy(item, 'test')" @click="testConnection(item)">
             <Activity :size="14" />测试连接
           </el-button>
-          <el-button size="small" :loading="isBusy(item, 'diagnose')" @click="openDiagnostics(item)"
-            >路径诊断</el-button
-          >
           <el-button size="small" @click="openEdit(item)"> <Settings2 :size="14" />配置 </el-button>
           <el-button link type="danger" :loading="isBusy(item, 'delete')" @click="remove(item)"
             >删除</el-button
@@ -650,78 +579,13 @@ async function remove(item: Downloader) {
         <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
       </template>
     </el-dialog>
-
-    <el-dialog v-model="diagnosticDialog" title="路径映射诊断" width="min(760px, 94vw)">
-      <template v-if="diagnosticTarget">
-        <el-alert
-          title="请为每条映射填写一个实际存在的下载器文件路径和一个已存在的目标目录。"
-          type="warning"
-          :closable="false"
-        />
-        <div v-for="(probe, index) in diagnosticDrafts" :key="index" class="diagnostic-probe">
-          <b
-            >映射 {{ index + 1 }}：{{ probe.mapping.remote_prefix }} →
-            {{ probe.mapping.container_prefix }}</b
-          >
-          <el-form label-position="top">
-            <el-form-item label="下载器视角的已存在测试文件">
-              <el-input
-                v-model="probe.remote_path"
-                :placeholder="`${probe.mapping.remote_prefix}/实际文件.mkv`"
-              />
-            </el-form-item>
-            <el-form-item label="容器内已存在目标目录">
-              <el-input
-                v-model="probe.target_directory"
-                placeholder="/downloads/seeding 或 /mnt/media/seeding"
-              />
-            </el-form-item>
-          </el-form>
-        </div>
-
-        <div v-if="diagnosticReport" class="diagnostic-report">
-          <el-alert
-            :title="
-              diagnosticReport.status === 'ok'
-                ? '全部映射诊断通过，可以满足路径启用门槛'
-                : `诊断被阻断：${diagnosticReport.error_code ?? '未知原因'}`
-            "
-            :type="diagnosticReport.status === 'ok' ? 'success' : 'error'"
-            :closable="false"
-          />
-          <div
-            v-for="(result, index) in diagnosticReport.results"
-            :key="index"
-            class="diagnostic-result"
-          >
-            <component :is="result.status === 'ok' ? Check : AlertTriangle" :size="18" />
-            <span>规则 {{ result.rule_index + 1 }}</span>
-            <span>设备 {{ result.source_device }} → {{ result.target_device }}</span>
-            <el-tag :type="result.hardlink_feasible ? 'success' : 'danger'">
-              {{ result.hardlink_feasible ? 'hardlink 可行' : (result.error_code ?? '不可行') }}
-            </el-tag>
-          </div>
-        </div>
-      </template>
-      <template #footer>
-        <el-button @click="diagnosticDialog = false">关闭</el-button>
-        <el-button
-          v-if="diagnosticTarget"
-          type="primary"
-          :loading="isBusy(diagnosticTarget, 'diagnose')"
-          @click="runDiagnostics"
-          >运行诊断</el-button
-        >
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .downloader-heading-actions,
 .downloader-probe-tags,
-.mapping-editor-heading,
-.diagnostic-result {
+.mapping-editor-heading {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -795,24 +659,6 @@ async function remove(item: Downloader) {
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
-}
-
-.diagnostic-probe {
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--el-border-color-lighter);
-}
-
-.diagnostic-report {
-  display: grid;
-  gap: 10px;
-  margin-top: 18px;
-}
-
-.diagnostic-result {
-  flex-wrap: wrap;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
 @media (max-width: 700px) {

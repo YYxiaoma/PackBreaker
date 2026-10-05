@@ -288,6 +288,7 @@ def create_app(
         cookiecloud_driver = CookieCloudDriver(
             cookiecloud_service,
             interval_seconds=resolved_settings.cookiecloud_driver_interval_seconds,
+            timezone=resolved_settings.timezone,
         )
         app.state.cookiecloud_driver = cookiecloud_driver
         app.state.task_definition_service = TaskDefinitionService(

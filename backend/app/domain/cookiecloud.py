@@ -36,6 +36,7 @@ class CookieCloudCookie:
     def expired(self) -> bool:
         return (
             self.expiration_date is not None
+            and self.expiration_date > 0
             and self.expiration_date <= datetime.now(UTC).timestamp()
         )
 
@@ -79,9 +80,26 @@ def normalize_cookiecloud_uuid(value: str) -> str:
     return normalized
 
 
+def _normalize_cookie_host(value: str) -> str:
+    raw = value.strip().lower()
+    if not raw:
+        return ""
+    if "://" in raw:
+        try:
+            parsed = urlsplit(raw)
+        except ValueError:
+            return ""
+        raw = parsed.hostname or ""
+    else:
+        raw = raw.split("/", 1)[0]
+        if ":" in raw:
+            raw = raw.split(":", 1)[0]
+    return raw.lstrip(".").rstrip(".")
+
+
 def cookie_domain_matches_host(cookie_domain: str, request_host: str) -> bool:
-    domain = cookie_domain.strip().lower().lstrip(".").rstrip(".")
-    host = request_host.strip().lower().rstrip(".")
+    domain = _normalize_cookie_host(cookie_domain)
+    host = _normalize_cookie_host(request_host)
     if not domain or not host:
         return False
     return host == domain or host.endswith(f".{domain}")

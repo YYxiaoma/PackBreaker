@@ -235,7 +235,6 @@ def downloader_execution_binding_digest(
     kind: DownloaderKind,
     enabled: bool,
     connection_status: ProbeStatus,
-    path_mapping_status: ProbeStatus,
     path_mappings: tuple[PathMappingRule, ...],
     capabilities: dict[str, Any],
 ) -> str:
@@ -249,7 +248,6 @@ def downloader_execution_binding_digest(
         "kind": kind.value,
         "enabled": enabled,
         "connection_status": connection_status.value,
-        "path_mapping_status": path_mapping_status.value,
         "path_mappings": [
             {
                 "remote_prefix": item.remote_prefix,

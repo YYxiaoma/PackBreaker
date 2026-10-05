@@ -330,7 +330,6 @@ class AIToolService:
                     "name": downloader.name,
                     "type": downloader.type.value,
                     "connection_status": downloader.connection_status.value,
-                    "path_mapping_status": downloader.path_mapping_status.value,
                     "enabled": downloader.enabled,
                     "last_test_at": self._timestamp(downloader.last_test_at),
                     "metrics": metrics,

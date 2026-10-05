@@ -24,11 +24,9 @@ export interface Downloader {
   path_mappings: PathMapping[];
   capabilities: Record<string, unknown>;
   connection_status: ProbeStatus;
-  path_mapping_status: ProbeStatus;
   enabled: boolean;
   version: number;
   last_test_at: string | null;
-  last_path_diagnostic_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -104,33 +102,6 @@ export interface ConnectionProbeResult {
   capabilities: Record<string, unknown>;
 }
 
-export interface PathDiagnosticProbeInput {
-  remote_path: string;
-  target_directory: string;
-}
-
-export interface PathDiagnosticResult {
-  status: 'ok' | 'blocked';
-  rule_index: number;
-  container_visible: boolean;
-  regular_file: boolean;
-  readable: boolean;
-  target_writable: boolean;
-  round_trip: boolean;
-  source_device: number;
-  target_device: number;
-  same_device: boolean;
-  hardlink_feasible: boolean;
-  error_code: string | null;
-}
-
-export interface PathDiagnosticReport {
-  status: 'ok' | 'blocked';
-  all_mappings_verified: boolean;
-  error_code: string | null;
-  results: PathDiagnosticResult[];
-}
-
 export async function listDownloaders(): Promise<Downloader[]> {
   const response = await apiClient.get<{ items: Downloader[] }>('/downloaders');
   return response.data.items;
@@ -187,19 +158,6 @@ export async function deleteDownloader(id: string, version: number): Promise<voi
 
 export async function testDownloader(id: string): Promise<ConnectionProbeResult> {
   const response = await apiClient.post<ConnectionProbeResult>(`/downloaders/${id}/test`);
-  return response.data;
-}
-
-export async function diagnoseDownloaderPaths(
-  id: string,
-  probes: PathDiagnosticProbeInput[],
-): Promise<PathDiagnosticReport> {
-  const response = await apiClient.post<PathDiagnosticReport>(
-    `/downloaders/${id}/path-diagnostics`,
-    {
-      probes,
-    },
-  );
   return response.data;
 }
 

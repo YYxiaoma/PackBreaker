@@ -8,7 +8,6 @@ export type SiteCredentialInput = components['schemas']['SiteCredentialInput'];
 export type SiteCreateInput = components['schemas']['SiteCreateRequest'];
 export type SitePatchInput = components['schemas']['SitePatchRequest'];
 export type SiteProbeResult = components['schemas']['SiteProbeResponse'];
-export type SiteHealth = components['schemas']['SiteHealthResponse'];
 export type SiteProfile = components['schemas']['SiteProfileResponse'];
 export type SiteTemporaryProbeInput = components['schemas']['SiteTemporaryProbeRequest'];
 
@@ -69,24 +68,10 @@ export async function testSite(id: string): Promise<SiteProbeResult> {
   return response.data;
 }
 
-export async function getSiteHealth(id: string): Promise<SiteHealth> {
-  const response = await apiClient.get<SiteHealth>(`${sitePath(id)}/health`);
-  return response.data;
-}
-
 export async function setSiteEnabled(id: string, version: number, enabled: boolean): Promise<Site> {
   const response = await apiClient.post<Site>(
     `${sitePath(id)}/actions`,
     { action: enabled ? 'enable' : 'disable' },
-    { headers: { 'If-Match': strongEtag(version) } },
-  );
-  return response.data;
-}
-
-export async function resetSiteCircuit(id: string, version: number): Promise<SiteHealth> {
-  const response = await apiClient.post<SiteHealth>(
-    `${sitePath(id)}/actions`,
-    { action: 'reset_circuit' },
     { headers: { 'If-Match': strongEtag(version) } },
   );
   return response.data;

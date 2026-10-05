@@ -41,7 +41,7 @@ class DownloaderRepository:
             capabilities={},
             connection_status="UNTESTED",
             path_mapping_status="UNTESTED",
-            enabled=False,
+            enabled=True,
             version=1,
             last_test_at=None,
             last_path_diagnostic_at=None,
@@ -86,26 +86,6 @@ class DownloaderRepository:
                 connection_status=status,
                 capabilities=dict(capabilities),
                 last_test_at=tested_at,
-                updated_at=utc_now(),
-            )
-            .returning(Downloader.id)
-        )
-        return updated is not None
-
-    def update_path_probe(
-        self,
-        downloader_id: str,
-        *,
-        expected_version: int,
-        status: str,
-        tested_at: datetime,
-    ) -> bool:
-        updated = self._session.scalar(
-            update(Downloader)
-            .where(Downloader.id == downloader_id, Downloader.version == expected_version)
-            .values(
-                path_mapping_status=status,
-                last_path_diagnostic_at=tested_at,
                 updated_at=utc_now(),
             )
             .returning(Downloader.id)

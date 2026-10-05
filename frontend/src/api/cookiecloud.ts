@@ -5,6 +5,7 @@ export type CookieCloudSettings = components['schemas']['CookieCloudSettingRespo
 export type CookieCloudSettingUpdate = components['schemas']['CookieCloudSettingUpdateRequest'];
 export type CookieCloudProbe = components['schemas']['CookieCloudProbeResponse'];
 export type CookieCloudSyncReport = components['schemas']['CookieCloudSyncResponse'];
+export type CookieCloudCronPreview = components['schemas']['CookieCloudCronPreviewResponse'];
 
 export async function getCookieCloudSettings(): Promise<CookieCloudSettings> {
   try {
@@ -41,6 +42,19 @@ export async function testCookieCloud(): Promise<CookieCloudProbe> {
 export async function syncCookieCloud(): Promise<CookieCloudSyncReport> {
   try {
     const response = await apiClient.post<CookieCloudSyncReport>('/cookiecloud/sync');
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function previewCookieCloudCron(
+  cronExpression: string,
+): Promise<CookieCloudCronPreview> {
+  try {
+    const response = await apiClient.post<CookieCloudCronPreview>('/cookiecloud/cron-preview', {
+      cron_expression: cronExpression,
+    });
     return response.data;
   } catch (error) {
     throw toApiProblem(error);

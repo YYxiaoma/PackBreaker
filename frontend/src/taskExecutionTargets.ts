@@ -6,8 +6,7 @@ export function eligibleTaskExecutionTargets(downloaders: Downloader[]): Downloa
     (item) =>
       (item.type === 'QBITTORRENT' || item.type === 'TRANSMISSION') &&
       item.enabled &&
-      item.connection_status === 'OK' &&
-      item.path_mapping_status === 'OK',
+      item.connection_status === 'OK',
   );
 }
 

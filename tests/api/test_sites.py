@@ -857,7 +857,7 @@ def test_hhclub_cookie_is_encrypted_and_drives_read_only_connection_probe(tmp_pa
         client.__exit__(None, None, None)
 
 
-def test_site_health_reset_is_safe_and_versioned(tmp_path: Path) -> None:
+def test_site_health_remains_read_only_and_reset_action_is_removed(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     canary = "PACKBREAKER-SITE-HEALTH-CANARY-a72c"
     try:
@@ -882,48 +882,19 @@ def test_site_health_reset_is_safe_and_versioned(tmp_path: Path) -> None:
         assert payload["circuit_state"] == "OPEN"
         assert payload["failure_count"] >= 1
         assert payload["last_error_code"] == "SITE_AUTH_FAILED"
-        assert payload["requests_started"] == payload["requests_failed"] == 1
         assert "base_url" not in payload
         assert canary not in health.text
-
-        no_csrf = client.post(
-            f"/api/v1/sites/{site_id}/actions",
-            headers={"If-Match": '"1"'},
-            json={"action": "reset_circuit"},
-        )
-        assert no_csrf.status_code == 403
-        assert no_csrf.json()["code"] == "CSRF_INVALID"
-
-        missing_if_match = client.post(
-            f"/api/v1/sites/{site_id}/actions",
-            headers=_csrf(client),
-            json={"action": "reset_circuit"},
-        )
-        assert missing_if_match.status_code == 428
-
-        stale = client.post(
-            f"/api/v1/sites/{site_id}/actions",
-            headers={**_csrf(client), "If-Match": '"2"'},
-            json={"action": "reset_circuit"},
-        )
-        assert stale.status_code == 412
-        assert stale.json()["code"] == "SITE_VERSION_CONFLICT"
-
-        read_health = client.get(f"/api/v1/sites/{site_id}/health")
-        assert read_health.status_code == 200
 
         reset = client.post(
             f"/api/v1/sites/{site_id}/actions",
             headers={**_csrf(client), "If-Match": '"1"'},
             json={"action": "reset_circuit"},
         )
-        assert reset.status_code == 200
-        assert reset.headers["ETag"] == '"1"'
-        reset_payload = reset.json()
-        assert reset_payload["circuit_state"] == "CLOSED"
-        assert reset_payload["failure_count"] == 0
-        assert reset_payload["last_error_code"] is None
-        assert reset_payload["requests_failed"] == 1
+        assert reset.status_code == 422
+
+        still_open = client.get(f"/api/v1/sites/{site_id}/health")
+        assert still_open.status_code == 200
+        assert still_open.json()["circuit_state"] == "OPEN"
     finally:
         client.__exit__(None, None, None)
 

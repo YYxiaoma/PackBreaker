@@ -1,13 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { apiClient } from './client';
-import {
-  credentialKindForSite,
-  deleteSite,
-  resetSiteCircuit,
-  setSiteEnabled,
-  updateSite,
-} from './sites';
+import { credentialKindForSite, deleteSite, setSiteEnabled, updateSite } from './sites';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -34,13 +28,12 @@ describe('站点 API 并发前置条件', () => {
     );
   });
 
-  it('删除、启停与 reset-circuit 都携带当前版本', async () => {
+  it('删除与启停都携带当前版本', async () => {
     const remove = vi.spyOn(apiClient, 'delete').mockResolvedValue({ data: undefined });
     const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: {} });
 
     await deleteSite('site-1', 4);
     await setSiteEnabled('site-1', 4, true);
-    await resetSiteCircuit('site-1', 4);
 
     expect(remove).toHaveBeenCalledWith('/sites/site-1', {
       headers: { 'If-Match': '"4"' },
@@ -48,11 +41,6 @@ describe('站点 API 并发前置条件', () => {
     expect(post.mock.calls[0]).toEqual([
       '/sites/site-1/actions',
       { action: 'enable' },
-      { headers: { 'If-Match': '"4"' } },
-    ]);
-    expect(post.mock.calls[1]).toEqual([
-      '/sites/site-1/actions',
-      { action: 'reset_circuit' },
       { headers: { 'If-Match': '"4"' } },
     ]);
   });

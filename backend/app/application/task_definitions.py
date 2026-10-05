@@ -424,10 +424,8 @@ class TaskDefinitionService:
                     add("DOWNLOADER", "BLOCKED", "下载器", "下载器已停用或最近连接失败")
                 elif downloader.connection_status != "OK":
                     add("DOWNLOADER", "WARNING", "下载器", "下载器尚未完成成功连接验证")
-                elif downloader.path_mapping_status != "OK":
-                    add("DOWNLOADER", "BLOCKED", "下载器", "下载器路径映射尚未验证通过")
                 else:
-                    add("DOWNLOADER", "OK", "下载器", "下载器连接和路径映射均已验证通过")
+                    add("DOWNLOADER", "OK", "下载器", "下载器连接已验证")
 
                 if normalized_output is not None:
                     try:

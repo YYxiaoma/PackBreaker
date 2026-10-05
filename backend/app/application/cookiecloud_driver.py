@@ -4,10 +4,11 @@ import asyncio
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Protocol
 
 from backend.app.application.cookiecloud import CookieCloudSettingView, CookieCloudSyncView
+from backend.app.domain.task_definition import next_cron_run
 
 
 class CookieCloudSyncPort(Protocol):
@@ -34,12 +35,14 @@ class CookieCloudDriver:
         service: CookieCloudSyncPort,
         *,
         interval_seconds: float,
+        timezone: str,
         logger: logging.Logger | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("CookieCloud driver 周期必须大于 0")
         self._service = service
         self._interval_seconds = interval_seconds
+        self._timezone = timezone
         self._logger = logger or logging.getLogger("packbreaker.cookiecloud_driver")
         self._tick_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
@@ -100,13 +103,18 @@ class CookieCloudDriver:
             if not force and (not config.enabled or not config.auto_sync):
                 self._complete_skipped()
                 return None
-            if (
-                not force
-                and config.last_sync_at is not None
-                and now < config.last_sync_at + timedelta(minutes=config.sync_interval_minutes)
-            ):
-                self._complete_skipped()
-                return None
+            if not force:
+                schedule_base = max(
+                    value for value in (config.last_sync_at, config.updated_at) if value is not None
+                )
+                next_run = next_cron_run(
+                    config.sync_cron_expression,
+                    schedule_base,
+                    timezone=self._timezone,
+                )
+                if now < next_run:
+                    self._complete_skipped()
+                    return None
             _record, report = await self._service.sync_now()
             self._last_report = report
             self._ticks_completed += 1

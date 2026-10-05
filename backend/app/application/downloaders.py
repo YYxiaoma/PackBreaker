@@ -1,13 +1,8 @@
-import asyncio
-import errno
 import json
-import os
-from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
-from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,11 +18,10 @@ from backend.app.domain.downloader import (
     map_remote_path,
     normalize_base_url,
     normalize_path_mappings,
-    reverse_map_container_path,
     reverse_map_container_path_unique,
     validate_credential,
 )
-from backend.app.domain.errors import DomainViolation, ErrorCode
+from backend.app.domain.errors import DomainViolation
 from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.adapters.downloaders import (
     DownloaderAdapterError,
@@ -54,11 +48,9 @@ class DownloaderView:
     path_mappings: tuple[PathMappingRule, ...]
     capabilities: dict[str, Any]
     connection_status: ProbeStatus
-    path_mapping_status: ProbeStatus
     enabled: bool
     version: int
     last_test_at: datetime | None
-    last_path_diagnostic_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -80,50 +72,6 @@ class DownloaderUpdate:
     path_mappings: list[PathMappingRule] | None = None
     credential_action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
     credential: DownloaderCredential | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class PathDiagnosticResult:
-    rule_index: int
-    container_visible: bool
-    regular_file: bool
-    readable: bool
-    target_writable: bool
-    round_trip: bool
-    source_device: int
-    target_device: int
-    same_device: bool
-    hardlink_feasible: bool
-    error_code: str | None
-
-    @property
-    def ok(self) -> bool:
-        return (
-            self.container_visible
-            and self.regular_file
-            and self.readable
-            and self.target_writable
-            and self.round_trip
-            and self.same_device
-            and self.hardlink_feasible
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class PathDiagnosticProbe:
-    remote_path: str
-    target_directory: Path
-
-
-@dataclass(frozen=True, slots=True)
-class PathDiagnosticReport:
-    results: tuple[PathDiagnosticResult, ...]
-    all_mappings_verified: bool
-    error_code: str | None
-
-    @property
-    def ok(self) -> bool:
-        return self.all_mappings_verified and all(result.ok for result in self.results)
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,15 +248,12 @@ class DownloaderService:
                     title="目标下载器未启用",
                     detail="下载器写操作只能使用已通过安全门并启用的配置",
                 )
-            if (
-                record.connection_status != ProbeStatus.OK.value
-                or record.path_mapping_status != ProbeStatus.OK.value
-            ):
+            if record.connection_status != ProbeStatus.OK.value:
                 raise ApplicationError(
                     code="DOWNLOADER_NOT_READY",
                     status=409,
                     title="目标下载器安全门未就绪",
-                    detail="连接探测与路径映射诊断都必须保持 OK",
+                    detail="连接探测必须保持 OK；路径映射在任务执行时按实际路径安全校验",
                 )
             if record.secret_id is None:
                 raise ApplicationError(
@@ -342,7 +287,6 @@ class DownloaderService:
                 kind=DownloaderKind.QBITTORRENT,
                 enabled=True,
                 connection_status=ProbeStatus.OK,
-                path_mapping_status=ProbeStatus.OK,
                 path_mappings=mappings,
                 capabilities=capabilities,
             ),
@@ -372,15 +316,12 @@ class DownloaderService:
                     title="目标下载器未启用",
                     detail="下载器写操作只能使用已通过安全门并启用的配置",
                 )
-            if (
-                record.connection_status != ProbeStatus.OK.value
-                or record.path_mapping_status != ProbeStatus.OK.value
-            ):
+            if record.connection_status != ProbeStatus.OK.value:
                 raise ApplicationError(
                     code="DOWNLOADER_NOT_READY",
                     status=409,
                     title="目标下载器安全门未就绪",
-                    detail="连接探测与路径映射诊断都必须保持 OK",
+                    detail="连接探测必须保持 OK；路径映射在任务执行时按实际路径安全校验",
                 )
             api_version = record.capabilities.get("api_version")
             if not isinstance(api_version, str) or not api_version:
@@ -411,7 +352,6 @@ class DownloaderService:
                 kind=DownloaderKind.TRANSMISSION,
                 enabled=True,
                 connection_status=ProbeStatus.OK,
-                path_mapping_status=ProbeStatus.OK,
                 path_mappings=mappings,
                 capabilities=capabilities,
             ),
@@ -493,7 +433,6 @@ class DownloaderService:
             safety_connection_changed = (
                 update_request.type is not None or update_request.base_url is not None
             )
-            safety_path_changed = update_request.path_mappings is not None
             if update_request.name is not None:
                 values["name"] = self._normalize_name(update_request.name)
             if update_request.type is not None:
@@ -525,8 +464,6 @@ class DownloaderService:
                 values.update(
                     connection_status=ProbeStatus.UNTESTED.value, capabilities={}, enabled=False
                 )
-            if safety_path_changed:
-                values.update(path_mapping_status=ProbeStatus.UNTESTED.value, enabled=False)
             if not values:
                 if expected_version != current.version:
                     raise self._version_conflict()
@@ -594,13 +531,6 @@ class DownloaderService:
                         status=409,
                         title="下载器连接尚未验证",
                         detail="启用自动化前必须通过连接测试",
-                    )
-                if current.path_mapping_status != ProbeStatus.OK.value:
-                    raise ApplicationError(
-                        code="PATH_MAPPING_TEST_REQUIRED",
-                        status=409,
-                        title="路径映射尚未验证",
-                        detail="启用自动化前必须通过路径映射诊断",
                     )
             if current.enabled == enabled:
                 if current.version != expected_version:
@@ -702,72 +632,6 @@ class DownloaderService:
                 detail=str(exc),
             ) from exc
 
-    async def path_diagnostics(
-        self,
-        downloader_id: str,
-        *,
-        probes: list[PathDiagnosticProbe],
-    ) -> PathDiagnosticReport:
-        with self._session_factory() as session:
-            current = self._require_record(DownloaderRepository(session), downloader_id)
-            snapshot_id = current.id
-            snapshot_version = current.version
-            mappings: tuple[PathMappingRule, ...] = tuple(self._record_mappings(current))
-        if not mappings:
-            raise ApplicationError(
-                code=ErrorCode.PATH_MAPPING_INVALID.value,
-                status=422,
-                title="路径映射诊断失败",
-                detail="下载器尚未配置路径映射",
-            )
-        tested_at = datetime.now(UTC)
-        try:
-            results = tuple(
-                await asyncio.gather(
-                    *(
-                        asyncio.to_thread(
-                            self._diagnose_path,
-                            probe.remote_path,
-                            probe.target_directory,
-                            list(mappings),
-                        )
-                        for probe in probes
-                    )
-                )
-            )
-        except DomainViolation as exc:
-            self._store_path_probe(
-                snapshot_id,
-                snapshot_version,
-                status=ProbeStatus.FAILED,
-                tested_at=tested_at,
-            )
-            raise ApplicationError(
-                code=exc.code.value,
-                status=422,
-                title="路径映射诊断失败",
-                detail=str(exc),
-            ) from exc
-        covered_rules = {result.rule_index for result in results if result.ok}
-        all_mappings_verified = covered_rules == set(range(len(mappings)))
-        first_error = next((result.error_code for result in results if result.error_code), None)
-        report = PathDiagnosticReport(
-            results=results,
-            all_mappings_verified=all_mappings_verified,
-            error_code=(
-                None
-                if all_mappings_verified and all(result.ok for result in results)
-                else first_error or "PATH_MAPPING_TEST_INCOMPLETE"
-            ),
-        )
-        self._store_path_probe(
-            snapshot_id,
-            snapshot_version,
-            status=ProbeStatus.OK if report.ok else ProbeStatus.FAILED,
-            tested_at=tested_at,
-        )
-        return report
-
     def list_tasks(self, downloader_id: str) -> list[dict[str, object]]:
         with self._session_factory() as session:
             repository = DownloaderRepository(session)
@@ -813,103 +677,6 @@ class DownloaderService:
                 session.rollback()
                 raise self._version_conflict()
             session.commit()
-
-    def _store_path_probe(
-        self,
-        downloader_id: str,
-        expected_version: int,
-        *,
-        status: ProbeStatus,
-        tested_at: datetime,
-    ) -> None:
-        with self._session_factory() as session:
-            if not DownloaderRepository(session).update_path_probe(
-                downloader_id,
-                expected_version=expected_version,
-                status=status.value,
-                tested_at=tested_at,
-            ):
-                session.rollback()
-                raise self._version_conflict()
-            session.commit()
-
-    def _diagnose_path(
-        self,
-        remote_path: str,
-        target_directory: Path,
-        mappings: list[PathMappingRule],
-    ) -> PathDiagnosticResult:
-        match = map_remote_path(remote_path, mappings)
-        rule = mappings[match.rule_index]
-        mapping_root = Path(rule.container_prefix).resolve(strict=False)
-        try:
-            source = match.container_path.resolve(strict=True)
-        except OSError as exc:
-            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "映射后的测试文件不可见") from exc
-        if not source.is_relative_to(mapping_root) or not source.is_file():
-            raise DomainViolation(
-                ErrorCode.PATH_MAPPING_INVALID, "映射后的测试路径不是安全普通文件"
-            )
-        if not target_directory.is_absolute():
-            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "硬链接目标目录必须是绝对路径")
-        try:
-            target = target_directory.resolve(strict=True)
-        except OSError as exc:
-            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "硬链接目标目录不可见") from exc
-        authorized_roots = {
-            self._data_root.resolve(strict=False),
-            *(Path(item.container_prefix).resolve(strict=False) for item in mappings),
-        }
-        if not any(target.is_relative_to(root) for root in authorized_roots) or not target.is_dir():
-            raise DomainViolation(
-                ErrorCode.PATH_MAPPING_INVALID,
-                "硬链接目标目录必须位于数据根目录或已配置下载器映射目录内",
-            )
-
-        source_stat = source.stat()
-        target_stat = target.stat()
-        readable = os.access(source, os.R_OK)
-        target_writable = os.access(target, os.W_OK | os.X_OK)
-        reverse = reverse_map_container_path(source, rule)
-        round_trip = reverse.casefold() == match.normalized_remote_path.casefold()
-        same_device = source_stat.st_dev == target_stat.st_dev
-        hardlink_feasible = False
-        error_code: str | None = None
-        if not same_device:
-            error_code = ErrorCode.CROSS_DEVICE_LINK.value
-        elif readable and target_writable:
-            probe = target / f".packbreaker-link-probe-{uuid4().hex}"
-            try:
-                os.link(source, probe, follow_symlinks=False)
-                probe_stat = probe.stat()
-                hardlink_feasible = (
-                    probe_stat.st_dev == source_stat.st_dev
-                    and probe_stat.st_ino == source_stat.st_ino
-                )
-            except OSError as exc:
-                error_code = (
-                    ErrorCode.CROSS_DEVICE_LINK.value
-                    if exc.errno == errno.EXDEV
-                    else ErrorCode.PATH_MAPPING_INVALID.value
-                )
-            finally:
-                with suppress(FileNotFoundError):
-                    probe.unlink()
-        else:
-            error_code = ErrorCode.PATH_MAPPING_INVALID.value
-        return PathDiagnosticResult(
-            rule_index=match.rule_index,
-            container_visible=True,
-            regular_file=True,
-            readable=readable,
-            target_writable=target_writable,
-            round_trip=round_trip,
-            source_device=source_stat.st_dev,
-            target_device=target_stat.st_dev,
-            same_device=same_device,
-            hardlink_feasible=hardlink_feasible,
-            error_code=error_code,
-        )
 
     def _normalize_mappings(self, mappings: list[PathMappingRule]) -> list[PathMappingRule]:
         try:
@@ -1018,11 +785,9 @@ class DownloaderService:
             path_mappings=tuple(self._record_mappings(record)),
             capabilities=dict(record.capabilities),
             connection_status=ProbeStatus(record.connection_status),
-            path_mapping_status=ProbeStatus(record.path_mapping_status),
             enabled=record.enabled,
             version=record.version,
             last_test_at=record.last_test_at,
-            last_path_diagnostic_at=record.last_path_diagnostic_at,
             created_at=record.created_at,
             updated_at=record.updated_at,
         )

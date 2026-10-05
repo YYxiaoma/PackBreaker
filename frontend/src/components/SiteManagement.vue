@@ -9,7 +9,6 @@ import type {
   Site,
   SiteCreateInput,
   SiteCredentialInput,
-  SiteHealth,
   SiteKind,
   SitePatchInput,
   SiteProfile,
@@ -43,7 +42,7 @@ interface SiteDraft {
 }
 
 const store = useSiteStore();
-const { items, profiles, health, loading, error, busy } = storeToRefs(store);
+const { items, profiles, loading, error, busy } = storeToRefs(store);
 const dialog = ref(false);
 const saving = ref(false);
 const probingDraft = ref(false);
@@ -116,49 +115,17 @@ function statusTag(status: Site['connection_status']): 'success' | 'danger' | 'i
   return 'info';
 }
 
-function statusState(item: Site): 'ok' | 'degraded' | 'failed' | 'idle' {
+function statusState(item: Site): 'ok' | 'failed' | 'idle' {
   if (!item.enabled || item.connection_status === 'UNTESTED') return 'idle';
   if (item.connection_status === 'FAILED') return 'failed';
-  const siteHealth = health.value[item.id];
-  // A successful connection test does not prove the current config's runtime
-  // reliability if health is missing or still belongs to the older version.
-  if (!siteHealth || siteHealth.config_version !== item.version) return 'degraded';
-  if (siteHealth.circuit_state === 'OPEN') return 'failed';
-  if (
-    siteHealth?.circuit_state === 'HALF_OPEN' ||
-    (siteHealth?.rate_limit_wait_seconds ?? 0) > 0 ||
-    siteHealth?.last_error_code === 'SITE_RATE_LIMITED' ||
-    siteHealth?.last_error_code === 'SITE_UNAVAILABLE'
-  ) {
-    return 'degraded';
-  }
   return 'ok';
 }
 
 function statusText(item: Site): string {
   if (!item.enabled) return '已停用';
   if (item.connection_status === 'UNTESTED') return '未测试';
-  if (statusState(item) === 'failed') return '连接失败或熔断';
-  if (!health.value[item.id] || health.value[item.id]?.config_version !== item.version)
-    return '连接已验证 · 可靠性待确认';
-  if (statusState(item) === 'degraded') return '暂时降级';
+  if (item.connection_status === 'FAILED') return '连接失败';
   return '连接正常';
-}
-
-function circuitLabel(value: SiteHealth['circuit_state'] | undefined): string {
-  if (value === 'OPEN') return '已打开';
-  if (value === 'HALF_OPEN') return '半开探测';
-  if (value === 'CLOSED') return '关闭';
-  return '未知';
-}
-
-function circuitTag(
-  value: SiteHealth['circuit_state'] | undefined,
-): 'success' | 'danger' | 'warning' | 'info' {
-  if (value === 'OPEN') return 'danger';
-  if (value === 'HALF_OPEN') return 'warning';
-  if (value === 'CLOSED') return 'success';
-  return 'info';
 }
 
 function isBusy(item: Site, operation: string): boolean {
@@ -172,7 +139,7 @@ function problemText(problem: ApiProblem): string {
 async function refresh(notify = true) {
   try {
     await store.refresh();
-    if (notify) ElMessage.success('站点配置与可靠性状态已刷新');
+    if (notify) ElMessage.success('站点配置已刷新');
   } catch (caught) {
     if (notify) ElMessage.error(problemText(toApiProblem(caught)));
   }
@@ -524,24 +491,6 @@ async function toggleEnabled(item: Site, enabled: boolean) {
   }
 }
 
-async function resetCircuit(item: Site) {
-  try {
-    await ElMessageBox.confirm(
-      `重置「${item.name}」当前配置版本的熔断状态？此动作只清除进程内熔断失败计数，不会测试连接，也不会把站点标记为恢复。`,
-      '确认重置站点熔断器',
-      { confirmButtonText: '仅重置熔断器', cancelButtonText: '取消', type: 'warning' },
-    );
-  } catch {
-    return;
-  }
-  try {
-    await store.resetCircuit(item);
-    ElMessage.success('熔断器已重置；站点是否恢复以之后的请求或连接测试为准');
-  } catch (caught) {
-    await handleWriteProblem(caught);
-  }
-}
-
 async function remove(item: Site) {
   try {
     await ElMessageBox.confirm(
@@ -620,9 +569,6 @@ async function remove(item: Site) {
           >
             {{ item.download_credential_configured ? '下载 Cookie 已配置' : '下载 Cookie 未配置' }}
           </el-tag>
-          <el-tag :type="circuitTag(health[item.id]?.circuit_state)">
-            熔断 {{ circuitLabel(health[item.id]?.circuit_state) }}
-          </el-tag>
           <el-tag type="info">{{ supportLabel(profileFor(item.type)) }}</el-tag>
         </div>
         <dl class="config-summary">
@@ -640,22 +586,12 @@ async function remove(item: Site) {
           <dd>
             {{ item.last_test_at ? new Date(item.last_test_at).toLocaleString() : '尚未测试' }}
           </dd>
-          <dt>可靠性错误</dt>
-          <dd>{{ health[item.id]?.last_error_code ?? '—' }}</dd>
         </dl>
         <div class="card-actions">
           <el-button size="small" :loading="isBusy(item, 'test')" @click="testConnection(item)">
             <Activity :size="14" />测试连接
           </el-button>
           <el-button size="small" @click="openEdit(item)"> <Settings2 :size="14" />配置 </el-button>
-          <el-button
-            v-if="health[item.id]"
-            link
-            type="warning"
-            :loading="isBusy(item, 'reset')"
-            @click="resetCircuit(item)"
-            >重置熔断</el-button
-          >
           <el-button link type="danger" :loading="isBusy(item, 'delete')" @click="remove(item)">
             删除
           </el-button>

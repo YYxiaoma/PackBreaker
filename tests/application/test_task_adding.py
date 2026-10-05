@@ -355,7 +355,6 @@ def adding_fixture(tmp_path: Path) -> _AddingFixture:
         kind=DownloaderKind.QBITTORRENT,
         enabled=True,
         connection_status=ProbeStatus.OK,
-        path_mapping_status=ProbeStatus.OK,
         path_mappings=mappings,
         capabilities=capabilities,
     )
@@ -684,7 +683,6 @@ async def test_transmission_full_verified_verifies_then_recovery_starts_seeding_
         kind=DownloaderKind.TRANSMISSION,
         enabled=True,
         connection_status=ProbeStatus.OK,
-        path_mapping_status=ProbeStatus.OK,
         path_mappings=current_binding.path_mappings,
         capabilities=capabilities,
     )
@@ -840,7 +838,6 @@ async def test_existing_transmission_torrent_skips_duplicate_seeding_without_cla
         kind=DownloaderKind.TRANSMISSION,
         enabled=True,
         connection_status=ProbeStatus.OK,
-        path_mapping_status=ProbeStatus.OK,
         path_mappings=current_binding.path_mappings,
         capabilities=capabilities,
     )
@@ -1819,7 +1816,6 @@ async def _prepare_transmission_seeding_for_cancellation(
         kind=DownloaderKind.TRANSMISSION,
         enabled=True,
         connection_status=ProbeStatus.OK,
-        path_mapping_status=ProbeStatus.OK,
         path_mappings=current_binding.path_mappings,
         capabilities=capabilities,
     )

@@ -300,7 +300,6 @@ async def test_rousi_dual_secret_candidate_cannot_link_without_verified_approval
                 kind=DownloaderKind.TRANSMISSION,
                 enabled=True,
                 connection_status=ProbeStatus.OK,
-                path_mapping_status=ProbeStatus.OK,
                 path_mappings=mappings,
                 capabilities=capabilities,
             )

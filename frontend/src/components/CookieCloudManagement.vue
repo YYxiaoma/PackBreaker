@@ -1,16 +1,21 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { Cloud, RefreshCw, ShieldCheck } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 
-import { ApiProblem } from '../api/client';
+import { ApiProblem, toApiProblem } from '../api/client';
 import {
   getCookieCloudSettings,
+  previewCookieCloudCron,
   syncCookieCloud,
   testCookieCloud,
   updateCookieCloudSettings,
+  type CookieCloudCronPreview,
   type CookieCloudSettings,
 } from '../api/cookiecloud';
+
+type CronInputMode = 'VISUAL' | 'CRON';
+type CronVisualKind = 'EVERY_MINUTES' | 'EVERY_HOURS' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
 
 interface Draft {
   enabled: boolean;
@@ -19,7 +24,7 @@ interface Draft {
   password: string;
   clearPassword: boolean;
   autoSync: boolean;
-  syncIntervalMinutes: number;
+  syncCronExpression: string;
   requestTimeoutSeconds: number;
 }
 
@@ -28,6 +33,19 @@ const loading = ref(false);
 const saving = ref(false);
 const probing = ref(false);
 const syncing = ref(false);
+const cronInputMode = ref<CronInputMode>('VISUAL');
+const cronVisualKind = ref<CronVisualKind>('EVERY_MINUTES');
+const cronVisualInterval = ref(30);
+const cronVisualHour = ref(3);
+const cronVisualMinute = ref(0);
+const cronVisualWeekday = ref(1);
+const cronVisualMonthDay = ref(1);
+const cronPreview = ref<CookieCloudCronPreview | null>(null);
+const cronPreviewLoading = ref(false);
+const cronPreviewError = ref('');
+let cronPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+let cronPreviewSequence = 0;
+
 const draft = reactive<Draft>({
   enabled: false,
   serverUrl: '',
@@ -35,7 +53,7 @@ const draft = reactive<Draft>({
   password: '',
   clearPassword: false,
   autoSync: true,
-  syncIntervalMinutes: 30,
+  syncCronExpression: '*/30 * * * *',
   requestTimeoutSeconds: 15,
 });
 
@@ -63,6 +81,138 @@ const syncText = computed(() => {
 });
 const insecureHttp = computed(() => draft.serverUrl.trim().toLowerCase().startsWith('http://'));
 
+watch(
+  () => [
+    cronInputMode.value,
+    cronVisualKind.value,
+    cronVisualInterval.value,
+    cronVisualHour.value,
+    cronVisualMinute.value,
+    cronVisualWeekday.value,
+    cronVisualMonthDay.value,
+  ],
+  () => {
+    if (cronInputMode.value === 'VISUAL') applyVisualCron();
+  },
+);
+
+watch(
+  () => [draft.autoSync, draft.syncCronExpression],
+  () => scheduleCronPreview(),
+);
+
+function applyVisualCron(): void {
+  const interval = Math.max(1, Math.trunc(cronVisualInterval.value || 1));
+  const hour = Math.min(23, Math.max(0, Math.trunc(cronVisualHour.value || 0)));
+  const minute = Math.min(59, Math.max(0, Math.trunc(cronVisualMinute.value || 0)));
+  const weekday = Math.min(6, Math.max(0, Math.trunc(cronVisualWeekday.value || 0)));
+  const monthDay = Math.min(31, Math.max(1, Math.trunc(cronVisualMonthDay.value || 1)));
+  if (cronVisualKind.value === 'EVERY_MINUTES') {
+    draft.syncCronExpression = `*/${Math.min(59, interval)} * * * *`;
+  } else if (cronVisualKind.value === 'EVERY_HOURS') {
+    draft.syncCronExpression = `${minute} */${Math.min(23, interval)} * * *`;
+  } else if (cronVisualKind.value === 'DAILY') {
+    draft.syncCronExpression = `${minute} ${hour} * * *`;
+  } else if (cronVisualKind.value === 'WEEKLY') {
+    draft.syncCronExpression = `${minute} ${hour} * * ${weekday}`;
+  } else {
+    draft.syncCronExpression = `${minute} ${hour} ${monthDay} * *`;
+  }
+}
+
+function hydrateVisualCron(expression: string): void {
+  const parts = expression.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    cronInputMode.value = 'CRON';
+    return;
+  }
+  const [minute, hour, day, month, weekday] = parts;
+  if (minute?.startsWith('*/') && hour === '*' && day === '*' && month === '*' && weekday === '*') {
+    cronVisualKind.value = 'EVERY_MINUTES';
+    cronVisualInterval.value = Number(minute.slice(2)) || 30;
+    cronInputMode.value = 'VISUAL';
+    return;
+  }
+  if (hour?.startsWith('*/') && day === '*' && month === '*' && weekday === '*') {
+    cronVisualKind.value = 'EVERY_HOURS';
+    cronVisualInterval.value = Number(hour.slice(2)) || 1;
+    cronVisualMinute.value = Number(minute) || 0;
+    cronInputMode.value = 'VISUAL';
+    return;
+  }
+  if (
+    day === '*' &&
+    month === '*' &&
+    weekday === '*' &&
+    /^\d+$/.test(minute ?? '') &&
+    /^\d+$/.test(hour ?? '')
+  ) {
+    cronVisualKind.value = 'DAILY';
+    cronVisualMinute.value = Number(minute);
+    cronVisualHour.value = Number(hour);
+    cronInputMode.value = 'VISUAL';
+    return;
+  }
+  if (
+    day === '*' &&
+    month === '*' &&
+    /^\d+$/.test(weekday ?? '') &&
+    /^\d+$/.test(minute ?? '') &&
+    /^\d+$/.test(hour ?? '')
+  ) {
+    cronVisualKind.value = 'WEEKLY';
+    cronVisualMinute.value = Number(minute);
+    cronVisualHour.value = Number(hour);
+    cronVisualWeekday.value = Number(weekday);
+    cronInputMode.value = 'VISUAL';
+    return;
+  }
+  if (
+    month === '*' &&
+    weekday === '*' &&
+    /^\d+$/.test(day ?? '') &&
+    /^\d+$/.test(minute ?? '') &&
+    /^\d+$/.test(hour ?? '')
+  ) {
+    cronVisualKind.value = 'MONTHLY';
+    cronVisualMinute.value = Number(minute);
+    cronVisualHour.value = Number(hour);
+    cronVisualMonthDay.value = Number(day);
+    cronInputMode.value = 'VISUAL';
+    return;
+  }
+  cronInputMode.value = 'CRON';
+}
+
+function scheduleCronPreview(): void {
+  if (cronPreviewTimer !== null) clearTimeout(cronPreviewTimer);
+  cronPreviewTimer = setTimeout(() => void refreshCronPreview(), 300);
+}
+
+async function refreshCronPreview(): Promise<void> {
+  const expression = draft.syncCronExpression.trim();
+  const sequence = ++cronPreviewSequence;
+  if (!draft.autoSync || !expression) {
+    cronPreview.value = null;
+    cronPreviewError.value = '';
+    cronPreviewLoading.value = false;
+    return;
+  }
+  cronPreviewLoading.value = true;
+  try {
+    const result = await previewCookieCloudCron(expression);
+    if (sequence !== cronPreviewSequence) return;
+    cronPreview.value = result;
+    cronPreviewError.value = '';
+  } catch (caught) {
+    if (sequence !== cronPreviewSequence) return;
+    cronPreview.value = null;
+    cronPreviewError.value = toApiProblem(caught).message;
+  } finally {
+    if (sequence === cronPreviewSequence) cronPreviewLoading.value = false;
+  }
+}
+
 function applySettings(value: CookieCloudSettings): void {
   settings.value = value;
   Object.assign(draft, {
@@ -72,9 +222,11 @@ function applySettings(value: CookieCloudSettings): void {
     password: '',
     clearPassword: false,
     autoSync: value.auto_sync,
-    syncIntervalMinutes: value.sync_interval_minutes,
+    syncCronExpression: value.sync_cron_expression,
     requestTimeoutSeconds: value.request_timeout_seconds,
   });
+  hydrateVisualCron(value.sync_cron_expression);
+  scheduleCronPreview();
 }
 
 function errorText(caught: unknown, fallback: string): string {
@@ -104,6 +256,14 @@ function validate(): boolean {
     ElMessage.warning('启用 CookieCloud 前必须配置密码');
     return false;
   }
+  if (draft.autoSync && !draft.syncCronExpression.trim()) {
+    ElMessage.warning('启用自动同步时必须配置 Cron 表达式');
+    return false;
+  }
+  if (draft.autoSync && cronPreviewError.value) {
+    ElMessage.warning('请先修正 Cron 表达式');
+    return false;
+  }
   return true;
 }
 
@@ -130,7 +290,7 @@ async function save(): Promise<void> {
       password_action: passwordAction,
       ...(passwordAction === 'SET' ? { password: draft.password } : {}),
       auto_sync: draft.autoSync,
-      sync_interval_minutes: draft.syncIntervalMinutes,
+      sync_cron_expression: draft.syncCronExpression.trim(),
       request_timeout_seconds: draft.requestTimeoutSeconds,
     });
     applySettings(updated);
@@ -164,11 +324,9 @@ async function syncNow(): Promise<void> {
     const result = await syncCookieCloud();
     await refresh();
     ElMessage.success(
-      '同步完成：匹配 ' +
-        result.matched_sites +
-        ' 个站点，更新 ' +
-        result.updated_sites +
-        ' 个站点',
+      `同步完成：读取 ${result.source_domains} 个域名 / ${result.source_cookies} 条 Cookie，` +
+        `可同步站点 ${result.eligible_sites}，匹配 ${result.matched_sites}，` +
+        `更新 ${result.updated_sites}，无变化 ${result.unchanged_sites}，未匹配域名 ${result.unmatched_domains}`,
     );
   } catch (caught) {
     await refresh();
@@ -205,10 +363,17 @@ onMounted(() => void refresh());
         <el-tag :type="syncType" effect="plain">{{ syncText }}</el-tag>
         <small>最后同步：{{ formatTime(settings.last_sync_at) }}</small>
       </div>
-      <div class="cookiecloud-status-item">
-        <span>最近结果</span>
+      <div class="cookiecloud-status-item cookiecloud-status-wide">
+        <span>最近同步统计</span>
         <strong>{{ settings.updated_sites }} / {{ settings.matched_sites }}</strong>
-        <small>更新 / 匹配站点 · 未匹配域名 {{ settings.unmatched_domains }}</small>
+        <small>
+          更新 / 匹配 · 可同步站点 {{ settings.eligible_sites }} · 无变化
+          {{ settings.unchanged_sites }}
+        </small>
+        <small>
+          源数据 {{ settings.source_domains }} 个域名 / {{ settings.source_cookies }} 条 Cookie ·
+          未匹配域名 {{ settings.unmatched_domains }}
+        </small>
       </div>
     </div>
 
@@ -255,19 +420,77 @@ onMounted(() => void refresh());
         <el-form-item label="自动同步">
           <el-switch v-model="draft.autoSync" />
         </el-form-item>
-        <el-form-item label="同步间隔（分钟）">
-          <el-input-number
-            v-model="draft.syncIntervalMinutes"
-            :min="5"
-            :max="10080"
-            :disabled="!draft.autoSync"
-          />
-        </el-form-item>
         <el-form-item label="请求超时（秒）">
           <el-input-number v-model="draft.requestTimeoutSeconds" :min="1" :max="120" />
         </el-form-item>
       </div>
+
+      <el-form-item v-if="draft.autoSync" label="自动同步时间">
+        <div class="cron-editor">
+          <el-radio-group v-model="cronInputMode" size="small">
+            <el-radio-button value="VISUAL">图形化</el-radio-button>
+            <el-radio-button value="CRON">Cron</el-radio-button>
+          </el-radio-group>
+
+          <template v-if="cronInputMode === 'VISUAL'">
+            <div class="cron-visual-row">
+              <el-select v-model="cronVisualKind" class="cron-kind-select">
+                <el-option label="每隔 N 分钟" value="EVERY_MINUTES" />
+                <el-option label="每隔 N 小时" value="EVERY_HOURS" />
+                <el-option label="每天固定时间" value="DAILY" />
+                <el-option label="每周" value="WEEKLY" />
+                <el-option label="每月" value="MONTHLY" />
+              </el-select>
+              <el-input-number
+                v-if="cronVisualKind === 'EVERY_MINUTES' || cronVisualKind === 'EVERY_HOURS'"
+                v-model="cronVisualInterval"
+                :min="1"
+                :max="cronVisualKind === 'EVERY_MINUTES' ? 59 : 23"
+              />
+              <el-select v-if="cronVisualKind === 'WEEKLY'" v-model="cronVisualWeekday">
+                <el-option label="周日" :value="0" />
+                <el-option label="周一" :value="1" />
+                <el-option label="周二" :value="2" />
+                <el-option label="周三" :value="3" />
+                <el-option label="周四" :value="4" />
+                <el-option label="周五" :value="5" />
+                <el-option label="周六" :value="6" />
+              </el-select>
+              <el-input-number
+                v-if="cronVisualKind === 'MONTHLY'"
+                v-model="cronVisualMonthDay"
+                :min="1"
+                :max="31"
+              />
+              <template v-if="cronVisualKind !== 'EVERY_MINUTES'">
+                <el-input-number v-model="cronVisualHour" :min="0" :max="23" />
+                <span>:</span>
+                <el-input-number v-model="cronVisualMinute" :min="0" :max="59" />
+              </template>
+            </div>
+            <el-input v-model="draft.syncCronExpression" readonly />
+          </template>
+          <el-input v-else v-model="draft.syncCronExpression" placeholder="例如：0 */6 * * *" />
+
+          <small v-if="cronPreviewLoading" class="field-hint">正在计算执行时间…</small>
+          <small v-else-if="cronPreviewError" class="field-error">{{ cronPreviewError }}</small>
+          <div v-else-if="cronPreview" class="cron-preview">
+            <small class="field-hint">
+              {{ cronPreview.description }} · 时区 {{ cronPreview.timezone }}
+            </small>
+            <small class="field-hint">
+              未来 5 次：{{ cronPreview.next_runs.map((item) => formatTime(item)).join(' · ') }}
+            </small>
+          </div>
+        </div>
+      </el-form-item>
     </el-form>
+
+    <el-alert
+      type="info"
+      :closable="false"
+      title="手动“立即同步”不受 Cron 限制；Cron 仅控制后台自动同步。同步统计会区分源数据、可同步站点、匹配、更新、无变化和未匹配域名。"
+    />
 
     <div class="cookiecloud-actions">
       <el-button :loading="probing" :disabled="!settings?.password_configured" @click="probe">
@@ -319,7 +542,8 @@ onMounted(() => void refresh());
 }
 
 .cookiecloud-status-item span,
-.cookiecloud-status-item small {
+.cookiecloud-status-item small,
+.field-hint {
   color: var(--el-text-color-secondary);
 }
 
@@ -329,12 +553,34 @@ onMounted(() => void refresh());
 
 .cookiecloud-form-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
 
 .cookiecloud-alert {
   margin: 0;
+}
+
+.cron-editor,
+.cron-preview {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+}
+
+.cron-visual-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cron-kind-select {
+  width: 180px;
+}
+
+.field-error {
+  color: var(--el-color-danger);
 }
 
 .cookiecloud-actions {

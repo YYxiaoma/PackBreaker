@@ -147,18 +147,13 @@ def _install_transmission_probe(app: FastAPI) -> None:
     )
 
 
-def test_downloader_mapping_and_diagnostic_can_use_mount_outside_data_root(
+def test_downloader_mapping_can_use_mount_outside_data_root_without_diagnostic(
     tmp_path: Path,
 ) -> None:
     client, _app = _authenticated_client(tmp_path)
     try:
         mount_root = tmp_path / "standalone-downloads"
         mount_root.mkdir()
-        source = mount_root / "sample.mkv"
-        source.write_bytes(b"synthetic")
-        target = mount_root / "seeding"
-        target.mkdir()
-
         created = client.post(
             "/api/v1/downloaders",
             headers=_csrf(client),
@@ -179,29 +174,20 @@ def test_downloader_mapping_and_diagnostic_can_use_mount_outside_data_root(
             },
         )
         assert created.status_code == 201
-        assert created.json()["path_mappings"] == [
+        payload = created.json()
+        assert payload["enabled"] is True
+        assert payload["path_mappings"] == [
             {
                 "remote_prefix": "/downloads",
                 "container_prefix": str(mount_root.resolve()),
             }
         ]
-
-        diagnosed = client.post(
-            f"/api/v1/downloaders/{created.json()['id']}/path-diagnostics",
+        removed = client.post(
+            f"/api/v1/downloaders/{payload['id']}/path-diagnostics",
             headers=_csrf(client),
-            json={
-                "probes": [
-                    {
-                        "remote_path": "/downloads/sample.mkv",
-                        "target_directory": str(target),
-                    }
-                ]
-            },
+            json={"probes": []},
         )
-        assert diagnosed.status_code == 200
-        assert diagnosed.json()["status"] == "ok"
-        assert diagnosed.json()["all_mappings_verified"] is True
-        assert list(target.iterdir()) == []
+        assert removed.status_code == 404
     finally:
         client.__exit__(None, None, None)
 
@@ -372,18 +358,12 @@ def test_stale_if_match_is_rejected(tmp_path: Path) -> None:
         client.__exit__(None, None, None)
 
 
-def test_connection_path_diagnostics_and_enable_gate(tmp_path: Path) -> None:
+def test_connection_is_the_only_probe_gate_for_downloader_use(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
         created = _create_qb(client, data_root=app.state.settings.data_dir)
         downloader_id = cast(str, created["id"])
-        blocked = client.post(
-            f"/api/v1/downloaders/{downloader_id}/actions",
-            headers={**_csrf(client), "If-Match": '"1"'},
-            json={"action": "enable"},
-        )
-        assert blocked.status_code == 409
-        assert blocked.json()["code"] == "DOWNLOADER_CONNECTION_TEST_REQUIRED"
+        assert created["enabled"] is True
 
         _install_qb_probe(app)
         tested = client.post(
@@ -393,48 +373,22 @@ def test_connection_path_diagnostics_and_enable_gate(tmp_path: Path) -> None:
         assert tested.status_code == 200
         assert tested.json()["capabilities"]["version"] == "v5.2.1"
 
-        source_file = app.state.settings.data_dir / "source" / "movie.mkv"
-        source_file.write_bytes(b"synthetic-media-bytes")
-        target_dir = app.state.settings.data_dir / "target"
-        target_dir.mkdir()
-        before_links = source_file.stat().st_nlink
-        diagnosed = client.post(
-            f"/api/v1/downloaders/{downloader_id}/path-diagnostics",
-            headers=_csrf(client),
-            json={
-                "probes": [
-                    {
-                        "remote_path": "/downloads/movie.mkv",
-                        "target_directory": str(target_dir),
-                    }
-                ]
-            },
-        )
-        assert diagnosed.status_code == 200
-        assert diagnosed.json()["status"] == "ok"
-        assert diagnosed.json()["all_mappings_verified"] is True
-        assert diagnosed.json()["results"][0]["hardlink_feasible"] is True
-        assert source_file.stat().st_nlink == before_links
-        assert list(target_dir.iterdir()) == []
-
-        enabled = client.post(
-            f"/api/v1/downloaders/{downloader_id}/actions",
-            headers={**_csrf(client), "If-Match": '"1"'},
-            json={"action": "enable"},
-        )
-        assert enabled.status_code == 200
-        assert enabled.json()["enabled"] is True
-        assert enabled.headers["ETag"] == '"2"'
-
         binding = app.state.downloader_service.qbittorrent_write_binding(downloader_id)
         assert binding.downloader_id == downloader_id
-        assert binding.downloader_version == 2
+        assert binding.downloader_version == 1
         assert binding.capabilities["api_version"] == "2.15.1"
         assert binding.remote_save_path(app.state.settings.data_dir / "source") == "/downloads"
 
+        removed = client.post(
+            f"/api/v1/downloaders/{downloader_id}/path-diagnostics",
+            headers=_csrf(client),
+            json={"probes": []},
+        )
+        assert removed.status_code == 404
+
         changed = client.patch(
             f"/api/v1/downloaders/{downloader_id}",
-            headers={**_csrf(client), "If-Match": '"2"'},
+            headers={**_csrf(client), "If-Match": '"1"'},
             json={"base_url": "http://qb-new.invalid:8080"},
         )
         assert changed.status_code == 200
@@ -539,6 +493,7 @@ def test_transmission_probe_and_write_binding_freeze_safe_capabilities(tmp_path:
     try:
         created = _create_transmission(client, data_root=app.state.settings.data_dir)
         downloader_id = cast(str, created["id"])
+        assert created["enabled"] is True
         _install_transmission_probe(app)
 
         tested = client.post(
@@ -556,35 +511,9 @@ def test_transmission_probe_and_write_binding_freeze_safe_capabilities(tmp_path:
             "read_only_probe": True,
         }
 
-        source_file = app.state.settings.data_dir / "tr-source" / "movie.mkv"
-        source_file.write_bytes(b"synthetic-media-bytes")
-        target_dir = app.state.settings.data_dir / "tr-target"
-        target_dir.mkdir()
-        diagnosed = client.post(
-            f"/api/v1/downloaders/{downloader_id}/path-diagnostics",
-            headers=_csrf(client),
-            json={
-                "probes": [
-                    {
-                        "remote_path": "/downloads/movie.mkv",
-                        "target_directory": str(target_dir),
-                    }
-                ]
-            },
-        )
-        assert diagnosed.status_code == 200
-        assert diagnosed.json()["status"] == "ok"
-
-        enabled = client.post(
-            f"/api/v1/downloaders/{downloader_id}/actions",
-            headers={**_csrf(client), "If-Match": '"1"'},
-            json={"action": "enable"},
-        )
-        assert enabled.status_code == 200
-
         binding = app.state.downloader_service.transmission_write_binding(downloader_id)
         assert binding.downloader_id == downloader_id
-        assert binding.downloader_version == 2
+        assert binding.downloader_version == 1
         assert binding.capabilities["supports_skip_checking"] is False
         assert binding.capabilities["supports_force_recheck"] is True
         assert binding.remote_save_path(app.state.settings.data_dir / "tr-source") == "/downloads"
@@ -592,17 +521,13 @@ def test_transmission_probe_and_write_binding_freeze_safe_capabilities(tmp_path:
         client.__exit__(None, None, None)
 
 
-def test_all_path_mappings_must_be_verified_before_enable(tmp_path: Path) -> None:
+def test_multiple_path_mappings_do_not_require_preflight_diagnostics(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
         root_a = app.state.settings.data_dir / "source-a"
         root_b = app.state.settings.data_dir / "source-b"
-        target_dir = app.state.settings.data_dir / "target"
         root_a.mkdir()
         root_b.mkdir()
-        target_dir.mkdir()
-        (root_a / "a.mkv").write_bytes(b"a")
-        (root_b / "b.mkv").write_bytes(b"b")
         created = client.post(
             "/api/v1/downloaders",
             headers=_csrf(client),
@@ -618,7 +543,8 @@ def test_all_path_mappings_must_be_verified_before_enable(tmp_path: Path) -> Non
             },
         )
         assert created.status_code == 201
-        downloader_id = created.json()["id"]
+        downloader_id = cast(str, created.json()["id"])
+        assert created.json()["enabled"] is True
         _install_qb_probe(app)
         assert (
             client.post(
@@ -628,78 +554,17 @@ def test_all_path_mappings_must_be_verified_before_enable(tmp_path: Path) -> Non
             == 200
         )
 
-        partial = client.post(
-            f"/api/v1/downloaders/{downloader_id}/path-diagnostics",
-            headers=_csrf(client),
-            json={"probes": [{"remote_path": "/a/a.mkv", "target_directory": str(target_dir)}]},
+        binding = app.state.downloader_service.qbittorrent_write_binding(downloader_id)
+        assert binding.remote_save_path(root_a) == "/a"
+        assert binding.remote_save_path(root_b) == "/b"
+        assert (
+            client.post(
+                f"/api/v1/downloaders/{downloader_id}/path-diagnostics",
+                headers=_csrf(client),
+                json={"probes": []},
+            ).status_code
+            == 404
         )
-        assert partial.status_code == 200
-        assert partial.json()["status"] == "blocked"
-        assert partial.json()["all_mappings_verified"] is False
-        assert partial.json()["error_code"] == "PATH_MAPPING_TEST_INCOMPLETE"
-
-        blocked = client.post(
-            f"/api/v1/downloaders/{downloader_id}/actions",
-            headers={**_csrf(client), "If-Match": '"1"'},
-            json={"action": "enable"},
-        )
-        assert blocked.status_code == 409
-        assert blocked.json()["code"] == "PATH_MAPPING_TEST_REQUIRED"
-
-        complete = client.post(
-            f"/api/v1/downloaders/{downloader_id}/path-diagnostics",
-            headers=_csrf(client),
-            json={
-                "probes": [
-                    {"remote_path": "/a/a.mkv", "target_directory": str(target_dir)},
-                    {"remote_path": "/b/b.mkv", "target_directory": str(target_dir)},
-                ]
-            },
-        )
-        assert complete.status_code == 200
-        assert complete.json()["status"] == "ok"
-        assert complete.json()["all_mappings_verified"] is True
-
-        enabled = client.post(
-            f"/api/v1/downloaders/{downloader_id}/actions",
-            headers={**_csrf(client), "If-Match": '"1"'},
-            json={"action": "enable"},
-        )
-        assert enabled.status_code == 200
-        assert enabled.json()["enabled"] is True
-    finally:
-        client.__exit__(None, None, None)
-
-
-def test_path_diagnostic_rejects_symlink_escape(tmp_path: Path) -> None:
-    client, app = _authenticated_client(tmp_path)
-    try:
-        created = _create_qb(client, data_root=app.state.settings.data_dir)
-        downloader_id = cast(str, created["id"])
-        outside = tmp_path / "outside.mkv"
-        outside.write_bytes(b"outside")
-        escape = app.state.settings.data_dir / "source" / "escape.mkv"
-        escape.symlink_to(outside)
-        target_dir = app.state.settings.data_dir / "target"
-        target_dir.mkdir()
-
-        response = client.post(
-            f"/api/v1/downloaders/{downloader_id}/path-diagnostics",
-            headers=_csrf(client),
-            json={
-                "probes": [
-                    {
-                        "remote_path": "/downloads/escape.mkv",
-                        "target_directory": str(target_dir),
-                    }
-                ]
-            },
-        )
-
-        assert response.status_code == 422
-        assert response.json()["code"] == "PATH_MAPPING_INVALID"
-        assert str(outside) not in response.text
-        assert list(target_dir.iterdir()) == []
     finally:
         client.__exit__(None, None, None)
 

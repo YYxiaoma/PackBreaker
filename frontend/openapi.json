@@ -876,6 +876,53 @@
         "title": "CookieCloudConnectionStatus",
         "type": "string"
       },
+      "CookieCloudCronPreviewRequest": {
+        "properties": {
+          "cron_expression": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Cron Expression",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cron_expression"
+        ],
+        "title": "CookieCloudCronPreviewRequest",
+        "type": "object"
+      },
+      "CookieCloudCronPreviewResponse": {
+        "properties": {
+          "cron_expression": {
+            "title": "Cron Expression",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "next_runs": {
+            "items": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "title": "Next Runs",
+            "type": "array"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cron_expression",
+          "timezone",
+          "description",
+          "next_runs"
+        ],
+        "title": "CookieCloudCronPreviewResponse",
+        "type": "object"
+      },
       "CookieCloudCryptoType": {
         "enum": [
           "legacy",
@@ -949,6 +996,10 @@
             "title": "Created At",
             "type": "string"
           },
+          "eligible_sites": {
+            "title": "Eligible Sites",
+            "type": "integer"
+          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
@@ -1007,8 +1058,20 @@
             "title": "Server Url",
             "type": "string"
           },
-          "sync_interval_minutes": {
-            "title": "Sync Interval Minutes",
+          "source_cookies": {
+            "title": "Source Cookies",
+            "type": "integer"
+          },
+          "source_domains": {
+            "title": "Source Domains",
+            "type": "integer"
+          },
+          "sync_cron_expression": {
+            "title": "Sync Cron Expression",
+            "type": "string"
+          },
+          "unchanged_sites": {
+            "title": "Unchanged Sites",
             "type": "integer"
           },
           "unmatched_domains": {
@@ -1039,15 +1102,19 @@
           "uuid",
           "password_configured",
           "auto_sync",
-          "sync_interval_minutes",
+          "sync_cron_expression",
           "request_timeout_seconds",
           "connection_status",
           "last_test_at",
           "last_sync_at",
           "last_sync_status",
           "last_sync_error_code",
+          "source_domains",
+          "source_cookies",
+          "eligible_sites",
           "matched_sites",
           "updated_sites",
+          "unchanged_sites",
           "unmatched_domains",
           "version",
           "created_at",
@@ -1105,12 +1172,12 @@
             "title": "Server Url",
             "type": "string"
           },
-          "sync_interval_minutes": {
-            "default": 30,
-            "maximum": 10080.0,
-            "minimum": 5.0,
-            "title": "Sync Interval Minutes",
-            "type": "integer"
+          "sync_cron_expression": {
+            "default": "*/30 * * * *",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Sync Cron Expression",
+            "type": "string"
           },
           "uuid": {
             "default": "",
@@ -1127,8 +1194,20 @@
           "crypto_type": {
             "$ref": "#/components/schemas/CookieCloudCryptoType"
           },
+          "eligible_sites": {
+            "title": "Eligible Sites",
+            "type": "integer"
+          },
           "matched_sites": {
             "title": "Matched Sites",
+            "type": "integer"
+          },
+          "source_cookies": {
+            "title": "Source Cookies",
+            "type": "integer"
+          },
+          "source_domains": {
+            "title": "Source Domains",
             "type": "integer"
           },
           "status": {
@@ -1140,6 +1219,10 @@
             "format": "date-time",
             "title": "Synced At",
             "type": "string"
+          },
+          "unchanged_sites": {
+            "title": "Unchanged Sites",
+            "type": "integer"
           },
           "unmatched_domains": {
             "title": "Unmatched Domains",
@@ -1169,8 +1252,12 @@
           "status",
           "synced_at",
           "crypto_type",
+          "source_domains",
+          "source_cookies",
+          "eligible_sites",
           "matched_sites",
           "updated_sites",
+          "unchanged_sites",
           "unmatched_domains",
           "update_time",
           "version"
@@ -3309,46 +3396,6 @@
         "title": "PasswordRequest",
         "type": "object"
       },
-      "PathDiagnosticProbeInput": {
-        "properties": {
-          "remote_path": {
-            "maxLength": 8192,
-            "minLength": 1,
-            "title": "Remote Path",
-            "type": "string"
-          },
-          "target_directory": {
-            "maxLength": 8192,
-            "minLength": 1,
-            "title": "Target Directory",
-            "type": "string"
-          }
-        },
-        "required": [
-          "remote_path",
-          "target_directory"
-        ],
-        "title": "PathDiagnosticProbeInput",
-        "type": "object"
-      },
-      "PathDiagnosticRequest": {
-        "properties": {
-          "probes": {
-            "items": {
-              "$ref": "#/components/schemas/PathDiagnosticProbeInput"
-            },
-            "maxItems": 64,
-            "minItems": 1,
-            "title": "Probes",
-            "type": "array"
-          }
-        },
-        "required": [
-          "probes"
-        ],
-        "title": "PathDiagnosticRequest",
-        "type": "object"
-      },
       "PathMappingInput": {
         "properties": {
           "container_prefix": {
@@ -3962,8 +4009,7 @@
             "enum": [
               "enable",
               "disable",
-              "refresh_capabilities",
-              "reset_circuit"
+              "refresh_capabilities"
             ],
             "title": "Action",
             "type": "string"
@@ -8155,7 +8201,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.0.9"
+    "version": "1.0.10"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9050,6 +9096,65 @@
         ]
       }
     },
+    "/api/v1/cookiecloud/cron-preview": {
+      "post": {
+        "operationId": "preview_cookiecloud_cron_api_v1_cookiecloud_cron_preview_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CookieCloudCronPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CookieCloudCronPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Cookiecloud Cron",
+        "tags": [
+          "cookiecloud"
+        ]
+      }
+    },
     "/api/v1/cookiecloud/sync": {
       "post": {
         "operationId": "sync_cookiecloud_api_v1_cookiecloud_sync_post",
@@ -9877,108 +9982,6 @@
           }
         },
         "summary": "Get Downloader Metrics",
-        "tags": [
-          "downloaders"
-        ]
-      }
-    },
-    "/api/v1/downloaders/{downloader_id}/path-diagnostics": {
-      "post": {
-        "operationId": "diagnose_downloader_path_api_v1_downloaders__downloader_id__path_diagnostics_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "downloader_id",
-            "required": true,
-            "schema": {
-              "title": "Downloader Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Csrf-Token"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_session",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Session"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "packbreaker_csrf",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Packbreaker Csrf"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PathDiagnosticRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Diagnose Downloader Path Api V1 Downloaders  Downloader Id  Path Diagnostics Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Diagnose Downloader Path",
         "tags": [
           "downloaders"
         ]

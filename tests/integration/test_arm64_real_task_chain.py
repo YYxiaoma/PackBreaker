@@ -332,7 +332,6 @@ async def test_authorized_transmission_task_journal_verifies_then_seeds_real_cli
         kind=DownloaderKind.TRANSMISSION,
         enabled=True,
         connection_status=ProbeStatus.OK,
-        path_mapping_status=ProbeStatus.OK,
         path_mappings=old_binding.path_mappings,
         capabilities=capabilities,
     )

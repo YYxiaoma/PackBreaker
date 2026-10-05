@@ -1630,7 +1630,7 @@ def test_authenticated_web_approval_creates_transmission_plan_without_side_effec
         target = next(item for item in response.json()["items"] if item["id"] == downloader_id)
         assert target["type"] == "TRANSMISSION"
         assert target["credential_configured"] is True
-        assert target["connection_status"] == target["path_mapping_status"] == "OK"
+        assert target["connection_status"] == "OK"
 
         analyzed = client.post(
             f"/api/v1/tasks/{task_id}/actions",

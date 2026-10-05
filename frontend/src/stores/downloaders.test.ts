@@ -15,7 +15,6 @@ vi.mock('../api/downloaders', async () => {
     ...actual,
     createDownloader: vi.fn(),
     deleteDownloader: vi.fn(),
-    diagnoseDownloaderPaths: vi.fn(),
     getDownloader: vi.fn(),
     getDownloaderMetrics: vi.fn(),
     listDownloaders: vi.fn(),
@@ -36,11 +35,9 @@ const downloader: Downloader = {
   path_mappings: [],
   capabilities: {},
   connection_status: 'OK',
-  path_mapping_status: 'OK',
   enabled: false,
   version: 4,
   last_test_at: null,
-  last_path_diagnostic_at: null,
   created_at: '2026-09-09T00:00:00Z',
   updated_at: '2026-09-09T00:00:00Z',
 };
@@ -68,16 +65,10 @@ describe('下载器 store', () => {
     expect(store.items[0]?.version).toBe(5);
   });
 
-  it('会话失效时清空先前加载的下载器和诊断结果', async () => {
+  it('会话失效时清空先前加载的下载器与运行指标', async () => {
     vi.mocked(listDownloaders).mockResolvedValueOnce([downloader]);
     const store = useDownloaderStore();
     await store.refresh();
-    store.diagnostics[downloader.id] = {
-      status: 'ok',
-      all_mappings_verified: true,
-      error_code: null,
-      results: [],
-    };
 
     vi.mocked(listDownloaders).mockRejectedValueOnce(
       new ApiProblem('会话失效', { status: 401, code: 'AUTH_SESSION_INVALID' }),
@@ -85,7 +76,8 @@ describe('下载器 store', () => {
     await expect(store.refresh()).rejects.toMatchObject({ status: 401 });
 
     expect(store.items).toEqual([]);
-    expect(store.diagnostics).toEqual({});
+    expect(store.metrics).toEqual({});
+    expect(store.metricErrors).toEqual({});
   });
 
   it('单个下载器指标失败不会阻断其他实例，并保留独立错误状态', async () => {

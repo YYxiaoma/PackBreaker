@@ -3,7 +3,6 @@ import { ref } from 'vue';
 import {
   createDownloader,
   deleteDownloader,
-  diagnoseDownloaderPaths,
   getDownloader,
   getDownloaderMetrics,
   listDownloaders,
@@ -16,8 +15,6 @@ import {
   type DownloaderPatchInput,
   type DownloaderProbeInput,
   type DownloaderRuntimeMetrics,
-  type PathDiagnosticProbeInput,
-  type PathDiagnosticReport,
 } from '../api/downloaders';
 import { ApiProblem, toApiProblem } from '../api/client';
 
@@ -26,7 +23,6 @@ export const useDownloaderStore = defineStore('downloaders', () => {
   const loading = ref(false);
   const error = ref<ApiProblem | null>(null);
   const busy = ref<Record<string, boolean>>({});
-  const diagnostics = ref<Record<string, PathDiagnosticReport>>({});
   const metrics = ref<Record<string, DownloaderRuntimeMetrics>>({});
   const metricErrors = ref<Record<string, ApiProblem>>({});
 
@@ -47,7 +43,6 @@ export const useDownloaderStore = defineStore('downloaders', () => {
       error.value = problem;
       if (problem.status === 401) {
         items.value = [];
-        diagnostics.value = {};
         metrics.value = {};
         metricErrors.value = {};
       }
@@ -69,7 +64,6 @@ export const useDownloaderStore = defineStore('downloaders', () => {
       error.value = problem;
       if (problem.status === 401) {
         items.value = [];
-        diagnostics.value = {};
         metrics.value = {};
         metricErrors.value = {};
       }
@@ -99,7 +93,6 @@ export const useDownloaderStore = defineStore('downloaders', () => {
     return guarded(`delete:${item.id}`, async () => {
       await deleteDownloader(item.id, item.version);
       items.value = items.value.filter((current) => current.id !== item.id);
-      delete diagnostics.value[item.id];
       delete metrics.value[item.id];
       delete metricErrors.value[item.id];
     });
@@ -143,7 +136,6 @@ export const useDownloaderStore = defineStore('downloaders', () => {
     if (unauthorized) {
       error.value = unauthorized;
       items.value = [];
-      diagnostics.value = {};
       metrics.value = {};
       metricErrors.value = {};
       return;
@@ -162,15 +154,6 @@ export const useDownloaderStore = defineStore('downloaders', () => {
     metricErrors.value = nextErrors;
   }
 
-  async function diagnose(item: Downloader, probes: PathDiagnosticProbeInput[]) {
-    return guarded(`diagnose:${item.id}`, async () => {
-      const report = await diagnoseDownloaderPaths(item.id, probes);
-      diagnostics.value = { ...diagnostics.value, [item.id]: report };
-      await refreshOne(item.id);
-      return report;
-    });
-  }
-
   async function setEnabled(item: Downloader, enabled: boolean) {
     return guarded(`enable:${item.id}`, async () => {
       const updated = await setDownloaderEnabled(item.id, item.version, enabled);
@@ -184,7 +167,6 @@ export const useDownloaderStore = defineStore('downloaders', () => {
     loading,
     error,
     busy,
-    diagnostics,
     metrics,
     metricErrors,
     refresh,
@@ -194,7 +176,6 @@ export const useDownloaderStore = defineStore('downloaders', () => {
     probe,
     refreshMetrics,
     testConnection,
-    diagnose,
     setEnabled,
   };
 });

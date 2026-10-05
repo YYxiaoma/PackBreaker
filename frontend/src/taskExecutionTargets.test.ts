@@ -14,11 +14,9 @@ function downloader(type: Downloader['type'], overrides: Partial<Downloader> = {
     path_mappings: [],
     capabilities: {},
     connection_status: 'OK',
-    path_mapping_status: 'OK',
     enabled: true,
     version: 1,
     last_test_at: null,
-    last_path_diagnostic_at: null,
     created_at: '',
     updated_at: '',
     ...overrides,
@@ -33,9 +31,9 @@ describe('Web 任务执行目标', () => {
         downloader('TRANSMISSION'),
         downloader('TRANSMISSION', { id: 'disabled', enabled: false }),
         downloader('TRANSMISSION', { id: 'unreachable', connection_status: 'FAILED' }),
-        downloader('TRANSMISSION', { id: 'unmapped', path_mapping_status: 'UNTESTED' }),
+        downloader('TRANSMISSION', { id: 'mapped-at-runtime', path_mappings: [] }),
       ]).map((item) => item.id),
-    ).toEqual(['QBITTORRENT', 'TRANSMISSION']);
+    ).toEqual(['QBITTORRENT', 'TRANSMISSION', 'mapped-at-runtime']);
   });
 
   it('Transmission 的真实客户端校验不可跳过', () => {

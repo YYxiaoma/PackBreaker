@@ -271,7 +271,6 @@ def repair_fixture(tmp_path: Path) -> Iterator[_RepairFixture]:
         kind=DownloaderKind.QBITTORRENT,
         enabled=True,
         connection_status=ProbeStatus.OK,
-        path_mapping_status=ProbeStatus.OK,
         path_mappings=path_mappings,
         capabilities=capabilities,
     )

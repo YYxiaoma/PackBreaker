@@ -1799,14 +1799,13 @@ class TaskAnalysisService:
         if (
             not record.enabled
             or record.connection_status != ProbeStatus.OK.value
-            or record.path_mapping_status != ProbeStatus.OK.value
             or (kind is DownloaderKind.QBITTORRENT and record.secret_id is None)
         ):
             raise ApplicationError(
                 code="EXECUTION_PLAN_TARGET_DOWNLOADER_NOT_READY",
                 status=409,
                 title="目标下载器安全门未就绪",
-                detail="目标下载器必须已启用且连接、路径映射与所需凭证均保持有效",
+                detail="目标下载器必须已启用且连接与所需凭证保持有效",
             )
         if (require_client_verification or kind is DownloaderKind.TRANSMISSION) and (
             record.capabilities.get("supports_force_recheck") is not True
@@ -1836,7 +1835,6 @@ class TaskAnalysisService:
                 kind=DownloaderKind(record.type),
                 enabled=record.enabled,
                 connection_status=ProbeStatus(record.connection_status),
-                path_mapping_status=ProbeStatus(record.path_mapping_status),
                 path_mappings=mappings,
                 capabilities=deepcopy(record.capabilities),
             )

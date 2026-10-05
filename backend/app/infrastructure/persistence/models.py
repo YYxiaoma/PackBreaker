@@ -154,15 +154,24 @@ class CookieCloudSetting(Base):
         String(36), ForeignKey("secret.id", ondelete="SET NULL"), nullable=True
     )
     auto_sync: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Kept for downgrade/read compatibility with v1.0.5-v1.0.9. v1.0.10
+    # scheduling is driven by sync_cron_expression.
     sync_interval_minutes: Mapped[int] = mapped_column(nullable=False, default=30)
+    sync_cron_expression: Mapped[str] = mapped_column(
+        String(160), nullable=False, default="*/30 * * * *"
+    )
     request_timeout_seconds: Mapped[int] = mapped_column(nullable=False, default=15)
     connection_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
     last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     last_sync_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     last_sync_status: Mapped[str] = mapped_column(String(16), nullable=False, default="NEVER")
     last_sync_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_domains: Mapped[int] = mapped_column(nullable=False, default=0)
+    source_cookies: Mapped[int] = mapped_column(nullable=False, default=0)
+    eligible_sites: Mapped[int] = mapped_column(nullable=False, default=0)
     matched_sites: Mapped[int] = mapped_column(nullable=False, default=0)
     updated_sites: Mapped[int] = mapped_column(nullable=False, default=0)
+    unchanged_sites: Mapped[int] = mapped_column(nullable=False, default=0)
     unmatched_domains: Mapped[int] = mapped_column(nullable=False, default=0)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
@@ -390,7 +399,7 @@ class Downloader(Base):
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     connection_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
     path_mapping_status: Mapped[str] = mapped_column(String(16), nullable=False, default="UNTESTED")
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     last_path_diagnostic_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)

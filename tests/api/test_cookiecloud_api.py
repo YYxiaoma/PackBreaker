@@ -59,6 +59,31 @@ def _fixed_encrypt(uuid: str, password: str, payload: Mapping[str, object]) -> s
     return base64.b64encode(encryptor.update(padded) + encryptor.finalize()).decode()
 
 
+def test_cookiecloud_cron_preview_validates_and_returns_next_runs(tmp_path: Path) -> None:
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        preview = client.post(
+            "/api/v1/cookiecloud/cron-preview",
+            headers=headers,
+            json={"cron_expression": "0 */6 * * *"},
+        )
+        assert preview.status_code == 200
+        payload = preview.json()
+        assert payload["cron_expression"] == "0 */6 * * *"
+        assert payload["timezone"] == "Asia/Shanghai"
+        assert len(payload["next_runs"]) == 5
+        assert payload["description"] == "每 6 小时的第 0 分钟"
+
+        invalid = client.post(
+            "/api/v1/cookiecloud/cron-preview",
+            headers=headers,
+            json={"cron_expression": "not a cron"},
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["code"] == "COOKIECLOUD_CRON_INVALID"
+
+
 def test_cookiecloud_config_encrypts_password_and_never_echoes_it(tmp_path: Path) -> None:
     app = create_app(settings=_settings(tmp_path))
     with TestClient(app, base_url="https://testserver") as client:
@@ -78,7 +103,7 @@ def test_cookiecloud_config_encrypts_password_and_never_echoes_it(tmp_path: Path
                 "password_action": "SET",
                 "password": _COOKIECLOUD_PASSWORD,
                 "auto_sync": True,
-                "sync_interval_minutes": 30,
+                "sync_cron_expression": "*/30 * * * *",
                 "request_timeout_seconds": 15,
             },
         )
@@ -140,7 +165,7 @@ def test_cookiecloud_saved_probe_uses_get_uuid_and_local_decryption(tmp_path: Pa
                 "password_action": "SET",
                 "password": _COOKIECLOUD_PASSWORD,
                 "auto_sync": True,
-                "sync_interval_minutes": 30,
+                "sync_cron_expression": "*/30 * * * *",
                 "request_timeout_seconds": 15,
             },
         )
@@ -195,7 +220,7 @@ def test_cookiecloud_wrong_password_error_does_not_leak_secrets(tmp_path: Path) 
                 "password_action": "SET",
                 "password": "wrong-password",
                 "auto_sync": False,
-                "sync_interval_minutes": 30,
+                "sync_cron_expression": "*/30 * * * *",
                 "request_timeout_seconds": 15,
             },
         )
@@ -219,12 +244,13 @@ def test_cookiecloud_sync_updates_cookie_sites_and_preserves_rousi_api_key(tmp_p
     uuid = "sync-uuid"
     payload = {
         "cookie_data": {
-            ".keepfrds.com": [
+            "https://keepfrds.com/": [
                 {
                     "name": "session",
                     "value": "cookiecloud-keepfrds",
-                    "domain": ".keepfrds.com",
+                    "domain": "https://keepfrds.com/",
                     "path": "/",
+                    "expirationDate": 0,
                 }
             ],
             ".rousi.pro": [
@@ -306,7 +332,7 @@ def test_cookiecloud_sync_updates_cookie_sites_and_preserves_rousi_api_key(tmp_p
                 "password_action": "SET",
                 "password": _COOKIECLOUD_PASSWORD,
                 "auto_sync": True,
-                "sync_interval_minutes": 30,
+                "sync_cron_expression": "*/30 * * * *",
                 "request_timeout_seconds": 15,
             },
         )
@@ -321,11 +347,23 @@ def test_cookiecloud_sync_updates_cookie_sites_and_preserves_rousi_api_key(tmp_p
         synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
         assert synced.status_code == 200
         report = synced.json()
+        assert report["source_domains"] == 3
+        assert report["source_cookies"] == 3
+        assert report["eligible_sites"] == 2
         assert report["matched_sites"] == 2
         assert report["updated_sites"] == 2
+        assert report["unchanged_sites"] == 0
         assert report["unmatched_domains"] == 1
         assert "cookiecloud-keepfrds" not in synced.text
         assert "cookiecloud-rousi" not in synced.text
+
+        refreshed = client.get("/api/v1/cookiecloud/config").json()
+        assert refreshed["source_domains"] == 3
+        assert refreshed["source_cookies"] == 3
+        assert refreshed["eligible_sites"] == 2
+        assert refreshed["matched_sites"] == 2
+        assert refreshed["updated_sites"] == 2
+        assert refreshed["unchanged_sites"] == 0
 
         with app.state.runtime.session_factory() as session:
             sites = {
