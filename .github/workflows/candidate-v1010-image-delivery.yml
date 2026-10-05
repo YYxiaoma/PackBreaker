@@ -1,4 +1,4 @@
-name: v1.0.9 Candidate Dual Registry Delivery
+name: v1.0.10 Candidate Dual Registry Delivery
 
 # Manual-only candidate delivery. It publishes the exact reviewed source to
 # GHCR and Docker Hub under an immutable candidate tag, but never creates a
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: "Full 40-character SHA of the reviewed v1.0.9 candidate commit"
+        description: "Full 40-character SHA of the reviewed v1.0.10 candidate commit"
         required: true
         type: string
 
@@ -15,12 +15,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: packbreaker-candidate-v109-dual-registry-delivery
+  group: packbreaker-candidate-v1010-dual-registry-delivery
   cancel-in-progress: false
 
 env:
   CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-  CANDIDATE_VERSION: 1.0.9
+  CANDIDATE_VERSION: 1.0.10
   GHCR_IMAGE: ghcr.io/yyxiaoma/packbreaker
   DOCKERHUB_IMAGE: docker.io/yyxiaoma01/packbreaker
 
@@ -53,7 +53,7 @@ jobs:
           git checkout --detach "$CANDIDATE_SHA"
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           test "$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" = "$CANDIDATE_VERSION"
-          tag="candidate-v1.0.9-${CANDIDATE_SHA:0:12}"
+          tag="candidate-v1.0.10-${CANDIDATE_SHA:0:12}"
           echo "CANDIDATE_TAG=$tag" >> "$GITHUB_ENV"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "build_date=$(git show -s --format=%cI "$CANDIDATE_SHA")" >> "$GITHUB_OUTPUT"
@@ -115,13 +115,13 @@ jobs:
           test "$dockerhub_digest" = "$digest"
           python3 scripts/verify_release_platforms.py \
             --image "$GHCR_IMAGE@$digest" \
-            --tag v1.0.9 \
+            --tag v1.0.10 \
             --commit "$CANDIDATE_SHA" \
             --multiarch
           bash scripts/check-immutable-image-runtime.sh \
-            "$GHCR_IMAGE@$digest" linux/amd64 v1.0.9 "$CANDIDATE_SHA"
+            "$GHCR_IMAGE@$digest" linux/amd64 v1.0.10 "$CANDIDATE_SHA"
           bash scripts/check-immutable-image-runtime.sh \
-            "$DOCKERHUB_IMAGE@$digest" linux/amd64 v1.0.9 "$CANDIDATE_SHA"
+            "$DOCKERHUB_IMAGE@$digest" linux/amd64 v1.0.10 "$CANDIDATE_SHA"
           echo "GHCR candidate: $GHCR_IMAGE@$digest" >> "$GITHUB_STEP_SUMMARY"
           echo "Docker Hub candidate: $DOCKERHUB_IMAGE@$digest" >> "$GITHUB_STEP_SUMMARY"
 
@@ -160,7 +160,7 @@ jobs:
           digest='${{ needs.publish-candidate.outputs.digest }}'
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           bash scripts/check-immutable-image-runtime.sh \
-            "$GHCR_IMAGE@$digest" linux/arm64 v1.0.9 "$CANDIDATE_SHA"
+            "$GHCR_IMAGE@$digest" linux/arm64 v1.0.10 "$CANDIDATE_SHA"
           bash scripts/check-immutable-image-runtime.sh \
-            "$DOCKERHUB_IMAGE@$digest" linux/arm64 v1.0.9 "$CANDIDATE_SHA"
+            "$DOCKERHUB_IMAGE@$digest" linux/arm64 v1.0.10 "$CANDIDATE_SHA"
           echo "Native ARM64 verified both registries at $digest" >> "$GITHUB_STEP_SUMMARY"
