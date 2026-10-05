@@ -1026,6 +1026,6 @@ const path = require('node:path');
     }
     assert.deepEqual(unmockedApiCalls,[],'浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端');
     assert.deepEqual(errors,[]);
-    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、真实站点 health/reset/启用、状态自动刷新、任务中心大目录监控能力、计划备份管理、品牌版本后台检查红点与单容器一次性 helper 一键升级、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题；未显式 mock 的 API 请求全部失败关闭。');
+    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、站点无熔断 UI/启用/连接测试、状态自动刷新、任务中心大目录监控能力、计划备份管理、品牌版本后台检查红点与单容器一次性 helper 一键升级、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题；未显式 mock 的 API 请求全部失败关闭。');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1});

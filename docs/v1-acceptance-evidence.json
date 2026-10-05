@@ -203,7 +203,7 @@
       "evidence": [
         {"path": "tests/api/test_sites.py", "contains": "test_site_credential_is_encrypted_write_only_and_clearable"},
         {"path": "tests/unit/test_nexusphp_adapters.py", "contains": "test_hhclub_card_layout_search_and_download_use_exact_script_names"},
-        {"path": "scripts/check-prototype.cjs", "contains": "reset-circuit 不得伪造远端连接恢复文案"}
+        {"path": "scripts/check-prototype.cjs", "contains": "打开站点列表不得读取内部 health/circuit 状态"}
       ]
     },
     {
