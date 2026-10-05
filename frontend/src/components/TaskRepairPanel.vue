@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { RefreshCw, ShieldCheck, Wrench } from '@lucide/vue';
 
 import { ApiProblem } from '../api/client';
+import { createClientNonce } from '../clientNonce';
 import {
   executeTaskUnitRepair,
   getTaskUnitRepairPlan,
@@ -99,7 +100,7 @@ function resetPlan(): void {
 }
 
 function newRepairKey(): string {
-  return `repair-${globalThis.crypto.randomUUID()}`;
+  return `repair-${createClientNonce()}`;
 }
 
 function formatBytes(value: number): string {

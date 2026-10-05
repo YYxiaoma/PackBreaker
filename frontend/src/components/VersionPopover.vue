@@ -11,6 +11,7 @@ import {
 import { ElMessage } from 'element-plus';
 
 import { toApiProblem } from '../api/client';
+import { createClientNonce } from '../clientNonce';
 import {
   getSystemHealth,
   getSystemUpgradeStatus,
@@ -246,7 +247,7 @@ async function startUpgrade(): Promise<void> {
   if (!targetVersion || !targetDigest) return;
 
   if (!upgradeResultUnknown.value) {
-    pendingIdempotencyKey.value = `pb-upgrade-${crypto.randomUUID()}`;
+    pendingIdempotencyKey.value = `pb-upgrade-${createClientNonce()}`;
     persistPendingUpgrade(pendingIdempotencyKey.value, targetVersion, targetDigest);
   }
 

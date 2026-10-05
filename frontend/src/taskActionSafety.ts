@@ -1,3 +1,4 @@
+import { createClientNonce } from './clientNonce';
 import type { TaskStatus } from './api/tasks';
 
 export type TaskMutationKind = 'execute' | 'cancel' | 'rerun' | 'release' | 'reconcile' | 'purge';
@@ -58,10 +59,7 @@ export function cancellationOptionsAreConsistent(
 }
 
 function defaultActionNonce(): string {
-  return (
-    globalThis.crypto?.randomUUID?.() ??
-    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-  );
+  return createClientNonce();
 }
 
 export function createTaskActionIdempotencyKey(

@@ -10,6 +10,12 @@ const path = require('node:path');
   if(requestedBrowser!=='bundled') launchOptions.channel=requestedBrowser;
   const browser=await chromium.launch(launchOptions);
   const page=await browser.newPage({viewport:{width:1440,height:1050}});
+  await page.addInitScript(()=>{
+    const proto=globalThis.Crypto?.prototype;
+    if(proto){
+      try{Object.defineProperty(proto,'randomUUID',{value:undefined,configurable:true});}catch{}
+    }
+  });
   const errors=[];
   const unmockedApiCalls=[];
   await page.route('**/api/v1/**',route=>{
@@ -712,6 +718,7 @@ const path = require('node:path');
     upgradeStatusDelayMs=2000;
     const overviewStartedAt=Date.now();
     await page.goto('http://127.0.0.1:5173/',{waitUntil:'domcontentloaded'});
+    assert.equal(await page.evaluate(()=>typeof globalThis.crypto?.randomUUID),'undefined','E2E 必须真实模拟 HTTP 内网缺少 crypto.randomUUID 的浏览器环境');
     await page.getByRole('heading',{name:'PackBreaker 总览',exact:true,level:1}).waitFor();
     const overviewFirstPaintMs=Date.now()-overviewStartedAt;
     assert.ok(overviewFirstPaintMs<1500,`总览首屏不应等待慢速 Release 查询，实际 ${overviewFirstPaintMs}ms`);

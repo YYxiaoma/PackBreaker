@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Clock3, FolderSearch, Plus, RefreshCw, RotateCcw } from '@lucide/vue';
 
 import { toApiProblem } from '../api/client';
+import { createClientNonce } from '../clientNonce';
 import {
   listDownloaders,
   listDownloaderTorrents,
@@ -866,7 +867,7 @@ async function retryExecution(execution: TaskExecutionListItem | TaskExecution):
     activeExecution.value = await retryFailedTaskDefinitionExecution(
       detailDefinition.value.id,
       execution.id,
-      crypto.randomUUID(),
+      createClientNonce(),
     );
     executionDrawerVisible.value = true;
     await loadExecutionHistory();
@@ -885,7 +886,7 @@ async function retryActiveExecution(): Promise<void> {
     activeExecution.value = await retryFailedTaskDefinitionExecution(
       definitionId,
       execution.id,
-      crypto.randomUUID(),
+      createClientNonce(),
     );
     await refresh();
     if (detailDefinition.value?.id === definitionId) await loadExecutionHistory();
@@ -1202,7 +1203,7 @@ async function retryFailed(item: TaskDefinition): Promise<void> {
     const execution = await retryFailedTaskDefinitionExecution(
       item.id,
       latest.id,
-      crypto.randomUUID(),
+      createClientNonce(),
     );
     activeExecution.value = execution;
     executionDrawerVisible.value = true;
@@ -1227,7 +1228,7 @@ async function advanceActiveExecution(): Promise<void> {
     const updated = await advanceTaskDefinitionExecution(
       definitionId,
       execution.id,
-      `task-lifecycle-${execution.id}-${crypto.randomUUID()}`,
+      `task-lifecycle-${execution.id}-${createClientNonce()}`,
     );
     activeExecution.value = updated;
     if (detailDefinition.value?.id === definitionId) await loadExecutionHistory();
@@ -1299,7 +1300,7 @@ async function decideApproval(
         execution_plan_id: item.execution_plan_id,
         decision: approve ? 'APPROVE' : 'REJECT',
       },
-      'approval-' + execution.id + '-' + item.id + '-' + crypto.randomUUID(),
+      'approval-' + execution.id + '-' + item.id + '-' + createClientNonce(),
     );
     activeExecution.value = updated;
     if (detailDefinition.value?.id === definitionId) await loadExecutionHistory();

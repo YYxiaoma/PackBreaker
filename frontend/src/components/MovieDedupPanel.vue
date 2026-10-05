@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 import { toApiProblem } from '../api/client';
+import { createClientNonce } from '../clientNonce';
 import { browseTaskDirectories, type TaskDirectoryEntry } from '../api/taskDefinitions';
 import {
   createMovieDedupJob,
@@ -261,7 +262,7 @@ async function executeSelected(): Promise<void> {
     const updated = await executeMovieDedupPairs(
       job.id,
       selectedPairIds.value,
-      `movie-dedup-${job.id}-${crypto.randomUUID()}`,
+      `movie-dedup-${job.id}-${createClientNonce()}`,
     );
     activeJob.value = updated;
     selectedPairIds.value = [];
