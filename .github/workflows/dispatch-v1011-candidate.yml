@@ -1,0 +1,35 @@
+name: Dispatch v1.0.11 Candidate
+
+on:
+  push:
+    branches:
+      - "release/v1.0.11-candidate-trigger"
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: packbreaker-v1011-candidate-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch-candidate:
+    if: github.repository == 'YYxiaoma/PackBreaker'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out trigger branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify reviewed main SHA and dispatch candidate workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_SHA: 5efe7c3488e53e18460140f18cdcbe1c9f9601d7
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --force --no-tags
+          test "$(git rev-parse origin/main)" = "$CANDIDATE_SHA"
+          gh workflow run candidate-v1011-image-delivery.yml --ref main -f candidate_sha="$CANDIDATE_SHA"
