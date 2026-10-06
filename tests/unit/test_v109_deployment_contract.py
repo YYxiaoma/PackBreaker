@@ -91,3 +91,29 @@ def test_v1012_candidate_delivery_is_dual_registry_and_manual_only() -> None:
     assert 'test "$dockerhub_digest" = "$digest"' in workflow
     assert '"$DOCKERHUB_IMAGE@$digest" linux/amd64 v1.0.12' in workflow
     assert '"$DOCKERHUB_IMAGE@$digest" linux/arm64 v1.0.12' in workflow
+
+
+def test_v1013_candidate_delivery_is_dual_registry_and_manual_only() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "candidate-v1013-image-delivery.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "workflow_dispatch:" in workflow
+    assert "candidate_sha:" in workflow
+    assert "push:" not in workflow.split("permissions:", 1)[0]
+    assert "ghcr.io/yyxiaoma/packbreaker" in workflow
+    assert "docker.io/yyxiaoma01/packbreaker" in workflow
+    assert "DOCKERHUB_USERNAME" in workflow
+    assert "DOCKERHUB_TOKEN" in workflow
+    assert "Refuse existing candidate tags in either registry" in workflow
+    assert "Build and push one multi-arch candidate to both registries" in workflow
+    assert "Verify both candidate tags resolve to the same immutable index" in workflow
+    assert "linux/amd64,linux/arm64" in workflow
+    assert "CANDIDATE_VERSION: 1.0.13" in workflow
+    assert "candidate-v1.0.13-" in workflow
+    assert ":latest" not in workflow
+    assert ":stable" not in workflow
+    assert "gh release" not in workflow
+    assert 'test "$dockerhub_digest" = "$digest"' in workflow
+    assert '"$DOCKERHUB_IMAGE@$digest" linux/amd64 v1.0.13' in workflow
+    assert '"$DOCKERHUB_IMAGE@$digest" linux/arm64 v1.0.13' in workflow
