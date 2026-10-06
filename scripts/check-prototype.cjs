@@ -215,7 +215,19 @@ const path = require('node:path');
     });
     const fulfillJson=(route,body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
     await page.route('**/api/v1/system/health',route=>fulfillJson(route,{
-      status:'ok',generated_at:now(),version:'0.1.4',checks:[],
+      status:'warning',generated_at:now(),version:'0.1.4',checks:[
+        {name:'runtime',status:'ok',code:'RUNTIME_READY',detail:'数据库正常',metrics:{}},
+        {name:'storage',status:'ok',code:'STORAGE_OK',detail:'存储正常',metrics:{data_total_bytes:1099511627776,data_free_bytes:549755813888}},
+        {name:'resources',status:'ok',code:'RESOURCES_READABLE',detail:'资源正常',metrics:{
+          memory_total_bytes:17179869184,memory_available_bytes:8589934592,cpu_load_percent:18.0,
+          cpu_load_history_count:3,cpu_load_history_0_percent:12.0,cpu_load_history_1_percent:15.0,cpu_load_history_2_percent:18.0,
+        }},
+        {name:'backups',status:'warning',code:'BACKUP_MISSING',detail:'尚无普通备份',metrics:{}},
+        {name:'tasks',status:'ok',code:'TASK_BACKLOG_OK',detail:'任务正常',metrics:{running:1,awaiting_confirmation:0}},
+        {name:'sites',status:'ok',code:'SITE_OK',detail:'站点正常',metrics:{configured:1,connection_ok:1}},
+        {name:'downloaders',status:'ok',code:'DOWNLOADER_OK',detail:'下载器正常',metrics:{configured:2,connection_ok:2}},
+        {name:'workers',status:'ok',code:'BACKGROUND_WORKERS_OK',detail:'调度正常',metrics:{}},
+      ],
     }));
     await page.route('**/api/v1/system/release/preflight',route=>fulfillJson(route,{
       status:'ready',app_version:'0.1.4',checks:[
@@ -778,8 +790,9 @@ const path = require('node:path');
     assert.equal(sidebarScroll.scrolled,true,'低视口侧栏菜单仍应能滚动到底部');
     assert.equal(sidebarScroll.lastVisible,true,'低视口侧栏最后一项必须可访问');
     await page.setViewportSize({width:1440,height:900});
-    // 顶栏状态使用现有只读健康快照；搜索是页面/功能快捷导航，通知复用已有管理员通知抽屉。
-    await page.getByRole('button',{name:'系统运行正常',exact:true}).waitFor();
+    // v1.0.13 顶栏删除重复的系统状态提示；系统状态仅在总览中展示。
+    assert.equal(await page.locator('.header-health').count(),0,'右上角用户框左侧不应再显示系统状态提示');
+    assert.equal(await page.getByText('系统需要关注',{exact:true}).count(),0,'顶栏不应继续显示系统需要关注文本');
     await page.getByRole('button',{name:'查看通知',exact:true}).click();
     await page.locator('.user-menu-drawer').waitFor({state:'visible'});
     await page.keyboard.press('Escape');
@@ -794,6 +807,13 @@ const path = require('node:path');
     assert.equal(await globalSearch.inputValue(),'','快捷跳转后应清空搜索框');
     await page.locator('nav').getByRole('button',{name:'总览',exact:true}).click();
     await page.getByRole('heading',{name:'PackBreaker 总览',exact:true,level:1}).waitFor();
+    const systemCard=page.locator('.overview-monitor-grid > .monitor-card').filter({hasText:'系统状态'}).first();
+    await systemCard.getByText('运行正常',{exact:true}).waitFor();
+    assert.equal(await systemCard.getByText('需要关注',{exact:true}).count(),0,'全局 health warning 不应覆盖四个可见子服务均正常的系统状态卡');
+    const runningCard=page.locator('.overview-kpi-grid > .kpi-card').filter({hasText:'运行中任务'}).first();
+    assert.equal((await runningCard.locator('strong').textContent())?.trim(),'1','总览运行中任务应使用统一任务执行层计数');
+    assert.equal(await page.locator('.cpu-bars span:not(.is-pending)').count(),3,'CPU 图应直接加载后端已积累的历史采样');
+    await page.getByText('8.0 GiB',{exact:false}).first().waitFor();
     assert.equal(await page.locator('nav').getByRole('button',{name:'升级中心',exact:true}).count(),0,'主导航不应再展示升级中心');
     assert.equal(await page.getByText('本地工作空间',{exact:true}).count(),0,'侧边栏不应再展示本地工作空间组件');
     const versionTrigger=page.getByRole('button',{name:'当前版本 v0.1.4',exact:true});
@@ -1019,6 +1039,7 @@ const path = require('node:path');
     assert.equal(await siteCard.locator('.site-status-dot').getAttribute('title'),'已停用','停用状态应只通过简洁状态点表达');
     assert.equal(siteHealthReads,0,'打开站点列表不得读取内部 health/circuit 状态');
     assert.equal(await siteCard.getByText(/熔断/).count(),0,'站点卡片不得显示熔断状态');
+    assert.equal(await siteCard.getByText('已完成适配',{exact:true}).count(),0,'v1.0.13 站点卡片不再显示已完成适配');
     assert.equal(await siteCard.getByText('可靠性错误',{exact:true}).count(),0,'站点卡片不得显示内部可靠性错误');
     assert.equal(await siteCard.getByRole('button',{name:'重置熔断',exact:true}).count(),0,'站点管理不得提供重置熔断入口');
     assert.equal(await siteCard.getByRole('button',{name:'详情',exact:true}).count(),0,'站点用户详情入口必须已移除');
