@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,17 +16,21 @@ from backend.app.application.backup_schedule import BackupDriverState
 from backend.app.application.notification_driver import NotificationDriverState
 from backend.app.application.task_driver import ActiveTaskDriverState
 from backend.app.config import AppSettings
+from backend.app.domain.movie_dedup import MovieDedupJobStatus
 from backend.app.domain.notification import NotificationDeliveryState
 from backend.app.domain.operation import OperationStatus
+from backend.app.domain.task_definition import TaskExecutionStatus
 from backend.app.domain.task_state import TERMINAL_STATUSES, TaskStatus
 from backend.app.infrastructure.backups import BackupError, plan_backup_retention
 from backend.app.infrastructure.persistence.models import (
     BackupPolicy,
     Downloader,
     NotificationChannel,
+    MovieDedupJob,
     NotificationOutbox,
     OperationJournal,
     Site,
+    TaskExecution,
     UnpackTask,
 )
 from backend.app.infrastructure.runtime import RuntimeManager
@@ -39,6 +45,55 @@ _TASK_STALE_AFTER = timedelta(hours=24)
 _OPERATION_STALE_AFTER = timedelta(hours=1)
 _LOW_DISK_RATIO = 0.10
 _LOW_DISK_BYTES = 2 * 1024 * 1024 * 1024
+_RESOURCE_SAMPLE_INTERVAL_SECONDS = 30.0
+_RESOURCE_HISTORY_SIZE = 12
+
+
+class SystemResourceSampler:
+    """应用级只读资源采样器；页面未打开时也持续保留最近 CPU 负载历史。"""
+
+    def __init__(
+        self,
+        *,
+        interval_seconds: float = _RESOURCE_SAMPLE_INTERVAL_SECONDS,
+        history_size: int = _RESOURCE_HISTORY_SIZE,
+    ) -> None:
+        self._interval_seconds = interval_seconds
+        self._history: deque[float] = deque(maxlen=history_size)
+        self._current: float | None = None
+        self._task: asyncio.Task[None] | None = None
+
+    def sample_now(self) -> float | None:
+        current = _cpu_load_percent()
+        self._current = current
+        if current is not None:
+            self._history.append(current)
+        return current
+
+    def snapshot(self) -> tuple[float | None, tuple[float, ...]]:
+        return self._current, tuple(self._history)
+
+    def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        self.sample_now()
+        self._task = asyncio.create_task(self._run(), name="packbreaker-system-resource-sampler")
+
+    async def stop(self) -> None:
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _run(self) -> None:
+        while True:
+            await asyncio.sleep(self._interval_seconds)
+            self.sample_now()
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,11 +148,13 @@ class SystemHealthService:
         settings: AppSettings,
         runtime: RuntimeManager,
         site_reliability_registry: SiteReliabilityRegistry,
+        resource_sampler: SystemResourceSampler | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
         self._runtime = runtime
         self._site_reliability_registry = site_reliability_registry
+        self._resource_sampler = resource_sampler
 
     async def snapshot(
         self,
@@ -127,6 +184,12 @@ class SystemHealthService:
     def _database_snapshot(self, session: Session, *, now: datetime) -> dict[str, object]:
         task_rows = session.execute(
             select(UnpackTask.status, func.count()).group_by(UnpackTask.status)
+        ).all()
+        execution_rows = session.execute(
+            select(TaskExecution.status, func.count()).group_by(TaskExecution.status)
+        ).all()
+        movie_dedup_rows = session.execute(
+            select(MovieDedupJob.status, func.count()).group_by(MovieDedupJob.status)
         ).all()
         operation_rows = session.execute(
             select(OperationJournal.status, func.count()).group_by(OperationJournal.status)
@@ -172,6 +235,8 @@ class SystemHealthService:
         return {
             "backup_policy": session.get(BackupPolicy, "default"),
             "tasks": {status: int(count) for status, count in task_rows},
+            "task_executions": {status: int(count) for status, count in execution_rows},
+            "movie_dedup_jobs": {status: int(count) for status, count in movie_dedup_rows},
             "operations": {status: int(count) for status, count in operation_rows},
             "stale_tasks": stale_tasks,
             "stale_operations": stale_operations,
@@ -229,30 +294,33 @@ class SystemHealthService:
         )
 
     def _resources_check(self) -> SystemHealthCheck:
-        """只读系统计数；不可读取时不生成虚假的 CPU / 内存值。"""
+        """只读系统计数；CPU 历史由应用级采样器持续积累。"""
         memory = _memory_metrics()
-        try:
-            # 1 分钟平均可运行队列长度 / 逻辑 CPU 数，不等于 CPU 使用率。
-            cpu_count = os.cpu_count()
-            cpu_load = os.getloadavg()[0]
-            normalized_load = (
-                round(cpu_load / cpu_count * 100, 1)
-                if cpu_count is not None and cpu_count > 0
-                else None
-            )
-        except OSError:
-            normalized_load = None
+        sampler = getattr(self, "_resource_sampler", None)
+        if sampler is None:
+            normalized_load = _cpu_load_percent()
+            history = () if normalized_load is None else (normalized_load,)
+        else:
+            normalized_load, history = sampler.snapshot()
+            if normalized_load is None and not history:
+                normalized_load = sampler.sample_now()
+                history = () if normalized_load is None else (normalized_load,)
+
         available = memory is not None or normalized_load is not None
+        metrics: dict[str, MetricValue] = {
+            "memory_total_bytes": memory[0] if memory else None,
+            "memory_available_bytes": memory[1] if memory else None,
+            "cpu_load_percent": normalized_load,
+            "cpu_load_history_count": len(history),
+        }
+        for index, sample in enumerate(history[-_RESOURCE_HISTORY_SIZE:]):
+            metrics[f"cpu_load_history_{index}_percent"] = sample
         return SystemHealthCheck(
             "resources",
             "ok" if available else "warning",
             "RESOURCES_READABLE" if available else "RESOURCES_UNAVAILABLE",
             "本地系统资源只读快照" if available else "无法读取本地系统资源计数",
-            {
-                "memory_total_bytes": memory[0] if memory else None,
-                "memory_available_bytes": memory[1] if memory else None,
-                "cpu_load_percent": normalized_load,
-            },
+            metrics,
         )
 
     def _backup_check(self, database: dict[str, object], *, now: datetime) -> SystemHealthCheck:
@@ -339,10 +407,14 @@ class SystemHealthService:
 
     def _task_check(self, database: dict[str, object]) -> SystemHealthCheck:
         by_status = _string_int_map(database["tasks"])
+        execution_status = _string_int_map(database["task_executions"])
+        movie_dedup_status = _string_int_map(database["movie_dedup_jobs"])
         terminal = {status.value for status in TERMINAL_STATUSES}
         active_count = sum(count for status, count in by_status.items() if status not in terminal)
         retry_count = by_status.get(TaskStatus.RETRY.value, 0)
         stale_count = _integer(database["stale_tasks"], label="stale_tasks")
+        running_executions = execution_status.get(TaskExecutionStatus.RUNNING.value, 0)
+        running_movie_dedup = movie_dedup_status.get(MovieDedupJobStatus.RUNNING.value, 0)
         warning = retry_count > 0 or stale_count > 0
         return SystemHealthCheck(
             "tasks",
@@ -354,22 +426,9 @@ class SystemHealthService:
             {
                 "total": sum(by_status.values()),
                 "active": active_count,
-                "running": sum(
-                    by_status.get(status.value, 0)
-                    for status in (
-                        TaskStatus.ANALYZING,
-                        TaskStatus.SEARCHING,
-                        TaskStatus.MATCHING,
-                        TaskStatus.VERIFYING,
-                        TaskStatus.PREFLIGHT,
-                        TaskStatus.LINKING,
-                        TaskStatus.ADDING,
-                        TaskStatus.CLIENT_VERIFYING,
-                        TaskStatus.SEEDING,
-                        TaskStatus.CANCELLING,
-                        TaskStatus.ROLLING_BACK,
-                    )
-                ),
+                "running": running_executions + running_movie_dedup,
+                "running_task_executions": running_executions,
+                "running_movie_dedup_jobs": running_movie_dedup,
                 "retry": retry_count,
                 "stale_active": stale_count,
                 "awaiting_confirmation": by_status.get(TaskStatus.AWAITING_CONFIRMATION.value, 0),
@@ -526,26 +585,63 @@ def _disk_metrics(path: Path) -> dict[str, int | float | bool]:
     }
 
 
-def _memory_metrics() -> tuple[int, int] | None:
-    """优先使用容器 cgroup 限额；否则读取 Linux MemAvailable。"""
+def _cpu_load_percent() -> float | None:
+    """返回 1 分钟系统 load / 逻辑 CPU 数的归一化百分比。"""
+    try:
+        cpu_count = os.cpu_count()
+        cpu_load = os.getloadavg()[0]
+    except OSError:
+        return None
+    if cpu_count is None or cpu_count <= 0:
+        return None
+    return round(cpu_load / cpu_count * 100, 1)
+
+
+def _memory_metrics(
+    *,
+    proc_meminfo_path: Path = Path("/proc/meminfo"),
+    cgroup_v2_root: Path = Path("/sys/fs/cgroup"),
+    cgroup_v1_memory_root: Path = Path("/sys/fs/cgroup/memory"),
+) -> tuple[int, int] | None:
+    """兼容 cgroup v2/v1；容器指标不可用时保留 /proc/meminfo 回退。"""
     try:
         values: dict[str, int] = {}
-        for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+        for line in proc_meminfo_path.read_text(encoding="ascii").splitlines():
             key, _, raw = line.partition(":")
             if key in {"MemTotal", "MemAvailable"}:
                 values[key] = int(raw.strip().split()[0]) * 1024
         total = values["MemTotal"]
-        available = values["MemAvailable"]
-        cgroup = Path("/sys/fs/cgroup")
-        limit_raw = (cgroup / "memory.max").read_text(encoding="ascii").strip()
-        if limit_raw != "max":
-            limit = int(limit_raw)
-            if 0 < limit < total:
-                current = int((cgroup / "memory.current").read_text(encoding="ascii").strip())
-                return limit, max(0, limit - min(limit, current))
-        return total, max(0, min(total, available))
+        available = max(0, min(total, values["MemAvailable"]))
     except (OSError, ValueError, KeyError, IndexError):
         return None
+
+    try:
+        limit_raw = (cgroup_v2_root / "memory.max").read_text(encoding="ascii").strip()
+        if limit_raw != "max":
+            limit = int(limit_raw)
+            current = int((cgroup_v2_root / "memory.current").read_text(encoding="ascii").strip())
+            if 0 < limit < total:
+                return limit, max(0, limit - min(limit, current))
+    except (OSError, ValueError):
+        pass
+
+    try:
+        limit = int(
+            (cgroup_v1_memory_root / "memory.limit_in_bytes")
+            .read_text(encoding="ascii")
+            .strip()
+        )
+        current = int(
+            (cgroup_v1_memory_root / "memory.usage_in_bytes")
+            .read_text(encoding="ascii")
+            .strip()
+        )
+        if 0 < limit < total:
+            return limit, max(0, limit - min(limit, current))
+    except (OSError, ValueError):
+        pass
+
+    return total, available
 
 
 def _integer(value: object, *, label: str) -> int:
