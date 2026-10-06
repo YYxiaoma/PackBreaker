@@ -627,14 +627,10 @@ def _memory_metrics(
 
     try:
         limit = int(
-            (cgroup_v1_memory_root / "memory.limit_in_bytes")
-            .read_text(encoding="ascii")
-            .strip()
+            (cgroup_v1_memory_root / "memory.limit_in_bytes").read_text(encoding="ascii").strip()
         )
         current = int(
-            (cgroup_v1_memory_root / "memory.usage_in_bytes")
-            .read_text(encoding="ascii")
-            .strip()
+            (cgroup_v1_memory_root / "memory.usage_in_bytes").read_text(encoding="ascii").strip()
         )
         if 0 < limit < total:
             return limit, max(0, limit - min(limit, current))
