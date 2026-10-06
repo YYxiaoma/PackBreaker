@@ -37,7 +37,6 @@ def test_resources_check_does_not_fake_unavailable_metrics(
     assert report.metrics["cpu_load_percent"] is None
 
 
-
 def test_memory_metrics_supports_synology_cgroup_v1(tmp_path: Path) -> None:
     proc = tmp_path / "meminfo"
     proc.write_text(
