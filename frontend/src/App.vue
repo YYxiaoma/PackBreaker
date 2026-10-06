@@ -12,8 +12,6 @@ import {
   ChevronDown,
   Bell,
   Search,
-  CheckCircle2,
-  CircleAlert,
   Menu,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -28,7 +26,6 @@ import packBreakerIcon from './assets/packbreaker-icon.png';
 import AboutPage from './components/AboutPage.vue';
 import { AUTH_REQUIRED_EVENT } from './api/client';
 import { getAdminInboxUnreadCount } from './api/notifications';
-import { getSystemHealth, type SystemHealth } from './api/system';
 import { normalizePrimaryRoute, type PrimaryRoute } from './navigation';
 import { useAuthStore } from './stores/auth';
 
@@ -38,8 +35,6 @@ const auth = useAuthStore();
 const versionPopover = ref<InstanceType<typeof VersionPopover> | null>(null);
 const userDrawerVisible = ref(false);
 const unreadCount = ref(0);
-const headerHealth = ref<SystemHealth | null>(null);
-const headerHealthError = ref(false);
 const searchQuery = ref('');
 const searchOpen = ref(false);
 const systemDark = ref(window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -58,7 +53,6 @@ const dark = computed(
 );
 const avatarInitial = computed(() => auth.username?.trim().charAt(0).toUpperCase() || 'A');
 let unreadTimer: ReturnType<typeof setInterval> | undefined;
-let healthTimer: ReturnType<typeof setInterval> | undefined;
 
 function handleAuthRequired(): void {
   auth.markUnauthenticated();
@@ -73,7 +67,6 @@ onUnmounted(() => {
   window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
   mediaQuery.removeEventListener('change', handleSystemThemeChange);
   if (unreadTimer) clearInterval(unreadTimer);
-  if (healthTimer) clearInterval(healthTimer);
 });
 
 function handleSystemThemeChange(event: MediaQueryListEvent): void {
@@ -105,18 +98,6 @@ const searchResults = computed(() => {
       !query || (item.name + ' ' + (aliases[item.name] ?? '')).toLocaleLowerCase().includes(query),
   );
 });
-const healthLabel = computed(() =>
-  !headerHealth.value || headerHealthError.value
-    ? '状态暂不可用'
-    : headerHealth.value.status === 'ok'
-      ? '系统运行正常'
-      : headerHealth.value.status === 'warning'
-        ? '系统需要关注'
-        : '系统运行异常',
-);
-const healthLevel = computed(() =>
-  !headerHealth.value || headerHealthError.value ? 'unknown' : headerHealth.value.status,
-);
 const initialRoute = location.hash.slice(1) ? decodeURIComponent(location.hash.slice(1)) : '总览';
 const route = ref<PrimaryRoute>(normalizePrimaryRoute(initialRoute));
 const mobile = ref(false);
@@ -151,21 +132,13 @@ watch(
       clearInterval(unreadTimer);
       unreadTimer = undefined;
     }
-    if (healthTimer) {
-      clearInterval(healthTimer);
-      healthTimer = undefined;
-    }
     if (!ready) {
       unreadCount.value = 0;
-      headerHealth.value = null;
-      headerHealthError.value = false;
       userDrawerVisible.value = false;
       return;
     }
     void refreshUnreadCount();
-    void refreshHeaderHealth();
     unreadTimer = setInterval(() => void refreshUnreadCount(), 30_000);
-    healthTimer = setInterval(() => void refreshHeaderHealth(), 60_000);
   },
   { immediate: true },
 );
@@ -175,14 +148,6 @@ async function refreshUnreadCount(): Promise<void> {
     unreadCount.value = await getAdminInboxUnreadCount();
   } catch {
     // 顶栏未读红点读取失败不能阻断主界面。
-  }
-}
-async function refreshHeaderHealth(): Promise<void> {
-  try {
-    headerHealth.value = await getSystemHealth();
-    headerHealthError.value = false;
-  } catch {
-    headerHealthError.value = true;
   }
 }
 function selectSearchRoute(target: PrimaryRoute): void {
@@ -283,17 +248,6 @@ function openVersionPopover(): void {
           </div>
         </div>
         <div class="top-actions">
-          <button
-            type="button"
-            class="header-health"
-            :class="healthLevel"
-            :title="headerHealthError ? '系统状态读取失败，请进入总览刷新' : '查看系统状态'"
-            @click="route = '总览'"
-          >
-            <CheckCircle2 v-if="healthLevel === 'ok'" :size="15" />
-            <CircleAlert v-else :size="15" />
-            {{ healthLabel }}
-          </button>
           <button
             type="button"
             class="header-bell"
