@@ -11,20 +11,20 @@ from scripts.validate_release_baseline import load_release_baseline, project_ver
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_repository_release_baseline_is_immutable_v1010_multiarch() -> None:
+def test_repository_release_baseline_is_immutable_v1011_multiarch() -> None:
     baseline = load_release_baseline()
 
-    assert baseline.version == "1.0.10"
-    assert baseline.tag == "v1.0.10"
-    assert baseline.commit == "a74ed6c05d84446db5eb842c3ea518395025c1c0"
+    assert baseline.version == "1.0.11"
+    assert baseline.tag == "v1.0.11"
+    assert baseline.commit == "5efe7c3488e53e18460140f18cdcbe1c9f9601d7"
     assert baseline.format_version == 2
     assert baseline.platform == "multi"
     assert baseline.platforms == ("linux/amd64", "linux/arm64")
     assert baseline.alembic_revision == "0034_cookiecloud_cron_v1010"
-    assert baseline.release_workflow_run_id == 37270624592
+    assert baseline.release_workflow_run_id == 37302337063
     assert baseline.immutable_image == (
         "ghcr.io/yyxiaoma/packbreaker@"
-        "sha256:b9a693abe852699d609d4876a6a54e5d73add4cafe47910f062a2be9d0421af7"
+        "sha256:e7957f10681005d38a3f4af13c7af708927535f9552260bf4f631425e348bef6"
     )
 
 
