@@ -1,16 +1,16 @@
 {
   "format_version": 2,
-  "version": "1.0.12",
-  "tag": "v1.0.12",
-  "commit": "a0683efbd262464922418ce285c3f1bfa3255370",
+  "version": "1.0.13",
+  "tag": "v1.0.13",
+  "commit": "bf1a12c2cd646a39d1c25d75845d0393a8e0ef74",
   "platform": "multi",
   "platforms": [
     "linux/amd64",
     "linux/arm64"
   ],
   "image": "ghcr.io/yyxiaoma/packbreaker",
-  "image_digest": "sha256:a878b8d50b50ec903a55791c9f473c30da09ac4c23d0e00a421654cdccdf0217",
-  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:a878b8d50b50ec903a55791c9f473c30da09ac4c23d0e00a421654cdccdf0217",
+  "image_digest": "sha256:047bb6afadef7606b38bbbd89b4b79de37892c26fb572a66d9710cedaffd3590",
+  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:047bb6afadef7606b38bbbd89b4b79de37892c26fb572a66d9710cedaffd3590",
   "alembic_revision": "0034_cookiecloud_cron_v1010",
-  "release_workflow_run_id": 37410410816
+  "release_workflow_run_id": 37428908278
 }
