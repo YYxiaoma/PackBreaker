@@ -48,6 +48,7 @@ from backend.app.application.notifications import NotificationService
 from backend.app.application.repair_downloader_operations import RepairDownloadOperationService
 from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
+from backend.app.application.system_health import SystemResourceSampler
 from backend.app.application.system_upgrades import SystemUpgradeService
 from backend.app.application.task_actions import TaskActionService
 from backend.app.application.task_adding import TaskAddingCoordinator
@@ -520,9 +521,13 @@ def create_app(
         cookiecloud_driver.start()
         backup_driver.start()
         ai_telegram_driver.start()
+        resource_sampler = SystemResourceSampler()
+        app.state.resource_sampler = resource_sampler
+        resource_sampler.start()
         try:
             yield
         finally:
+            await resource_sampler.stop()
             await ai_telegram_driver.stop()
             await backup_driver.stop()
             await cookiecloud_driver.stop()
