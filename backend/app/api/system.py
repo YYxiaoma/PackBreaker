@@ -27,6 +27,7 @@ from backend.app.application.system_health import (
     MetricValue,
     SystemHealthReport,
     SystemHealthService,
+    SystemResourceSampler,
 )
 from backend.app.application.system_upgrades import (
     SystemUpgradeActionResult,
@@ -591,11 +592,13 @@ def _query_logs(
 def _health_service(request: Request) -> SystemHealthService:
     runtime = cast(RuntimeManager, request.app.state.runtime)
     registry = cast(SiteReliabilityRegistry, request.app.state.site_reliability_registry)
+    sampler = cast(SystemResourceSampler, request.app.state.resource_sampler)
     return SystemHealthService(
         runtime.session_factory,
         settings=runtime.settings,
         runtime=runtime,
         site_reliability_registry=registry,
+        resource_sampler=sampler,
     )
 
 
