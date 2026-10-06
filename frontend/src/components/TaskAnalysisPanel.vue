@@ -137,6 +137,14 @@ function verificationType(level: string | null): 'success' | 'warning' | 'danger
   return 'info';
 }
 
+function verificationLabel(level: string | null, rejected: boolean): string {
+  if (level === 'FULL_VERIFIED') return '完整验证';
+  if (level === 'CLIENT_CHECK_REQUIRED') return '需要客户端校验';
+  if (level === 'BLOCKED') return '已阻断';
+  if (rejected) return '算法硬拒绝';
+  return '未验证';
+}
+
 function staleReasonLabel(reason: string): string {
   const labels: Record<string, string> = {
     TASK_VERSION_CHANGED: '任务版本已变化',
@@ -219,7 +227,7 @@ function staleReasonLabel(reason: string): string {
         </p>
         <div class="candidate-bottom">
           <el-tag :type="verificationType(item.verification_level)">
-            {{ item.verification_level ?? (item.rejected ? 'HARD_REJECTED' : 'NOT_VERIFIED') }}
+            {{ verificationLabel(item.verification_level, item.rejected) }}
           </el-tag>
           <span v-if="item.error_code" class="red"
             ><AlertTriangle :size="14" />{{ item.error_code }}</span

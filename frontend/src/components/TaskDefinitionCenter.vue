@@ -66,6 +66,9 @@ interface Draft {
   siteId: string;
   sourceKind: TaskSourceKind;
   downloaderId: string;
+  downloaderNameContains: string;
+  downloaderCategories: string;
+  downloaderTags: string;
   selectedTorrentHashes: string[];
   directoryPath: string;
   targetDownloaderId: string;
@@ -114,6 +117,7 @@ const createTypeDialogVisible = ref(false);
 const createTypeSelection = ref<TaskCenterKind>('MANUAL');
 const dialogVisible = ref(false);
 const definitionDrawerVisible = ref(false);
+const sourceSnapshotConfigDialogVisible = ref(false);
 const detailDefinition = ref<TaskDefinition | null>(null);
 const detailTab = ref('overview');
 const executionHistoryLoading = ref(false);
@@ -345,6 +349,9 @@ function freshDraft(): Draft {
     siteId: '',
     sourceKind: 'DOWNLOADER',
     downloaderId: '',
+    downloaderNameContains: '',
+    downloaderCategories: '',
+    downloaderTags: '',
     selectedTorrentHashes: [],
     directoryPath: '',
     targetDownloaderId: '',
@@ -456,6 +463,17 @@ function hydrateDraft(item: TaskDefinition, clone: boolean): void {
   const selectedTorrents = Array.isArray(item.source_config.selected_torrents)
     ? item.source_config.selected_torrents
     : [];
+  const rawMonitorFilter = item.source_config.monitor_filter;
+  const monitorFilter =
+    rawMonitorFilter && typeof rawMonitorFilter === 'object' && !Array.isArray(rawMonitorFilter)
+      ? (rawMonitorFilter as Record<string, unknown>)
+      : {};
+  const monitorCategories = Array.isArray(monitorFilter.categories)
+    ? monitorFilter.categories.filter((value): value is string => typeof value === 'string')
+    : [];
+  const monitorTags = Array.isArray(monitorFilter.tags)
+    ? monitorFilter.tags.filter((value): value is string => typeof value === 'string')
+    : [];
   const torrentSnapshots: Record<string, DownloaderTorrent> = {};
   for (const raw of selectedTorrents) {
     if (!raw || typeof raw !== 'object') continue;
@@ -509,6 +527,10 @@ function hydrateDraft(item: TaskDefinition, clone: boolean): void {
     siteId: item.site_id ?? '',
     sourceKind: item.source_kind,
     downloaderId: item.source_downloader_id ?? '',
+    downloaderNameContains:
+      typeof monitorFilter.name_contains === 'string' ? monitorFilter.name_contains : '',
+    downloaderCategories: monitorCategories.join(', '),
+    downloaderTags: monitorTags.join(', '),
     selectedTorrentHashes: Object.keys(torrentSnapshots),
     directoryPath: item.source_directory ?? '',
     targetDownloaderId:
@@ -579,6 +601,17 @@ function filterPayload(): TaskFilterInput {
     include_subdirectories: draft.includeSubdirectories,
     max_scan_depth: draft.maxScanDepth,
   };
+}
+
+function commaSeparatedValues(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
 }
 
 async function openDirectoryDrawer(target: 'source' | 'output'): Promise<void> {
@@ -793,6 +826,20 @@ function executionPhaseLabel(value: string): string {
     COMPLETED: '已完成',
     FAILED: '失败',
     SKIPPED: '已跳过',
+    PENDING: '等待处理',
+    SEARCHING: '搜索候选',
+    MATCHING: '匹配候选',
+    PREFLIGHT: '执行前检查',
+    AWAITING_CONFIRMATION: '等待人工确认',
+    LINKING: '创建链接',
+    ADDING: '添加下载器任务',
+    CLIENT_VERIFYING: '客户端下载校验',
+    SEEDING: '做种中',
+    PAUSED: '已暂停',
+    RETRY: '等待重试',
+    CANCELLING: '取消中',
+    ROLLING_BACK: '回滚中',
+    CANCELLED: '已取消',
   };
   return labels[value] ?? value;
 }
@@ -1114,7 +1161,7 @@ function validateDraft(): boolean {
     ElMessage.warning('开启高风险预授权时必须填写允许的 action kind 白名单');
     return false;
   }
-  if (!draft.fileTypes.length) {
+  if (draft.sourceKind === 'DIRECTORY' && !draft.fileTypes.length) {
     ElMessage.warning('至少选择一种文件类型');
     return false;
   }
@@ -1140,21 +1187,30 @@ function createPayload(): TaskDefinitionCreateInput {
         ? {
             kind: 'DOWNLOADER',
             downloader_id: draft.downloaderId,
-            config: {
-              selected_torrent_hashes: draft.selectedTorrentHashes,
-              selected_torrents: draft.selectedTorrentHashes
-                .map((hash) => selectedTorrentSnapshots.value[hash])
-                .filter((item): item is DownloaderTorrent => Boolean(item))
-                .map((item) => ({
-                  torrent_hash: item.torrent_hash,
-                  name: item.name,
-                  size_bytes: item.size_bytes,
-                  save_path: item.save_path,
-                  content_path: item.content_path,
-                  status: item.status,
-                  progress: item.progress,
-                })),
-            },
+            config:
+              draft.kind === 'MANUAL'
+                ? {
+                    selected_torrent_hashes: draft.selectedTorrentHashes,
+                    selected_torrents: draft.selectedTorrentHashes
+                      .map((hash) => selectedTorrentSnapshots.value[hash])
+                      .filter((item): item is DownloaderTorrent => Boolean(item))
+                      .map((item) => ({
+                        torrent_hash: item.torrent_hash,
+                        name: item.name,
+                        size_bytes: item.size_bytes,
+                        save_path: item.save_path,
+                        content_path: item.content_path,
+                        status: item.status,
+                        progress: item.progress,
+                      })),
+                  }
+                : {
+                    monitor_filter: {
+                      name_contains: draft.downloaderNameContains.trim() || null,
+                      categories: commaSeparatedValues(draft.downloaderCategories),
+                      tags: commaSeparatedValues(draft.downloaderTags),
+                    },
+                  },
           }
         : {
             kind: 'DIRECTORY',
@@ -1664,11 +1720,35 @@ async function decideApproval(
     >
       <div class="create-type-dialog">
         <p>选择任务类型。无论当前选中哪个任务卡片，这里都可以创建任意一种任务。</p>
-        <el-radio-group v-model="createTypeSelection" class="create-type-options">
-          <el-radio-button label="MANUAL">手动拆包</el-radio-button>
-          <el-radio-button label="MONITOR">监控拆包</el-radio-button>
-          <el-radio-button label="MOVIE_DEDUP">影片去重</el-radio-button>
-        </el-radio-group>
+        <div class="create-type-options">
+          <button
+            type="button"
+            class="create-type-card"
+            :class="{ active: createTypeSelection === 'MANUAL' }"
+            @click="createTypeSelection = 'MANUAL'"
+          >
+            <b>手动拆包</b>
+            <span>选择指定种子或目录文件，保存后立即执行一次。</span>
+          </button>
+          <button
+            type="button"
+            class="create-type-card"
+            :class="{ active: createTypeSelection === 'MONITOR' }"
+            @click="createTypeSelection = 'MONITOR'"
+          >
+            <b>监控拆包</b>
+            <span>按计划扫描下载器或目录，并持续捕获符合规则的新对象。</span>
+          </button>
+          <button
+            type="button"
+            class="create-type-card"
+            :class="{ active: createTypeSelection === 'MOVIE_DEDUP' }"
+            @click="createTypeSelection = 'MOVIE_DEDUP'"
+          >
+            <b>影片去重</b>
+            <span>对比两个影视目录并按安全策略创建链接或执行替换。</span>
+          </button>
+        </div>
       </div>
       <template #footer>
         <el-button @click="createTypeDialogVisible = false">取消</el-button>
@@ -1706,68 +1786,69 @@ async function decideApproval(
                 />
               </el-select>
             </el-form-item>
-            <el-form-item v-if="draft.kind === 'MONITOR'" label="执行时间" required>
-              <div class="cron-editor">
-                <el-radio-group v-model="cronInputMode" size="small">
-                  <el-radio-button value="VISUAL">图形化</el-radio-button>
-                  <el-radio-button value="CRON">Cron</el-radio-button>
-                </el-radio-group>
-                <template v-if="cronInputMode === 'VISUAL'">
-                  <div class="cron-visual-row">
-                    <el-select v-model="cronVisualKind" class="cron-kind-select">
-                      <el-option label="每隔 N 分钟" value="EVERY_MINUTES" />
-                      <el-option label="每隔 N 小时" value="EVERY_HOURS" />
-                      <el-option label="每天固定时间" value="DAILY" />
-                      <el-option label="每周" value="WEEKLY" />
-                      <el-option label="每月" value="MONTHLY" />
-                    </el-select>
-                    <el-input-number
-                      v-if="cronVisualKind === 'EVERY_MINUTES' || cronVisualKind === 'EVERY_HOURS'"
-                      v-model="cronVisualInterval"
-                      :min="1"
-                      :max="cronVisualKind === 'EVERY_MINUTES' ? 59 : 23"
-                    />
-                    <el-select v-if="cronVisualKind === 'WEEKLY'" v-model="cronVisualWeekday">
-                      <el-option label="周日" :value="0" />
-                      <el-option label="周一" :value="1" />
-                      <el-option label="周二" :value="2" />
-                      <el-option label="周三" :value="3" />
-                      <el-option label="周四" :value="4" />
-                      <el-option label="周五" :value="5" />
-                      <el-option label="周六" :value="6" />
-                    </el-select>
-                    <el-input-number
-                      v-if="cronVisualKind === 'MONTHLY'"
-                      v-model="cronVisualMonthDay"
-                      :min="1"
-                      :max="31"
-                    />
-                    <template v-if="!['EVERY_MINUTES'].includes(cronVisualKind)">
-                      <el-input-number v-model="cronVisualHour" :min="0" :max="23" />
-                      <span>:</span>
-                      <el-input-number v-model="cronVisualMinute" :min="0" :max="59" />
-                    </template>
-                  </div>
-                  <el-input v-model="draft.cronExpression" readonly />
-                </template>
-                <el-input v-else v-model="draft.cronExpression" placeholder="例如：0 */2 * * *" />
-                <small v-if="cronPreviewLoading" class="field-hint">正在计算执行时间…</small>
-                <small v-else-if="cronPreviewError" class="field-error">{{
-                  cronPreviewError
-                }}</small>
-                <div v-else-if="cronPreview" class="cron-preview">
-                  <small class="field-hint">
-                    {{ cronPreview.description }} · 时区 {{ cronPreview.timezone }}
-                  </small>
-                  <small class="field-hint">
-                    未来 5 次：{{
-                      cronPreview.next_runs.map((item) => formatTime(item)).join(' · ')
-                    }}
-                  </small>
-                </div>
-              </div>
-            </el-form-item>
           </div>
+          <el-form-item
+            v-if="draft.kind === 'MONITOR'"
+            label="执行时间"
+            required
+            class="monitor-schedule-field"
+          >
+            <div class="cron-editor">
+              <el-radio-group v-model="cronInputMode" size="small">
+                <el-radio-button value="VISUAL">图形化</el-radio-button>
+                <el-radio-button value="CRON">Cron</el-radio-button>
+              </el-radio-group>
+              <template v-if="cronInputMode === 'VISUAL'">
+                <div class="cron-visual-row">
+                  <el-select v-model="cronVisualKind" class="cron-kind-select">
+                    <el-option label="每隔 N 分钟" value="EVERY_MINUTES" />
+                    <el-option label="每隔 N 小时" value="EVERY_HOURS" />
+                    <el-option label="每天固定时间" value="DAILY" />
+                    <el-option label="每周" value="WEEKLY" />
+                    <el-option label="每月" value="MONTHLY" />
+                  </el-select>
+                  <el-input-number
+                    v-if="cronVisualKind === 'EVERY_MINUTES' || cronVisualKind === 'EVERY_HOURS'"
+                    v-model="cronVisualInterval"
+                    :min="1"
+                    :max="cronVisualKind === 'EVERY_MINUTES' ? 59 : 23"
+                  />
+                  <el-select v-if="cronVisualKind === 'WEEKLY'" v-model="cronVisualWeekday">
+                    <el-option label="周日" :value="0" />
+                    <el-option label="周一" :value="1" />
+                    <el-option label="周二" :value="2" />
+                    <el-option label="周三" :value="3" />
+                    <el-option label="周四" :value="4" />
+                    <el-option label="周五" :value="5" />
+                    <el-option label="周六" :value="6" />
+                  </el-select>
+                  <el-input-number
+                    v-if="cronVisualKind === 'MONTHLY'"
+                    v-model="cronVisualMonthDay"
+                    :min="1"
+                    :max="31"
+                  />
+                  <template v-if="!['EVERY_MINUTES'].includes(cronVisualKind)">
+                    <el-input-number v-model="cronVisualHour" :min="0" :max="23" />
+                    <span>:</span>
+                    <el-input-number v-model="cronVisualMinute" :min="0" :max="59" />
+                  </template>
+                </div>
+                <el-input v-model="draft.cronExpression" readonly />
+              </template>
+              <el-input v-else v-model="draft.cronExpression" placeholder="例如：0 */2 * * *" />
+              <small v-if="cronPreviewLoading" class="field-hint">正在计算执行时间…</small>
+              <small v-else-if="cronPreviewError" class="field-error">{{ cronPreviewError }}</small>
+              <div v-else-if="cronPreview" class="cron-preview">
+                <small class="field-hint">
+                  {{ cronPreview.description }} · 时区 {{ cronPreview.timezone }}
+                </small>
+                <small class="field-hint">
+                  未来 5 次：{{ cronPreview.next_runs.map((item) => formatTime(item)).join(' · ') }}
+                </small>
+              </div>
+            </div>
+          </el-form-item>
         </div>
 
         <div class="form-section">
@@ -1794,8 +1875,42 @@ async function decideApproval(
               </span>
               <span v-else>尚未选择真实种子</span>
             </div>
-            <small v-else class="field-hint">监控任务将在调度阶段按来源规则发现新增种子。</small>
+            <small v-else class="field-hint"
+              >监控任务将在调度阶段按下方过滤规则发现符合条件的种子。</small
+            >
           </el-form-item>
+          <div
+            v-if="draft.kind === 'MONITOR' && draft.sourceKind === 'DOWNLOADER'"
+            class="monitor-downloader-filter"
+          >
+            <h4>下载器任务过滤</h4>
+            <div class="monitor-filter-grid">
+              <el-form-item label="任务名称包含">
+                <el-input
+                  v-model="draft.downloaderNameContains"
+                  clearable
+                  placeholder="例如 Movie 或影片名关键字"
+                />
+              </el-form-item>
+              <el-form-item label="分类">
+                <el-input
+                  v-model="draft.downloaderCategories"
+                  clearable
+                  placeholder="多个分类用逗号分隔"
+                />
+              </el-form-item>
+              <el-form-item label="标签">
+                <el-input
+                  v-model="draft.downloaderTags"
+                  clearable
+                  placeholder="多个标签用逗号分隔"
+                />
+              </el-form-item>
+            </div>
+            <small class="field-hint">
+              已填写的条件需要同时满足；分类允许多个精确值，标签填写多个时命中任意一个即可。
+            </small>
+          </div>
           <template v-else>
             <el-form-item label="来源目录" required>
               <div class="directory-field">
@@ -1840,7 +1955,7 @@ async function decideApproval(
           </template>
         </div>
 
-        <div class="form-section">
+        <div v-if="draft.sourceKind === 'DIRECTORY'" class="form-section">
           <h3>文件过滤</h3>
           <el-form-item label="文件类型">
             <el-checkbox-group v-model="draft.fileTypes">
@@ -1849,9 +1964,6 @@ async function decideApproval(
               <el-checkbox value="ISO" disabled>ISO（执行器待接入）</el-checkbox>
               <el-checkbox value="OTHER" disabled>其他（执行器待接入）</el-checkbox>
             </el-checkbox-group>
-            <small class="field-hint">
-              v0.1.5 当前安全执行链仅执行视频文件；RAR 分卷、ISO 和其他类型不会作为可执行对象开放。
-            </small>
           </el-form-item>
           <div class="form-grid two">
             <el-form-item label="最小大小（MB）">
@@ -1909,7 +2021,6 @@ async function decideApproval(
             </el-form-item>
             <el-form-item label="目录结构">
               <el-switch v-model="draft.preserveStructure" active-text="保持原目录结构" disabled />
-              <small class="field-hint">当前安全执行计划固定保持 torrent 原目录结构。</small>
             </el-form-item>
           </div>
         </div>
@@ -2122,8 +2233,11 @@ async function decideApproval(
                 </p>
               </section>
               <section>
-                <h4>来源快照配置</h4>
-                <pre>{{ prettyJson(detailDefinition.source_config) }}</pre>
+                <h4>来源快照</h4>
+                <p>查看任务保存时冻结的来源选择与监控过滤配置。</p>
+                <el-button link type="primary" @click="sourceSnapshotConfigDialogVisible = true">
+                  来源快照配置
+                </el-button>
               </section>
             </div>
           </el-tab-pane>
@@ -2242,6 +2356,15 @@ async function decideApproval(
     </el-dialog>
 
     <el-dialog
+      v-model="sourceSnapshotConfigDialogVisible"
+      title="来源快照配置"
+      width="min(760px, 92vw)"
+      append-to-body
+    >
+      <pre class="config-snapshot">{{ prettyJson(detailDefinition?.source_config ?? {}) }}</pre>
+    </el-dialog>
+
+    <el-dialog
       v-model="executionDrawerVisible"
       title="执行记录详情"
       width="min(1100px, 96vw)"
@@ -2264,7 +2387,10 @@ async function decideApproval(
           </div>
           <div>
             <small>状态 / 阶段</small
-            ><b>{{ activeExecution.status }} / {{ activeExecution.phase }}</b>
+            ><b
+              >{{ executionStatusLabel(activeExecution.status) }} /
+              {{ executionPhaseLabel(activeExecution.phase) }}</b
+            >
           </div>
           <div>
             <small>触发方式</small><b>{{ triggerLabel(activeExecution.trigger) }}</b>
@@ -2306,12 +2432,24 @@ async function decideApproval(
         <el-tabs class="execution-detail-tabs">
           <el-tab-pane label="执行对象">
             <el-table :data="activeExecution.items" class="execution-items-table">
-              <el-table-column label="对象" min-width="220">
+              <el-table-column label="对象" min-width="260">
                 <template #default="scope">
-                  <div class="primary-cell">
-                    <b>{{ scope.row.name }}</b>
-                    <small>{{ scope.row.source }}</small>
-                    <small>{{ scope.row.source_object_key }}</small>
+                  <div class="primary-cell execution-object-cell">
+                    <el-tooltip :content="scope.row.name" placement="top" :show-after="350">
+                      <b class="execution-object-ellipsis">{{ scope.row.name }}</b>
+                    </el-tooltip>
+                    <el-tooltip :content="scope.row.source" placement="top" :show-after="350">
+                      <small class="execution-object-ellipsis">{{ scope.row.source }}</small>
+                    </el-tooltip>
+                    <el-tooltip
+                      :content="scope.row.source_object_key"
+                      placement="top"
+                      :show-after="350"
+                    >
+                      <small class="execution-object-ellipsis">{{
+                        scope.row.source_object_key
+                      }}</small>
+                    </el-tooltip>
                   </div>
                 </template>
               </el-table-column>
@@ -2406,7 +2544,13 @@ async function decideApproval(
                   <span v-else>—</span>
                 </template>
               </el-table-column>
-              <el-table-column label="审批" min-width="155" fixed="right">
+              <el-table-column
+                label="审批"
+                min-width="155"
+                fixed="right"
+                class-name="execution-approval-column"
+                label-class-name="execution-approval-column"
+              >
                 <template #default="scope">
                   <div
                     v-if="
@@ -2433,7 +2577,7 @@ async function decideApproval(
                     </el-button>
                   </div>
                   <span v-else-if="scope.row.approval">
-                    {{ scope.row.approval.state }}
+                    {{ approvalStateLabel(scope.row.approval.state) }}
                   </span>
                   <span v-else>—</span>
                 </template>
@@ -2843,10 +2987,40 @@ async function decideApproval(
 .create-type-options {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
-.create-type-options :deep(.el-radio-button),
-.create-type-options :deep(.el-radio-button__inner) {
-  width: 100%;
+.create-type-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 118px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.create-type-card:hover,
+.create-type-card.active {
+  border-color: var(--blue);
+  background: var(--soft-blue);
+}
+.create-type-card.active {
+  box-shadow: 0 0 0 1px var(--blue);
+}
+.create-type-card b {
+  font-size: 15px;
+}
+.create-type-card span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
 }
 .create-form {
   max-height: 70vh;
@@ -2868,6 +3042,23 @@ async function decideApproval(
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 18px;
+}
+.monitor-schedule-field {
+  margin-top: 2px;
+}
+.monitor-downloader-filter {
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.monitor-downloader-filter h4 {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.monitor-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 12px;
 }
 .source-kind-switch {
   margin-bottom: 16px;
@@ -2987,6 +3178,23 @@ async function decideApproval(
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
+}
+.execution-object-cell {
+  min-width: 0;
+}
+.execution-object-ellipsis {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution-items-table :deep(.execution-approval-column) {
+  background: var(--surface) !important;
+}
+.execution-items-table :deep(.el-table__fixed-right),
+.execution-items-table :deep(.el-table__fixed-right-patch) {
+  background: var(--surface);
 }
 .execution-summary-grid small,
 .execution-error {
@@ -3110,7 +3318,9 @@ async function decideApproval(
 }
 @media (max-width: 860px) {
   .task-kind-cards,
+  .create-type-options,
   .form-grid.two,
+  .monitor-filter-grid,
   .detail-overview-grid,
   .detail-config-grid {
     grid-template-columns: 1fr;

@@ -7,6 +7,7 @@ from math import isfinite
 from backend.app.domain.media_matching import MediaDescriptor, MediaFileSummary, normalize_text
 
 SCORING_ALGORITHM_VERSION = "packbreaker-candidate-score-v1"
+MIN_SEARCH_TITLE_DICE = 0.5
 
 
 class ScoreDimension(StrEnum):
@@ -105,6 +106,16 @@ def rank_candidates(
     )
 
 
+def candidate_search_relevant(source: MediaDescriptor, candidate: MediaDescriptor) -> bool:
+    """Conservatively reject site search noise before it reaches review."""
+
+    source_ids = {(item.namespace, item.value) for item in source.external_ids}
+    candidate_ids = {(item.namespace, item.value) for item in candidate.external_ids}
+    if source_ids and candidate_ids and source_ids & candidate_ids:
+        return True
+    return _title_similarity(source, candidate) >= MIN_SEARCH_TITLE_DICE
+
+
 def _hard_conflicts(
     source: MediaDescriptor, candidate: MediaDescriptor
 ) -> tuple[HardConflict, ...]:
@@ -137,15 +148,19 @@ def _score_external_ids(source: MediaDescriptor, candidate: MediaDescriptor) -> 
 
 
 def _score_title(source: MediaDescriptor, candidate: MediaDescriptor) -> DimensionScore:
-    left = (source.title_tokens, *source.alias_tokens)
-    right = (candidate.title_tokens, *candidate.alias_tokens)
-    similarity = max((_dice(a, b) for a in left for b in right), default=0.0)
+    similarity = _title_similarity(source, candidate)
     return DimensionScore(
         ScoreDimension.TITLE,
         round(20 * similarity, 4),
         20,
         f"token Dice={similarity:.4f}",
     )
+
+
+def _title_similarity(source: MediaDescriptor, candidate: MediaDescriptor) -> float:
+    left = (source.title_tokens, *source.alias_tokens)
+    right = (candidate.title_tokens, *candidate.alias_tokens)
+    return max((_dice(a, b) for a in left for b in right), default=0.0)
 
 
 def _score_year_episode(source: MediaDescriptor, candidate: MediaDescriptor) -> DimensionScore:

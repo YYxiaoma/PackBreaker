@@ -1492,6 +1492,97 @@ def test_manual_downloader_task_materializes_selected_torrent_into_safe_pending_
         client.__exit__(None, None, None)
 
 
+def test_monitor_downloader_filters_torrents_before_materializing_runs(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    source_root = tmp_path / "monitor-downloader-mount"
+    try:
+        site_id = _create_ready_site(app)
+        downloader_id = _create_ready_qb_downloader(app, source_root=source_root)
+        torrent_specs = (
+            ("a" * 40, "Wanted.Movie.2026.1080p", "movies", "packbreaker,hd"),
+            ("b" * 40, "Wanted.Wrong.Category.2026.1080p", "tv", "packbreaker"),
+            ("c" * 40, "Wanted.Wrong.Tag.2026.1080p", "movies", "other"),
+            ("d" * 40, "Different.Movie.2026.1080p", "movies", "packbreaker"),
+        )
+        for _, name, _, _ in torrent_specs:
+            movie_root = source_root / name
+            movie_root.mkdir(parents=True, exist_ok=True)
+            (movie_root / f"{name}.mkv").write_bytes(b"synthetic-video")
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            if request.url.path.endswith("/auth/login"):
+                return httpx2.Response(200, text="Ok.", headers={"Set-Cookie": "SID=fake; path=/"})
+            if request.url.path.endswith("/torrents/info"):
+                return httpx2.Response(
+                    200,
+                    json=[
+                        {
+                            "hash": torrent_hash,
+                            "name": name,
+                            "state": "uploading",
+                            "progress": 1.0,
+                            "size": 15,
+                            "category": category,
+                            "tags": tags,
+                            "tracker": "https://tracker.invalid/announce",
+                            "save_path": "/downloads",
+                            "content_path": f"/downloads/{name}",
+                        }
+                        for torrent_hash, name, category, tags in torrent_specs
+                    ],
+                )
+            return httpx2.Response(404)
+
+        app.state.downloader_service._adapter_factory = DownloaderAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(handler)
+        )
+
+        payload = _monitor_payload(site_id)
+        payload["name"] = "按下载器元数据过滤"
+        payload["source"] = {
+            "kind": "DOWNLOADER",
+            "downloader_id": downloader_id,
+            "config": {
+                "monitor_filter": {
+                    "name_contains": "Wanted",
+                    "categories": ["movies"],
+                    "tags": ["packbreaker"],
+                }
+            },
+        }
+        payload["execution_policy"] = {
+            "stability_detection_enabled": False,
+            "initial_scope": "INCLUDE_EXISTING",
+            "debounce_seconds": 0,
+        }
+        created = client.post(
+            "/api/v1/task-definitions",
+            headers=_csrf(client),
+            json=payload,
+        )
+        assert created.status_code == 201
+        created_body = created.json()
+        assert created_body["source_config"]["monitor_filter"] == {
+            "name_contains": "Wanted",
+            "categories": ["movies"],
+            "tags": ["packbreaker"],
+        }
+
+        result = asyncio.run(
+            app.state.task_definition_execution_service.scan_monitor(
+                cast(str, created_body["id"]),
+                trigger=TaskExecutionTrigger.IMMEDIATE_SCAN,
+                trace_id="monitor-downloader-filter",
+            )
+        )
+        assert result.outcome == "MATERIALIZED"
+        assert result.execution is not None
+        assert result.execution.discovered_count == 1
+        assert [item.name for item in result.execution.items] == ["Wanted.Movie.2026.1080p.mkv"]
+    finally:
+        client.__exit__(None, None, None)
+
+
 def _monitor_payload(site_id: str) -> dict[str, object]:
     return {
         "name": "夜间目录监控",

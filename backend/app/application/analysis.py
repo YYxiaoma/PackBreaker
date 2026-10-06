@@ -11,7 +11,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
-from backend.app.domain.candidate_scoring import CandidateScore, rank_candidates, score_candidate
+from backend.app.domain.candidate_scoring import (
+    CandidateScore,
+    candidate_search_relevant,
+    rank_candidates,
+    score_candidate,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.file_mapping import AutoMappingDecision, SourceFileCandidate, auto_map_files
 from backend.app.domain.preflight import (
@@ -128,6 +133,11 @@ class AnalysisService:
             queries,
             lifecycle=lifecycle,
         )
+        candidates = {
+            identity: candidate
+            for identity, candidate in candidates.items()
+            if candidate_search_relevant(unit.descriptor, candidate.descriptor)
+        }
         if lifecycle is not None:
             task_version = lifecycle.enter_matching()
         ranked = rank_candidates(

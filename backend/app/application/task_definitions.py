@@ -388,6 +388,15 @@ class TaskDefinitionService:
                         downloader_id=source.downloader_id,
                         config=self._normalize_manual_downloader_config(source.config or {}),
                     )
+                elif (
+                    request.kind is TaskDefinitionKind.MONITOR
+                    and source.kind is TaskSourceKind.DOWNLOADER
+                ):
+                    source = TaskSourceCreate(
+                        kind=source.kind,
+                        downloader_id=source.downloader_id,
+                        config=self._normalize_monitor_downloader_config(source.config or {}),
+                    )
                 if (
                     request.kind is TaskDefinitionKind.MANUAL
                     and source.kind is TaskSourceKind.DIRECTORY
@@ -575,6 +584,15 @@ class TaskDefinitionService:
                     kind=source.kind,
                     downloader_id=source.downloader_id,
                     config=self._normalize_manual_downloader_config(source.config or {}),
+                )
+            elif (
+                request.kind is TaskDefinitionKind.MONITOR
+                and source.kind is TaskSourceKind.DOWNLOADER
+            ):
+                source = TaskSourceCreate(
+                    kind=source.kind,
+                    downloader_id=source.downloader_id,
+                    config=self._normalize_monitor_downloader_config(source.config or {}),
                 )
             elif (
                 request.kind is TaskDefinitionKind.MANUAL
@@ -817,6 +835,15 @@ class TaskDefinitionService:
                     kind=source.kind,
                     downloader_id=source.downloader_id,
                     config=self._normalize_manual_downloader_config(source.config or {}),
+                )
+            elif (
+                request.kind is TaskDefinitionKind.MONITOR
+                and source.kind is TaskSourceKind.DOWNLOADER
+            ):
+                source = TaskSourceCreate(
+                    kind=source.kind,
+                    downloader_id=source.downloader_id,
+                    config=self._normalize_monitor_downloader_config(source.config or {}),
                 )
             elif (
                 request.kind is TaskDefinitionKind.MANUAL
@@ -1163,6 +1190,67 @@ class TaskDefinitionService:
         if snapshots is not None and not isinstance(snapshots, list):
             raise self._invalid("已选择种子快照格式无效")
         return result
+
+    def _normalize_monitor_downloader_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        result = dict(config)
+        raw_filter = result.get("monitor_filter")
+        if raw_filter is None:
+            raw_filter = {}
+        if not isinstance(raw_filter, dict):
+            raise self._invalid("下载器监控过滤配置格式无效")
+
+        raw_name = raw_filter.get("name_contains")
+        if raw_name is not None and not isinstance(raw_name, str):
+            raise self._invalid("下载器任务名称过滤必须是文本")
+        name_contains = (raw_name or "").strip()
+        if len(name_contains) > 512:
+            raise self._invalid("下载器任务名称过滤不能超过 512 个字符")
+
+        categories = self._normalize_monitor_filter_values(
+            raw_filter.get("categories"),
+            field_name="下载器分类过滤",
+        )
+        tags = self._normalize_monitor_filter_values(
+            raw_filter.get("tags"),
+            field_name="下载器标签过滤",
+        )
+        result.pop("selected_torrent_hashes", None)
+        result.pop("selected_torrents", None)
+        result["monitor_filter"] = {
+            "name_contains": name_contains or None,
+            "categories": list(categories),
+            "tags": list(tags),
+        }
+        return result
+
+    def _normalize_monitor_filter_values(
+        self,
+        raw: object,
+        *,
+        field_name: str,
+    ) -> tuple[str, ...]:
+        if raw is None:
+            return ()
+        if not isinstance(raw, list):
+            raise self._invalid(f"{field_name}必须是文本列表")
+        if len(raw) > 64:
+            raise self._invalid(f"{field_name}最多允许 64 项")
+        values: list[str] = []
+        seen: set[str] = set()
+        for value in raw:
+            if not isinstance(value, str):
+                raise self._invalid(f"{field_name}必须是文本列表")
+            normalized = value.strip()
+            if not normalized:
+                continue
+            if len(normalized) > 256:
+                raise self._invalid(f"{field_name}单项不能超过 256 个字符")
+            folded = normalized.casefold()
+            if folded in seen:
+                continue
+            seen.add(folded)
+            values.append(normalized)
+        return tuple(values)
 
     def _validate_execution_policy(
         self,

@@ -2,6 +2,7 @@ from backend.app.domain.candidate_scoring import (
     HardConflict,
     ScoreDimension,
     ScoringConfig,
+    candidate_search_relevant,
     rank_candidates,
     score_candidate,
 )
@@ -82,3 +83,19 @@ def test_ranking_is_deterministic_and_rejected_candidates_are_last() -> None:
 
     assert [item.candidate_id for item in ranking] == ["a-good", "b-weaker", "z-rejected"]
     assert ranking[-1].result.rejected is True
+
+
+def test_search_relevance_rejects_unrelated_site_noise_before_review() -> None:
+    source = _descriptor("The Great Movie.2024.1080p")
+    relevant = _descriptor("The Great Movie Extended.2024.2160p")
+    unrelated = _descriptor("Completely Different Documentary.2024.1080p")
+
+    assert candidate_search_relevant(source, relevant) is True
+    assert candidate_search_relevant(source, unrelated) is False
+
+
+def test_search_relevance_accepts_exact_external_id_even_when_title_differs() -> None:
+    source = _descriptor("The Great Movie.2024.tt1234567")
+    localized = _descriptor("完全不同的本地化标题.2024.tt1234567")
+
+    assert candidate_search_relevant(source, localized) is True

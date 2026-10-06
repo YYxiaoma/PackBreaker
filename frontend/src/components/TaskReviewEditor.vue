@@ -355,7 +355,7 @@ async function executeExecutionPlan(): Promise<void> {
       executeResultUnknown.value = false;
       lastMutation.value = result;
       ElMessage.success(
-        `执行结果已确认：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+        `执行结果已确认：${taskStatusLabel(result.status)}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
       );
       emit('saved');
       return;
@@ -400,7 +400,7 @@ async function executeExecutionPlan(): Promise<void> {
     executeResultUnknown.value = false;
     lastMutation.value = result;
     ElMessage.success(
-      `执行动作已受理：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+      `执行动作已受理：${taskStatusLabel(result.status)}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
     );
     emit('saved');
   } catch (error) {
@@ -481,7 +481,7 @@ async function cancelAndRollback(): Promise<void> {
     cancelResultUnknown.value = false;
     lastMutation.value = result;
     ElMessage.success(
-      `${result.status === 'CANCELLING' ? '取消请求已登记' : '取消动作已完成'}：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+      `${result.status === 'CANCELLING' ? '取消请求已登记' : '取消动作已完成'}：${taskStatusLabel(result.status)}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
     );
     emit('saved');
   } catch (error) {
@@ -567,6 +567,51 @@ function showError(error: unknown): void {
   }
   ElMessage.error(error instanceof Error ? error.message : '审核请求失败');
 }
+
+function taskStatusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    PENDING: '等待处理',
+    ANALYZING: '分析中',
+    SEARCHING: '搜索候选',
+    MATCHING: '匹配候选',
+    VERIFYING: '验证中',
+    PREFLIGHT: '执行前检查',
+    AWAITING_CONFIRMATION: '等待人工确认',
+    LINKING: '创建链接',
+    ADDING: '添加下载器任务',
+    CLIENT_VERIFYING: '客户端下载校验',
+    SEEDING: '做种中',
+    DONE: '已完成',
+    PAUSED: '已暂停',
+    RETRY: '等待重试',
+    FAILED: '失败',
+    CANCELLING: '取消中',
+    ROLLING_BACK: '回滚中',
+    CANCELLED: '已取消',
+  };
+  return labels[value] ?? value;
+}
+
+function verificationLevelLabel(value: string | null | undefined): string {
+  if (!value) return '未知';
+  const labels: Record<string, string> = {
+    FULL_VERIFIED: '完整验证',
+    CLIENT_CHECK_REQUIRED: '需要客户端校验',
+    BLOCKED: '已阻断',
+    NOT_VERIFIED: '未验证',
+  };
+  return labels[value] ?? value;
+}
+
+function mutationActionLabel(value: TaskMutationAction['action']): string {
+  const labels: Record<TaskMutationAction['action'], string> = {
+    execute: '执行计划',
+    cancel: '取消任务',
+    rerun: '重新运行',
+    release: '释放辅种资源',
+  };
+  return labels[value];
+}
 </script>
 
 <template>
@@ -589,7 +634,7 @@ function showError(error: unknown): void {
     />
     <el-alert
       v-else-if="!stateAllowsReview"
-      :title="`任务当前为 ${item.task.status}，不允许修改审核结果`"
+      :title="`任务当前为${taskStatusLabel(item.task.status)}，不允许修改审核结果`"
       description="当前任务状态不支持继续修改审核内容。"
       type="warning"
       :closable="false"
@@ -605,30 +650,41 @@ function showError(error: unknown): void {
 
     <el-form label-position="top">
       <el-form-item label="批准候选（最多一个）">
-        <el-radio-group v-model="approvedCandidateId">
-          <el-radio value="">暂不批准</el-radio>
-          <el-radio
+        <el-select
+          v-model="approvedCandidateId"
+          class="candidate-select"
+          clearable
+          filterable
+          placeholder="暂不批准"
+        >
+          <el-option
             v-for="candidate in eligibleCandidates"
             :key="candidate.id"
             :value="candidate.id"
-          >
-            {{ candidate.site_id }} · {{ candidate.display_name }} · {{ candidate.score }} 分
-          </el-radio>
-        </el-radio-group>
+            :label="`${candidate.site_id} · ${candidate.display_name} · ${candidate.score} 分`"
+          />
+        </el-select>
       </el-form-item>
 
       <el-form-item label="显式拒绝候选">
-        <el-checkbox-group v-model="rejectedCandidateIds">
-          <el-checkbox
+        <el-select
+          v-model="rejectedCandidateIds"
+          class="candidate-select"
+          multiple
+          filterable
+          clearable
+          collapse-tags
+          collapse-tags-tooltip
+          placeholder="选择需要明确拒绝的候选"
+        >
+          <el-option
             v-for="candidate in item.candidates"
             :key="candidate.id"
             :value="candidate.id"
             :disabled="candidate.id === approvedCandidateId"
-          >
-            {{ candidate.site_id }} · {{ candidate.display_name }}
-            <span v-if="candidate.rejected">（算法硬拒绝）</span>
-          </el-checkbox>
-        </el-checkbox-group>
+            :label="`${candidate.site_id} · ${candidate.display_name}${candidate.rejected ? '（算法硬拒绝）' : ''}`"
+          />
+        </el-select>
       </el-form-item>
 
       <template v-if="ambiguousTorrentPaths.length">
@@ -661,7 +717,7 @@ function showError(error: unknown): void {
         <span v-if="decision?.requires_reverification">当前审核结果需要重新验证</span>
         <span v-else-if="decision">当前审核结果无需重新验证，仍需满足执行条件</span>
         <span v-if="verification">
-          重验证 {{ verification.verification_level }} ·
+          重验证 {{ verificationLevelLabel(verification.verification_level) }} ·
           {{ verification.verification_digest.slice(0, 20) }}…
         </span>
       </div>
@@ -696,19 +752,19 @@ function showError(error: unknown): void {
       <template v-if="executionGate">
         <div class="gate-tags">
           <el-tag :type="executionGate.eligible ? 'success' : 'danger'">
-            {{ executionGate.eligible ? 'ELIGIBLE' : 'BLOCKED' }}
+            {{ executionGate.eligible ? '可执行' : '已阻断' }}
           </el-tag>
           <el-tag :type="executionGate.current ? 'success' : 'warning'">
-            {{ executionGate.current ? 'CURRENT' : 'STALE' }}
+            {{ executionGate.current ? '当前有效' : '已失效' }}
           </el-tag>
           <el-tag v-if="executionGate.client_check_required" type="warning">
-            CLIENT CHECK REQUIRED
+            需要客户端校验
           </el-tag>
           <el-tag type="info">尚未执行</el-tag>
         </div>
         <div class="review-editor-status">
           <span v-if="executionGate.verification_level">
-            验证等级 {{ executionGate.verification_level }} · 来源
+            验证等级 {{ verificationLevelLabel(executionGate.verification_level) }} · 来源
             {{ executionGate.verification_source ?? 'UNKNOWN' }}
           </span>
           <span v-if="executionGate.blocked_reasons.length" class="gate-blocked">
@@ -750,13 +806,13 @@ function showError(error: unknown): void {
       <template v-if="executionPlan">
         <div class="gate-tags">
           <el-tag :type="executionPlan.ready ? 'success' : 'danger'">
-            {{ executionPlan.ready ? 'READY' : 'BLOCKED' }}
+            {{ executionPlan.ready ? '计划就绪' : '计划已阻断' }}
           </el-tag>
           <el-tag :type="executionPlan.current ? 'success' : 'warning'">
-            {{ executionPlan.current ? 'CURRENT' : 'STALE' }}
+            {{ executionPlan.current ? '当前有效' : '已失效' }}
           </el-tag>
           <el-tag v-if="executionPlan.client_check_required" type="warning">
-            CLIENT CHECK REQUIRED
+            需要客户端校验
           </el-tag>
           <el-tag type="info">计划生成无副作用</el-tag>
         </div>
@@ -806,7 +862,7 @@ function showError(error: unknown): void {
             show-icon
           />
           <div class="review-editor-status">
-            <span>验证等级 {{ executionPlan.verification_level }}</span>
+            <span>验证等级 {{ verificationLevelLabel(executionPlan.verification_level) }}</span>
             <span v-if="selectedTargetDownloader">
               目标 {{ selectedTargetDownloader.name }} · v{{ selectedTargetDownloader.version }}
             </span>
@@ -814,7 +870,8 @@ function showError(error: unknown): void {
               本计划必须完整执行客户端校验，禁止 skip-check。
             </span>
             <span v-if="lastMutation">
-              最近动作 {{ lastMutation.action }} → {{ lastMutation.status }}
+              最近动作 {{ mutationActionLabel(lastMutation.action) }} →
+              {{ taskStatusLabel(lastMutation.status) }}
             </span>
           </div>
           <div class="mutation-action-buttons">
@@ -822,8 +879,7 @@ function showError(error: unknown): void {
               当前任务可能已进入后续状态；重试只会继续确认第一次请求的结果。
             </small>
             <small v-else-if="!canExecute">
-              仅 AWAITING_CONFIRMATION 且计划 READY +
-              CURRENT、选择与当前计划一致、目标下载器仍通过安全门时可首次执行。
+              仅“等待人工确认”且计划已就绪、当前有效、选择与当前计划一致、目标下载器仍通过安全门时可首次执行。
             </small>
             <el-button
               type="warning"
@@ -858,13 +914,13 @@ function showError(error: unknown): void {
           {{
             preSideEffectCancellation
               ? cooperativeAnalysisCancellation
-                ? 'COOPERATIVE STOP'
-                : 'NO SIDE EFFECTS'
+                ? '协作停止'
+                : '未执行副作用'
               : cancellationInProgress
-                ? item.task.status
+                ? taskStatusLabel(item.task.status)
                 : cancelResultUnknown
-                  ? 'RESULT UNKNOWN'
-                  : 'SIDE EFFECTS ACTIVE'
+                  ? '结果未知'
+                  : '已进入副作用阶段'
           }}
         </el-tag>
       </div>
@@ -907,9 +963,13 @@ function showError(error: unknown): void {
         />
         <div class="mutation-action-buttons">
           <small v-if="cooperativeAnalysisCancellation"
-            >任务状态：{{ item.task.status }}。不会从外部线程抢改终态；原分析流负责停止。</small
+            >任务状态：{{
+              taskStatusLabel(item.task.status)
+            }}。不会从外部线程抢改终态；原分析流负责停止。</small
           >
-          <small v-else>任务状态：{{ item.task.status }}。未启动任何副作用。</small>
+          <small v-else
+            >任务状态：{{ taskStatusLabel(item.task.status) }}。未启动任何副作用。</small
+          >
           <el-button
             type="danger"
             :disabled="!canCancel"
@@ -956,7 +1016,11 @@ function showError(error: unknown): void {
           我已确认上面的移除/保留范围，并理解未勾选的资源将被保留
         </el-checkbox>
         <div class="mutation-action-buttons">
-          <small>任务状态：{{ item.task.status }}。选项变化后必须重新确认影响范围。</small>
+          <small
+            >任务状态：{{
+              taskStatusLabel(item.task.status)
+            }}。选项变化后必须重新确认影响范围。</small
+          >
           <el-button
             type="danger"
             :disabled="!canCancel"
@@ -1054,16 +1118,8 @@ function showError(error: unknown): void {
 .gate-blocked {
   color: var(--red);
 }
-.review-editor :deep(.el-radio-group),
-.review-editor :deep(.el-checkbox-group) {
-  display: grid;
-  gap: 8px;
-  align-items: start;
-}
-.review-editor :deep(.el-radio),
-.review-editor :deep(.el-checkbox) {
-  height: auto;
-  white-space: normal;
+.candidate-select {
+  width: 100%;
 }
 @media (max-width: 720px) {
   .review-editor-heading,

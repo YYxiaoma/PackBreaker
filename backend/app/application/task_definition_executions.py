@@ -54,6 +54,7 @@ from backend.app.domain.task_lifecycle import (
 )
 from backend.app.domain.task_state import TaskStatus
 from backend.app.domain.task_units import SourceTaskFile, TaskUnit, identify_task_units
+from backend.app.infrastructure.adapters.downloaders import DownloaderTorrent
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.models import (
     OperationJournal,
@@ -221,6 +222,43 @@ def filter_source_inventory(
             continue
         selected.append(item)
     return tuple(selected)
+
+
+def monitor_downloader_torrent_matches(
+    config: dict[str, Any],
+    torrent: DownloaderTorrent,
+) -> bool:
+    """Apply monitor-only torrent metadata filters before touching its files."""
+
+    raw_filter = config.get("monitor_filter")
+    if raw_filter is None:
+        return True
+    if not isinstance(raw_filter, dict):
+        return False
+
+    raw_name = raw_filter.get("name_contains")
+    if raw_name is not None:
+        if not isinstance(raw_name, str):
+            return False
+        name_contains = raw_name.strip().casefold()
+        if name_contains and name_contains not in torrent.name.casefold():
+            return False
+
+    raw_categories = raw_filter.get("categories", [])
+    if not isinstance(raw_categories, list) or any(
+        not isinstance(value, str) for value in raw_categories
+    ):
+        return False
+    categories = {value.strip().casefold() for value in raw_categories if value.strip()}
+    if categories and (torrent.category or "").strip().casefold() not in categories:
+        return False
+
+    raw_tags = raw_filter.get("tags", [])
+    if not isinstance(raw_tags, list) or any(not isinstance(value, str) for value in raw_tags):
+        return False
+    tags = {value.strip().casefold() for value in raw_tags if value.strip()}
+    torrent_tags = {value.strip().casefold() for value in torrent.tags if value.strip()}
+    return not (tags and not tags & torrent_tags)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2545,6 +2583,8 @@ class TaskDefinitionExecutionService:
         torrents = await self._downloader_service.list_all_torrents(downloader_id)
         candidates: list[_MonitorCandidate] = []
         for torrent in torrents:
+            if not monitor_downloader_torrent_matches(snapshot.source.config, torrent):
+                continue
             if snapshot.policy.only_completed_downloads and torrent.progress < 1.0:
                 continue
             remote_content = torrent.content_path or torrent.save_path

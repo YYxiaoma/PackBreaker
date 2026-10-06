@@ -205,7 +205,7 @@ async function cancelBeforeSideEffects(): Promise<void> {
     clearPreCancelState();
     await refresh();
     ElMessage.success(
-      `${result.status === 'CANCELLING' ? '取消请求已登记' : '取消结果已确认'}：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+      `${result.status === 'CANCELLING' ? '取消请求已登记' : '取消结果已确认'}：${taskStatusLabel(result.status)}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
     );
   } catch (error) {
     if (isUnknownMutationResult(error) && preCancelIdempotencyKey.value) {
@@ -250,7 +250,7 @@ async function rerunActiveTask(): Promise<void> {
     if (!replaying) {
       try {
         await ElMessageBox.confirm(
-          `当前 Run #${task.run_number} 将保持 ${task.status} 状态，并创建新的 Run #${task.run_number + 1} 重新处理。`,
+          `当前 Run #${task.run_number} 将保持“${taskStatusLabel(task.status)}”状态，并创建新的 Run #${task.run_number + 1} 重新处理。`,
           '确认重新运行',
           {
             confirmButtonText: `创建 Run #${task.run_number + 1}`,
@@ -317,7 +317,7 @@ async function releaseActiveTask(): Promise<void> {
     operationRefreshKey.value += 1;
     await refresh();
     ElMessage.success(
-      `辅种资源释放已确认：任务仍为 ${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+      `辅种资源释放已确认：任务仍为${taskStatusLabel(result.status)}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
     );
   } catch (error) {
     if (isUnknownMutationResult(error) && releaseIdempotencyKey.value) {
@@ -345,6 +345,30 @@ function showError(error: unknown): void {
     return;
   }
   ElMessage.error(error instanceof Error ? error.message : '任务请求失败');
+}
+
+function taskStatusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    PENDING: '等待处理',
+    ANALYZING: '分析中',
+    SEARCHING: '搜索候选',
+    MATCHING: '匹配候选',
+    VERIFYING: '验证中',
+    PREFLIGHT: '执行前检查',
+    AWAITING_CONFIRMATION: '等待人工确认',
+    LINKING: '创建链接',
+    ADDING: '添加下载器任务',
+    CLIENT_VERIFYING: '客户端下载校验',
+    SEEDING: '做种中',
+    DONE: '已完成',
+    PAUSED: '已暂停',
+    RETRY: '等待重试',
+    FAILED: '失败',
+    CANCELLING: '取消中',
+    ROLLING_BACK: '回滚中',
+    CANCELLED: '已取消',
+  };
+  return labels[value] ?? value;
 }
 
 function statusType(value: TaskStatus): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
@@ -394,7 +418,12 @@ const statusOptions: TaskStatus[] = [
         <template #prefix><Search :size="16" /></template>
       </el-input>
       <el-select v-model="status" clearable placeholder="全部状态">
-        <el-option v-for="item in statusOptions" :key="item" :label="item" :value="item" />
+        <el-option
+          v-for="item in statusOptions"
+          :key="item"
+          :label="taskStatusLabel(item)"
+          :value="item"
+        />
       </el-select>
     </div>
 
@@ -423,7 +452,7 @@ const statusOptions: TaskStatus[] = [
       </el-table-column>
       <el-table-column label="状态" width="155">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)">{{ row.status }}</el-tag>
+          <el-tag :type="statusType(row.status)">{{ taskStatusLabel(row.status) }}</el-tag>
           <small v-if="row.error_code" class="red">{{ row.error_code }}</small>
         </template>
       </el-table-column>
@@ -471,7 +500,9 @@ const statusOptions: TaskStatus[] = [
     >
       <template v-if="active">
         <el-descriptions :column="2" border class="real-task-summary">
-          <el-descriptions-item label="状态">{{ active.status }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{
+            taskStatusLabel(active.status)
+          }}</el-descriptions-item>
           <el-descriptions-item label="版本">v{{ active.version }}</el-descriptions-item>
           <el-descriptions-item label="Run">#{{ active.run_number }}</el-descriptions-item>
           <el-descriptions-item label="父任务">{{

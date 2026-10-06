@@ -135,7 +135,7 @@ async function reconcile(item: TaskOperation): Promise<void> {
     clearPending();
     await refresh();
     ElMessage.success(
-      `证据重新验证完成：${result.status}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
+      `证据重新验证完成：${operationStatusLabel(result.status)}${result.idempotency_replayed ? '（幂等重放）' : ''}`,
     );
   } catch (error) {
     if (isUnknownMutationResult(error) && pendingJournalId.value && pendingIdempotencyKey.value) {
@@ -249,6 +249,19 @@ function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
   return 'info';
 }
 
+function operationStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    INTENT_RECORDED: '已登记执行意图',
+    APPLIED: '已应用',
+    RECONCILE_REQUIRED: '需要安全对账',
+    ROLLBACK_PENDING: '等待回滚',
+    ROLLED_BACK: '已回滚',
+    ROLLBACK_BLOCKED: '回滚已阻断',
+    NOOP: '无需操作',
+  };
+  return labels[status] ?? status;
+}
+
 function kindLabel(kind: string): string {
   const labels: Record<string, string> = {
     FILESYSTEM_DIRECTORY: '文件目录',
@@ -308,7 +321,7 @@ function kindLabel(kind: string): string {
       </el-table-column>
       <el-table-column label="状态" width="190">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)">{{ row.status }}</el-tag>
+          <el-tag :type="statusType(row.status)">{{ operationStatusLabel(row.status) }}</el-tag>
           <small v-if="row.attention_required" class="operation-attention">需要安全对账</small>
           <small v-else-if="retentionItems.get(row.id)">
             {{ retentionReasonLabel(retentionItems.get(row.id)!.reason_code) }}
@@ -354,7 +367,7 @@ function kindLabel(kind: string): string {
 
     <el-alert
       v-if="lastAction"
-      :title="`最近对账：${lastAction.kind} → ${lastAction.status}`"
+      :title="`最近对账：${kindLabel(lastAction.kind)} → ${operationStatusLabel(lastAction.status)}`"
       :description="lastAction.idempotency_replayed ? '重复请求已确认原结果。' : '对账已完成。'"
       type="success"
       :closable="false"
