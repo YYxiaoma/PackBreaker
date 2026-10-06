@@ -569,7 +569,6 @@ async function remove(item: Site) {
           >
             {{ item.download_credential_configured ? '下载 Cookie 已配置' : '下载 Cookie 未配置' }}
           </el-tag>
-          <el-tag type="info">{{ supportLabel(profileFor(item.type)) }}</el-tag>
         </div>
         <dl class="config-summary">
           <dt>请求超时</dt>
