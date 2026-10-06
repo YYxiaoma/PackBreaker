@@ -197,7 +197,6 @@ def test_release_preflight_api_is_local_read_only_and_skips_backup_exercise(
         client.__exit__(None, None, None)
 
 
-
 def test_release_preflight_does_not_block_when_legacy_data_root_is_absent(
     tmp_path: Path,
 ) -> None:
