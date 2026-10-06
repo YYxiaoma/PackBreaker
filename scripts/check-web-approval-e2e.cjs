@@ -98,11 +98,15 @@ function start(command, args, options = {}) {
     await page.getByRole('button', { name: '刷新证据', exact: true }).click();
     const editor = page.locator('.review-editor');
     await editor.getByRole('heading', { name: '人工审核' }).waitFor();
-    await editor.locator('.el-radio').filter({ hasText: 'fake' }).click();
+    const approvedCandidate = editor.locator('.el-form-item')
+      .filter({ hasText: '批准候选（最多一个）' })
+      .locator('.el-select');
+    await approvedCandidate.click();
+    await page.getByRole('option').filter({ hasText: 'fake' }).click();
     await editor.getByRole('button', { name: '保存审核' }).click();
     await editor.getByText(/当前 v1 · admin_session/).waitFor();
     await editor.getByRole('button', { name: '刷新执行门检查' }).click();
-    await editor.getByText('ELIGIBLE', { exact: true }).waitFor();
+    await editor.getByText('可执行', { exact: true }).waitFor();
 
     const selector = editor.locator('.el-form-item')
       .filter({ hasText: '目标下载器（必须已通过连接与路径安全门）' })
@@ -112,7 +116,7 @@ function start(command, args, options = {}) {
     await editor.locator('.el-form-item').filter({ hasText: '目标根' })
       .locator('input').fill('web-review-target');
     await editor.getByRole('button', { name: '生成无副作用计划' }).click();
-    await editor.getByText('READY', { exact: true }).waitFor();
+    await editor.getByText('计划就绪', { exact: true }).waitFor();
     await editor.getByText('本计划必须完整执行客户端校验，禁止 skip-check。').waitFor();
 
     const allTasks = await (await context.request.get(`${frontendUrl}/api/v1/tasks`)).json();
