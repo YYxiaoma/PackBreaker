@@ -197,6 +197,93 @@ def test_release_preflight_api_is_local_read_only_and_skips_backup_exercise(
         client.__exit__(None, None, None)
 
 
+
+
+def test_release_preflight_does_not_block_when_legacy_data_root_is_absent(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        data_dir = app.state.runtime.settings.data_dir
+        data_dir.rmdir()
+
+        response = client.get("/api/v1/system/release/preflight")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "ready"
+        checks = {item["name"]: item for item in payload["checks"]}
+        assert checks["data_root"] == {
+            "name": "data_root",
+            "status": "warning",
+            "code": "LEGACY_DATA_ROOT_OPTIONAL",
+            "detail": "旧 /data 数据根不可用；当前版本允许使用显式 Docker 媒体挂载，不阻断在线升级",
+        }
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_system_health_running_count_uses_unified_execution_not_unpack_children(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        now = datetime.now(UTC)
+        with app.state.runtime.session_factory() as session:
+            for index, status in enumerate((TaskStatus.ANALYZING, TaskStatus.SEARCHING), start=1):
+                session.add(
+                    UnpackTask(
+                        id=new_uuid(),
+                        type="PACKAGE_UNPACK",
+                        source_downloader_id=f"legacy-downloader-{index}",
+                        source_hash=f"legacy-source-{index}",
+                        normalized_unit_key=f"legacy/unit/{index}",
+                        idempotency_key=(str(index) * 64)[:64],
+                        parent_task_id=None,
+                        run_number=1,
+                        status=status.value,
+                        trace_id=new_uuid(),
+                        checkpoint={},
+                        error_code=None,
+                        version=1,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            session.add(
+                TaskExecution(
+                    id=new_uuid(),
+                    task_definition_id=None,
+                    task_name="唯一的统一执行",
+                    trigger="MANUAL",
+                    status="RUNNING",
+                    phase="UNPACKING",
+                    source_execution_id=None,
+                    trace_id=new_uuid(),
+                    config_snapshot={},
+                    discovered_count=2,
+                    success_count=0,
+                    failed_count=0,
+                    skipped_count=0,
+                    started_at=now,
+                    finished_at=None,
+                    created_at=now,
+                )
+            )
+            session.commit()
+
+        response = client.get("/api/v1/system/health")
+
+        assert response.status_code == 200
+        checks = {item["name"]: item for item in response.json()["checks"]}
+        assert checks["tasks"]["metrics"]["running"] == 1
+        assert checks["tasks"]["metrics"]["running_task_executions"] == 1
+        assert checks["tasks"]["metrics"]["running_movie_dedup_jobs"] == 0
+        assert checks["tasks"]["metrics"]["active"] == 2
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_system_health_aggregates_existing_evidence_without_exposing_identifiers(
     tmp_path: Path,
 ) -> None:
