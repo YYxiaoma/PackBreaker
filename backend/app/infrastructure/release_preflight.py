@@ -143,21 +143,29 @@ def _check_secret(path: Path, checks: list[PreflightCheck]) -> None:
 
 
 def _check_data_root(path: Path, checks: list[PreflightCheck]) -> None:
+    """兼容旧 /data 根；显式 Docker 媒体挂载不再以该目录作为升级前置条件。"""
     try:
         metadata = path.stat(follow_symlinks=False)
         if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
-            raise RuntimeError("数据根目录不是安全的真实目录")
+            raise RuntimeError("旧数据根目录不是安全的真实目录")
         if not os.access(path, os.R_OK | os.X_OK):
-            raise RuntimeError("数据根目录不可读取/遍历")
-    except (OSError, RuntimeError) as exc:
-        checks.append(PreflightCheck("data_root", "blocked", "DATA_ROOT_UNAVAILABLE", str(exc)))
+            raise RuntimeError("旧数据根目录不可读取/遍历")
+    except (OSError, RuntimeError):
+        checks.append(
+            PreflightCheck(
+                "data_root",
+                "warning",
+                "LEGACY_DATA_ROOT_OPTIONAL",
+                "旧 /data 数据根不可用；当前版本允许使用显式 Docker 媒体挂载，不阻断在线升级",
+            )
+        )
         return
     checks.append(
         PreflightCheck(
             "data_root",
             "ok",
             "DATA_ROOT_OK",
-            "数据根目录可见；预检未遍历或修改任何媒体文件",
+            "旧数据根目录可见；预检未遍历或修改任何媒体文件",
         )
     )
 
