@@ -4,6 +4,7 @@ import asyncio
 import os
 import shutil
 from collections import deque
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,8 +26,8 @@ from backend.app.infrastructure.backups import BackupError, plan_backup_retentio
 from backend.app.infrastructure.persistence.models import (
     BackupPolicy,
     Downloader,
-    NotificationChannel,
     MovieDedupJob,
+    NotificationChannel,
     NotificationOutbox,
     OperationJournal,
     Site,
@@ -85,10 +86,8 @@ class SystemResourceSampler:
         if task is None:
             return
         task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     async def _run(self) -> None:
         while True:
