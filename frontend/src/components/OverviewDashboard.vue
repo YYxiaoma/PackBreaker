@@ -23,7 +23,16 @@ const emit = defineEmits<{ navigate: [page: string] }>();
 const health = ref<SystemHealth | null>(null);
 const busy = ref(false);
 const loadError = ref('');
-const cpuHistory = ref<number[]>([]);
+const cpuHistory = computed<number[]>(() => {
+  const rawCount = metric('resources', 'cpu_load_history_count');
+  const count = rawCount === null ? 0 : Math.min(12, Math.max(0, Math.trunc(rawCount)));
+  const samples: number[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const sample = metric('resources', `cpu_load_history_${index}_percent`);
+    if (sample !== null) samples.push(sample);
+  }
+  return samples;
+});
 const cpuBars = computed<(number | null)[]>(() => [
   ...Array<number | null>(Math.max(0, 12 - cpuHistory.value.length)).fill(null),
   ...cpuHistory.value,
@@ -66,6 +75,21 @@ function dotClass(checkName: string): string {
   return check(checkName)?.status ?? 'unavailable';
 }
 
+const systemStatus = computed<'ok' | 'warning' | 'blocked' | 'unavailable'>(() => {
+  if (!health.value || loadError.value) return 'unavailable';
+  const statuses = ['workers', 'storage', 'runtime'].map((name) => check(name)?.status);
+  if (statuses.some((value) => value === undefined)) return 'warning';
+  if (statuses.includes('blocked')) return 'blocked';
+  if (statuses.includes('warning')) return 'warning';
+  return 'ok';
+});
+const systemStatusText = computed(() => {
+  if (systemStatus.value === 'ok') return '运行正常';
+  if (systemStatus.value === 'warning') return '需要关注';
+  if (systemStatus.value === 'blocked') return '运行异常';
+  return '暂无数据';
+});
+
 const diskTotal = computed(() => metric('storage', 'data_total_bytes'));
 const diskFree = computed(() => metric('storage', 'data_free_bytes'));
 const diskUsed = computed(() =>
@@ -97,10 +121,6 @@ async function refresh(): Promise<void> {
     const next = await getSystemHealth();
     health.value = next;
     loadError.value = '';
-    const current = next.checks.find((item) => item.name === 'resources')?.metrics.cpu_load_percent;
-    if (typeof current === 'number' && Number.isFinite(current) && current >= 0) {
-      cpuHistory.value = [...cpuHistory.value.slice(-11), current];
-    }
   } catch {
     loadError.value = health.value
       ? '本次刷新失败，以下为上次成功获取的数据'
@@ -180,16 +200,8 @@ onUnmounted(() => {
           <span class="metric-icon green"><CheckCircle2 :size="24" /></span>
           <div>
             <h2>系统状态</h2>
-            <strong :class="health?.status === 'ok' ? 'healthy' : 'attention'">
-              {{
-                !health
-                  ? '暂无数据'
-                  : health.status === 'ok'
-                    ? '运行正常'
-                    : health.status === 'warning'
-                      ? '需要关注'
-                      : '运行异常'
-              }}
+            <strong :class="systemStatus === 'ok' ? 'healthy' : 'attention'">
+              {{ systemStatusText }}
             </strong>
           </div>
         </div>
