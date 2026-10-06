@@ -1,0 +1,32 @@
+name: Bootstrap v1.0.12 Release Tag
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create exact immutable release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: v1.0.12
+          SHA: d1f2a554c6b67e48d3c254ced680f4e17681307d
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$REPO" = "YYxiaoma/PackBreaker"
+          existing="$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null || true)"
+          if [ -n "$existing" ]; then
+            test "$existing" = "$SHA"
+            echo "Tag already exists at expected SHA: $existing"
+            exit 0
+          fi
+          gh api "repos/$REPO/git/refs"             --method POST             -f ref="refs/tags/$TAG"             -f sha="$SHA"
+          actual="$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha)"
+          test "$actual" = "$SHA"
+          echo "Created $TAG -> $actual"
