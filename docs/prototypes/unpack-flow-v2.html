@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PackBreaker · 数据拆包流程重构原型</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-2: #f8fafc;
+      --border: #e5e9f2;
+      --text: #172033;
+      --muted: #6b7280;
+      --blue: #2563eb;
+      --blue-soft: #eff6ff;
+      --green: #16a34a;
+      --green-soft: #f0fdf4;
+      --orange: #d97706;
+      --orange-soft: #fff7ed;
+      --red: #dc2626;
+      --red-soft: #fef2f2;
+      --purple: #7c3aed;
+      --shadow: 0 12px 30px rgba(15, 23, 42, .08);
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background: var(--bg);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .app { display: grid; grid-template-columns: 226px 1fr; min-height: 100vh; }
+    .sidebar {
+      background: #0f172a;
+      color: #dbeafe;
+      padding: 24px 16px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 30px; }
+    .brand-mark {
+      width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; font-weight: 800;
+    }
+    .brand b { display:block; font-size: 16px; color: white; }
+    .brand small { color: #94a3b8; }
+    .nav { display: grid; gap: 6px; }
+    .nav a {
+      text-decoration: none; color: #94a3b8; padding: 10px 12px; border-radius: 9px;
+      display:flex; gap:10px; align-items:center;
+    }
+    .nav a.active { background:#1e293b; color:white; }
+    .nav a:hover { color:white; background:#172033; }
+    .main { padding: 28px 32px 56px; min-width: 0; }
+    .toolbar { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:22px; }
+    h1,h2,h3,p { margin-top:0; }
+    .toolbar h1 { margin-bottom:6px; font-size:24px; }
+    .toolbar p { margin-bottom:0; color:var(--muted); }
+    .actions { display:flex; gap:10px; }
+    .btn {
+      border:1px solid var(--border); background:var(--surface); color:var(--text);
+      border-radius:9px; padding:9px 14px; display:inline-flex; align-items:center; gap:7px;
+    }
+    .btn.primary { background:var(--blue); border-color:var(--blue); color:white; }
+    .btn.success { background:var(--green); border-color:var(--green); color:white; }
+    .btn.danger { color:var(--red); border-color:#fecaca; background:white; }
+    .btn.link { padding:0; border:0; background:transparent; color:var(--blue); }
+    .btn.small { padding:6px 10px; font-size:12px; }
+    .mode-cards { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-bottom:20px; }
+    .mode-card {
+      border:1px solid var(--border); background:var(--surface); border-radius:var(--radius);
+      padding:18px; display:flex; align-items:center; gap:14px; text-align:left; box-shadow:0 2px 10px rgba(15,23,42,.03);
+    }
+    .mode-card.active { border-color:#93c5fd; box-shadow:0 0 0 2px #dbeafe; background:linear-gradient(180deg,#fff,#f8fbff); }
+    .mode-icon {
+      width:42px;height:42px;border-radius:11px;display:grid;place-items:center;font-size:20px;
+      background:var(--blue-soft);color:var(--blue);flex:0 0 auto;
+    }
+    .mode-card:nth-child(2) .mode-icon { background:#f5f3ff;color:var(--purple); }
+    .mode-card b { font-size:16px; display:block; margin-bottom:4px; }
+    .mode-card small { color:var(--muted); }
+    .mode-card strong { margin-left:auto; font-size:24px; }
+    .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:0 3px 12px rgba(15,23,42,.03); overflow:hidden; }
+    .panel-head {
+      padding:16px 18px; border-bottom:1px solid var(--border); display:flex;
+      justify-content:space-between; align-items:center; gap:12px;
+    }
+    .panel-head b { font-size:15px; }
+    .panel-head span { color:var(--muted); font-size:12px; margin-left:8px; }
+    .filters { display:flex; gap:8px; align-items:center; }
+    .select,.input {
+      border:1px solid var(--border); background:white; border-radius:8px; padding:8px 10px; min-width:120px; color:var(--text);
+    }
+    .input { min-width:220px; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { padding:13px 14px; border-bottom:1px solid #eef1f6; text-align:left; vertical-align:middle; white-space:nowrap; }
+    th { color:#64748b; background:#fbfcfe; font-size:12px; font-weight:600; }
+    tr:last-child td { border-bottom:0; }
+    td.ellipsis { max-width:220px; overflow:hidden; text-overflow:ellipsis; }
+    .primary { display:grid; gap:2px; }
+    .primary small { color:var(--muted); }
+    .tag { display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:600; }
+    .tag.blue { color:#1d4ed8;background:#eff6ff; }
+    .tag.green { color:#15803d;background:var(--green-soft); }
+    .tag.orange { color:#b45309;background:var(--orange-soft); }
+    .tag.red { color:#b91c1c;background:var(--red-soft); }
+    .tag.gray { color:#475569;background:#f1f5f9; }
+    .tag.purple { color:#6d28d9;background:#f5f3ff; }
+    .progress { height:7px;background:#edf2f7;border-radius:999px;overflow:hidden;min-width:100px; }
+    .progress > i { display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#6366f1);border-radius:inherit; }
+    .row-actions { display:flex; gap:10px; align-items:center; }
+    .empty { padding:56px;text-align:center;color:var(--muted); }
+    .note {
+      margin-top:16px;padding:12px 14px;border-radius:10px;background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-size:12px;
+    }
+    .overlay {
+      position:fixed;inset:0;background:rgba(15,23,42,.46);display:none;place-items:center;padding:24px;z-index:40;
+    }
+    .overlay.open { display:grid; }
+    .dialog {
+      width:min(980px,96vw); max-height:92vh; overflow:hidden; background:white; border-radius:16px; box-shadow:0 30px 80px rgba(15,23,42,.3);
+      display:grid; grid-template-rows:auto 1fr auto;
+    }
+    .dialog.wide { width:min(1180px,97vw); }
+    .dialog.narrow { width:min(760px,95vw); }
+    .dialog-head { display:flex;justify-content:space-between;align-items:center;padding:17px 20px;border-bottom:1px solid var(--border); }
+    .dialog-head h2 { margin:0;font-size:18px; }
+    .close { border:0;background:transparent;font-size:23px;color:#64748b;padding:2px 7px; }
+    .dialog-body { padding:20px; overflow:auto; }
+    .dialog-foot { display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;border-top:1px solid var(--border);background:#fbfcfe; }
+    .sections { display:grid;gap:14px; }
+    .section { border:1px solid var(--border);border-radius:12px;padding:16px; }
+    .section h3 { font-size:14px;margin-bottom:14px; }
+    .grid2 { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px; }
+    .grid3 { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px; }
+    .field { display:grid;gap:6px;min-width:0; }
+    .field label { font-size:12px;color:#475569;font-weight:600; }
+    .field small { color:var(--muted);font-size:11px; }
+    .field input,.field select {
+      width:100%;border:1px solid var(--border);border-radius:8px;padding:9px 10px;background:white;color:var(--text);
+    }
+    .inline { display:flex;gap:8px;align-items:center; }
+    .inline input { flex:1;min-width:0; }
+    .radio-row,.check-row { display:flex;gap:9px;flex-wrap:wrap; }
+    .choice {
+      border:1px solid var(--border);border-radius:9px;padding:8px 11px;background:white;color:#475569;
+    }
+    .choice.active { border-color:#93c5fd;background:var(--blue-soft);color:#1d4ed8; }
+    .switch { display:flex;align-items:center;gap:9px; }
+    .switch input { width:auto; }
+    .advanced { background:#fbfcfe; }
+    .tree-layout { display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;min-height:440px; }
+    .tree-card,.summary-card { border:1px solid var(--border);border-radius:12px;overflow:hidden; }
+    .tree-tools { display:flex;gap:8px;padding:12px;border-bottom:1px solid var(--border);background:#fbfcfe; }
+    .tree { padding:12px; }
+    .tree ul { list-style:none;margin:0;padding-left:22px; }
+    .tree > ul { padding-left:0; }
+    .node { display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:7px; }
+    .node:hover { background:#f8fafc; }
+    .node.selected { background:#eff6ff;color:#1d4ed8; }
+    .node button { border:0;background:transparent;width:18px;color:#64748b;padding:0; }
+    .node .folder { color:#d97706; }
+    .node .file { color:#64748b; }
+    .summary-card { padding:16px; }
+    .summary-card h3 { margin-bottom:12px; }
+    .kv { display:grid;grid-template-columns:90px 1fr;gap:8px 10px;font-size:12px;margin-bottom:16px; }
+    .kv dt { color:var(--muted); }
+    .kv dd { margin:0;word-break:break-all; }
+    .pipeline {
+      display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:18px;
+    }
+    .cron-helper{margin-top:10px;padding:12px;border:1px solid #dbe4f0;border-radius:12px;background:#f8fafc}
+    .cron-helper b{display:block;margin-bottom:8px;font-size:13px}
+    .cron-presets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+    .cron-builder{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+    .cron-builder .field{gap:4px}
+    .cron-builder label{font-size:11px;color:#64748b}
+    .scope-toolbar{display:grid;grid-template-columns:minmax(220px,1.5fr) repeat(3,minmax(120px,.7fr));gap:10px;margin-bottom:12px}
+    .scope-summary{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;margin-bottom:12px;border:1px solid #dbe4f0;border-radius:12px;background:#f8fafc}
+    .scope-list{border:1px solid #e2e8f0;border-radius:12px;overflow:hidden}
+    .scope-item{display:grid;grid-template-columns:34px minmax(0,1.8fr) 110px 110px 120px;gap:10px;align-items:center;padding:11px 12px;border-bottom:1px solid #eef2f7}
+    .scope-item:last-child{border-bottom:0}
+    .scope-item small{display:block;color:#64748b;margin-top:3px}
+    .confirm-card{max-width:560px}
+    .step { border:1px solid var(--border);border-radius:10px;padding:10px;background:#fbfcfe;min-height:72px; }
+    .step b { display:block;font-size:12px;margin-bottom:4px; }
+    .step small { color:var(--muted); }
+    .step.done { background:var(--green-soft);border-color:#bbf7d0; }
+    .step.active { background:var(--blue-soft);border-color:#bfdbfe;box-shadow:inset 3px 0 0 var(--blue); }
+    .metrics { display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:18px; }
+    .metric { border:1px solid var(--border);border-radius:10px;padding:11px;background:white; }
+    .metric b { font-size:20px;display:block; }
+    .metric small { color:var(--muted);font-size:11px; }
+    .execution-meta { display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px; }
+    .execution-meta .left { display:flex;gap:8px;align-items:center;flex-wrap:wrap; }
+    .candidate-list { display:grid;gap:10px; }
+    .candidate {
+      border:1px solid var(--border);border-radius:12px;padding:14px;display:grid;grid-template-columns:24px 1fr 118px;gap:12px;align-items:flex-start;
+    }
+    .candidate.selected { border-color:#93c5fd;background:#f8fbff;box-shadow:0 0 0 1px #dbeafe; }
+    .candidate input { margin-top:4px; }
+    .candidate-title { font-weight:700;margin-bottom:4px; }
+    .candidate-meta { color:var(--muted);font-size:12px;display:flex;gap:10px;flex-wrap:wrap; }
+    .score { text-align:right; }
+    .score b { font-size:22px;color:var(--blue);display:block; }
+    .evidence { margin-top:10px;display:flex;gap:6px;flex-wrap:wrap; }
+    .evidence span { background:#f1f5f9;border-radius:6px;padding:3px 6px;font-size:11px;color:#475569; }
+    .source-box { border:1px solid #bfdbfe;background:#f8fbff;border-radius:12px;padding:14px;margin-bottom:14px; }
+    .source-box strong { display:block;font-size:15px;margin-bottom:7px; }
+    .source-meta { display:flex;gap:12px;flex-wrap:wrap;color:#475569;font-size:12px; }
+    .dedup-preview { padding:22px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px; }
+    .dedup-card { border:1px solid var(--border);border-radius:12px;padding:16px;background:#fbfcfe; }
+    .dedup-card b { font-size:20px;display:block;margin-bottom:4px; }
+    .hidden { display:none!important; }
+    @media (max-width: 980px) {
+      .app { grid-template-columns:1fr; }
+      .sidebar { display:none; }
+      .main { padding:20px 14px 40px; }
+      .mode-cards,.grid2,.grid3,.metrics,.pipeline,.tree-layout,.dedup-preview { grid-template-columns:1fr; }
+      .toolbar { flex-direction:column; }
+      .filters { flex-wrap:wrap; }
+      .panel { overflow:auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">PB</div>
+        <div><b>PackBreaker</b><small>拆包流程重构原型</small></div>
+      </div>
+      <nav class="nav">
+        <a href="#">⌂ 总览</a>
+        <a href="#" class="active">▣ 任务中心</a>
+        <a href="#">◫ 站点管理</a>
+        <a href="#">⇄ 下载器</a>
+        <a href="#">≡ 日志</a>
+        <a href="#">⚙ 系统设置</a>
+        <a href="#">ⓘ 关于</a>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <div class="toolbar">
+        <div>
+          <h1>任务中心</h1>
+          <p>原型重点：统一数据拆包入口、分页取片、分批匹配、候选审核与异常重试。</p>
+        </div>
+        <div class="actions">
+          <button class="btn">↻ 刷新</button>
+          <button class="btn primary" id="openCreate">＋ 新增任务</button>
+        </div>
+      </div>
+
+      <div class="mode-cards">
+        <button class="mode-card active" data-view="unpack">
+          <span class="mode-icon">▦</span>
+          <span>
+            <b>数据拆包</b>
+            <small>手动 4 · 监控 3 · 待人工审核 2 · 异常 2</small>
+          </span>
+          <strong>7</strong>
+        </button>
+        <button class="mode-card" data-view="dedup">
+          <span class="mode-icon">⧉</span>
+          <span>
+            <b>数据去重</b>
+            <small>运行中 1 · 待审核 1 · 已完成 8</small>
+          </span>
+          <strong>10</strong>
+        </button>
+      </div>
+
+      <section id="unpackView">
+        <div class="panel">
+          <div class="panel-head">
+            <div><b>数据拆包任务</b><span>手动与监控共用同一套影片匹配执行链</span></div>
+            <div class="filters">
+              <select class="select"><option>全部类型</option><option>手动拆包</option><option>监控拆包</option></select>
+              <select class="select"><option>全部状态</option><option>待执行</option><option>匹配中</option><option>待人工审核</option><option>匹配超时</option><option>匹配错误</option></select>
+              <input class="input" value="" placeholder="搜索任务名称 / 来源" />
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>任务名称</th><th>类型</th><th>来源</th><th>扫描站点</th><th>状态</th><th>匹配进度</th><th>结果</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr id="newPendingTask" class="hidden">
+                <td><div class="primary"><b>电影库自动拆包</b><small>刚刚保存 · 尚未执行</small></div></td>
+                <td><span class="tag blue">手动</span></td>
+                <td class="ellipsis">/downloads/movies/2026</td>
+                <td>M-TEAM、HDTime、HHClub</td>
+                <td><span class="tag gray">待执行</span></td>
+                <td>—</td>
+                <td id="pendingScopeSummary">全部影视文件</td>
+                <td><div class="row-actions"><button class="btn primary executeTask">执行</button><button class="btn link">查看</button></div></td>
+              </tr>
+              <tr>
+                <td><div class="primary"><b>电影库手动拆包</b><small>刚刚执行 · 第 4 批</small></div></td>
+                <td><span class="tag blue">手动</span></td>
+                <td class="ellipsis">/downloads/movies/2026</td>
+                <td>M-TEAM、HDTime</td>
+                <td><span class="tag blue">匹配中</span></td>
+                <td><div class="primary"><span>82 / 120</span><div class="progress"><i style="width:68%"></i></div></div></td>
+                <td>精确 62 · 待审核 14 · 异常 6</td>
+                <td><div class="row-actions"><button class="btn link openExecution">查看</button><button class="btn link">暂停</button></div></td>
+              </tr>
+              <tr>
+                <td><div class="primary"><b>新番持续监控</b><small>每 10 分钟扫描</small></div></td>
+                <td><span class="tag purple">监控</span></td>
+                <td class="ellipsis">qBittorrent · anime</td>
+                <td>HHClub、KeepFrds</td>
+                <td><span class="tag orange">待人工审核</span></td>
+                <td><div class="primary"><span>14 / 14</span><div class="progress"><i style="width:100%"></i></div></div></td>
+                <td>精确 11 · 待审核 3</td>
+                <td><div class="row-actions"><button class="btn link openExecution">查看</button><button class="btn link openReview">审核</button></div></td>
+              </tr>
+              <tr>
+                <td><div class="primary"><b>纪录片补档</b><small>手动触发</small></div></td>
+                <td><span class="tag blue">手动</span></td>
+                <td class="ellipsis">/downloads/documentary</td>
+                <td>HDHome</td>
+                <td><span class="tag red">匹配超时</span></td>
+                <td>19 / 20</td>
+                <td>1 个影片搜索超时</td>
+                <td><div class="row-actions"><button class="btn link openExecution">查看</button><button class="btn small danger">重试</button></div></td>
+              </tr>
+              <tr>
+                <td><div class="primary"><b>Transmission 电影监控</b><small>每 30 分钟扫描</small></div></td>
+                <td><span class="tag purple">监控</span></td>
+                <td class="ellipsis">Transmission · movies</td>
+                <td>Ubits、HDFans</td>
+                <td><span class="tag red">匹配错误</span></td>
+                <td>7 / 9</td>
+                <td>2 个影片站点返回异常</td>
+                <td><div class="row-actions"><button class="btn link openExecution">查看</button><button class="btn small danger">重试</button></div></td>
+              </tr>
+              <tr>
+                <td><div class="primary"><b>经典电影整理</b><small>今天 21:30 完成</small></div></td>
+                <td><span class="tag blue">手动</span></td>
+                <td class="ellipsis">/downloads/classic</td>
+                <td>M-TEAM</td>
+                <td><span class="tag green">已完成</span></td>
+                <td>36 / 36</td>
+                <td>精确 31 · 人工确认 5</td>
+                <td><div class="row-actions"><button class="btn link openExecution">查看</button></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note">原型规则：保存任务只创建“待执行”任务，不直接启动。达到自动匹配阈值的候选可自动选择，但仍需通过种子内容校验；低于阈值进入人工审核。</div>
+      </section>
+
+      <section id="dedupView" class="hidden">
+        <div class="panel">
+          <div class="panel-head"><div><b>数据去重</b><span>本轮不调整既有去重执行逻辑，仅合并顶部入口命名</span></div></div>
+          <div class="dedup-preview">
+            <div class="dedup-card"><b>10</b><span>去重任务总数</span></div>
+            <div class="dedup-card"><b>1</b><span>待人工审核</span></div>
+            <div class="dedup-card"><b>8</b><span>已完成</span></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="overlay" id="createDialog">
+    <div class="dialog">
+      <div class="dialog-head"><h2>新增数据拆包任务</h2><button class="close">×</button></div>
+      <div class="dialog-body">
+        <div class="sections">
+          <section class="section">
+            <h3>1. 基本信息</h3>
+            <div class="grid2">
+              <div class="field"><label>任务名称</label><input value="电影库自动拆包" /></div>
+              <div class="field">
+                <label>任务类型</label>
+                <div class="radio-row">
+                  <button class="choice active taskMode" data-mode="manual">手动拆包</button>
+                  <button class="choice taskMode" data-mode="monitor">监控拆包</button>
+                </div>
+              </div>
+              <div class="field"><label>扫描站点</label><select><option>M-TEAM、HDTime、HHClub</option></select></div>
+              <div class="field monitorOnly hidden"><label>执行时间</label><input id="cronInput" value="*/10 * * * *" /><small>监控任务按计划进入与手动任务相同的匹配执行链。</small>
+                <div class="cron-helper">
+                  <b>Cron 辅助</b>
+                  <div class="cron-presets">
+                    <button type="button" class="btn cronPreset" data-cron="*/5 * * * *">每 5 分钟</button>
+                    <button type="button" class="btn cronPreset" data-cron="*/10 * * * *">每 10 分钟</button>
+                    <button type="button" class="btn cronPreset" data-cron="0 * * * *">每小时</button>
+                    <button type="button" class="btn cronPreset" data-cron="0 3 * * *">每天 03:00</button>
+                    <button type="button" class="btn cronPreset" data-cron="0 3 * * 1">每周一 03:00</button>
+                  </div>
+                  <div class="cron-builder">
+                    <div class="field"><label>分钟</label><select class="cronPart" data-index="0"><option>*</option><option selected>*/10</option><option>0</option><option>30</option></select></div>
+                    <div class="field"><label>小时</label><select class="cronPart" data-index="1"><option selected>*</option><option>0</option><option>3</option><option>12</option></select></div>
+                    <div class="field"><label>日期</label><select class="cronPart" data-index="2"><option selected>*</option><option>1</option><option>15</option></select></div>
+                    <div class="field"><label>月份</label><select class="cronPart" data-index="3"><option selected>*</option><option>1</option><option>6</option><option>12</option></select></div>
+                    <div class="field"><label>星期</label><select class="cronPart" data-index="4"><option selected>*</option><option>1</option><option>1-5</option><option>0,6</option></select></div>
+                  </div>
+                  <small>可直接点预设，也可逐项点击分钟 / 小时 / 日期 / 月份 / 星期，组件会自动回填 Cron 表达式。</small>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h3>2. 来源</h3>
+            <div class="radio-row" style="margin-bottom:12px">
+              <button class="choice active sourceKind" data-source="directory">目录</button><button class="choice sourceKind monitorOnly hidden" data-source="downloader">下载器</button>
+            </div>
+            <div class="grid2 directorySource">
+              <div class="field">
+                <label>来源目录</label>
+                <div class="inline"><input id="sourcePath" value="/downloads/movies/2026" /><button class="btn" id="openTree">选择目录</button></div>
+                <small>改为文件 / 目录树弹窗，不再使用逐层平铺目录浏览。</small>
+              </div>
+              <div class="field"><label>输出目录</label><div class="inline"><input value="/downloads2/seeding/movies" /><button class="btn openTreeGeneric">选择目录</button></div></div>
+            </div>
+            <div class="grid2 downloaderSource hidden">
+              <div class="field"><label>下载器</label><select><option>qBittorrent · 主下载器</option><option>Transmission · 备用下载器</option></select></div>
+              <div class="field"><label>输出目录</label><div class="inline"><input value="/downloads2/seeding/movies" /><button class="btn openTreeGeneric">选择目录</button></div></div>
+              <div class="field"><label>任务名称包含</label><input placeholder="例如：Movie / 电影" /></div>
+              <div class="field"><label>分类</label><input value="movies" placeholder="多个分类使用逗号分隔" /></div>
+              <div class="field"><label>标签</label><input value="pt, ready" placeholder="命中任意标签即可" /></div>
+              <div class="field"><label>说明</label><small>监控任务可直接从下载器筛选已完成任务，随后仍进入统一的影片发现、匹配、内容校验和辅种执行链。</small></div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h3>3. 文件过滤</h3>
+            <div class="grid2">
+              <div class="field"><label>文件类型</label><div class="check-row"><label><input type="checkbox" checked /> 视频</label><label><input type="checkbox" /> 压缩包</label></div></div>
+              <div class="field"><label>后缀名过滤（新增）</label><input value=".mkv, .mp4, .ts" /><small>支持白名单；多个后缀使用逗号分隔。</small></div>
+              <div class="field"><label>最小大小（MB）</label><input value="500" /></div>
+              <div class="field"><label>最大大小（MB）</label><input placeholder="不限" /></div>
+              <div class="field"><label>包含名称</label><input placeholder="留空表示不限" /></div>
+              <div class="field"><label>排除名称</label><input value="sample, trailer" /></div>
+            </div>
+            <div class="check-row" style="margin-top:12px"><label><input type="checkbox" checked /> 忽略临时文件</label><label><input type="checkbox" checked /> 包含子目录</label></div>
+          </section>
+
+          <section class="section">
+            <h3>4. 输出与文件冲突</h3>
+            <div class="grid2">
+              <div class="field"><label>存放方式</label><select><option>硬链接（默认）</option><option>软链接</option><option>复制</option></select></div>
+              <div class="field"><label>文件冲突</label><select><option>校验一致后复用，否则停止</option><option>跳过</option><option>自动重命名</option><option>覆盖</option></select></div>
+            </div>
+          </section>
+
+          <section class="section advanced">
+            <h3>5. 高级执行规则</h3>
+            <div class="grid3">
+              <div class="field"><label>自动重试</label><label class="switch"><input type="checkbox" checked /> 开启自动重试</label></div>
+              <div class="field"><label>自动重试次数</label><input type="number" value="3" min="0" max="10" /><small>只保留这两个高级选项，其余规则从新建任务表单移除。</small></div>
+              <div class="field"><label>自动匹配阈值（%）</label><input type="number" value="100" min="0" max="100" step="0.1" /><small>匹配度达到该阈值时自动选择候选；仍必须通过种子内容校验后才能辅种。</small></div>
+            </div>
+          </section>
+        </div>
+      </div>
+      <div class="dialog-foot"><button class="btn closeDialog">取消</button><button class="btn primary" id="saveTask">保存</button></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="scopeConfirmDialog">
+    <div class="dialog confirm-card">
+      <div class="dialog-head"><h2>确认拆包范围</h2><button class="close">×</button></div>
+      <div class="dialog-body"><div class="note" style="margin:0">是否将当前目录下扫描到的所有影视文件加入本任务？选择“是”将保存为“全部影视文件”；选择“否”会先扫描目录，并由你勾选本次需要处理的影片。</div></div>
+      <div class="dialog-foot"><button class="btn" id="chooseMediaFiles">否，选择影片</button><button class="btn primary" id="useAllMedia">是，全部处理</button></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="mediaSelectDialog">
+    <div class="dialog wide">
+      <div class="dialog-head"><h2>选择需要拆包的影视文件</h2><button class="close">×</button></div>
+      <div class="dialog-body">
+        <div class="scope-toolbar">
+          <input class="input" id="mediaFilterKeyword" placeholder="搜索影片名称 / 路径" />
+          <select class="select" id="mediaFilterExt"><option value="">全部后缀</option><option value=".mkv">MKV</option><option value=".mp4">MP4</option></select>
+          <select class="select" id="mediaFilterResolution"><option value="">全部分辨率</option><option value="2160p">2160p</option><option value="1080p">1080p</option></select>
+          <select class="select" id="mediaFilterChecked"><option value="">全部选择状态</option><option value="checked">已勾选</option><option value="unchecked">未勾选</option></select>
+        </div>
+        <div class="scope-summary"><div><b>目录扫描完成</b><small style="display:block;margin-top:3px">已发现 6 个影视文件；顶部过滤仅影响列表展示，不会自动改变勾选结果。</small></div><div><button class="btn" id="selectVisibleMedia">勾选当前结果</button> <button class="btn" id="clearVisibleMedia">取消当前结果</button></div></div>
+        <div class="scope-list" id="mediaScopeList">
+          <label class="scope-item" data-name="Dune.Part.Three.2026.2160p.mkv" data-ext=".mkv" data-resolution="2160p"><input type="checkbox" checked /><div><b>Dune.Part.Three.2026.2160p.mkv</b><small>/downloads/movies/2026</small></div><span>2160p</span><span>24.8 GB</span><span>MKV</span></label>
+          <label class="scope-item" data-name="Project.Hail.Mary.2026.1080p.mkv" data-ext=".mkv" data-resolution="1080p"><input type="checkbox" checked /><div><b>Project.Hail.Mary.2026.1080p.mkv</b><small>/downloads/movies/2026</small></div><span>1080p</span><span>13.2 GB</span><span>MKV</span></label>
+          <label class="scope-item" data-name="Avatar.Fire.And.Ash.2026.2160p.mkv" data-ext=".mkv" data-resolution="2160p"><input type="checkbox" /><div><b>Avatar.Fire.And.Ash.2026.2160p.mkv</b><small>/downloads/movies/2026</small></div><span>2160p</span><span>31.4 GB</span><span>MKV</span></label>
+          <label class="scope-item" data-name="The.Odyssey.2026.1080p.mp4" data-ext=".mp4" data-resolution="1080p"><input type="checkbox" /><div><b>The.Odyssey.2026.1080p.mp4</b><small>/downloads/movies/2026</small></div><span>1080p</span><span>8.9 GB</span><span>MP4</span></label>
+          <label class="scope-item" data-name="Mickey.17.2025.2160p.mkv" data-ext=".mkv" data-resolution="2160p"><input type="checkbox" checked /><div><b>Mickey.17.2025.2160p.mkv</b><small>/downloads/movies/2026/archive</small></div><span>2160p</span><span>20.1 GB</span><span>MKV</span></label>
+          <label class="scope-item" data-name="F1.2025.1080p.mkv" data-ext=".mkv" data-resolution="1080p"><input type="checkbox" /><div><b>F1.2025.1080p.mkv</b><small>/downloads/movies/2026/archive</small></div><span>1080p</span><span>11.8 GB</span><span>MKV</span></label>
+        </div>
+      </div>
+      <div class="dialog-foot"><span id="mediaSelectedCount" style="margin-right:auto;color:#64748b">已选择 3 / 6</span><button class="btn closeDialog">取消</button><button class="btn primary" id="saveSelectedMedia">保存任务</button></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="treeDialog">
+    <div class="dialog wide">
+      <div class="dialog-head"><h2>选择文件 / 目录</h2><button class="close">×</button></div>
+      <div class="dialog-body">
+        <div class="tree-layout">
+          <div class="tree-card">
+            <div class="tree-tools"><input class="input" placeholder="搜索文件或目录" /><button class="btn">展开全部</button><button class="btn">收起全部</button></div>
+            <div class="tree">
+              <ul>
+                <li>
+                  <div class="node"><button>▾</button><span class="folder">📁</span><b>/data</b></div>
+                  <ul>
+                    <li>
+                      <div class="node"><button>▾</button><span class="folder">📁</span><b>downloads</b></div>
+                      <ul>
+                        <li>
+                          <div class="node"><button>▾</button><span class="folder">📁</span><b>movies</b></div>
+                          <ul>
+                            <li><div class="node selected treePick" data-path="/downloads/movies/2026"><button>▾</button><span class="folder">📁</span><b>2026</b><span style="margin-left:auto;color:#64748b">128 个对象</span></div>
+                              <ul>
+                                <li><div class="node"><button></button><span class="file">🎞</span><span>Dune.Part.Three.2026.2160p.mkv</span><span style="margin-left:auto;color:#64748b">24.8 GB</span></div></li>
+                                <li><div class="node"><button></button><span class="file">🎞</span><span>Project.Hail.Mary.2026.1080p.mkv</span><span style="margin-left:auto;color:#64748b">13.2 GB</span></div></li>
+                              </ul>
+                            </li>
+                            <li><div class="node treePick" data-path="/downloads/movies/2025"><button>›</button><span class="folder">📁</span><b>2025</b><span style="margin-left:auto;color:#64748b">436 个对象</span></div></li>
+                          </ul>
+                        </li>
+                        <li><div class="node treePick" data-path="/downloads/anime"><button>›</button><span class="folder">📁</span><b>anime</b></div></li>
+                        <li><div class="node treePick" data-path="/downloads/documentary"><button>›</button><span class="folder">📁</span><b>documentary</b></div></li>
+                      </ul>
+                    </li>
+                    <li><div class="node"><button>▾</button><span class="folder">📁</span><b>downloads2</b></div>
+                      <ul><li><div class="node treePick" data-path="/downloads2/seeding/movies"><button>›</button><span class="folder">📁</span><b>seeding/movies</b></div></li></ul>
+                    </li>
+                  </ul>
+                </li>
+              </ul>
+            </div>
+          </div>
+          <aside class="summary-card">
+            <h3>当前选择</h3>
+            <dl class="kv"><dt>路径</dt><dd id="treeSelectedPath">/downloads/movies/2026</dd><dt>类型</dt><dd>目录</dd><dt>子对象</dt><dd>128</dd><dt>估算大小</dt><dd>1.82 TB</dd></dl>
+            <div class="note" style="margin:0">手动拆包可继续展开到文件级查看；监控拆包保存时以选中的目录节点作为监控根。</div>
+          </aside>
+        </div>
+      </div>
+      <div class="dialog-foot"><button class="btn closeDialog">取消</button><button class="btn primary" id="confirmTree">使用此目录</button></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="executionDialog">
+    <div class="dialog wide">
+      <div class="dialog-head"><h2>执行详情 · 电影库手动拆包</h2><button class="close">×</button></div>
+      <div class="dialog-body">
+        <div class="pipeline">
+          <div class="step done"><b>① 分页获取影片</b><small>6 页 · 120 个影片</small></div>
+          <div class="step active"><b>② 分批影片匹配</b><small>第 5 / 6 批 · 每批 20</small></div>
+          <div class="step"><b>③ 自动匹配 / 人工审核</b><small>按任务阈值决定是否自动选中</small></div>
+          <div class="step"><b>④ 种子内容校验</b><small>下载 .torrent，只读验证本地字节</small></div>
+          <div class="step"><b>⑤ 辅种执行</b><small>内容一致后创建目标并添加下载器</small></div>
+          <div class="step"><b>⑥ 客户端校验 / 完成</b><small>确认做种状态并收尾</small></div>
+        </div>
+        <div class="metrics">
+          <div class="metric"><b>120</b><small>影片总数</small></div>
+          <div class="metric"><b>82</b><small>已匹配</small></div>
+          <div class="metric"><b>62</b><small>100% 自动确认</small></div>
+          <div class="metric"><b>14</b><small>待人工审核</small></div>
+          <div class="metric"><b>4</b><small>匹配超时</small></div>
+          <div class="metric"><b>2</b><small>匹配错误</small></div>
+        </div>
+        <div class="execution-meta">
+          <div class="left"><span class="tag blue">正在匹配</span><span class="tag gray">当前页 5 / 6</span><span class="tag gray">批次 5 / 6</span><span>搜索优先级：IMDb/豆瓣 ID → 影片名</span></div>
+          <select class="select"><option>每页 20 条</option><option>每页 50 条</option></select>
+        </div>
+        <div class="panel" style="box-shadow:none">
+          <table>
+            <thead><tr><th>影片</th><th>搜索依据</th><th>目标站点</th><th>最佳候选</th><th>匹配度</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><div class="primary"><b>Dune: Part Three (2026)</b><small>Dune.Part.Three.2026.2160p...</small></div></td>
+                <td><span class="tag gray">IMDb tt15239678</span></td><td>M-TEAM</td><td class="ellipsis">Dune.Part.Three.2026.2160p.UHD...</td><td><b style="color:#15803d">100%</b></td><td><span class="tag green">自动匹配成功</span></td><td><button class="btn link openReview">审核</button></td>
+              </tr>
+              <tr>
+                <td><div class="primary"><b>Project Hail Mary (2026)</b><small>Project.Hail.Mary.2026.1080p...</small></div></td>
+                <td><span class="tag gray">豆瓣 35428968</span></td><td>HDTime</td><td class="ellipsis">Project.Hail.Mary.2026.BluRay...</td><td><b style="color:#d97706">96.8%</b></td><td><span class="tag orange">待人工审核</span></td><td><button class="btn link openReview">审核</button></td>
+              </tr>
+              <tr>
+                <td><div class="primary"><b>Mickey 17 (2025)</b><small>Mickey.17.2025.1080p...</small></div></td>
+                <td><span class="tag gray">影片名</span></td><td>HHClub</td><td>—</td><td>—</td><td><span class="tag red">匹配超时</span></td><td><button class="btn small danger">重试</button></td>
+              </tr>
+              <tr>
+                <td><div class="primary"><b>Avatar: Fire and Ash (2025)</b><small>Avatar.Fire.And.Ash...</small></div></td>
+                <td><span class="tag gray">IMDb tt1757678</span></td><td>KeepFrds</td><td>—</td><td>—</td><td><span class="tag red">匹配错误</span></td><td><button class="btn small danger">重试</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="dialog-foot"><button class="btn closeDialog">关闭</button></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="reviewDialog">
+    <div class="dialog wide">
+      <div class="dialog-head"><h2>人工审核候选 · Project Hail Mary (2026)</h2><button class="close">×</button></div>
+      <div class="dialog-body">
+        <div class="source-box">
+          <strong>Project.Hail.Mary.2026.1080p.BluRay.x264-Group</strong>
+          <div class="source-meta"><span>IMDb: tt12042730</span><span>豆瓣: 35428968</span><span>1080p</span><span>BluRay</span><span>12.7 GB</span><span>制作组 Group</span></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div><b>候选列表</b><span style="color:var(--muted);margin-left:8px">默认选中匹配度最高的一条，必须人工确认后才继续。</span></div>
+          <span class="tag orange">任务状态：待人工审核</span>
+        </div>
+        <div class="candidate-list">
+          <label class="candidate selected">
+            <input type="radio" name="candidate" checked />
+            <div>
+              <div class="candidate-title">Project.Hail.Mary.2026.1080p.BluRay.x264-Group</div>
+              <div class="candidate-meta"><span>HDTime · #884211</span><span>12.71 GB</span><span>IMDb tt12042730</span><span>做种 48</span></div>
+              <div class="evidence"><span>IMDb 一致</span><span>年份一致</span><span>分辨率一致</span><span>来源一致</span><span>制作组一致</span><span>大小差 0.4%</span></div>
+            </div>
+            <div class="score"><b>96.8%</b><small>最高候选</small></div>
+          </label>
+          <label class="candidate">
+            <input type="radio" name="candidate" />
+            <div>
+              <div class="candidate-title">Project.Hail.Mary.2026.2160p.WEB-DL.DDP5.1.H.265</div>
+              <div class="candidate-meta"><span>M-TEAM · #773105</span><span>21.32 GB</span><span>IMDb tt12042730</span><span>做种 112</span></div>
+              <div class="evidence"><span>IMDb 一致</span><span>年份一致</span><span>分辨率不同</span><span>来源不同</span><span>制作组不同</span></div>
+            </div>
+            <div class="score"><b>82.4%</b><small>候选 2</small></div>
+          </label>
+          <label class="candidate">
+            <input type="radio" name="candidate" />
+            <div>
+              <div class="candidate-title">Project.Hail.Mary.2026.1080p.WEBRip.x264</div>
+              <div class="candidate-meta"><span>HHClub · #119024</span><span>9.84 GB</span><span>豆瓣 35428968</span><span>做种 21</span></div>
+              <div class="evidence"><span>豆瓣一致</span><span>年份一致</span><span>分辨率一致</span><span>来源不同</span><span>大小差较大</span></div>
+            </div>
+            <div class="score"><b>78.1%</b><small>候选 3</small></div>
+          </label>
+        </div>
+      </div>
+      <div class="dialog-foot"><button class="btn">标记无匹配</button><button class="btn closeDialog">稍后处理</button><button class="btn primary">确认所选候选并继续</button></div>
+    </div>
+  </div>
+
+  <script>
+    const overlays = Array.from(document.querySelectorAll('.overlay'));
+    const open = id => document.getElementById(id).classList.add('open');
+    const close = el => el.closest('.overlay').classList.remove('open');
+    document.querySelectorAll('.close,.closeDialog').forEach(btn => btn.addEventListener('click', () => close(btn)));
+    overlays.forEach(overlay => overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.remove('open'); }));
+    document.getElementById('openCreate').addEventListener('click', () => open('createDialog'));
+    document.querySelectorAll('.openExecution').forEach(btn => btn.addEventListener('click', () => open('executionDialog')));
+    document.querySelectorAll('.openReview').forEach(btn => btn.addEventListener('click', () => open('reviewDialog')));
+    document.getElementById('openTree').addEventListener('click', () => open('treeDialog'));
+    document.querySelectorAll('.openTreeGeneric').forEach(btn => btn.addEventListener('click', () => open('treeDialog')));
+    document.querySelectorAll('.mode-card').forEach(btn => btn.addEventListener('click', () => {
+      document.querySelectorAll('.mode-card').forEach(x => x.classList.toggle('active', x === btn));
+      document.getElementById('unpackView').classList.toggle('hidden', btn.dataset.view !== 'unpack');
+      document.getElementById('dedupView').classList.toggle('hidden', btn.dataset.view !== 'dedup');
+    }));
+    document.querySelectorAll('.taskMode').forEach(btn => btn.addEventListener('click', () => {
+      document.querySelectorAll('.taskMode').forEach(x => x.classList.toggle('active', x === btn));
+      document.querySelectorAll('.monitorOnly').forEach(x => x.classList.toggle('hidden', btn.dataset.mode !== 'monitor'));
+      if (btn.dataset.mode !== 'monitor') {
+        document.querySelectorAll('.sourceKind').forEach(x => x.classList.toggle('active', x.dataset.source === 'directory'));
+        document.querySelectorAll('.directorySource').forEach(x => x.classList.remove('hidden'));
+        document.querySelectorAll('.downloaderSource').forEach(x => x.classList.add('hidden'));
+      }
+    }));
+    document.querySelectorAll('.sourceKind').forEach(btn => btn.addEventListener('click', () => {
+      document.querySelectorAll('.sourceKind').forEach(x => x.classList.toggle('active', x === btn));
+      document.querySelectorAll('.directorySource').forEach(x => x.classList.toggle('hidden', btn.dataset.source !== 'directory'));
+      document.querySelectorAll('.downloaderSource').forEach(x => x.classList.toggle('hidden', btn.dataset.source !== 'downloader'));
+    }));
+    const currentMode = () => document.querySelector('.taskMode.active')?.dataset.mode || 'manual';
+    const currentSource = () => document.querySelector('.sourceKind.active')?.dataset.source || 'directory';
+    const completeTaskSave = scopeLabel => {
+      document.getElementById('createDialog').classList.remove('open');
+      document.getElementById('scopeConfirmDialog').classList.remove('open');
+      document.getElementById('mediaSelectDialog').classList.remove('open');
+      document.getElementById('pendingScopeSummary').textContent = scopeLabel;
+      document.getElementById('newPendingTask').classList.remove('hidden');
+    };
+    document.getElementById('saveTask').addEventListener('click', () => {
+      if (currentMode() === 'manual' && currentSource() === 'directory') open('scopeConfirmDialog');
+      else completeTaskSave('按任务来源规则');
+    });
+    document.getElementById('useAllMedia').addEventListener('click', () => completeTaskSave('全部影视文件'));
+    document.getElementById('chooseMediaFiles').addEventListener('click', () => {
+      document.getElementById('scopeConfirmDialog').classList.remove('open');
+      open('mediaSelectDialog');
+    });
+    const scopeItems = Array.from(document.querySelectorAll('.scope-item'));
+    const refreshScopeCount = () => {
+      const checked = scopeItems.filter(item => item.querySelector('input').checked).length;
+      document.getElementById('mediaSelectedCount').textContent = `已选择 ${checked} / ${scopeItems.length}`;
+    };
+    const applyMediaFilters = () => {
+      const keyword = document.getElementById('mediaFilterKeyword').value.trim().toLowerCase();
+      const ext = document.getElementById('mediaFilterExt').value;
+      const resolution = document.getElementById('mediaFilterResolution').value;
+      const checkedState = document.getElementById('mediaFilterChecked').value;
+      scopeItems.forEach(item => {
+        const checked = item.querySelector('input').checked;
+        const visible = (!keyword || item.dataset.name.toLowerCase().includes(keyword)) && (!ext || item.dataset.ext === ext) && (!resolution || item.dataset.resolution === resolution) && (!checkedState || (checkedState === 'checked' ? checked : !checked));
+        item.classList.toggle('hidden', !visible);
+      });
+    };
+    ['mediaFilterKeyword','mediaFilterExt','mediaFilterResolution','mediaFilterChecked'].forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener(id === 'mediaFilterKeyword' ? 'input' : 'change', applyMediaFilters);
+    });
+    scopeItems.forEach(item => item.querySelector('input').addEventListener('change', () => { refreshScopeCount(); applyMediaFilters(); }));
+    document.getElementById('selectVisibleMedia').addEventListener('click', () => {
+      scopeItems.filter(item => !item.classList.contains('hidden')).forEach(item => item.querySelector('input').checked = true);
+      refreshScopeCount(); applyMediaFilters();
+    });
+    document.getElementById('clearVisibleMedia').addEventListener('click', () => {
+      scopeItems.filter(item => !item.classList.contains('hidden')).forEach(item => item.querySelector('input').checked = false);
+      refreshScopeCount(); applyMediaFilters();
+    });
+    document.getElementById('saveSelectedMedia').addEventListener('click', () => {
+      const checked = scopeItems.filter(item => item.querySelector('input').checked).length;
+      if (!checked) return;
+      completeTaskSave(`已选择 ${checked} 个影视文件`);
+    });
+    document.querySelectorAll('.executeTask').forEach(btn => btn.addEventListener('click', () => {
+      const row = btn.closest('tr');
+      row.querySelector('td:nth-child(5)').innerHTML = '<span class="tag blue">匹配中</span>';
+      row.querySelector('td:nth-child(6)').textContent = '0 / 待发现';
+      btn.textContent = '执行中';
+      btn.disabled = true;
+    }));
+    const cronInput = document.getElementById('cronInput');
+    const syncCronParts = value => {
+      const parts = value.trim().split(/\s+/);
+      if (parts.length !== 5) return;
+      document.querySelectorAll('.cronPart').forEach(select => {
+        const value = parts[Number(select.dataset.index)];
+        if (Array.from(select.options).some(option => option.value === value)) select.value = value;
+      });
+    };
+    document.querySelectorAll('.cronPreset').forEach(btn => btn.addEventListener('click', () => {
+      cronInput.value = btn.dataset.cron;
+      syncCronParts(btn.dataset.cron);
+    }));
+    document.querySelectorAll('.cronPart').forEach(select => select.addEventListener('change', () => {
+      const parts = Array.from(document.querySelectorAll('.cronPart')).map(item => item.value);
+      cronInput.value = parts.join(' ');
+    }));
+    let selectedPath = '/downloads/movies/2026';
+    document.querySelectorAll('.treePick').forEach(node => node.addEventListener('click', () => {
+      document.querySelectorAll('.treePick').forEach(x => x.classList.remove('selected'));
+      node.classList.add('selected');
+      selectedPath = node.dataset.path;
+      document.getElementById('treeSelectedPath').textContent = selectedPath;
+    }));
+    document.getElementById('confirmTree').addEventListener('click', () => {
+      document.getElementById('sourcePath').value = selectedPath;
+      document.getElementById('treeDialog').classList.remove('open');
+    });
+    document.querySelectorAll('.candidate input').forEach(input => input.addEventListener('change', () => {
+      document.querySelectorAll('.candidate').forEach(x => x.classList.remove('selected'));
+      input.closest('.candidate').classList.add('selected');
+    }));
+  </script>
+</body>
+</html>

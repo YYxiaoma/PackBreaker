@@ -52,6 +52,11 @@
 | [v1.0.8 研发设计](./v1.0.8-development.md) | 去除单一 /data 根限制、显式挂载绝对路径与直接非 root 运行模型 | v1.0.8 |
 | [v1.0.8 正式发布记录](./v1.0.8-release.md) | 正式 Tag、双架构不可变 digest、非 root/绝对挂载路径、升级/回滚、供应链资产与下版基线 | v1.0.8 |
 | [v1.0.9 研发设计](./v1.0.9-development.md) | GHCR + Docker Hub 双 Registry 发布，以及只配置 PUID/PGID 的自动降权启动模型 | v1.0.9 |
+| [v1.0.15 研发设计](./v1.0.15-development.md) | 数据拆包 v2：任务中心两卡化、统一手动/监控执行链、分页发现、分批匹配、人工审核、item 重试及在线升级 503 诊断修复 | v1.0.15 |
+| [数据拆包 v2 架构设计](./design/unpack-flow-v2-architecture.md) | 定义统一拆包 pipeline、状态机、分页发现、批量匹配、exact-match、审核与恢复模型 | v1.0.15 |
+| [数据拆包 v2 API 与数据模型](./design/unpack-flow-v2-api-data-model.md) | 定义新拆包表结构、API、强版本、幂等、目录树和破坏性迁移方案 | v1.0.15 |
+| [数据拆包 v2 测试与验收](./design/unpack-flow-v2-test-plan.md) | 定义单元/API/集成/浏览器/迁移/升级 Bug 回归和候选发布门禁 | v1.0.15 |
+| [数据拆包 v2 实施计划](./design/unpack-flow-v2-implementation-plan.md) | 将重构拆成 WP1-WP11，冻结产品决策、开发顺序和旧模型删除清单 | v1.0.15 |
 | [部署、运维与安全](./deployment.md) | 约定容器、卷、备份、升级和密钥管理 | M1/M6 |
 | [本地开发指南](./local-development.md) | 统一工具链、命令、配置和日常工作流 | M1 |
 | [研发路线图](./development-roadmap.md) | 将 M0-M6 拆成可交付工作包与退出条件 | 全阶段 |
