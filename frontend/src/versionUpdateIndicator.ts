@@ -8,6 +8,11 @@ export interface PendingUpgradeRequest {
   targetDigest: string;
 }
 
+export interface UpgradeMutationProblem {
+  code: string;
+  status: number | null;
+}
+
 export function shouldMarkUpdateUnseen(updateAvailable: boolean, popoverVisible: boolean): boolean {
   return updateAvailable && !popoverVisible;
 }
@@ -50,4 +55,10 @@ export function shouldReloadAfterUpgrade(
       currentVersion === targetVersion &&
       requestId !== lastReloadedRequestId,
   );
+}
+
+export function upgradeMutationResultIsUnknown(problem: UpgradeMutationProblem): boolean {
+  if (problem.code === 'API_UNAVAILABLE') return true;
+  if (problem.status === 408 || problem.status === 504) return true;
+  return problem.code === 'API_REQUEST_FAILED' && (problem.status ?? 0) >= 500;
 }
