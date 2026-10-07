@@ -51,6 +51,18 @@ from backend.app.domain.task_definition import (
     TaskStorageMode,
 )
 from backend.app.domain.task_state import TaskStatus
+from backend.app.domain.unpack import (
+    UnpackCandidateVerificationStatus,
+    UnpackContentVerificationLevel,
+    UnpackDefinitionStatus,
+    UnpackExecutionScopeKind,
+    UnpackExecutionStatus,
+    UnpackExecutionTrigger,
+    UnpackItemStatus,
+    UnpackReviewDecision,
+    UnpackSourceKind,
+    UnpackTriggerKind,
+)
 from backend.app.domain.verification import DownloaderKind
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.types import UTCDateTime
@@ -90,6 +102,20 @@ _TASK_EXECUTION_STATUS_SQL = ", ".join(f"'{value.value}'" for value in TaskExecu
 _TASK_EXECUTION_PHASE_SQL = ", ".join(f"'{value.value}'" for value in TaskExecutionPhase)
 _TASK_APPROVAL_STATE_SQL = ", ".join(f"'{value.value}'" for value in TaskApprovalState)
 _TASK_APPROVAL_SOURCE_SQL = ", ".join(f"'{value.value}'" for value in TaskApprovalDecisionSource)
+_UNPACK_TRIGGER_KIND_SQL = ", ".join(f"'{value.value}'" for value in UnpackTriggerKind)
+_UNPACK_DEFINITION_STATUS_SQL = ", ".join(f"'{value.value}'" for value in UnpackDefinitionStatus)
+_UNPACK_SOURCE_KIND_SQL = ", ".join(f"'{value.value}'" for value in UnpackSourceKind)
+_UNPACK_SCOPE_KIND_SQL = ", ".join(f"'{value.value}'" for value in UnpackExecutionScopeKind)
+_UNPACK_EXECUTION_TRIGGER_SQL = ", ".join(f"'{value.value}'" for value in UnpackExecutionTrigger)
+_UNPACK_EXECUTION_STATUS_SQL = ", ".join(f"'{value.value}'" for value in UnpackExecutionStatus)
+_UNPACK_ITEM_STATUS_SQL = ", ".join(f"'{value.value}'" for value in UnpackItemStatus)
+_UNPACK_CANDIDATE_VERIFICATION_SQL = ", ".join(
+    f"'{value.value}'" for value in UnpackCandidateVerificationStatus
+)
+_UNPACK_CONTENT_VERIFICATION_SQL = ", ".join(
+    f"'{value.value}'" for value in UnpackContentVerificationLevel
+)
+_UNPACK_REVIEW_DECISION_SQL = ", ".join(f"'{value.value}'" for value in UnpackReviewDecision)
 _MOVIE_DEDUP_MODE_SQL = ", ".join(f"'{value.value}'" for value in MovieDedupMode)
 _MOVIE_DEDUP_CROSS_FS_SQL = ", ".join(
     f"'{value.value}'" for value in MovieDedupCrossFilesystemPolicy
@@ -692,6 +718,228 @@ class TaskExecutionEvent(Base):
     trace_id: Mapped[str] = mapped_column(String(36), nullable=False)
     context: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackDefinition(Base):
+    __tablename__ = "unpack_definition"
+    __table_args__ = (
+        CheckConstraint(f"trigger_kind IN ({_UNPACK_TRIGGER_KIND_SQL})", name="trigger_kind"),
+        CheckConstraint(f"status IN ({_UNPACK_DEFINITION_STATUS_SQL})", name="status"),
+        CheckConstraint(f"source_kind IN ({_UNPACK_SOURCE_KIND_SQL})", name="source_kind"),
+        CheckConstraint(
+            f"execution_scope_kind IN ({_UNPACK_SCOPE_KIND_SQL})", name="execution_scope_kind"
+        ),
+        CheckConstraint("max_retries BETWEEN 0 AND 10", name="max_retries"),
+        CheckConstraint(
+            "auto_match_threshold_bps BETWEEN 0 AND 10000", name="auto_match_threshold_bps"
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(
+            "(trigger_kind = 'MONITOR') OR source_kind = 'DIRECTORY'",
+            name="manual_directory_only",
+        ),
+        CheckConstraint(
+            "(execution_scope_kind != 'SELECTED_MEDIA') OR "
+            "(trigger_kind = 'MANUAL' AND source_kind = 'DIRECTORY')",
+            name="selected_scope_manual_directory",
+        ),
+        Index("ix_unpack_definition_status_updated", "status", "updated_at"),
+        Index("ix_unpack_definition_trigger_status", "trigger_kind", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    trigger_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    execution_scope_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    file_filter: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    site_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    output_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    retry_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    max_retries: Mapped[int] = mapped_column(nullable=False, default=3)
+    auto_match_threshold_bps: Mapped[int] = mapped_column(nullable=False, default=10000)
+    cron_expression: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackDefinitionSelectedSource(Base):
+    __tablename__ = "unpack_definition_selected_source"
+    __table_args__ = (
+        UniqueConstraint(
+            "definition_id", "source_object_key", name="uq_unpack_definition_selected_source"
+        ),
+        Index("ix_unpack_selected_source_definition", "definition_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    definition_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_definition.id", ondelete="CASCADE"), nullable=False
+    )
+    source_object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    canonical_path_hint: Mapped[str] = mapped_column(Text, nullable=False)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes_at_selection: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackExecution(Base):
+    __tablename__ = "unpack_execution"
+    __table_args__ = (
+        CheckConstraint(f"trigger IN ({_UNPACK_EXECUTION_TRIGGER_SQL})", name="trigger"),
+        CheckConstraint(f"status IN ({_UNPACK_EXECUTION_STATUS_SQL})", name="status"),
+        CheckConstraint("total_count >= 0", name="total_count"),
+        CheckConstraint("matched_auto_count >= 0", name="matched_auto_count"),
+        CheckConstraint("review_count >= 0", name="review_count"),
+        CheckConstraint("content_verified_count >= 0", name="content_verified_count"),
+        CheckConstraint("content_mismatch_count >= 0", name="content_mismatch_count"),
+        CheckConstraint("timeout_count >= 0", name="timeout_count"),
+        CheckConstraint("error_count >= 0", name="error_count"),
+        CheckConstraint("completed_count >= 0", name="completed_count"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        Index("ix_unpack_execution_definition_started", "definition_id", "started_at"),
+        Index("ix_unpack_execution_status_updated", "status", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    definition_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_definition.id", ondelete="CASCADE"), nullable=False
+    )
+    trigger: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    config_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    discovery_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discovery_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    total_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    matched_auto_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    review_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    content_verified_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    content_mismatch_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    timeout_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    error_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    completed_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackExecutionItem(Base):
+    __tablename__ = "unpack_execution_item"
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_UNPACK_ITEM_STATUS_SQL})", name="status"),
+        CheckConstraint(
+            "content_verification_level IS NULL OR "
+            f"content_verification_level IN ({_UNPACK_CONTENT_VERIFICATION_SQL})",
+            name="content_verification_level",
+        ),
+        CheckConstraint("candidate_generation >= 0", name="candidate_generation"),
+        CheckConstraint("retry_count >= 0", name="retry_count"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint(
+            "execution_id", "source_object_key", name="uq_unpack_execution_item_source"
+        ),
+        Index("ix_unpack_item_execution_status", "execution_id", "status", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_execution.id", ondelete="CASCADE"), nullable=False
+    )
+    source_object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    media_identity: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    selected_candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    candidate_generation: Mapped[int] = mapped_column(nullable=False, default=0)
+    retry_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    content_verification_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    torrent_metainfo_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    auxiliary_state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    match_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    match_finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackMatchCandidate(Base):
+    __tablename__ = "unpack_match_candidate"
+    __table_args__ = (
+        CheckConstraint("generation >= 0", name="generation"),
+        CheckConstraint("score_bps BETWEEN 0 AND 10000", name="score_bps"),
+        CheckConstraint(
+            f"verification_status IN ({_UNPACK_CANDIDATE_VERIFICATION_SQL})",
+            name="verification_status",
+        ),
+        CheckConstraint(
+            "verification_level IS NULL OR "
+            f"verification_level IN ({_UNPACK_CONTENT_VERIFICATION_SQL})",
+            name="verification_level",
+        ),
+        UniqueConstraint(
+            "item_id", "generation", "site_id", "candidate_key", name="uq_unpack_candidate_key"
+        ),
+        Index("ix_unpack_candidate_item_generation_score", "item_id", "generation", "score_bps"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_execution_item.id", ondelete="CASCADE"), nullable=False
+    )
+    generation: Mapped[int] = mapped_column(nullable=False, default=0)
+    site_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    candidate_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    imdb_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    douban_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    seeders: Mapped[int | None] = mapped_column(nullable=True)
+    score_bps: Mapped[int] = mapped_column(nullable=False)
+    is_exact_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    verification_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="NOT_CHECKED"
+    )
+    verification_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    verification_error_code: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    metainfo_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    raw_ref: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackReviewDecisionModel(Base):
+    __tablename__ = "unpack_review_decision"
+    __table_args__ = (
+        CheckConstraint(f"decision IN ({_UNPACK_REVIEW_DECISION_SQL})", name="decision"),
+        CheckConstraint("generation >= 0", name="generation"),
+        CheckConstraint("item_version_before >= 1", name="item_version_before"),
+        CheckConstraint(
+            "(decision = 'APPROVE' AND candidate_id IS NOT NULL) OR "
+            "(decision = 'NO_MATCH' AND candidate_id IS NULL)",
+            name="candidate_binding",
+        ),
+        Index("ix_unpack_review_item_decided", "item_id", "decided_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_execution_item.id", ondelete="CASCADE"), nullable=False
+    )
+    generation: Mapped[int] = mapped_column(nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    candidate_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("unpack_match_candidate.id", ondelete="SET NULL"), nullable=True
+    )
+    item_version_before: Mapped[int] = mapped_column(nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
 class MovieDedupJob(Base):
