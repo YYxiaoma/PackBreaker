@@ -34,7 +34,8 @@ from backend.app.application.system_upgrades import (
     SystemUpgradeService,
     SystemUpgradeStatus,
 )
-from backend.app.application.task_driver import ActiveTaskDriver
+from backend.app.application.unpack_driver import UnpackDriver
+from backend.app.domain.unpack import TERMINAL_EXECUTION_STATUSES
 from backend.app.infrastructure.app_logging import redact_fields, sanitize_message
 from backend.app.infrastructure.backups import BackupError
 from backend.app.infrastructure.diagnostics import build_diagnostic_bundle
@@ -51,7 +52,7 @@ from backend.app.infrastructure.operational_logs import (
 from backend.app.infrastructure.persistence.models import (
     TaskExecution,
     TaskExecutionEvent,
-    UnpackTask,
+    UnpackExecution,
 )
 from backend.app.infrastructure.release_preflight import (
     ReleasePreflightReport,
@@ -603,11 +604,11 @@ def _health_service(request: Request) -> SystemHealthService:
 
 
 async def _health_report(request: Request) -> SystemHealthReport:
-    task_driver = cast(ActiveTaskDriver, request.app.state.task_driver)
+    unpack_driver = cast(UnpackDriver, request.app.state.unpack_driver)
     notification_driver = cast(NotificationDriver, request.app.state.notification_driver)
     backup_driver = _backup_driver(request)
     return await _health_service(request).snapshot(
-        task_driver=task_driver.state,
+        unpack_driver=unpack_driver.state,
         notification_driver=notification_driver.state,
         backup_driver=backup_driver.state,
     )
@@ -619,40 +620,41 @@ async def system_status(
     principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
 ) -> dict[str, object]:
     runtime = cast(RuntimeManager, request.app.state.runtime)
-    task_driver = cast(ActiveTaskDriver, request.app.state.task_driver)
-    driver_state = task_driver.state
+    unpack_driver = cast(UnpackDriver, request.app.state.unpack_driver)
+    driver_state = unpack_driver.state
     with runtime.session_factory() as session:
         rows = session.execute(
-            select(UnpackTask.status, func.count()).group_by(UnpackTask.status)
+            select(UnpackExecution.status, func.count()).group_by(UnpackExecution.status)
         ).all()
     by_status = {status: count for status, count in rows}
+    terminal = {status.value for status in TERMINAL_EXECUTION_STATUSES}
     return {
         "version": app_version(),
         "authenticated_via": principal.kind,
-        "tasks": {"total": sum(by_status.values()), "by_status": by_status},
+        "tasks": {
+            "total": sum(by_status.values()),
+            "active": sum(count for status, count in by_status.items() if status not in terminal),
+            "by_status": by_status,
+        },
         "checks": runtime.readiness().as_dict()["checks"],
         "worker": {
             "running": driver_state.running,
             "ticks_started": driver_state.ticks_started,
             "ticks_completed": driver_state.ticks_completed,
             "ticks_skipped": driver_state.ticks_skipped,
-            "consecutive_errors": driver_state.consecutive_errors,
+            "consecutive_errors": int(driver_state.last_error_type is not None),
             "last_error_type": driver_state.last_error_type,
-            "last_tick_started_at": (
-                None
-                if driver_state.last_tick_started_at is None
-                else driver_state.last_tick_started_at.isoformat()
-            ),
+            "last_tick_started_at": None,
             "last_tick_completed_at": (
                 None
                 if driver_state.last_tick_completed_at is None
                 else driver_state.last_tick_completed_at.isoformat()
             ),
-            "last_scanned_count": driver_state.last_scanned_count,
-            "last_completed_count": driver_state.last_completed_count,
-            "last_waiting_count": driver_state.last_waiting_count,
-            "last_blocked_count": driver_state.last_blocked_count,
-            "last_truncated": driver_state.last_truncated,
+            "last_scanned_count": None,
+            "last_completed_count": None,
+            "last_waiting_count": None,
+            "last_blocked_count": None,
+            "last_truncated": None,
         },
     }
 

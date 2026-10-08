@@ -244,8 +244,13 @@ def test_alembic_upgrade_creates_m1_core_schema(tmp_path: Path) -> None:
     assert {"subject_kind", "subject_id"}.issubset(outbox_columns)
     assert outbox_columns["subject_kind"]["nullable"] is False
     assert outbox_columns["subject_id"]["nullable"] is False
-    assert outbox_columns["task_id"]["nullable"] is True
-    assert outbox_columns["last_event_id"]["nullable"] is True
+    assert "task_id" not in outbox_columns
+    assert "last_event_id" not in outbox_columns
+    outbox_checks = {
+        constraint["name"]: constraint["sqltext"]
+        for constraint in inspector.get_check_constraints("notification_outbox")
+    }
+    assert "UNPACK" in str(outbox_checks["ck_notification_outbox_subject_kind"])
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("notification_outbox")
     } == {"uq_notification_outbox_channel_subject_event_key"}
@@ -615,17 +620,22 @@ def test_notification_subject_migration_backfills_existing_task_outbox(tmp_path:
     with engine.connect() as connection:
         row = connection.execute(
             text(
-                "SELECT subject_kind, subject_id, task_id, last_event_id "
+                "SELECT subject_kind, subject_id "
                 "FROM notification_outbox WHERE id = 'outbox-legacy'"
             )
         ).one()
+        outbox_columns = {
+            column["name"] for column in inspect(engine).get_columns("notification_outbox")
+        }
         task_row = connection.execute(
             text("SELECT parent_task_id, run_number FROM unpack_task WHERE id = 'task-legacy'")
         ).one()
         event_count = connection.scalar(
             text("SELECT COUNT(*) FROM task_event WHERE id = 'event-legacy'")
         )
-    assert row == ("TASK", "task-legacy", "task-legacy", "event-legacy")
+    assert row == ("TASK", "task-legacy")
+    assert "task_id" not in outbox_columns
+    assert "last_event_id" not in outbox_columns
     assert task_row == (None, 1)
     assert event_count == 1
     engine.dispose()

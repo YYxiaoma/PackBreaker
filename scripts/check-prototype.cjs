@@ -864,226 +864,20 @@ const path = require('node:path');
     await userDrawer.getByText('浅色',{exact:true}).click();
     await page.keyboard.press('Escape');
     console.log(`总览首屏 ${overviewFirstPaintMs}ms；已检查 1920/1440/1280/390 四档布局与深色六张独立状态卡`);
+    // v1.0.15: legacy TaskDefinition/TaskExecution UI was removed. Keep the
+    // production-preview navigation/overview/site/backup gates here; the
+    // dedicated unpack-v2 browser gate tests creation, review, retry and
+    // selection on production assets with fail-closed API mocking.
+    await page.route('**/api/v1/unpack/definitions',route=>fulfillJson(route,{items:[]}));
+    await page.route('**/api/v1/unpack/executions?**',route=>fulfillJson(route,{items:[]}));
     await page.getByRole('button',{name:'任务中心',exact:true}).click();
     await page.getByRole('heading',{name:'任务中心',exact:true,level:2}).waitFor();
-    await page.getByText('手动拆包 E2E',{exact:true}).waitFor();
-    const manualKindCard=page.locator('.kind-card').filter({hasText:'手动拆包'}).first();
-    const monitorKindCard=page.locator('.kind-card').filter({hasText:'监控拆包'}).first();
-    const movieDedupKindCard=page.locator('.kind-card').filter({hasText:'影片去重'}).first();
-    assert.equal(await manualKindCard.evaluate(el=>el.classList.contains('active')),true,'任务中心默认必须选中手动拆包');
-    assert.equal(await monitorKindCard.evaluate(el=>el.classList.contains('active')),false);
-    assert.equal(await movieDedupKindCard.evaluate(el=>el.classList.contains('active')),false);
-    await monitorKindCard.click();
-    assert.equal(await monitorKindCard.evaluate(el=>el.classList.contains('active')),true,'点击后监控拆包卡片应具有明确选中态');
-    await page.getByText('监控拆包 E2E',{exact:true}).waitFor();
-    const monitorDefinitionRow=page.locator('.el-table__row').filter({hasText:'监控拆包 E2E'}).first();
-    for(const action of ['查看','执行','删除','更多']){
-      assert.equal(await monitorDefinitionRow.getByRole('button',{name:action,exact:true}).count(),1,`监控任务列表应固定提供 ${action}`);
-    }
-    assert.equal(await monitorDefinitionRow.getByRole('button',{name:'立即扫描',exact:true}).count(),0,'监控任务列表不再单独暴露“立即扫描”，统一使用“执行”');
-
-    // v1.0.14 新增任务先用卡片选择类型；当前选中监控拆包时仍可创建任意类型。
-    await page.getByRole('button',{name:'新增任务',exact:true}).click();
-    const createTypeDialog=page.locator('.el-dialog').filter({hasText:'选择任务类型。无论当前选中哪个任务卡片，这里都可以创建任意一种任务。'}).last();
-    await createTypeDialog.waitFor({state:'visible'});
-    const createTypeCards=createTypeDialog.locator('.create-type-card');
-    assert.equal(await createTypeCards.count(),3,'新增任务类型必须使用三张卡片');
-    for(const kind of ['手动拆包','监控拆包','影片去重']){
-      assert.equal(await createTypeDialog.getByText(kind,{exact:true}).count(),1,`统一新增任务必须提供 ${kind}`);
-    }
-    const monitorCreateCard=createTypeDialog.locator('.create-type-card').filter({hasText:'监控拆包'});
-    assert.equal(await monitorCreateCard.evaluate(el=>el.classList.contains('active')),true,'当前监控拆包卡片应在新增任务弹窗中保持选中态');
-    await monitorCreateCard.click();
-    await createTypeDialog.getByRole('button',{name:'下一步',exact:true}).click();
-    const monitorCreateDialog=page.locator('.el-dialog').filter({hasText:'新增拆包任务'}).last();
-    await monitorCreateDialog.waitFor({state:'visible'});
-    const scanSiteField=monitorCreateDialog.locator('.el-form-item').filter({hasText:'扫描站点'}).first();
-    const scheduleField=monitorCreateDialog.locator('.el-form-item').filter({hasText:'执行时间'}).first();
-    const scanSiteBox=await scanSiteField.boundingBox();
-    const scheduleBox=await scheduleField.boundingBox();
-    assert.ok(scanSiteBox&&scheduleBox&&scheduleBox.y>=scanSiteBox.y+scanSiteBox.height-2,'监控任务执行时间必须位于扫描站点下方独占一行');
-    const sourceDownloaderField=monitorCreateDialog.locator('.el-form-item').filter({hasText:'来源下载器'}).first();
-    await sourceDownloaderField.locator('.el-select').click();
-    await page.getByRole('option',{name:/qB E2E/}).click();
-    await monitorCreateDialog.getByText('下载器任务过滤',{exact:true}).waitFor();
-    for(const label of ['任务名称包含','分类','标签']){
-      assert.equal(await monitorCreateDialog.locator('.el-form-item').filter({hasText:label}).count(),1,`下载器监控必须提供 ${label} 过滤`);
-    }
-    assert.equal(await monitorCreateDialog.getByText('文件过滤',{exact:true}).count(),0,'下载器来源不得继续展示文件过滤区域');
-    assert.equal(await monitorCreateDialog.getByText(/v0\.1\.5 当前安全执行链仅执行视频文件/).count(),0,'旧 v0.1.5 安全执行链提示必须删除');
-    assert.equal(await monitorCreateDialog.getByText(/当前安全执行计划固定保持 torrent 原目录结构/).count(),0,'旧固定目录结构提示必须删除');
-    await monitorCreateDialog.locator('.el-dialog__headerbtn').click();
-    await monitorCreateDialog.waitFor({state:'hidden'});
-
-    // 统一入口仍需允许从监控卡片跨类型创建手动拆包。
-    await page.getByRole('button',{name:'新增任务',exact:true}).click();
-    await createTypeDialog.waitFor({state:'visible'});
-    await createTypeDialog.getByText('手动拆包',{exact:true}).click();
-    await createTypeDialog.getByRole('button',{name:'下一步',exact:true}).click();
-    const createDefinitionDialog=page.locator('.el-dialog').filter({hasText:'新增拆包任务'}).last();
-    await createDefinitionDialog.waitFor({state:'visible'});
-    await createDefinitionDialog.locator('.source-kind-switch .el-radio-button').filter({hasText:'目录'}).click();
-    const scanPreviewButton=createDefinitionDialog.getByRole('button',{name:'扫描预览',exact:true});
-    await scanPreviewButton.waitFor({state:'visible'});
-    const scanPreviewStyle=await scanPreviewButton.evaluate(el=>{
-      const style=getComputedStyle(el);
-      return {color:style.color,backgroundColor:style.backgroundColor};
-    });
-    assert.notEqual(scanPreviewStyle.backgroundColor,'rgba(0, 0, 0, 0)','扫描预览按钮默认背景必须可见');
-    assert.notEqual(scanPreviewStyle.color,scanPreviewStyle.backgroundColor,'扫描预览按钮文字与背景必须具有可见对比');
-    await createDefinitionDialog.locator('.el-dialog__headerbtn').click();
-    await createDefinitionDialog.waitFor({state:'hidden'});
-    assert.equal(await manualKindCard.evaluate(el=>el.classList.contains('active')),true,'跨卡片新增手动任务后应切回手动拆包');
-
-    // v0.1.8 已移除独立“预演与确认 / 清理与对账”入口；审核、执行、对账和收尾都必须从任务中心当前 Run 进入。
-    assert.equal(await page.locator('nav').getByRole('button',{name:'预演与确认',exact:true}).count(),0,'旧“预演与确认”导航必须删除');
-    assert.equal(await page.locator('nav').getByRole('button',{name:'清理与对账',exact:true}).count(),0,'旧“清理与对账”导航必须删除');
-    assert.equal(await page.getByText('现有执行引擎任务（兼容区）',{exact:true}).count(),0,'兼容区不应继续暴露为独立页面区块');
-    assert.equal(await page.getByRole('button',{name:'新增',exact:true}).count(),0,'手动/监控列表不得重复提供新增入口');
-    await page.getByRole('heading',{name:'任务中心',exact:true,level:2}).waitFor();
-
-    // 真实动作 UI：从统一“任务执行详情 → 审核 / 对账”进入；首次 execute 响应丢失后必须复用同一幂等键，随后由 TaskEvent SSE 自动收敛到 DONE。
-    const definitionRow=page.locator('.el-table__row').filter({hasText:'手动拆包 E2E'}).first();
-    for(const action of ['查看','执行','删除','更多']){
-      assert.equal(await definitionRow.getByRole('button',{name:action,exact:true}).count(),1,`手动任务列表应固定提供 ${action}`);
-    }
-    assert.equal(await definitionRow.locator('.primary-cell').first().evaluate(el=>getComputedStyle(el).whiteSpace),'nowrap','任务列表主字段必须保持单行显示');
-    await definitionRow.getByRole('button',{name:'查看',exact:true}).click();
-    const definitionDrawer=page.locator('.el-dialog').filter({hasText:'任务详情 · 手动拆包 E2E'}).last();
-    assert.equal(await page.locator('.el-drawer').filter({hasText:'任务详情 · 手动拆包 E2E'}).count(),0,'任务详情必须使用 Dialog 而不是 Drawer');
-    await definitionDrawer.getByRole('tab',{name:'配置',exact:true}).click();
-    const sourceSnapshotLink=definitionDrawer.getByRole('button',{name:'来源快照配置',exact:true});
-    assert.equal(await sourceSnapshotLink.count(),1,'任务详情配置页应以来源快照配置链接代替直接展开 JSON');
-    await sourceSnapshotLink.click();
-    const sourceSnapshotDialog=page.locator('.el-dialog').filter({hasText:'来源快照配置'}).last();
-    await sourceSnapshotDialog.waitFor({state:'visible'});
-    assert.ok((await sourceSnapshotDialog.locator('pre.config-snapshot').textContent()).includes('selected_files'),'来源快照弹窗必须展示完整冻结配置');
-    await sourceSnapshotDialog.locator('.el-dialog__headerbtn').click();
-    await sourceSnapshotDialog.waitFor({state:'hidden'});
-    await definitionDrawer.getByRole('tab',{name:'执行记录',exact:true}).click();
-    const executionHistoryRow=definitionDrawer.locator('.el-table__row').filter({hasText:'手动执行'}).first();
-    await executionHistoryRow.getByRole('button',{name:'查看',exact:true}).click();
-    const executionDrawer=page.locator('.el-dialog').filter({hasText:'执行记录详情'}).last();
-    assert.equal(await page.locator('.el-drawer').filter({hasText:'执行记录详情'}).count(),0,'执行记录详情必须使用 Dialog 而不是 Drawer');
-    const executionStatusPhase=executionDrawer.locator('.execution-summary-grid > div').filter({hasText:'状态 / 阶段'}).locator('b');
-    assert.equal((await executionStatusPhase.innerText()).replace(/\s+/g,' ').trim(),'运行中 / 等待人工确认','执行记录状态与兼容阶段值必须中文展示');
-    const executionObjectCell=executionDrawer.locator('.execution-object-cell').first();
-    const objectEllipsis=executionObjectCell.locator('.execution-object-ellipsis').first();
-    assert.equal(await objectEllipsis.evaluate(el=>getComputedStyle(el).whiteSpace),'nowrap','执行对象字段必须保持单行');
-    assert.equal(await objectEllipsis.evaluate(el=>getComputedStyle(el).textOverflow),'ellipsis','执行对象字段必须使用省略号');
-    await objectEllipsis.hover();
-    await page.locator('.el-popper').filter({hasText:'E2E task execute'}).last().waitFor({state:'visible'});
-    const approvalFixedCell=executionDrawer.locator('.execution-approval-column').first();
-    assert.notEqual(await approvalFixedCell.evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)','固定审批列必须使用实体背景防止横向滚动重叠');
-    await executionDrawer.getByRole('tab',{name:'审核 / 对账',exact:true}).click();
-    await executionDrawer.getByRole('heading',{name:'审核、校验与对账',exact:true,level:3}).waitFor();
-    const approveCandidateField=executionDrawer.locator('.review-editor .el-form-item').filter({hasText:'批准候选（最多一个）'});
-    const rejectCandidateField=executionDrawer.locator('.review-editor .el-form-item').filter({hasText:'显式拒绝候选'});
-    assert.equal(await approveCandidateField.locator('.el-select').count(),1,'批准候选必须使用单选下拉框');
-    assert.equal(await approveCandidateField.locator('.el-radio-group').count(),0,'批准候选不得继续使用 radio 列表');
-    assert.equal(await rejectCandidateField.locator('.el-select').count(),1,'拒绝候选必须使用多选下拉框');
-    assert.equal(await rejectCandidateField.locator('.el-checkbox-group').count(),0,'拒绝候选不得继续使用 checkbox 列表');
-    // 浏览器可选择两种已连接且凭据/路径安全门通过的目标。改变选择时
-    // 旧 qB 计划不得继续可执行；只有真正生成 Transmission 计划后才能执行。
-    const targetSelector=executionDrawer.locator('.review-editor .el-form-item')
-      .filter({hasText:'目标下载器（必须已通过连接与路径安全门）'})
-      .locator('.el-select').first();
-    await targetSelector.click();
-    await page.getByRole('option',{name:/Transmission E2E/}).click();
-    const executionButton=executionDrawer.getByRole('button',{name:'确认并执行当前计划',exact:true});
-    assert.equal(await executionButton.isDisabled(),true,'目标切换后不得执行原 qB 计划');
-    await executionDrawer.getByRole('button',{name:'生成无副作用计划',exact:true}).click();
-    await executionDrawer.getByText('目标 Transmission E2E · v4',{exact:true}).waitFor();
-    assert.deepEqual(requestedPlanTargets,['tr-e2e'],'Web 应提交所选 Transmission 的执行计划');
-    assert.equal(await executionButton.isDisabled(),false,'新 Transmission 计划通过后方可执行');
-    await targetSelector.click();
-    await page.getByRole('option',{name:/qB E2E/}).click();
-    assert.equal(await executionButton.isDisabled(),true,'切回 qB 时不得执行旧 Transmission 计划');
-    await executionDrawer.getByRole('button',{name:'生成无副作用计划',exact:true}).click();
-    await executionDrawer.getByText('目标 qB E2E · v7',{exact:true}).waitFor();
-    assert.deepEqual(requestedPlanTargets,['tr-e2e','qb-e2e']);
-    assert.equal(await executionButton.isDisabled(),false);
-    await page.getByRole('button',{name:'确认并执行当前计划',exact:true}).click();
-    await page.locator('.el-message-box').getByRole('button',{name:'执行当前计划',exact:true}).click();
-    await page.getByText(/API_UNAVAILABLE/).waitFor();
-    await page.getByRole('button',{name:'重试确认执行结果',exact:true}).click();
-    await page.getByText(/执行结果已确认：添加下载器任务/).waitFor();
-    assert.equal(executeKeys.length,2,'响应丢失后的 execute 应重试一次');
-    assert.equal(executeKeys[0],executeKeys[1],'响应丢失后的 execute 必须复用相同 Idempotency-Key');
-    await page.getByText('QBITTORRENT_ADD_APPLIED',{exact:true}).waitFor({timeout:12000});
-    await page.getByText('QBITTORRENT_RECHECK_APPLIED',{exact:true}).waitFor({timeout:12000});
-    await page.getByText('QBITTORRENT_START_APPLIED',{exact:true}).waitFor({timeout:12000});
-    await page.getByText('QBITTORRENT_SEEDING_CONFIRMED',{exact:true}).waitFor({timeout:12000});
-    await page.getByText('任务当前为已完成，不允许修改审核结果',{exact:true}).waitFor({timeout:12000});
-
-    // 同一统一执行详情中切换到底层 cancel Run：禁止仅回滚文件；显式 qB remove + rollback 后由 TaskEvent SSE 收敛到 CANCELLED。
-    const evidenceSelector=executionDrawer.locator('.execution-evidence-selector .el-select');
-    await evidenceSelector.click();
-    await page.getByText('E2E task cancel · OPEN',{exact:true}).click();
-    await executionDrawer.getByRole('heading',{name:'审核、校验与对账',exact:true,level:3}).waitFor();
-    const rollbackCheckbox=page.locator('.cancellation-option').filter({hasText:'回滚 PackBreaker 创建的 hardlink'}).locator('.el-checkbox');
-    const removeCheckbox=page.locator('.cancellation-option').filter({hasText:'移除 PackBreaker 创建的 qBittorrent 任务'}).locator('.el-checkbox');
-    await rollbackCheckbox.click();
-    await page.getByText('回滚文件前必须同时移除下载器任务',{exact:true}).waitFor();
-    assert.equal(await page.getByRole('button',{name:'按已确认范围取消任务',exact:true}).isDisabled(),true,'rollback-only 必须阻断');
-    await removeCheckbox.click();
-    await page.getByText(/我已确认上面的移除\/保留范围/).click();
-    await page.getByRole('button',{name:'按已确认范围取消任务',exact:true}).click();
-    await page.locator('.el-message-box').getByRole('button',{name:'按以上范围取消',exact:true}).click();
-    await page.getByText(/取消动作已完成：回滚中/).waitFor();
-    assert.equal(cancelKeys.length,1,'取消动作应只提交一次');
-    assert.equal(cancelBodies[0].remove_downloader_task,true);
-    assert.equal(cancelBodies[0].rollback_created_resources,true);
-    await page.getByText('QBITTORRENT_REMOVE_APPLIED',{exact:true}).waitFor({timeout:7000});
-    await page.getByText('ROLLBACK_COMPLETED',{exact:true}).waitFor({timeout:7000});
-    await page.getByText('任务当前为已取消，不允许修改审核结果',{exact:true}).waitFor({timeout:7000});
-
-    // 当前 cancel Run 的 operation/retention 证据仍按任务隔离展示，不再依赖独立清理页。
-    await page.getByText('journal-maintenance-manual',{exact:false}).waitFor();
-    await page.getByText('当前状态没有可自动证明的安全恢复动作',{exact:true}).waitFor();
-    await page.getByText('journal-maintenance-blocked',{exact:false}).waitFor();
-    await page.getByText('任务仍引用该 journal',{exact:true}).first().waitFor();
-    assert.equal(await page.getByText('/private/maintenance/secret',{exact:true}).count(),0,'任务操作中心不得暴露私有路径');
-
-    // 阻断/对账：切换到 reconcile Run。响应丢失后即使 SSE 已显示 APPLIED，也只能使用原 journal + 原幂等键确认结果。
-    await evidenceSelector.click();
-    await page.getByText('E2E task reconcile · NEEDS_ATTENTION',{exact:true}).click();
-    await executionDrawer.getByRole('heading',{name:'校验 / 对账 / 收尾',exact:true,level:3}).waitFor();
-    assert.equal(await page.getByText('/private/reconcile/movie.mkv',{exact:true}).count(),0,'operation 摘要不得暴露路径');
-    await page.getByText('qB 添加',{exact:true}).waitFor();
-    const fsReconcileButton=page.getByRole('button',{name:'重新检查',exact:true});
-    assert.equal(await fsReconcileButton.count(),1,'只有支持安全快照重验的 journal 才显示对账按钮');
-    await fsReconcileButton.click();
-    await page.locator('.el-message-box').getByRole('button',{name:'重新验证证据',exact:true}).click();
-    await page.getByText(/API_UNAVAILABLE/).waitFor();
-    await page.getByText('OPERATION_RECONCILE_CONFIRMED',{exact:true}).waitFor({timeout:7000});
-    await page.getByRole('button',{name:'重试确认对账结果',exact:true}).click();
-    await page.getByText(/证据重新验证完成：已应用/).waitFor();
-    assert.equal(reconcileKeys.length,2,'响应丢失后的 reconcile 应重试一次');
-    assert.equal(reconcileKeys[0],reconcileKeys[1],'响应丢失后的 reconcile 必须复用相同 Idempotency-Key');
-
-    // 统一任务生命周期内的 retention/purge：切换到已终态且满足 retention-plan 的 Run。
-    await evidenceSelector.click();
-    await page.getByText('E2E task retention · CLOSED',{exact:true}).click();
-    await executionDrawer.getByRole('heading',{name:'校验 / 对账 / 收尾',exact:true,level:3}).waitFor();
-    await page.getByText('journal-maintenance-noop',{exact:false}).waitFor();
-    const retentionPurgeButton=page.getByRole('button',{name:'清理历史 payload',exact:true});
-    assert.equal(await retentionPurgeButton.count(),1,'只有 retention-plan eligible journal 才显示 purge 按钮');
-    assert.equal(await page.getByText('/private/maintenance/secret',{exact:true}).count(),0,'任务操作中心不得暴露私有路径');
-    await retentionPurgeButton.click();
-    await page.locator('.el-message-box').getByRole('button',{name:'重新验证并清理 payload',exact:true}).click();
-    await page.getByText('清理响应结果未知；请使用当前操作继续重试确认',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'重试确认清理结果',exact:true}).click();
-    await page.getByText(/Journal payload 已安全清理/).waitFor();
-    assert.equal(retentionKeys.length,2,'retention purge 响应丢失后应重试一次');
-    assert.equal(retentionKeys[0],retentionKeys[1],'retention purge 必须复用相同 Idempotency-Key');
-    assert.equal(retentionBodies[0].retention_days,30);
-    assert.equal(await page.getByRole('button',{name:'清理历史 payload',exact:true}).count(),0,'purge 确认后实时预览不得继续显示已清理 journal');
-
-    await executionDrawer.locator('.el-dialog__headerbtn').click();
-    await executionDrawer.waitFor({state:'hidden'});
-    await definitionDrawer.locator('.el-dialog__headerbtn').click();
-    await definitionDrawer.waitFor({state:'hidden'});
+    const unpackModeCard=page.locator('.mode-card').filter({hasText:'数据拆包'});
+    const dedupModeCard=page.locator('.mode-card').filter({hasText:'数据去重'});
+    assert.equal(await unpackModeCard.count(),1,'任务中心必须有数据拆包入口');
+    assert.equal(await dedupModeCard.count(),1,'任务中心必须有数据去重入口');
+    assert.equal(await unpackModeCard.evaluate(el=>el.classList.contains('active')),true,'默认展示数据拆包');
+    assert.equal(await page.locator('.kind-card').count(),0,'v1.0.15 不得再展示旧三卡任务中心');
 
     // v1.0.10 站点管理：前端不消费 health/circuit，不提供 reset-circuit；启用仍使用当前强版本，保存凭证不回显。
     await page.locator('nav').getByRole('button',{name:'站点管理',exact:true}).click();
@@ -1148,6 +942,6 @@ const path = require('node:path');
     }
     assert.deepEqual(unmockedApiCalls,[],'浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端');
     assert.deepEqual(errors,[]);
-    console.log('通过：任务筛选、审核、真实执行/取消幂等确认、站点无熔断 UI/启用/连接测试、状态自动刷新、任务中心大目录监控能力、计划备份管理、品牌版本后台检查红点与单容器一次性 helper 一键升级、清理/对账 retention 安全预览与同键 purge 确认、390px 移动布局与深色主题；未显式 mock 的 API 请求全部失败关闭。');
+    console.log('通过：总览响应式与深色主题、v2 任务中心入口、站点无熔断 UI/启用/连接测试、计划备份管理、版本红点和单容器 helper 升级、390px 移动布局；未显式 mock 的 API 请求全部失败关闭。v2 拆包交互由专用浏览器门禁验证。');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1});

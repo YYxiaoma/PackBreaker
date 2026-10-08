@@ -26,6 +26,7 @@ import {
   parsePendingUpgradeRequest,
   shouldReloadAfterUpgrade,
   shouldMarkUpdateUnseen,
+  upgradeMutationResultIsUnknown,
 } from '../versionUpdateIndicator';
 
 const visible = ref(false);
@@ -274,11 +275,7 @@ async function startUpgrade(): Promise<void> {
     await refreshReleaseQuietly();
   } catch (caught) {
     const problem = toApiProblem(caught);
-    if (
-      problem.code === 'API_UNAVAILABLE' ||
-      problem.status === 408 ||
-      (problem.status ?? 0) >= 500
-    ) {
+    if (upgradeMutationResultIsUnknown(problem)) {
       upgradeResultUnknown.value = true;
       ElMessage.warning('升级请求结果暂时未知；请用同一按钮重试确认，不要重复发起新升级。');
     } else {

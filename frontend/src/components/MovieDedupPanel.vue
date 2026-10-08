@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 
 import { toApiProblem } from '../api/client';
 import { createClientNonce } from '../clientNonce';
-import { browseTaskDirectories, type TaskDirectoryEntry } from '../api/taskDefinitions';
+import { browseUnpackTree, listUnpackTreeRoots, type UnpackTreeEntry } from '../api/unpack';
 import {
   createMovieDedupJob,
   deleteMovieDedupJob,
@@ -51,7 +51,13 @@ const selectedPairIds = ref<string[]>([]);
 const directoryPickerVisible = ref(false);
 const directoryPickerTarget = ref<'source' | 'target'>('source');
 const directoryPath = ref('/');
-const directoryEntries = ref<TaskDirectoryEntry[]>([]);
+interface DirectoryEntry {
+  name: string;
+  path: string;
+  token: string;
+}
+
+const directoryEntries = ref<DirectoryEntry[]>([]);
 const directoryLoading = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -346,14 +352,60 @@ async function openDirectoryPicker(target: 'source' | 'target'): Promise<void> {
 async function loadDirectory(path: string): Promise<void> {
   directoryLoading.value = true;
   try {
-    const result = await browseTaskDirectories(path);
-    directoryPath.value = result.current_path;
+    const result = await resolveAuthorizedDirectory(path);
+    directoryPath.value = result.path;
     directoryEntries.value = result.entries;
   } catch (caught) {
     ElMessage.error(toApiProblem(caught).message);
   } finally {
     directoryLoading.value = false;
   }
+}
+
+async function resolveAuthorizedDirectory(
+  requestedPath: string,
+): Promise<{ path: string; entries: DirectoryEntry[] }> {
+  const roots = await listUnpackTreeRoots();
+  const normalized = requestedPath.trim() || '/';
+  if (normalized === '/' || normalized === '.') {
+    return { path: '/', entries: roots.map(directoryEntry) };
+  }
+
+  const root = [...roots]
+    .sort((left, right) => right.display_path.length - left.display_path.length)
+    .find(
+      (entry) =>
+        normalized === entry.display_path ||
+        normalized.startsWith(entry.display_path.replace(/\/$/, '') + '/'),
+    );
+  if (!root) throw new Error('所选目录不在当前授权目录树中');
+
+  let current = await browseUnpackTree(root.selection_token);
+  if (normalized === current.display_path) {
+    return { path: current.display_path, entries: current.entries.map(directoryEntry) };
+  }
+
+  const rootPrefix = root.display_path.replace(/\/$/, '');
+  const remaining = normalized.slice(rootPrefix.length).split('/').filter(Boolean);
+  let expectedPath = rootPrefix;
+  for (const segment of remaining) {
+    expectedPath = expectedPath + '/' + segment;
+    const next = current.entries.find((entry) => entry.display_path === expectedPath);
+    if (!next) throw new Error('所选目录已不存在或不再属于当前授权目录树');
+    current = await browseUnpackTree(next.selection_token);
+  }
+  if (current.display_path !== normalized) {
+    throw new Error('目录树解析结果与请求路径不一致');
+  }
+  return { path: current.display_path, entries: current.entries.map(directoryEntry) };
+}
+
+function directoryEntry(entry: UnpackTreeEntry): DirectoryEntry {
+  return {
+    name: entry.name,
+    path: entry.display_path,
+    token: entry.selection_token,
+  };
 }
 
 function directoryParent(path: string): string | null {

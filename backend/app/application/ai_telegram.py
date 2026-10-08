@@ -105,11 +105,8 @@ class AITelegramService:
         )
         if channel_id == "":
             channel_id = None
-        runtime = (
+        if channel_id is not None:
             self._notification_service.telegram_ai_runtime(channel_id)
-            if channel_id is not None
-            else None
-        )
         if change.enabled:
             if channel_id is None:
                 raise self._invalid("启用 Telegram AI 前必须绑定 Telegram 通知渠道")
@@ -117,12 +114,12 @@ class AITelegramService:
                 raise self._invalid("启用 Telegram AI 前至少配置一个 Chat ID 或 User ID")
             self._ai_agent_service.runtime_config()
         if change.approval_enabled:
-            if channel_id is None or runtime is None:
-                raise self._invalid("启用 Telegram 审批前必须绑定 Telegram 通知渠道")
-            if not chat_ids and not user_ids:
-                raise self._invalid("启用 Telegram 审批前至少配置一个 Chat ID 或 User ID")
-            if chat_ids and runtime.credential.chat_id not in chat_ids:
-                raise self._invalid("Telegram 通知渠道的 Chat ID 必须包含在审批允许的 Chat ID 中")
+            raise ApplicationError(
+                code="AI_TELEGRAM_APPROVAL_RETIRED",
+                status=410,
+                title="Telegram 高风险审批已退役",
+                detail="v1.0.15 起数据拆包不再使用旧任务级高风险审批",
+            )
 
         with self._session_factory() as session:
             repository = AIChannelBindingRepository(session)
@@ -131,7 +128,7 @@ class AITelegramService:
                 expected_version=expected_version,
                 notification_channel_id=channel_id,
                 enabled=change.enabled,
-                approval_enabled=change.approval_enabled,
+                approval_enabled=False,
                 allowed_chat_ids=list(chat_ids),
                 allowed_user_ids=list(user_ids),
                 idle_timeout_minutes=change.idle_timeout_minutes,

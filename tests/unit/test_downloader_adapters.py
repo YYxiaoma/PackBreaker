@@ -48,6 +48,7 @@ async def test_qbittorrent_probe_logs_in_and_reads_versions() -> None:
     assert result.capabilities.supports_skip_checking is True
     assert result.capabilities.supports_force_recheck is True
     assert result.capabilities.supports_verify_progress is True
+    assert result.capabilities.supports_selective_files is True
 
 
 @pytest.mark.asyncio
@@ -201,6 +202,7 @@ async def test_transmission_probe_performs_session_id_handshake() -> None:
     assert result.capabilities.supports_skip_checking is False
     assert result.capabilities.supports_force_recheck is True
     assert result.capabilities.supports_verify_progress is True
+    assert result.capabilities.supports_selective_files is True
 
 
 @pytest.mark.asyncio
@@ -655,3 +657,86 @@ async def test_qbittorrent_remove_always_keeps_data_files() -> None:
     await adapter.remove_torrent_keep_files(torrent_hash)
 
     assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_qbittorrent_file_selection_uses_file_prio_and_is_idempotent() -> None:
+    torrent_hash = "e" * 40
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        assert request.url.path == "/api/v2/torrents/filePrio"
+        return httpx2.Response(200)
+
+    adapter = QbittorrentAdapter(
+        "http://qb.invalid",
+        DownloaderCredential(api_key="qbt_synthetic_key"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    await adapter.set_file_selection(
+        torrent_hash,
+        wanted=(3, 1, 3),
+        unwanted=(0, 2),
+    )
+
+    assert [request.content for request in requests] == [
+        f"hash={torrent_hash}&id=0%7C2&priority=0".encode(),
+        f"hash={torrent_hash}&id=1%7C3&priority=1".encode(),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transmission_file_selection_uses_torrent_set() -> None:
+    torrent_hash = "f" * 40
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.headers.get("X-Transmission-Session-Id") != "synthetic-session":
+            return httpx2.Response(
+                409,
+                headers={"X-Transmission-Session-Id": "synthetic-session"},
+            )
+        body = json.loads(request.content.decode())
+        bodies.append(body)
+        return httpx2.Response(
+            200,
+            json={"jsonrpc": "2.0", "result": {}, "id": 1},
+        )
+
+    adapter = TransmissionAdapter(
+        "http://tr.invalid:9091/transmission/rpc",
+        None,
+        transport=httpx2.MockTransport(handler),
+    )
+
+    await adapter.set_file_selection(
+        torrent_hash,
+        wanted=(4, 2, 4),
+        unwanted=(0, 1),
+    )
+
+    assert bodies == [
+        {
+            "jsonrpc": "2.0",
+            "method": "torrent_set",
+            "params": {
+                "ids": [torrent_hash],
+                "files_wanted": [2, 4],
+                "files_unwanted": [0, 1],
+            },
+            "id": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_file_selection_rejects_overlap() -> None:
+    adapter = QbittorrentAdapter("http://qb.invalid", None)
+    with pytest.raises(ValueError, match="同时设为 wanted 与 unwanted"):
+        await adapter.set_file_selection(
+            "a" * 40,
+            wanted=(1, 2),
+            unwanted=(2, 3),
+        )

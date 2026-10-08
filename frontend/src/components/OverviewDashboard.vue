@@ -143,7 +143,7 @@ onUnmounted(() => {
     <header class="overview-heading">
       <div>
         <h1>PackBreaker 总览</h1>
-        <p>统一管理任务、审批、执行与校验</p>
+        <p>统一管理任务、审核、执行与校验</p>
       </div>
       <div class="overview-mountain" aria-hidden="true">让获取更简单</div>
     </header>
@@ -163,8 +163,8 @@ onUnmounted(() => {
       <button class="overview-card kpi-card" type="button" @click="emit('navigate', '任务中心')">
         <span class="metric-icon orange"><Bell :size="25" /></span>
         <span class="kpi-content"
-          ><span>待审批</span><strong>{{ count('tasks', 'awaiting_confirmation') }}</strong>
-          <small>个任务等待确认</small></span
+          ><span>待审核</span><strong>{{ count('tasks', 'awaiting_confirmation') }}</strong>
+          <small>个影片等待人工审核</small></span
         >
         <ArrowRight :size="16" class="card-arrow" />
       </button>
@@ -352,7 +352,7 @@ onUnmounted(() => {
         </div>
         <ArrowRight :size="21" class="life-arrow" />
         <div class="life-step">
-          <span class="metric-icon green"><CheckCircle2 :size="24" /></span><b>审批确认</b>
+          <span class="metric-icon green"><CheckCircle2 :size="24" /></span><b>人工审核</b>
         </div>
         <ArrowRight :size="21" class="life-arrow" />
         <div class="life-step">

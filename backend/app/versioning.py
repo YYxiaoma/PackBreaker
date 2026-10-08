@@ -24,4 +24,4 @@ def app_version() -> str:
     try:
         return version("packbreaker")
     except PackageNotFoundError:
-        return "1.0.14"
+        return "1.0.15"

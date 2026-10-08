@@ -199,6 +199,41 @@ def test_transient_launcher_requires_mounted_docker_socket(tmp_path: Path) -> No
     assert exc_info.value.code == "UPDATER_DOCKER_SOCKET_REQUIRED"
 
 
+def test_transient_launcher_preserves_safe_replacement_plan_failure_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(mode=0o700)
+    docker_socket = tmp_path / "docker.sock"
+    docker_socket.touch()
+    FakeDockerEngineClient.instances = []
+    FakeDockerEngineClient.helper_available = True
+    FakeDockerEngineClient.config_dir = config_dir
+    FakeDockerEngineClient.docker_socket = docker_socket
+    monkeypatch.setattr(transient_module, "DockerEngineClient", FakeDockerEngineClient)
+
+    def fail_plan(*_args: object, **_kwargs: object) -> object:
+        raise DockerUpdaterError(
+            "UPGRADE_MULTI_NETWORK_UNSUPPORTED",
+            "当前版本暂不自动重建多网络容器",
+        )
+
+    monkeypatch.setattr(transient_module, "build_replacement_plan", fail_plan)
+    launcher = TransientUpdaterLauncher(
+        config_dir=config_dir,
+        docker_socket=docker_socket,
+        target_container="packbreaker",
+        allowed_image=_OFFICIAL,
+    )
+
+    with pytest.raises(UpdaterProtocolError) as exc_info:
+        launcher.start_upgrade(_request())
+
+    assert exc_info.value.code == "UPGRADE_MULTI_NETWORK_UNSUPPORTED"
+    assert str(exc_info.value) == "当前版本暂不自动重建多网络容器"
+    assert launcher.status().phase == "failed"
+
+
 def test_docker_access_distinguishes_host_permissions_from_missing_main_container(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

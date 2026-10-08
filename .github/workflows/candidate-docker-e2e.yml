@@ -23,6 +23,7 @@ on:
       - "scripts/check-immutable-image-runtime.sh"
       - "scripts/check-v109-default-entrypoint.sh"
       - "scripts/check_candidate_image_identity.py"
+      - "scripts/check-unpack-v2-ui.cjs"
       - "scripts/ci_release_relation.py"
       - "scripts/verify_release_platforms.py"
       - "scripts/validate_release_baseline.py"

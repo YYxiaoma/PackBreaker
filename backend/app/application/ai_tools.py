@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.backup_schedule import BackupDriver
@@ -15,20 +14,17 @@ from backend.app.application.notification_driver import NotificationDriver
 from backend.app.application.sites import SiteService
 from backend.app.application.system_health import SystemHealthService
 from backend.app.application.system_upgrades import SystemUpgradeService
-from backend.app.application.task_definitions import TaskDefinitionService
-from backend.app.application.task_driver import ActiveTaskDriver
+from backend.app.application.unpack_definitions import UnpackDefinitionService
+from backend.app.application.unpack_driver import UnpackDriver
+from backend.app.application.unpack_executions import UnpackExecutionQueryService
 from backend.app.config import AppSettings
 from backend.app.domain.ai_agent import AI_TOOL_SCOPES, AIDataScope, AIToolName
+from backend.app.domain.unpack import UnpackItemStatus
 from backend.app.infrastructure.app_logging import sanitize_message
 from backend.app.infrastructure.operational_logs import (
     MAX_LOG_WINDOW_MINUTES,
     OperationalLogLevel,
     query_operational_logs,
-)
-from backend.app.infrastructure.persistence.models import (
-    TaskExecution,
-    TaskExecutionEvent,
-    TaskExecutionItem,
 )
 from backend.app.infrastructure.runtime import RuntimeManager
 from backend.app.infrastructure.site_reliability import SiteReliabilityRegistry
@@ -55,11 +51,12 @@ class AIToolService:
         settings: AppSettings,
         runtime: RuntimeManager,
         site_reliability_registry: SiteReliabilityRegistry,
-        task_definition_service: TaskDefinitionService,
+        unpack_definition_service: UnpackDefinitionService,
+        unpack_execution_query_service: UnpackExecutionQueryService,
         downloader_service: DownloaderService,
         site_service: SiteService,
         system_upgrade_service: SystemUpgradeService,
-        task_driver: ActiveTaskDriver,
+        unpack_driver: UnpackDriver,
         notification_driver: NotificationDriver,
         backup_driver: BackupDriver,
         help_root: Path,
@@ -68,11 +65,12 @@ class AIToolService:
         self._settings = settings
         self._runtime = runtime
         self._site_reliability_registry = site_reliability_registry
-        self._task_definition_service = task_definition_service
+        self._unpack_definition_service = unpack_definition_service
+        self._unpack_execution_query_service = unpack_execution_query_service
         self._downloader_service = downloader_service
         self._site_service = site_service
         self._system_upgrade_service = system_upgrade_service
-        self._task_driver = task_driver
+        self._unpack_driver = unpack_driver
         self._notification_driver = notification_driver
         self._backup_driver = backup_driver
         self._help_root = help_root.resolve(strict=False)
@@ -125,7 +123,7 @@ class AIToolService:
             runtime=self._runtime,
             site_reliability_registry=self._site_reliability_registry,
         ).snapshot(
-            task_driver=self._task_driver.state,
+            unpack_driver=self._unpack_driver.state,
             notification_driver=self._notification_driver.state,
             backup_driver=self._backup_driver.state,
         )
@@ -148,35 +146,23 @@ class AIToolService:
         limit = self._bounded_int(
             arguments.get("limit"), default=20, minimum=1, maximum=_MAX_TOOL_ITEMS
         )
-        definitions = self._task_definition_service.list_definitions()[:limit]
+        definitions = self._unpack_definition_service.list()[:limit]
         return {
             "items": [
                 {
                     "id": item.id,
                     "name": item.name,
-                    "kind": item.kind,
-                    "status": item.status,
-                    "site_name": item.site_name,
-                    "site_available": item.site_available,
-                    "source_kind": item.source_kind,
-                    "source_downloader_name": item.source_downloader_name,
-                    "source_available": item.source_available,
+                    "kind": item.trigger_kind.value,
+                    "status": item.status.value,
+                    "site_name": f"{len(item.site_ids)} 个站点",
+                    "site_available": True,
+                    "source_kind": item.source_kind.value,
+                    "source_downloader_name": None,
+                    "source_available": True,
                     "cron_expression": item.cron_expression,
                     "timezone": item.timezone,
                     "next_run_at": self._timestamp(item.next_run_at),
-                    "latest_execution": (
-                        None
-                        if item.latest_execution is None
-                        else {
-                            "id": item.latest_execution.id,
-                            "status": item.latest_execution.status,
-                            "phase": item.latest_execution.phase,
-                            "success_count": item.latest_execution.success_count,
-                            "failed_count": item.latest_execution.failed_count,
-                            "skipped_count": item.latest_execution.skipped_count,
-                            "finished_at": self._timestamp(item.latest_execution.finished_at),
-                        }
-                    ),
+                    "latest_execution": self._latest_unpack_execution_payload(item.id),
                 }
                 for item in definitions
             ],
@@ -186,74 +172,102 @@ class AIToolService:
     def _get_task_execution(self, arguments: Mapping[str, object]) -> dict[str, object]:
         self._require_keys(arguments, {"execution_id"})
         execution_id = self._required_text(arguments.get("execution_id"), "execution_id", 36)
-        with self._session_factory() as session:
-            execution = session.get(TaskExecution, execution_id)
-            if execution is None:
+        try:
+            execution = self._unpack_execution_query_service.get(execution_id)
+            definition = self._unpack_definition_service.get(execution.definition_id)
+            items = self._unpack_execution_query_service.list_items(
+                execution_id,
+                limit=_MAX_TOOL_ITEMS,
+            ).items
+        except ApplicationError as exc:
+            if exc.status == 404:
                 raise ApplicationError(
                     code="AI_TOOL_TASK_EXECUTION_NOT_FOUND",
                     status=404,
                     title="任务执行记录不存在",
                     detail="未找到指定任务执行记录",
-                )
-            items = list(
-                session.scalars(
-                    select(TaskExecutionItem)
-                    .where(TaskExecutionItem.execution_id == execution_id)
-                    .order_by(TaskExecutionItem.created_at.desc())
-                    .limit(_MAX_TOOL_ITEMS)
-                )
-            )
-            events = list(
-                session.scalars(
-                    select(TaskExecutionEvent)
-                    .where(TaskExecutionEvent.execution_id == execution_id)
-                    .order_by(TaskExecutionEvent.created_at.desc())
-                    .limit(_MAX_TOOL_ITEMS)
-                )
-            )
+                ) from exc
+            raise
         return {
             "execution": {
                 "id": execution.id,
-                "task_definition_id": execution.task_definition_id,
-                "task_name": execution.task_name,
+                "task_definition_id": execution.definition_id,
+                "task_name": definition.name,
                 "trigger": execution.trigger,
-                "status": execution.status,
-                "phase": execution.phase,
-                "discovered_count": execution.discovered_count,
-                "success_count": execution.success_count,
-                "failed_count": execution.failed_count,
-                "skipped_count": execution.skipped_count,
+                "status": execution.status.value,
+                "phase": execution.status.value,
+                "discovered_count": execution.total_count,
+                "success_count": execution.completed_count,
+                "failed_count": (
+                    execution.error_count
+                    + execution.timeout_count
+                    + execution.content_mismatch_count
+                ),
+                "skipped_count": 0,
                 "started_at": self._timestamp(execution.started_at),
                 "finished_at": self._timestamp(execution.finished_at),
                 "created_at": self._timestamp(execution.created_at),
             },
             "items": [
                 {
-                    "name": item.name[:256],
-                    "size_bytes": item.size_bytes,
-                    "phase": item.phase,
-                    "progress": item.progress,
-                    "result": item.result,
-                    "error_code": item.error_code,
+                    "name": self._unpack_item_name(item.media_identity),
+                    "size_bytes": self._unpack_item_size(item.source_snapshot),
+                    "phase": item.status.value,
+                    "progress": 100 if item.status is UnpackItemStatus.COMPLETED else 0,
+                    "result": item.status.value,
+                    "error_code": item.last_error_code,
                     "error_summary": (
                         None
-                        if item.error_summary_zh is None
-                        else sanitize_message(item.error_summary_zh)[:1024]
+                        if item.last_error_message is None
+                        else sanitize_message(item.last_error_message)[:1024]
                     ),
-                    "retryable": item.retryable,
+                    "retryable": item.status
+                    in {UnpackItemStatus.MATCH_TIMEOUT, UnpackItemStatus.MATCH_ERROR},
                     "retry_count": item.retry_count,
                 }
                 for item in items
             ],
-            "events": [
-                {
-                    "event_code": event.event_code,
-                    "message": sanitize_message(event.message)[:1024],
-                    "created_at": self._timestamp(event.created_at),
-                }
-                for event in events
-            ],
+            "events": [],
         }
+
+    def _latest_unpack_execution_payload(self, definition_id: str) -> dict[str, object] | None:
+        records = self._unpack_execution_query_service.list(
+            definition_id=definition_id,
+            limit=1,
+        )
+        if not records:
+            return None
+        execution = records[0]
+        return {
+            "id": execution.id,
+            "status": execution.status.value,
+            "phase": execution.status.value,
+            "success_count": execution.completed_count,
+            "failed_count": (
+                execution.error_count + execution.timeout_count + execution.content_mismatch_count
+            ),
+            "skipped_count": 0,
+            "finished_at": self._timestamp(execution.finished_at),
+        }
+
+    @staticmethod
+    def _unpack_item_name(identity: Mapping[str, object]) -> str:
+        raw_name = identity.get("raw_name")
+        if isinstance(raw_name, str) and raw_name.strip():
+            return raw_name.strip()[:256]
+        title_tokens = identity.get("title_tokens")
+        if isinstance(title_tokens, list) and all(isinstance(item, str) for item in title_tokens):
+            title = " ".join(title_tokens).strip()
+            if title:
+                return title[:256]
+        return "影片项"
+
+    @staticmethod
+    def _unpack_item_size(snapshot: Mapping[str, object]) -> int | None:
+        value = snapshot.get("size")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return value
 
     def _query_redacted_logs(self, arguments: Mapping[str, object]) -> dict[str, object]:
         self._require_keys(arguments, {"window_minutes", "limit", "level", "query"})

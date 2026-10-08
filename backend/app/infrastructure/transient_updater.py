@@ -140,6 +140,8 @@ class TransientUpdaterLauncher:
             )
             self._write_status(failed)
             request_path.unlink(missing_ok=True)
+            if isinstance(exc, DockerUpdaterError):
+                raise UpdaterProtocolError(exc.code, str(exc)) from exc
             raise UpdaterProtocolError(
                 "UPDATER_BOOTSTRAP_FAILED", "无法启动一次性 Docker updater"
             ) from exc

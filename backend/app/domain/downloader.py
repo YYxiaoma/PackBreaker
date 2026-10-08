@@ -31,6 +31,7 @@ class DownloaderCapabilities:
     supports_skip_checking: bool
     supports_force_recheck: bool = False
     supports_verify_progress: bool = False
+    supports_selective_files: bool = False
     read_only_probe: bool = True
 
     def as_dict(self) -> dict[str, object]:
@@ -41,6 +42,7 @@ class DownloaderCapabilities:
             "supports_skip_checking": self.supports_skip_checking,
             "supports_force_recheck": self.supports_force_recheck,
             "supports_verify_progress": self.supports_verify_progress,
+            "supports_selective_files": self.supports_selective_files,
             "read_only_probe": self.read_only_probe,
         }
 

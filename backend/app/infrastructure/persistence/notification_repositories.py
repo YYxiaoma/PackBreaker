@@ -13,6 +13,7 @@ from backend.app.domain.notification import (
     NotificationMessage,
     notification_message_for_site_reliability_event,
     notification_message_for_task_event,
+    notification_message_for_unpack_execution_result,
 )
 from backend.app.infrastructure.persistence.models import (
     AdminNotification,
@@ -245,8 +246,6 @@ class NotificationOutboxRepository:
                 subject_id=event.task_id,
                 message=message,
                 occurred_at=event.created_at,
-                task_id=event.task_id,
-                last_event_id=event.id,
             )
             projected += 1
         self._session.flush()
@@ -277,8 +276,6 @@ class NotificationOutboxRepository:
                 subject_id=site_id,
                 message=message,
                 occurred_at=occurred_at,
-                task_id=None,
-                last_event_id=None,
             )
         self._session.flush()
         return sum(
@@ -286,6 +283,46 @@ class NotificationOutboxRepository:
             for channel in channels
             if _accepts_event(channel, NotificationEventType.SITE_RELIABILITY)
         )
+
+    def project_unpack_execution_result(
+        self,
+        *,
+        execution_id: str,
+        status: str,
+        occurred_at: datetime,
+    ) -> int:
+        message = notification_message_for_unpack_execution_result(
+            execution_id=execution_id,
+            status=status,
+            link=None,
+        )
+        if message is None:
+            return 0
+        channels = NotificationChannelRepository(self._session).list_enabled()
+        projected = 0
+        for channel in channels:
+            if not _accepts_event(channel, NotificationEventType.TASK_EXECUTION_RESULT):
+                continue
+            existing = self._session.scalar(
+                select(NotificationOutbox).where(
+                    NotificationOutbox.channel_id == channel.id,
+                    NotificationOutbox.subject_kind == "UNPACK",
+                    NotificationOutbox.subject_id == execution_id,
+                    NotificationOutbox.event_key == message.event_key,
+                )
+            )
+            if existing is not None:
+                continue
+            self._upsert_message(
+                channel=channel,
+                subject_kind="UNPACK",
+                subject_id=execution_id,
+                message=message,
+                occurred_at=occurred_at,
+            )
+            projected += 1
+        self._session.flush()
+        return projected
 
     def _upsert_message(
         self,
@@ -295,8 +332,6 @@ class NotificationOutboxRepository:
         subject_id: str,
         message: NotificationMessage,
         occurred_at: datetime,
-        task_id: str | None,
-        last_event_id: str | None,
     ) -> None:
         existing = self._session.scalar(
             select(NotificationOutbox).where(
@@ -313,8 +348,6 @@ class NotificationOutboxRepository:
                     channel_id=channel.id,
                     subject_kind=subject_kind,
                     subject_id=subject_id,
-                    task_id=task_id,
-                    last_event_id=last_event_id,
                     channel_version=channel.version,
                     event_key=message.event_key,
                     title=message.title,
@@ -334,8 +367,6 @@ class NotificationOutboxRepository:
             )
             return
 
-        existing.task_id = task_id
-        existing.last_event_id = last_event_id
         existing.channel_version = channel.version
         existing.title = message.title
         existing.body = message.body

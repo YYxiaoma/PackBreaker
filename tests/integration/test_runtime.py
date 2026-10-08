@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import inspect
+from sqlalchemy import inspect, select
 
 from backend.app.application.task_recovery import TaskRecoveryCoordinator
 from backend.app.config import AppSettings
@@ -37,6 +37,10 @@ def test_runtime_migrates_database_and_becomes_ready(tmp_path: Path) -> None:
             "unpack_task",
             "task_event",
             "operation_journal",
+            "unpack_definition",
+            "unpack_execution",
+            "unpack_execution_item",
+            "unpack_external_operation_journal",
             "notification_channel",
             "notification_outbox",
             "history_scan",
@@ -80,8 +84,9 @@ def test_ready_endpoint_is_healthy_inside_lifespan(tmp_path: Path) -> None:
 
     with TestClient(app) as client:
         response = client.get("/api/v1/health/ready")
-        recovery_report = app.state.task_recovery_report
-        assert app.state.task_driver.running is True
+        assert app.state.unpack_driver.running is True
+        assert not hasattr(app.state, "task_recovery_report")
+        assert not hasattr(app.state, "task_driver")
 
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
@@ -91,14 +96,11 @@ def test_ready_endpoint_is_healthy_inside_lifespan(tmp_path: Path) -> None:
         "secrets": "ok",
         "worker_slot": "ok",
     }
-    assert recovery_report.scanned_count == 0
-    assert recovery_report.blocked_count == 0
-    assert recovery_report.truncated is False
-    assert app.state.task_driver.running is False
+    assert app.state.unpack_driver.running is False
     assert not app.state.runtime.started
 
 
-def test_startup_recovery_blocked_task_does_not_fail_readiness(tmp_path: Path) -> None:
+def test_legacy_unpack_task_is_not_recovered_by_v1015_runtime(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     runtime = RuntimeManager(settings)
     runtime.start()
@@ -132,15 +134,21 @@ def test_startup_recovery_blocked_task_does_not_fail_readiness(tmp_path: Path) -
     app = create_app(settings=settings)
     with TestClient(app) as client:
         response = client.get("/api/v1/health/ready")
-        report = app.state.task_recovery_report
+        with app.state.runtime.session_factory() as session:
+            legacy = session.scalar(select(UnpackTask))
+            assert legacy is not None
+            assert legacy.status == TaskStatus.ADDING.value
+            assert legacy.checkpoint == {
+                "execution_plan_id": "missing-plan",
+                "execution_plan_digest": "c" * 64,
+            }
+        assert not hasattr(app.state, "task_recovery_report")
+        assert not hasattr(app.state, "task_driver")
 
     assert response.status_code == 200
-    assert report.scanned_count == 1
-    assert report.blocked_count == 1
-    assert report.items[0].error_code == "RECOVERY_PLAN_MISMATCH"
 
 
-def test_startup_recovery_unexpected_error_releases_runtime_lock(
+def test_retired_legacy_recovery_is_not_called_during_startup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -159,8 +167,9 @@ def test_startup_recovery_unexpected_error_releases_runtime_lock(
 
     monkeypatch.setattr(TaskRecoveryCoordinator, "reconcile_once", fail_recovery)
     app = create_app(settings=settings)
-    with pytest.raises(RuntimeError, match="synthetic recovery bug"), TestClient(app):
-        pass
+    with TestClient(app) as client:
+        response = client.get("/api/v1/health/ready")
+        assert response.status_code == 200
 
     probe = RuntimeManager(settings)
     probe.start()

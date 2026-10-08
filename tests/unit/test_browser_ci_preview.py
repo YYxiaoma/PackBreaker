@@ -24,4 +24,11 @@ def test_browser_ci_does_not_prestart_dev_server_on_preview_port() -> None:
     assert "pnpm dev" not in command, "Preview owns port 5173; a dev server would block it"
     assert "vite_pid" not in command
     assert "packbreaker-vite.log" not in command
-    assert "check-web-approval-e2e.cjs" in "\n".join(step.get("run", "") for step in steps)
+    all_commands = "\n".join(step.get("run", "") for step in steps)
+    assert "check-unpack-v2-ui.cjs" in all_commands
+    assert "PB_UNPACK_V2_E2E_PRODUCTION=1 node scripts/check-unpack-v2-ui.cjs" in all_commands
+    v2_script = (ROOT / "scripts/check-unpack-v2-ui.cjs").read_text()
+    assert "['preview']" in v2_script
+    assert "--strictPort" in v2_script
+    assert "E2E_UNMOCKED_API" in v2_script
+    assert "check-web-approval-e2e.cjs" not in all_commands

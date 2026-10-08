@@ -508,6 +508,7 @@ def test_transmission_probe_and_write_binding_freeze_safe_capabilities(tmp_path:
             "supports_skip_checking": False,
             "supports_force_recheck": True,
             "supports_verify_progress": True,
+            "supports_selective_files": True,
             "read_only_probe": True,
         }
 
@@ -516,6 +517,7 @@ def test_transmission_probe_and_write_binding_freeze_safe_capabilities(tmp_path:
         assert binding.downloader_version == 1
         assert binding.capabilities["supports_skip_checking"] is False
         assert binding.capabilities["supports_force_recheck"] is True
+        assert binding.capabilities["supports_selective_files"] is True
         assert binding.remote_save_path(app.state.settings.data_dir / "tr-source") == "/downloads"
     finally:
         client.__exit__(None, None, None)

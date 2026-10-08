@@ -13,15 +13,17 @@ from fastapi.testclient import TestClient
 
 from backend.app.config import AppSettings
 from backend.app.domain.operation import OperationStatus
-from backend.app.domain.task_state import TaskStatus
+from backend.app.domain.unpack import UnpackExecutionStatus, UnpackItemStatus
 from backend.app.infrastructure.app_logging import JsonLogFormatter
 from backend.app.infrastructure.persistence.models import (
     Downloader,
-    OperationJournal,
     Site,
     TaskExecution,
     TaskExecutionEvent,
-    UnpackTask,
+    UnpackDefinition,
+    UnpackExecution,
+    UnpackExecutionItem,
+    UnpackExternalOperationJournal,
     new_uuid,
 )
 from backend.app.main import create_app
@@ -57,7 +59,9 @@ def _authenticated_client(tmp_path: Path) -> tuple[TestClient, FastAPI]:
 def _seed_sensitive_health_evidence(app: FastAPI) -> str:
     runtime = app.state.runtime
     now = datetime.now(UTC)
-    task_id = new_uuid()
+    definition_id = new_uuid()
+    execution_id = new_uuid()
+    item_id = new_uuid()
     with runtime.session_factory() as session:
         session.add(
             Site(
@@ -99,19 +103,20 @@ def _seed_sensitive_health_evidence(app: FastAPI) -> str:
             )
         )
         session.add(
-            UnpackTask(
-                id=task_id,
-                type="PACKAGE_UNPACK",
-                source_downloader_id="synthetic-source-downloader",
-                source_hash=_CANARY_HASH,
-                normalized_unit_key="secret/private/unit",
-                idempotency_key="a" * 64,
-                parent_task_id=None,
-                run_number=1,
-                status=TaskStatus.RETRY.value,
-                trace_id=new_uuid(),
-                checkpoint={"path": _CANARY_PATH, "credential": _CANARY_TOKEN},
-                error_code="SYNTHETIC_RETRY",
+            UnpackDefinition(
+                id=definition_id,
+                name="secret unpack definition",
+                trigger_kind="MANUAL",
+                status="PENDING_EXECUTION",
+                source_kind="DIRECTORY",
+                execution_scope_kind="ALL_MATCHING_MEDIA",
+                source_config={"directory_path": _CANARY_PATH, "credential": _CANARY_TOKEN},
+                file_filter={"extensions": [".mkv"]},
+                site_ids=[],
+                output_config={},
+                retry_enabled=True,
+                max_retries=3,
+                auto_match_threshold_bps=10000,
                 version=1,
                 created_at=now - timedelta(days=2),
                 updated_at=now - timedelta(days=2),
@@ -119,9 +124,51 @@ def _seed_sensitive_health_evidence(app: FastAPI) -> str:
         )
         session.flush()
         session.add(
-            OperationJournal(
+            UnpackExecution(
+                id=execution_id,
+                definition_id=definition_id,
+                trigger="MANUAL",
+                status=UnpackExecutionStatus.MATCHING.value,
+                config_snapshot={"private": _CANARY_TOKEN},
+                discovery_complete=True,
+                total_count=1,
+                matched_auto_count=0,
+                review_count=0,
+                content_verified_count=0,
+                content_mismatch_count=0,
+                timeout_count=0,
+                error_count=1,
+                completed_count=0,
+                started_at=now - timedelta(days=2),
+                finished_at=None,
+                version=1,
+                created_at=now - timedelta(days=2),
+                updated_at=now - timedelta(days=2),
+            )
+        )
+        session.flush()
+        session.add(
+            UnpackExecutionItem(
+                id=item_id,
+                execution_id=execution_id,
+                source_object_key=_CANARY_HASH,
+                source_snapshot={"path": _CANARY_PATH, "size": 123},
+                media_identity={"raw_name": "secret.mkv"},
+                status=UnpackItemStatus.MATCH_ERROR.value,
+                candidate_generation=0,
+                retry_count=0,
+                last_error_code="SYNTHETIC_RETRY",
+                last_error_message=_CANARY_TOKEN,
+                version=1,
+                created_at=now - timedelta(days=2),
+                updated_at=now - timedelta(days=2),
+            )
+        )
+        session.flush()
+        session.add(
+            UnpackExternalOperationJournal(
                 id=new_uuid(),
-                task_id=task_id,
+                item_id=item_id,
                 idempotency_key="b" * 64,
                 operation_type="QBITTORRENT_ADD",
                 target={"path": _CANARY_PATH, "hash": _CANARY_HASH},
@@ -134,7 +181,7 @@ def _seed_sensitive_health_evidence(app: FastAPI) -> str:
             )
         )
         session.commit()
-    return task_id
+    return item_id
 
 
 def _write_operational_log_canary(app: FastAPI) -> tuple[str, str]:
@@ -228,46 +275,69 @@ def test_system_health_running_count_uses_unified_execution_not_unpack_children(
     try:
         now = datetime.now(UTC)
         with app.state.runtime.session_factory() as session:
-            for index, status in enumerate((TaskStatus.ANALYZING, TaskStatus.SEARCHING), start=1):
+            definition_id = new_uuid()
+            session.add(
+                UnpackDefinition(
+                    id=definition_id,
+                    name="唯一的统一执行",
+                    trigger_kind="MANUAL",
+                    status="PENDING_EXECUTION",
+                    source_kind="DIRECTORY",
+                    execution_scope_kind="ALL_MATCHING_MEDIA",
+                    source_config={"directory_path": "/data"},
+                    file_filter={"extensions": [".mkv"]},
+                    site_ids=[],
+                    output_config={},
+                    retry_enabled=True,
+                    max_retries=3,
+                    auto_match_threshold_bps=10000,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.flush()
+            execution_id = new_uuid()
+            session.add(
+                UnpackExecution(
+                    id=execution_id,
+                    definition_id=definition_id,
+                    trigger="MANUAL",
+                    status=UnpackExecutionStatus.MATCHING.value,
+                    config_snapshot={},
+                    discovery_complete=True,
+                    total_count=2,
+                    matched_auto_count=0,
+                    review_count=0,
+                    content_verified_count=0,
+                    content_mismatch_count=0,
+                    timeout_count=0,
+                    error_count=0,
+                    completed_count=0,
+                    started_at=now,
+                    finished_at=None,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.flush()
+            for index in range(2):
                 session.add(
-                    UnpackTask(
+                    UnpackExecutionItem(
                         id=new_uuid(),
-                        type="PACKAGE_UNPACK",
-                        source_downloader_id=f"legacy-downloader-{index}",
-                        source_hash=f"legacy-source-{index}",
-                        normalized_unit_key=f"legacy/unit/{index}",
-                        idempotency_key=(str(index) * 64)[:64],
-                        parent_task_id=None,
-                        run_number=1,
-                        status=status.value,
-                        trace_id=new_uuid(),
-                        checkpoint={},
-                        error_code=None,
+                        execution_id=execution_id,
+                        source_object_key=f"source-{index}",
+                        source_snapshot={"path": f"/data/{index}.mkv", "size": 10},
+                        media_identity={"raw_name": f"{index}.mkv"},
+                        status=UnpackItemStatus.MATCHING.value,
+                        candidate_generation=0,
+                        retry_count=0,
                         version=1,
                         created_at=now,
                         updated_at=now,
                     )
                 )
-            session.add(
-                TaskExecution(
-                    id=new_uuid(),
-                    task_definition_id=None,
-                    task_name="唯一的统一执行",
-                    trigger="MANUAL",
-                    status="RUNNING",
-                    phase="UNPACKING",
-                    source_execution_id=None,
-                    trace_id=new_uuid(),
-                    config_snapshot={},
-                    discovered_count=2,
-                    success_count=0,
-                    failed_count=0,
-                    skipped_count=0,
-                    started_at=now,
-                    finished_at=None,
-                    created_at=now,
-                )
-            )
             session.commit()
 
         response = client.get("/api/v1/system/health")
@@ -277,7 +347,7 @@ def test_system_health_running_count_uses_unified_execution_not_unpack_children(
         assert checks["tasks"]["metrics"]["running"] == 1
         assert checks["tasks"]["metrics"]["running_task_executions"] == 1
         assert checks["tasks"]["metrics"]["running_movie_dedup_jobs"] == 0
-        assert checks["tasks"]["metrics"]["active"] == 2
+        assert checks["tasks"]["metrics"]["active"] == 1
     finally:
         client.__exit__(None, None, None)
 

@@ -53,8 +53,8 @@
       "criterion": "execution plan 必须绑定明确的目标下载器 version/能力摘要/远端 save path",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_adding.py", "contains": "test_downloader_binding_change_blocks_before_qb_write"},
-        {"path": "tests/api/test_tasks.py", "contains": "test_transmission_plan_binding_is_allowed_and_requires_verify_capabilities"}
+        {"path": "tests/unit/test_unpack_v2_execution_plan.py", "contains": "assert plan.target_remote_save_path == \"/downloads/seeding\""},
+        {"path": "tests/unit/test_unpack_v2_execution_plan.py", "contains": "assert plan.target_downloader_version == 5"}
       ]
     },
     {
@@ -111,8 +111,7 @@
       "criterion": "`DONE` 是不可逆终态",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_actions.py", "contains": "test_release_action_keeps_done_and_replays_receipt"},
-        {"path": "tests/api/test_tasks.py", "contains": "test_task_release_requires_csrf_and_idempotency"}
+        {"path": "tests/application/test_task_actions.py", "contains": "test_release_action_keeps_done_and_replays_receipt"}
       ]
     },
     {
@@ -126,11 +125,11 @@
     },
     {
       "id": "V1-014",
-      "criterion": "公开 `execute`/`cancel` 必须要求管理会话 CSRF",
+      "criterion": "数据拆包 v2 的公开写动作必须要求管理会话 CSRF；人工审核还必须要求 `If-Match` + `Idempotency-Key`，重试动作要求 `If-Match`。",
       "status": "covered",
       "evidence": [
-        {"path": "tests/api/test_tasks.py", "contains": "test_public_execute_cancel_actions_enforce_csrf_idempotency_and_explicit_options"},
-        {"path": "tests/application/test_task_actions.py", "contains": "test_execute_pending_receipt_recovers_after_task_advanced_without_second_linking"}
+        {"path": "tests/api/test_unpack_v2.py", "contains": "test_unpack_write_api_requires_admin_csrf"},
+        {"path": "tests/api/test_unpack_v2.py", "contains": "test_unpack_item_review_api_requires_version_and_replays_idempotently"}
       ]
     },
     {
@@ -144,20 +143,21 @@
     },
     {
       "id": "V1-016",
-      "criterion": "前端公开动作控制必须覆盖",
+      "criterion": "数据拆包 v2 前端公开动作控制必须覆盖：保存与执行分离；仅 `review_allowed=true` 的影片显示“审核”；匹配超时 / 匹配错误只暴露 item 级“重试”；审核弹窗默认选中最高候选但不自动提交；全部可见业务状态保持中文。",
       "status": "covered",
       "evidence": [
-        {"path": "scripts/check-prototype.cjs", "contains": "rollback-only 必须阻断"},
-        {"path": "frontend/src/taskActionSafety.test.ts", "contains": "describe"}
+        {"path": "scripts/check-unpack-v2-ui.cjs", "contains": "自动匹配成功与待人工审核都必须提供审核按钮"},
+        {"path": "scripts/check-unpack-v2-ui.cjs", "contains": "保存并执行"}
       ]
     },
     {
       "id": "V1-017",
-      "criterion": "任务事件接口必须覆盖历史顺序",
+      "criterion": "数据拆包 v2 不再暴露旧 TaskEvent/SSE 接口；执行详情由 execution + items 分页快照提供，支持稳定 item 游标、状态筛选和六阶段中文管线；终态通过通知 outbox 幂等投影，不依赖浏览器保持 EventSource 连接。",
       "status": "covered",
       "evidence": [
-        {"path": "tests/api/test_tasks.py", "contains": "test_task_events_support_history_cursor_and_sse_resume"},
-        {"path": "frontend/src/components/TaskEventTimeline.vue", "contains": "new EventSource"}
+        {"path": "tests/api/test_unpack_v2.py", "contains": "/api/v1/unpack/executions/{execution_id}/items"},
+        {"path": "backend/app/application/notifications.py", "contains": "project_unpack_execution_results"},
+        {"path": "scripts/check-unpack-v2-ui.cjs", "contains": "客户端校验 / 完成"}
       ]
     },
     {
@@ -174,7 +174,6 @@
       "criterion": "operation journal 对账接口必须验证响应字段白名单",
       "status": "covered",
       "evidence": [
-        {"path": "tests/api/test_tasks.py", "contains": "test_task_operation_api_redacts_journal_and_reconciles_idempotently"},
         {"path": "tests/application/test_downloader_operations.py", "contains": "test_qb_add_reconcile_can_prove_missing_after_snapshot_from_intent_and_current_state"}
       ]
     },
@@ -183,17 +182,19 @@
       "criterion": "operation journal retention 必须覆盖 preview 与写时双重证明",
       "status": "covered",
       "evidence": [
-        {"path": "tests/api/test_tasks.py", "contains": "test_operation_retention_plan_and_purge_api_are_redacted_and_idempotent"},
+        {"path": "tests/application/test_task_operations.py", "contains": "test_retention_purge_commits_tombstone_and_replays_after_response_loss"},
+        {"path": "tests/application/test_task_operations.py", "contains": "test_retention_plan_and_purge_fail_closed_on_all_reference_types"},
         {"path": "backend/app/infrastructure/persistence/models.py", "contains": "OperationJournalTombstone"}
       ]
     },
     {
       "id": "V1-021",
-      "criterion": "retention 前端门禁必须只把服务端 `retention-plan` 中 `eligible=true` 的单条 journal 暴露为 purge",
+      "criterion": "数据拆包 v2 不得暴露旧任务的 retention/purge 前端入口；历史 journal 清理继续在后端 fail-closed 并支持同键重放",
       "status": "covered",
       "evidence": [
-        {"path": "scripts/check-prototype.cjs", "contains": "只有 retention-plan eligible journal 才显示 purge 按钮"},
-        {"path": "scripts/check-prototype.cjs", "contains": "retention purge 必须复用相同 Idempotency-Key"}
+        {"path": "scripts/check-unpack-v2-ui.cjs", "contains": "v2 任务中心不得暴露旧 retention/purge 入口"},
+        {"path": "tests/application/test_task_operations.py", "contains": "test_retention_purge_commits_tombstone_and_replays_after_response_loss"},
+        {"path": "tests/application/test_task_operations.py", "contains": "test_retention_plan_and_purge_fail_closed_on_all_reference_types"}
       ]
     },
     {

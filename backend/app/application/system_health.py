@@ -15,13 +15,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.backup_schedule import BackupDriverState
 from backend.app.application.notification_driver import NotificationDriverState
-from backend.app.application.task_driver import ActiveTaskDriverState
+from backend.app.application.unpack_driver import UnpackDriverState
 from backend.app.config import AppSettings
 from backend.app.domain.movie_dedup import MovieDedupJobStatus
 from backend.app.domain.notification import NotificationDeliveryState
 from backend.app.domain.operation import OperationStatus
-from backend.app.domain.task_definition import TaskExecutionStatus
-from backend.app.domain.task_state import TERMINAL_STATUSES, TaskStatus
+from backend.app.domain.unpack import (
+    TERMINAL_EXECUTION_STATUSES,
+    UnpackItemStatus,
+)
 from backend.app.infrastructure.backups import BackupError, plan_backup_retention
 from backend.app.infrastructure.persistence.models import (
     BackupPolicy,
@@ -29,10 +31,10 @@ from backend.app.infrastructure.persistence.models import (
     MovieDedupJob,
     NotificationChannel,
     NotificationOutbox,
-    OperationJournal,
     Site,
-    TaskExecution,
-    UnpackTask,
+    UnpackExecution,
+    UnpackExecutionItem,
+    UnpackExternalOperationJournal,
 )
 from backend.app.infrastructure.runtime import RuntimeManager
 from backend.app.infrastructure.site_reliability import SiteReliabilityRegistry
@@ -158,7 +160,7 @@ class SystemHealthService:
     async def snapshot(
         self,
         *,
-        task_driver: ActiveTaskDriverState,
+        unpack_driver: UnpackDriverState,
         notification_driver: NotificationDriverState,
         backup_driver: BackupDriverState,
         now: datetime | None = None,
@@ -176,26 +178,28 @@ class SystemHealthService:
             await self._site_check(database),
             self._downloader_check(database),
             self._notification_check(database),
-            self._worker_check(task_driver, notification_driver, backup_driver),
+            self._worker_check(unpack_driver, notification_driver, backup_driver),
         ]
         return SystemHealthReport(timestamp, app_version(), tuple(checks))
 
     def _database_snapshot(self, session: Session, *, now: datetime) -> dict[str, object]:
-        task_rows = session.execute(
-            select(UnpackTask.status, func.count()).group_by(UnpackTask.status)
-        ).all()
         execution_rows = session.execute(
-            select(TaskExecution.status, func.count()).group_by(TaskExecution.status)
+            select(UnpackExecution.status, func.count()).group_by(UnpackExecution.status)
+        ).all()
+        item_rows = session.execute(
+            select(UnpackExecutionItem.status, func.count()).group_by(UnpackExecutionItem.status)
         ).all()
         movie_dedup_rows = session.execute(
             select(MovieDedupJob.status, func.count()).group_by(MovieDedupJob.status)
         ).all()
         operation_rows = session.execute(
-            select(OperationJournal.status, func.count()).group_by(OperationJournal.status)
+            select(UnpackExternalOperationJournal.status, func.count()).group_by(
+                UnpackExternalOperationJournal.status
+            )
         ).all()
         stale_task_cutoff = now - _TASK_STALE_AFTER
         stale_operation_cutoff = now - _OPERATION_STALE_AFTER
-        terminal = tuple(status.value for status in TERMINAL_STATUSES)
+        terminal = tuple(status.value for status in TERMINAL_EXECUTION_STATUSES)
         unsettled_operations = (
             OperationStatus.INTENT_RECORDED.value,
             OperationStatus.ROLLBACK_PENDING.value,
@@ -205,9 +209,10 @@ class SystemHealthService:
         stale_tasks = int(
             session.scalar(
                 select(func.count())
-                .select_from(UnpackTask)
+                .select_from(UnpackExecution)
                 .where(
-                    UnpackTask.status.not_in(terminal), UnpackTask.updated_at < stale_task_cutoff
+                    UnpackExecution.status.not_in(terminal),
+                    UnpackExecution.updated_at < stale_task_cutoff,
                 )
             )
             or 0
@@ -215,10 +220,10 @@ class SystemHealthService:
         stale_operations = int(
             session.scalar(
                 select(func.count())
-                .select_from(OperationJournal)
+                .select_from(UnpackExternalOperationJournal)
                 .where(
-                    OperationJournal.status.in_(unsettled_operations),
-                    OperationJournal.updated_at < stale_operation_cutoff,
+                    UnpackExternalOperationJournal.status.in_(unsettled_operations),
+                    UnpackExternalOperationJournal.updated_at < stale_operation_cutoff,
                 )
             )
             or 0
@@ -233,8 +238,8 @@ class SystemHealthService:
         )
         return {
             "backup_policy": session.get(BackupPolicy, "default"),
-            "tasks": {status: int(count) for status, count in task_rows},
-            "task_executions": {status: int(count) for status, count in execution_rows},
+            "tasks": {status: int(count) for status, count in execution_rows},
+            "task_items": {status: int(count) for status, count in item_rows},
             "movie_dedup_jobs": {status: int(count) for status, count in movie_dedup_rows},
             "operations": {status: int(count) for status, count in operation_rows},
             "stale_tasks": stale_tasks,
@@ -406,20 +411,22 @@ class SystemHealthService:
 
     def _task_check(self, database: dict[str, object]) -> SystemHealthCheck:
         by_status = _string_int_map(database["tasks"])
-        execution_status = _string_int_map(database["task_executions"])
+        item_status = _string_int_map(database["task_items"])
         movie_dedup_status = _string_int_map(database["movie_dedup_jobs"])
-        terminal = {status.value for status in TERMINAL_STATUSES}
+        terminal = {status.value for status in TERMINAL_EXECUTION_STATUSES}
         active_count = sum(count for status, count in by_status.items() if status not in terminal)
-        retry_count = by_status.get(TaskStatus.RETRY.value, 0)
+        retry_count = item_status.get(UnpackItemStatus.MATCH_TIMEOUT.value, 0) + item_status.get(
+            UnpackItemStatus.MATCH_ERROR.value, 0
+        )
         stale_count = _integer(database["stale_tasks"], label="stale_tasks")
-        running_executions = execution_status.get(TaskExecutionStatus.RUNNING.value, 0)
+        running_executions = active_count
         running_movie_dedup = movie_dedup_status.get(MovieDedupJobStatus.RUNNING.value, 0)
         warning = retry_count > 0 or stale_count > 0
         return SystemHealthCheck(
             "tasks",
             "warning" if warning else "ok",
             "TASK_BACKLOG_ATTENTION" if warning else "TASK_BACKLOG_OK",
-            "存在 RETRY 或超过 24 小时未更新的非终态任务"
+            "存在可重试影片或超过 24 小时未更新的非终态数据拆包执行"
             if warning
             else "未发现需要运维关注的任务积压",
             {
@@ -430,7 +437,7 @@ class SystemHealthService:
                 "running_movie_dedup_jobs": running_movie_dedup,
                 "retry": retry_count,
                 "stale_active": stale_count,
-                "awaiting_confirmation": by_status.get(TaskStatus.AWAITING_CONFIRMATION.value, 0),
+                "awaiting_confirmation": item_status.get(UnpackItemStatus.REVIEW_REQUIRED.value, 0),
             },
         )
 
@@ -533,14 +540,15 @@ class SystemHealthService:
 
     def _worker_check(
         self,
-        task: ActiveTaskDriverState,
+        unpack: UnpackDriverState,
         notification: NotificationDriverState,
         backup: BackupDriverState,
     ) -> SystemHealthCheck:
-        running = task.running and notification.running and backup.running
+        running = unpack.running and notification.running and backup.running
+        unpack_errors = int(unpack.last_error_type is not None)
         errors = sum(
             (
-                task.consecutive_errors,
+                unpack_errors,
                 notification.consecutive_errors,
                 backup.consecutive_errors,
             )
@@ -556,17 +564,19 @@ class SystemHealthService:
         else:
             status = "ok"
             code = "BACKGROUND_WORKERS_OK"
-            detail = "任务、通知和计划备份 driver 均在运行且无连续错误"
+            detail = "数据拆包、通知和计划备份 driver 均在运行且无已知连续错误"
         return SystemHealthCheck(
             "workers",
             status,
             code,
             detail,
             {
-                "task_running": task.running,
+                "task_running": unpack.running,
+                "unpack_running": unpack.running,
                 "notification_running": notification.running,
                 "backup_running": backup.running,
-                "task_consecutive_errors": task.consecutive_errors,
+                "task_consecutive_errors": unpack_errors,
+                "unpack_last_error_type": unpack.last_error_type,
                 "notification_consecutive_errors": notification.consecutive_errors,
                 "backup_consecutive_errors": backup.consecutive_errors,
             },
