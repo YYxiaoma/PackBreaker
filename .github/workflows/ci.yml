@@ -39,7 +39,14 @@ jobs:
             tests/application/test_filesystem_operations.py \
             tests/application/test_task_repairs.py \
             tests/unit/test_piece_verifier.py \
-            tests/unit/test_v2_piece_verifier.py
+            tests/unit/test_v2_piece_verifier.py \
+            tests/unit/test_unpack_v2_content_verification.py \
+            tests/unit/test_unpack_v2_execution_plan.py \
+            tests/unit/test_unpack_v2_materialization.py \
+            tests/unit/test_unpack_v2_driver.py \
+            tests/unit/test_unpack_v2_seeding.py \
+            tests/api/test_unpack_v2.py \
+            tests/integration/test_unpack_v2_migration.py
       - name: Build native ARM64 runtime image
         run: |
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
@@ -226,8 +233,8 @@ jobs:
           # 127.0.0.1:5173 preview lifecycle. Starting Vite dev here first
           # makes the production browser gate fail or target stale dev assets.
           (cd frontend && corepack pnpm test:e2e)
-      - name: Exercise real browser to isolated FastAPI admin approval and Transmission plan
-        run: node scripts/check-web-approval-e2e.cjs
+      - name: Run data unpack v2 browser gate
+        run: node scripts/check-unpack-v2-ui.cjs
 
   container:
     runs-on: ubuntu-latest

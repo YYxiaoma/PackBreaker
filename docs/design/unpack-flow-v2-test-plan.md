@@ -60,7 +60,11 @@
 - 默认 100.0%；
 - 96.8% 在阈值 95.0% 时自动选择；
 - 96.8% 在阈值 97.0% 时进入人工审核；
-- hard conflict 即使分数达到阈值也不能自动选择。
+- hard conflict 即使分数达到阈值也不能自动选择；
+- Show/Season 01/01.mkv 能从目录上下文恢复标题、年份和季集；
+- 用户自定义媒体后缀通过 v2 文件过滤后不会被旧扩展名白名单二次拒绝；
+- 匹配终态写入后聚合统计必须在 autoflush=False 下仍读取到最新 item 状态；
+- 同一批最后一项使 execution 离开 MATCHING 后，批处理正常结束而不是报状态冲突。
 
 ### 2.4 状态机
 
@@ -102,6 +106,9 @@
 - 创建监控任务后状态为“待执行”，且尚未启用 Cron；
 - 手动任务点击“执行”后才创建 execution；
 - 监控任务点击“执行”后才进入启用状态；
+- 启用监控后 next_run_at 被计算，last_triggered_at 仍为空；
+- 到点后才创建 SCHEDULE execution，并推进下一次 next_run_at；
+- 同一定义存在未结束 execution 时不会创建重叠 execution；
 - MANUAL 携带 cron 拒绝；
 - MONITOR 缺 cron 拒绝；
 - 标准 5 段 Cron 接受；
@@ -109,6 +116,9 @@
 - Cron 辅助预设与分段选择生成的表达式能被后端解析；
 - 自动匹配阈值范围与基点换算；
 - MONITOR + DOWNLOADER 保存 downloader_id / name_contains / categories / tags；
+- 下载器监控只冻结下载完成且命中过滤的 torrent；
+- 下载器映射成功后扫描真实文件/目录并应用统一 suffix/大小/名称过滤；
+- 下载器路径映射失败形成可见 MATCH_ERROR，而不是静默遗漏；
 - MANUAL 使用 DOWNLOADER 来源拒绝；
 - extensions 规范化；
 - 非法目录 token 拒绝；
@@ -126,7 +136,7 @@
 - source scan items 支持 cursor / q / extension / resolution / selected；
 - 选择集合可跨分页、跨过滤条件保留；
 - 未勾选任何影片时禁止保存 SELECTED_MEDIA；
-- 保存后把 scan selection 物化到 unpack_definition_selected_sources；
+- 保存后把 scan selection 物化到 unpack_definition_selected_source；
 - 临时 scan 过期后不能继续创建任务；
 - ALL_MATCHING_MEDIA 在点击执行时重新发现当时目录中的媒体；
 - SELECTED_MEDIA 执行时只处理保存的 source_object_key；
@@ -162,7 +172,11 @@
 - generation stale；
 - candidate 不属于 item；
 - If-Match stale；
-- Idempotency-Key replay。
+- Idempotency-Key replay；
+- 自动匹配成功项可进入人工审核；
+- TORRENT_FETCHING / CONTENT_VERIFYING / CONTENT_VERIFIED / PLAN_PENDING 在无外部副作用时可审核；
+- 任意 v2 external-operation journal 存在后审核必须阻断；
+- 审核与只读验证并发时，旧 verification claim 不得覆盖审核结果。
 
 ### 3.5 Retry
 
@@ -199,6 +213,15 @@
 
 ### 4.3 Torrent 内容验证
 
+当前 5.5A 已落地并自动化覆盖：
+
+- v1 单文件 FULL_VERIFIED；
+- 同长度但 piece 内容不一致 → BLOCKED / CONTENT_MISMATCH；
+- source snapshot 改变 → 在 piece 验证前阻断；
+- 仅缺 .nfo / 图片等辅助文件 → AUXILIARY_FETCHING，而不是影片不匹配；
+- 缺失第二个视频文件 → BLOCKED；
+- driver 可在匹配后继续推进只读内容验证。
+
 覆盖真实合成 torrent：
 
 - v1 单文件 piece SHA-1 完全一致；
@@ -220,7 +243,23 @@
 - 使用本地主影片 + staging 辅助文件后可以重新得到 FULL_VERIFIED；
 - 缺失另一个视频文件时不能被辅助文件白名单放行；
 - 当前下载器不支持 selective files 时返回稳定阻断状态；
-- staging 清理遵循 operation journal。
+- staging 清理遵循 operation journal；
+- add 响应丢失仅通过 hash + save path + ownership tag/label 对账；
+- 已确认 APPLIED 的外部状态丢失后进入 RECONCILE_REQUIRED，不盲目重放。
+
+### 4.3.1 最终执行与辅种
+
+- FULL_VERIFIED 才能生成冻结 execution plan；
+- plan digest / candidate generation / metainfo digest / source snapshot 被绑定；
+- HARDLINK 跨设备阻断，SYMLINK/COPY 使用 SafeFilesystemGateway 原子落位；
+- 目标存在时 VERIFY_REUSE_OR_STOP fail-closed；
+- 文件落位 journal 在副作用前写 intent；
+- qB paused add + ownership proof；只有 HARDLINK + FULL_VERIFIED + capability 才允许 skip-checking；
+- Transmission 必须显式 verify；
+- 需要 client check 的 qB 必须显式 recheck；
+- 已存在同 hash 但无 ownership 的 torrent 不得接管；
+- add/verify/start 响应丢失只能从可证明 owned 的真实下载器状态收敛；
+- 完整确认后才允许 start seeding 并把 item 标记 COMPLETED。
 
 ### 4.4 手动 / 监控同管线
 
@@ -402,6 +441,22 @@
 - git diff --check。
 
 若真实站点凭证不可用，可用离线 adapter fixtures 验证状态机，但不能把 fixture 描述成真实站点验收。
+
+### 11.1 当前本地研发收口结果
+
+截至 v1.0.15 当前工作树：
+
+- `scripts/check.py`：通过；
+- 后端 pytest：1386 passed / 4 skipped；
+- 前端 Vitest：62 passed；
+- Vue TypeScript：通过；
+- OpenAPI drift：通过；
+- Vite production build：通过；
+- v1.0.15 专用 Playwright UI gate：通过；
+- migration fresh/head 与历史升级路径：通过。
+
+Candidate Docker E2E、AMD64 runtime/updater 和 native ARM64 仍属于候选镜像/发布阶段，
+在真正执行对应门禁之前保持“未验”，不得由本地 fixture 结果替代。
 
 ## 12. 现场验收建议
 

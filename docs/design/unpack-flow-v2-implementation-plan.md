@@ -17,14 +17,17 @@
 
 ### WP2：新 schema 与领域状态机
 
+当前实现状态：已完成。
+
 实现：
 
-- unpack_definitions；
-- unpack_executions；
-- unpack_execution_items；
-- unpack_match_candidates；
-- unpack_review_decisions；
-- unpack_definition_selected_sources；
+- unpack_definition；
+- unpack_execution；
+- unpack_execution_item；
+- unpack_match_candidate；
+- unpack_review_decision；
+- unpack_definition_selected_source；
+- 保存前临时表 unpack_source_scan / unpack_source_scan_item；
 - 枚举与 transition guard；
 - repository。
 
@@ -35,6 +38,8 @@
 - 状态机 unit tests。
 
 ### WP3：目录树与统一文件过滤
+
+当前实现状态：已完成。
 
 实现：
 
@@ -55,6 +60,8 @@
 
 ### WP4：分页媒体发现
 
+当前实现状态：已完成。
+
 实现：
 
 - directory cursor；
@@ -62,32 +69,51 @@
 - stable source_object_key；
 - source snapshot；
 - discovery watermark；
-- execution counters。
+- execution counters；
+- 监控 definition 的 next_run_at / last_triggered_at；
+- SCHEDULE execution 后台创建与重叠执行抑制；
+- 下载器已完成 torrent 冻结、名称/分类/标签过滤、路径映射错误显式化；
+- 后台 UnpackDriver 有界推进，浏览器刷新或关闭不影响 discovery。
 
 退出条件：
 
 - 10k 合成目录无重复、无遗漏；
-- 中断可恢复。
+- 中断可恢复；
+- SELECTED_MEDIA 在执行前重新核对 device / inode / size / mtime_ns；
+- DOWNLOADER 不把 torrent 汇总大小当成影片大小，而是扫描映射后的真实文件系统对象。
 
 ### WP5：批量匹配与候选代次
+
+当前实现状态：已完成。
 
 实现：
 
 - MatchCoordinator；
-- query strategy；
+- query strategy：IMDb → 豆瓣 → 标题+年份/集数 → 标题；
 - per-site concurrency；
 - candidate generation；
 - CandidateScorer exact rule；
 - 自动匹配阈值；
 - candidate evidence；
-- timeout/error classification。
+- timeout/error classification；
+- 后台 UnpackDriver 自动推进 MATCH_PENDING；
+- 候选列表 GET 与 default_candidate_id；
+- UI 默认候选只用于预选，不写入审核批准；
+- 自定义媒体后缀不再被旧 TaskUnit 后缀白名单二次否决；
+- Season/Specials 目录上下文可恢复裸集数影片身份。
 
 退出条件：
 
 - 自动匹配 / review / timeout / error 四类状态可稳定产生；
-- 阈值边界和 hard conflict 有单元测试。
+- 阈值边界和 hard conflict 有单元测试；
+- 显示分数 100.0 不等于 is_exact_match=true；
+- 批量匹配结束后 execution 可正常离开 MATCHING，不会被下一次领取误判为冲突。
 
 ### WP5.5：torrent 内容验证
+
+当前实现状态：已完成。
+
+#### WP5.5A：只读内容验证（已完成）
 
 实现：
 
@@ -98,19 +124,36 @@
 - FULL_VERIFIED / CLIENT_CHECK_REQUIRED / BLOCKED；
 - 内容不一致回退审核；
 - 主媒体 / 可补齐辅助文件分类；
+- source snapshot 与授权路径在取种/校验前重新确认；
+- piece mismatch 与“证据不足”分开；
+- 后台 UnpackDriver 自动推进只读内容验证；
+- item/candidate 持久化 metainfo digest、验证等级与辅助文件状态。
+
+#### WP5.5B：辅助文件补齐（已完成）
+
+实现：
+
 - qB / Transmission selective-files capability；
 - 隔离 staging 补齐 `.nfo` / 海报 / 字幕等辅助文件；
-- 站点 verification candidate budget。
+- 主影片始终保持在原位置，不复制到 staging；
+- v2 external-operation journal：intent → effect → reconcile/result；
+- add / file-selection / start / stop / remove-keep-files 全部 journal 化；
+- add 响应丢失只允许通过 hash + save path + ownership tag/label 恢复；
+- staging 辅助文件就绪后，重新组合“本地主影片 + staging 辅助文件”做完整 v1/v2/hybrid 校验；
+- 跨文件边界 piece hash 有合成 torrent 回归；
+- 目标下载器在 definition 保存时冻结：目录来源必须显式选择，下载器来源默认继承来源下载器。
 
 退出条件：
 
 - 只有 FULL_VERIFIED 才进入自动辅种；
 - info hash 不被误当作影片内容 hash；
 - 缺少可补齐辅助文件时不会直接判定主影片不匹配；
-- v1 跨文件边界 piece 的补齐写入不会触碰源影片 inode；
-- 内容不一致不产生任何外部副作用。
+- 内容不一致不产生任何外部副作用；
+- 5.5B 完成后，v1 跨文件边界 piece 的补齐写入不得触碰源影片 inode。
 
 ### WP6：人工审核
+
+当前实现状态：已完成。
 
 实现：
 
@@ -122,7 +165,11 @@
 - NO_MATCH；
 - stale generation。
 - 自动匹配成功项允许人工复核；
-- 已进入外部副作用后禁止直接改候选。
+- `review_allowed` 由后端按状态 + external-operation journal 统一计算；
+- `MATCHED_AUTO / TORRENT_FETCHING / CONTENT_VERIFYING / CONTENT_VERIFIED / PLAN_PENDING`
+  在尚无外部副作用时允许人工复核；
+- 已进入辅助文件 staging、文件落位或任何 external-operation journal 后禁止直接改候选；
+- 审核与只读内容验证并发时，旧 verification claim 必须 stale 丢弃，不能覆盖新审核决定。
 
 退出条件：
 
@@ -130,6 +177,8 @@
 - 并发审核不会覆盖。
 
 ### WP7：item 级重试
+
+当前实现状态：已完成。
 
 实现：
 
@@ -145,20 +194,33 @@
 
 ### WP8：安全执行器接入
 
+当前实现状态：已完成。
+
 实现：
 
-- 从 approved candidate 生成现有安全 Execution Plan；
-- operation journal；
+- 从 FULL_VERIFIED candidate 生成 v2 原生冻结 Execution Plan；
+- plan digest / item version / candidate generation / metainfo digest / source snapshot 全部冻结；
+- v2 external-operation journal；
+- `0039_unpack_external_operation`：v2 external-operation journal；
+- `0040_unpack_execution_plan`：冻结 execution plan；
+- `0041_unpack_execution_state`：可恢复 execution checkpoint；
 - qB / Transmission；
 - selective wanted / unwanted file 操作；
-- verify / reconcile / rollback；
-- execution 聚合。
+- HARDLINK / SYMLINK / COPY 通过 SafeFilesystemGateway 原子落位；
+- add paused → ownership proof → client verify/recheck → start seeding；
+- qB 仅在 HARDLINK + FULL_VERIFIED + capability 允许时使用 skip-checking；
+- Transmission 始终要求显式 verify；
+- verify / reconcile；
+- execution 聚合；
+- 不创建旧 `UnpackTask`，v2 最终执行始终绑定 `unpack_execution_item`。
 
 退出条件：
 
 - 匹配层重构不降低现有文件 / 下载器安全门。
 
 ### WP9：任务中心前端重构
+
+当前实现状态：已完成。
 
 实现：
 
@@ -177,17 +239,19 @@
 - execution 六阶段视图；
 - metrics；
 - review dialog；
-- 自动匹配成功项“审核”按钮；
+- 自动匹配成功项“审核”按钮，显示与否直接使用后端 `review_allowed`；
 - 异常 retry；
 - 全部可见状态 / 阶段 / 错误中文化。
 
 退出条件：
 
 - 与 docs/prototypes/unpack-flow-v2.html 交互一致；
-- desktop / mobile / dark mode E2E；
+- v1.0.15 专用浏览器烟测覆盖 desktop / 390px，并禁止未 mock API 外泄；
 - 保存动作不会发起 execution，执行按钮才进入运行链。
 
 ### WP10：在线升级诊断修复
+
+当前实现状态：已完成。
 
 实现：
 
@@ -202,20 +266,35 @@
 
 ### WP11：清理与文档同步
 
+当前实现状态：已完成本地研发收口。
+
 删除：
 
 - 旧 API；
 - 旧 DTO；
 - 旧前端组件分支；
 - 旧状态映射；
-- 已失效测试。
+- 已失效测试；
+- 依赖旧 Task runtime 的浏览器 approval fixture / E2E / Vite 专用配置。
 
 同步：
 
 - OpenAPI；
 - docs/README；
 - architecture / domain-model / api / testing 中与旧拆包模型冲突的章节；
-- README 功能说明。
+- README 功能说明；
+- CI browser gate，改为自管理 Vite 生命周期的 v1.0.15 unpack-v2 专用 E2E；
+- notification outbox schema，移除旧 task/event 外键字段并保留通用 subject 投影。
+
+本地收口验证：
+
+- `scripts/check.py`：通过；
+- `scripts/test.py`：后端 1386 passed / 4 skipped，前端 62 passed，生产构建通过；
+- `node scripts/check-unpack-v2-ui.cjs`：通过，并覆盖 390px；
+- Alembic fresh DB / 历史升级到 head：通过，autogenerate 无 drift。
+
+说明：Candidate Docker E2E、真实 AMD64 updater 与 native ARM64 属于候选/发布阶段门禁，
+本地研发收口不把这些尚未执行的发布门禁描述为已通过。
 
 ## 2. 推荐提交序列
 

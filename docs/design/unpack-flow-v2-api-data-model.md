@@ -12,7 +12,7 @@
 
 ## 2. 表结构
 
-### 2.1 unpack_definitions
+### 2.1 unpack_definition
 
 核心字段：
 
@@ -33,6 +33,8 @@
 | auto_match_threshold_bps | int | 自动匹配阈值，0..10000，默认 10000 |
 | cron_expression | text nullable | 监控任务 |
 | timezone | text nullable | 监控任务 |
+| next_run_at | UTC nullable | 启用监控后的下次调度时间 |
+| last_triggered_at | UTC nullable | 最近一次真正创建 execution 的调度时间 |
 | version | int | 乐观锁 |
 | created_at | UTC | 创建时间 |
 | updated_at | UTC | 更新时间 |
@@ -45,11 +47,14 @@
 - MANUAL 当前仅允许 DIRECTORY 来源；MONITOR 允许 DIRECTORY / DOWNLOADER；
 - SELECTED_MEDIA 仅允许 MANUAL + DIRECTORY；
 - DOWNLOADER 来源必须包含 downloader_id，可选 name_contains / categories / tags；
+- 监控任务点击“执行”只进入 ENABLED 并计算 next_run_at，不立即创建 execution；
+- 到达 next_run_at 时，后台 driver 先冻结本次来源边界，再创建 SCHEDULE execution；
+- 若同一定义已有未结束 execution，本轮跳过创建并推进 next_run_at，避免重叠执行；
 - max_retries 设上限，例如 10；
 - auto_match_threshold_bps 必须位于 0..10000；
 - JSON 在 application 层使用 Pydantic 强类型，不允许自由字典直接进入领域层。
 
-### 2.2 unpack_executions
+### 2.2 unpack_execution
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -77,7 +82,7 @@
 - definition_id + started_at；
 - status + updated_at。
 
-### 2.3 unpack_execution_items
+### 2.3 unpack_execution_item
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -105,7 +110,7 @@
 
 - execution_id + source_object_key。
 
-### 2.4 unpack_match_candidates
+### 2.4 unpack_match_candidate
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -133,7 +138,7 @@
 
 - item_id + generation + site_id + candidate_key。
 
-### 2.5 unpack_review_decisions
+### 2.5 unpack_review_decision
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -147,7 +152,7 @@
 
 审核历史建议 append-only，不覆盖旧 decision。
 
-### 2.6 unpack_definition_selected_sources
+### 2.6 unpack_definition_selected_source
 
 仅用于手动目录任务的 `SELECTED_MEDIA` 执行范围。
 
@@ -162,6 +167,21 @@
 | created_at | UTC | 保存时间 |
 
 唯一约束：definition_id + source_object_key。
+
+### 2.7 保存前临时扫描表
+
+以下两张表是保存前目录选片的临时辅助资源，不属于六张核心拆包业务表：
+
+- `unpack_source_scan`：保存授权目录、规范化文件过滤、发现数量、版本与过期时间；
+- `unpack_source_scan_item`：保存一次只读扫描得到的影视文件快照、过滤展示字段和勾选状态。
+
+约束：
+
+- scan 默认 30 分钟过期；
+- selection token 只作为目录定位符，不授予目录访问权限，每次使用都必须重新经过 `AuthorizedPathScope` 校验；
+- scan 创建只读取目录，不创建 definition / execution，不访问 PT 站，也不产生文件系统副作用；
+- `SELECTED_MEDIA` definition 创建时，必须在同一事务中核对 scan 目录、文件过滤和已选项，将结果物化到 `unpack_definition_selected_source`，随后删除临时 scan；
+- 临时 scan 可跨页面刷新和短暂服务重启恢复，但过期后必须重新扫描。
 
 ## 3. API
 
@@ -210,7 +230,7 @@ items 查询支持：
 - resolution；
 - selected = true / false。
 
-selection 接口按 source_object_key 增删勾选集合。最终创建 definition 时传 `execution_scope_kind=SELECTED_MEDIA` 和 `scan_id`，服务端把最终选择集合物化到 `unpack_definition_selected_sources` 后销毁 / 过期临时 scan。
+selection 接口按 source_object_key 增删勾选集合。最终创建 definition 时传 `execution_scope_kind=SELECTED_MEDIA` 和 `scan_id`，服务端把最终选择集合物化到 `unpack_definition_selected_source` 后销毁 / 过期临时 scan。
 
 若用户在确认框选择“是”，则不需要创建 source scan，直接保存 `execution_scope_kind=ALL_MATCHING_MEDIA`。
 
@@ -442,7 +462,7 @@ API 落地后同一提交更新：
 建议 migration：
 
 1. 删除旧 task definition / execution / candidate review 的拆包专属数据；
-2. 建立新六表；
+2. 建立六张核心拆包表，并建立两张保存前临时 source scan 辅助表；
 3. 保留 operation journal、下载器、站点、通知等独立领域表；
 4. 不迁移旧 task records；
 5. fresh DB 和 v1.0.14 测试 DB 都能到新 head，但旧拆包业务数据允许被清空。
@@ -453,12 +473,15 @@ migration 文件必须明确标记“测试阶段破坏性重构”，防止未�
 
 重点索引：
 
-- unpack_executions(definition_id, started_at)
-- unpack_executions(status, updated_at)
-- unpack_execution_items(execution_id, status, id)
-- unpack_execution_items(execution_id, source_object_key) UNIQUE
-- unpack_match_candidates(item_id, generation, score)
-- unpack_match_candidates(item_id, generation, site_id, candidate_key) UNIQUE
-- unpack_definition_selected_sources(definition_id, source_object_key) UNIQUE
+- unpack_execution(definition_id, started_at)
+- unpack_execution(status, updated_at)
+- unpack_execution_item(execution_id, status, id)
+- unpack_execution_item(execution_id, source_object_key) UNIQUE
+- unpack_match_candidate(item_id, generation, score)
+- unpack_match_candidate(item_id, generation, site_id, candidate_key) UNIQUE
+- unpack_definition_selected_source(definition_id, source_object_key) UNIQUE
+- unpack_source_scan(expires_at)
+- unpack_source_scan_item(scan_id, selected, id)
+- unpack_source_scan_item(scan_id, extension, id)
 
 候选列表可能增长。旧 generation 不在普通 UI 默认读取范围，后续可按终态 execution 设计 retention 清理。

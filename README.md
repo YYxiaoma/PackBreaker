@@ -10,8 +10,8 @@
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python 3.11"></a>
   <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white" alt="Vue 3"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-linux%2Famd64%20%7C%20linux%2Farm64-2496ED?logo=docker&logoColor=white" alt="Docker linux/amd64 and linux/arm64"></a>
-  <img src="https://img.shields.io/badge/latest_release-v1.0.5-2563EB" alt="latest release v1.0.5">
-  <img src="https://img.shields.io/badge/main-v1.0.5_released-16A34A" alt="main v1.0.5 released">
+  <img src="https://img.shields.io/badge/latest_release-v1.0.14-2563EB" alt="latest release v1.0.14">
+  <img src="https://img.shields.io/badge/main-v1.0.14_released-16A34A" alt="main v1.0.14 released">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A" alt="MIT License"></a>
 </p>
 

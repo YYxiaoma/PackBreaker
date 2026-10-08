@@ -51,7 +51,10 @@ Task Definition
 下载器来源：
 
 - 从 qBittorrent / Transmission 读取任务对象；
+- 监控调度触发时仅冻结已完成且命中 name / category / tag 过滤的 torrent；
+- 冻结 torrent_hash、任务名、远端内容路径及当次路径映射结果，避免 discovery 期间来源范围漂移；
 - 根据现有路径映射得到容器可见媒体；
+- 路径映射失败不会静默跳过，而会物化为 MATCH_ERROR execution item；
 - 最终仍输出与目录来源一致的媒体对象模型；
 - 后续匹配链不区分来源种类。
 
@@ -320,6 +323,10 @@ M-Team、NexusPHP 等当前适配器已经具备外部 ID 搜索和 torrent 获�
 - 大小在定义的精确容差内；
 - 不存在任何 hard conflict。
 
+当前实现将“精确大小容差”固定为相对差异不超过 0.1%。该参数只影响 is_exact_match 强证据，不改变任务配置的自动匹配阈值。
+
+媒体身份提取还必须保留目录上下文：例如 Show/Season 01/01.mkv 需要恢复为 Show / S01E01。Unpack v2 在文件过滤已经确认媒体后缀后，不会再次使用旧 TaskUnit 的固定扩展名白名单拒绝用户自定义媒体后缀。
+
 自动选中后：
 
 - item → MATCHED_AUTO；
@@ -349,6 +356,39 @@ BitTorrent v1 info hash 是 torrent `info` 字典的 SHA-1，v2 info hash 是对
 - `CLIENT_CHECK_REQUIRED`：现有证据不足以由 PackBreaker 本地证明完整一致，本版本默认不自动辅种；
 - `BLOCKED` / 内容不一致：禁止辅种。
 
+WP5.5A 当前已实现为纯只读链：重新校验授权路径和 source snapshot，按候选
+冻结的站点配置版本获取 torrent，解析 metainfo 后复用 v1/v2/hybrid piece
+verifier。该阶段不会写下载器、不会创建硬链接，也不会写入源影片。
+
+缺失文件按类型进一步分类：
+
+- 缺失另一个视频或其他非辅助文件 → BLOCKED / CONTENT_MISMATCH；
+- 仅缺 .nfo / 图片 / 字幕等辅助文件 → CLIENT_CHECK_REQUIRED /
+  AUXILIARY_FETCHING，并记录待补齐路径；
+- piece hash / Merkle 校验明确不一致 → BLOCKED / CONTENT_MISMATCH。
+
+WP5.5B 已实现：仅当缺失项全部属于允许补齐的辅助文件白名单时，才会创建
+隔离 staging。系统先持久化 v2 external-operation journal intent，再向目标
+qBittorrent / Transmission 添加暂停 torrent，并显式设置 wanted / unwanted
+文件索引。主影片不会复制或链接进 staging。
+
+辅助文件就绪后，系统先暂停 staging torrent，再将“本地主影片 + staging
+辅助文件”重新组合进行完整 v1/v2/hybrid 校验。只有结果为 FULL_VERIFIED
+才移除 staging torrent（保留已下载辅助文件）并继续最终执行。任何响应丢失
+只允许通过 torrent hash + save path + PackBreaker ownership tag/label 对账，
+不能盲目重发。
+
+最终执行使用 v2 原生冻结计划，不再创建旧 UnpackTask。计划冻结 candidate
+generation、metainfo digest、源文件 immutable snapshot、输出目录、存放方式、
+目标下载器 version/binding digest 和远端 save path。文件落位通过
+SafeFilesystemGateway 执行 HARDLINK / SYMLINK / COPY，外部写入均先写 v2
+journal intent。
+
+目标下载器阶段统一采用 paused add。qBittorrent 仅在 FULL_VERIFIED、
+HARDLINK 且当前 WebAPI capability 明确支持 skip-checking 时可以跳过客户端
+复检；Transmission 以及 SYMLINK/COPY 路径必须显式执行客户端 verify/recheck。
+只有确认数据完整后才能启动做种并将 item 标记为完成。
+
 候选内容不一致时，优先遵守站点 `max_verification_candidates` 和请求间隔限制：若仍有验证预算，可尝试下一条高分候选；否则进入人工审核并展示内容不一致证据。
 
 ## 9. 人工审核状态
@@ -363,6 +403,15 @@ BitTorrent v1 info hash 是 torrent `info` 字典的 SHA-1，v2 info hash 是对
 - 用户显式确认后才进入 MATCHED_MANUAL。
 
 人工确认只改变候选选择，随后仍必须进入 TorrentContentVerifier；人工批准不能覆盖内容校验失败。
+
+自动匹配成功项同样允许人工复核，但安全边界不是单看状态值。后端统一返回
+`review_allowed`：只有 item 仍位于 REVIEW_REQUIRED、MATCHED_AUTO、
+TORRENT_FETCHING、CONTENT_VERIFYING、CONTENT_VERIFIED 或 PLAN_PENDING，
+并且该 item 尚无任何 v2 external-operation journal 时才为 true。
+
+一旦发生辅助文件 staging、文件系统落位或下载器写操作，即使 item 后续再次处于
+CONTENT_VERIFIED，也禁止直接更换候选。若人工审核与只读内容验证并发，旧 verification
+claim 在提交结果时必须因 item/version/status 已变化而作废，不能覆盖用户的新决定。
 
 允许操作：
 
