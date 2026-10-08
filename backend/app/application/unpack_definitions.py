@@ -4,15 +4,21 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
+from backend.app.application.unpack_source_scans import (
+    UnpackSourceScanService,
+    normalize_unpack_file_filter,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.task_definition import (
     TaskConflictPolicy,
     TaskStorageMode,
+    next_cron_run,
     normalize_cron_expression,
 )
 from backend.app.domain.unpack import (
@@ -31,9 +37,11 @@ from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
     UnpackDefinitionSelectedSource,
     UnpackExecution,
+    UnpackSourceScan,
     new_uuid,
     utc_now,
 )
+from backend.app.infrastructure.source_inventory import current_file_snapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +50,7 @@ class UnpackSelectedSourceCreate:
     canonical_path_hint: str
     filename: str
     size_bytes_at_selection: int | None = None
+    source_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +68,7 @@ class UnpackDefinitionCreate:
     auto_match_threshold_bps: int = 10_000
     cron_expression: str | None = None
     timezone: str | None = None
+    source_scan_id: str | None = None
     selected_sources: tuple[UnpackSelectedSourceCreate, ...] = ()
 
 
@@ -79,6 +89,8 @@ class UnpackDefinitionView:
     auto_match_threshold_bps: int
     cron_expression: str | None
     timezone: str | None
+    next_run_at: datetime | None
+    last_triggered_at: datetime | None
     selected_source_count: int
     version: int
     created_at: datetime
@@ -105,6 +117,10 @@ class UnpackDefinitionService:
         self._session_factory = session_factory
         self._timezone = timezone
         self._path_scope = path_scope or AuthorizedPathScope.legacy_only(legacy_data_root=data_root)
+        self._source_scans = UnpackSourceScanService(
+            session_factory,
+            path_scope=self._path_scope,
+        )
 
     def create(self, request: UnpackDefinitionCreate) -> UnpackDefinitionView:
         normalized = self._normalize_request(request)
@@ -125,15 +141,21 @@ class UnpackDefinitionService:
             auto_match_threshold_bps=normalized.auto_match_threshold_bps,
             cron_expression=normalized.cron_expression,
             timezone=normalized.timezone,
+            next_run_at=None,
+            last_triggered_at=None,
             version=1,
             created_at=now,
             updated_at=now,
         )
         with self._session_factory() as session:
             self._validate_foreign_references(session, normalized)
+            materialized_sources, consumed_scan = self._materialize_selected_sources(
+                session,
+                normalized,
+            )
             session.add(definition)
             session.flush()
-            for item in normalized.selected_sources:
+            for item in materialized_sources:
                 session.add(
                     UnpackDefinitionSelectedSource(
                         id=new_uuid(),
@@ -142,9 +164,12 @@ class UnpackDefinitionService:
                         canonical_path_hint=item.canonical_path_hint,
                         filename=item.filename,
                         size_bytes_at_selection=item.size_bytes_at_selection,
+                        source_snapshot=item.source_snapshot or {},
                         created_at=now,
                     )
                 )
+            if consumed_scan is not None:
+                self._source_scans.consume_scan(session, consumed_scan)
             session.commit()
             return self._view(session, definition)
 
@@ -174,9 +199,19 @@ class UnpackDefinitionService:
 
             trigger_kind = UnpackTriggerKind(definition.trigger_kind)
             if trigger_kind is UnpackTriggerKind.MONITOR:
+                cron_expression = definition.cron_expression
+                timezone = definition.timezone
+                if not cron_expression or not timezone:
+                    raise self._conflict("监控任务缺少有效 Cron 或时区配置")
+                now = utc_now()
                 definition.status = UnpackDefinitionStatus.ENABLED.value
+                definition.next_run_at = next_cron_run(
+                    cron_expression,
+                    now,
+                    timezone=timezone,
+                )
                 definition.version += 1
-                definition.updated_at = utc_now()
+                definition.updated_at = now
                 session.commit()
                 return UnpackRunResult(self._view(session, definition), None)
 
@@ -255,6 +290,10 @@ class UnpackDefinitionService:
             timezone = (request.timezone or self._timezone).strip()
             if not timezone:
                 raise self._invalid("监控拆包任务必须配置时区")
+            try:
+                next_cron_run(cron_expression, utc_now(), timezone=timezone)
+            except (ValueError, ZoneInfoNotFoundError) as exc:
+                raise self._invalid("监控拆包任务时区或 Cron 无效") from exc
 
         source_config = dict(request.source_config)
         if request.source_kind is UnpackSourceKind.DIRECTORY:
@@ -271,6 +310,7 @@ class UnpackDefinitionService:
             if not isinstance(downloader_id, str) or not downloader_id.strip():
                 raise self._invalid("下载器来源必须选择下载器")
             source_config["downloader_id"] = downloader_id.strip()
+            source_config = self._normalize_downloader_source_config(source_config)
 
         selected_sources = request.selected_sources
         if request.execution_scope_kind is UnpackExecutionScopeKind.SELECTED_MEDIA:
@@ -279,18 +319,33 @@ class UnpackDefinitionService:
                 or request.source_kind is not UnpackSourceKind.DIRECTORY
             ):
                 raise self._invalid("指定影片范围仅支持手动目录任务")
-            if not selected_sources:
+            if not request.source_scan_id and not selected_sources:
                 raise self._invalid("选择影片模式至少需要勾选一个影视文件")
+            if request.source_scan_id and selected_sources:
+                raise self._invalid("选择影片模式必须且只能提交一个目录扫描结果或影片清单")
             normalized_selected = tuple(
                 self._normalize_selected_source(item) for item in selected_sources
             )
+            source_root = Path(str(source_config["directory_path"]))
+            if any(
+                not Path(item.canonical_path_hint).is_relative_to(source_root)
+                for item in normalized_selected
+            ):
+                raise self._invalid("选定影片必须位于当前来源目录内")
         else:
-            if selected_sources:
-                raise self._invalid("全部影视文件模式不能同时提交指定影片清单")
+            if selected_sources or request.source_scan_id is not None:
+                raise self._invalid("全部影视文件模式不能同时提交指定影片清单或目录扫描")
             normalized_selected = ()
 
-        file_filter = self._normalize_file_filter(request.file_filter)
-        output_config = self._normalize_output_config(request.output_config)
+        file_filter = normalize_unpack_file_filter(request.file_filter)
+        output_config = self._normalize_output_config(
+            request.output_config,
+            default_target_downloader_id=(
+                str(source_config["downloader_id"])
+                if request.source_kind is UnpackSourceKind.DOWNLOADER
+                else None
+            ),
+        )
 
         return UnpackDefinitionCreate(
             name=name,
@@ -306,31 +361,40 @@ class UnpackDefinitionService:
             auto_match_threshold_bps=threshold,
             cron_expression=cron_expression,
             timezone=timezone,
+            source_scan_id=request.source_scan_id.strip() if request.source_scan_id else None,
             selected_sources=normalized_selected,
         )
 
-    def _normalize_file_filter(self, raw: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_downloader_source_config(self, raw: dict[str, Any]) -> dict[str, Any]:
         result = dict(raw)
-        extensions = raw.get("extensions", ())
-        if not isinstance(extensions, (list, tuple)):
-            raise self._invalid("后缀名过滤必须是数组")
-        normalized_extensions: list[str] = []
-        for value in extensions:
-            if not isinstance(value, str):
-                raise self._invalid("后缀名过滤包含无效值")
-            item = value.strip().lower()
-            if not item:
-                continue
-            if "/" in item or "\\" in item or "\x00" in item or len(item) > 32:
-                raise self._invalid("后缀名过滤包含无效值")
-            if not item.startswith("."):
-                item = f".{item}"
-            if item not in normalized_extensions:
-                normalized_extensions.append(item)
-        result["extensions"] = normalized_extensions
+        raw_name = result.get("name_contains")
+        if raw_name is not None and not isinstance(raw_name, str):
+            raise self._invalid("下载器任务名称过滤必须是文本")
+        name_contains = raw_name.strip() if isinstance(raw_name, str) else ""
+        if len(name_contains) > 255:
+            raise self._invalid("下载器任务名称过滤不能超过 255 个字符")
+        result["name_contains"] = name_contains or None
+
+        for field_name, label in (("categories", "分类"), ("tags", "标签")):
+            raw_values = result.get(field_name, [])
+            if not isinstance(raw_values, (list, tuple)) or any(
+                not isinstance(value, str) for value in raw_values
+            ):
+                raise self._invalid(f"下载器{label}过滤必须是文本数组")
+            normalized_values = tuple(
+                dict.fromkeys(value.strip() for value in raw_values if value.strip())
+            )
+            if len(normalized_values) > 100:
+                raise self._invalid(f"下载器{label}过滤最多支持 100 项")
+            result[field_name] = list(normalized_values)
         return result
 
-    def _normalize_output_config(self, raw: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_output_config(
+        self,
+        raw: dict[str, Any],
+        *,
+        default_target_downloader_id: str | None,
+    ) -> dict[str, Any]:
         result = dict(raw)
         output_directory = result.get("output_directory")
         if not isinstance(output_directory, str) or not output_directory.strip():
@@ -352,6 +416,18 @@ class UnpackDefinitionService:
             raise self._invalid("输出存放方式或文件冲突策略无效") from exc
         result["storage_mode"] = storage_mode.value
         result["conflict_policy"] = conflict_policy.value
+        raw_target_downloader_id = result.get("target_downloader_id")
+        if raw_target_downloader_id is None or (
+            isinstance(raw_target_downloader_id, str) and not raw_target_downloader_id.strip()
+        ):
+            raw_target_downloader_id = default_target_downloader_id
+        if (
+            not isinstance(raw_target_downloader_id, str)
+            or not raw_target_downloader_id.strip()
+            or len(raw_target_downloader_id.strip()) > 36
+        ):
+            raise self._invalid("必须选择目标下载器")
+        result["target_downloader_id"] = raw_target_downloader_id.strip()
         return result
 
     def _normalize_selected_source(
@@ -370,11 +446,29 @@ class UnpackDefinitionService:
             normalized_path = self._path_scope.normalize_reference(path)
         except DomainViolation as exc:
             raise self._invalid(str(exc)) from exc
+        candidate_path = Path(normalized_path)
+        try:
+            self._path_scope.resolve_existing_directory(candidate_path.parent.as_posix())
+            snapshot = current_file_snapshot(candidate_path)
+        except DomainViolation as exc:
+            raise self._invalid(str(exc)) from exc
+        if (
+            item.size_bytes_at_selection is not None
+            and item.size_bytes_at_selection != snapshot.size
+        ):
+            raise self._invalid("选定影片大小与当前文件快照不一致，请重新扫描")
         return UnpackSelectedSourceCreate(
             source_object_key=key,
             canonical_path_hint=normalized_path,
             filename=filename,
-            size_bytes_at_selection=item.size_bytes_at_selection,
+            size_bytes_at_selection=snapshot.size,
+            source_snapshot={
+                "device": snapshot.device,
+                "inode": snapshot.inode,
+                "size": snapshot.size,
+                "mtime_ns": str(snapshot.mtime_ns),
+                "file_type": snapshot.file_type,
+            },
         )
 
     def _validate_foreign_references(
@@ -393,6 +487,57 @@ class UnpackDefinitionService:
             downloader_id = str(request.source_config["downloader_id"])
             if session.get(Downloader, downloader_id) is None:
                 raise self._invalid("所选下载器不存在")
+        target_downloader_id = request.output_config.get("target_downloader_id")
+        if not isinstance(target_downloader_id, str):
+            raise self._invalid("必须选择目标下载器")
+        if session.get(Downloader, target_downloader_id) is None:
+            raise self._invalid("所选目标下载器不存在")
+
+    def _materialize_selected_sources(
+        self,
+        session: Session,
+        request: UnpackDefinitionCreate,
+    ) -> tuple[tuple[UnpackSelectedSourceCreate, ...], UnpackSourceScan | None]:
+        if request.execution_scope_kind is not UnpackExecutionScopeKind.SELECTED_MEDIA:
+            return (), None
+        if request.selected_sources:
+            return request.selected_sources, None
+        assert request.source_scan_id is not None
+        directory_path = request.source_config.get("directory_path")
+        assert isinstance(directory_path, str)
+        scan = session.get(UnpackSourceScan, request.source_scan_id)
+        if scan is None:
+            raise ApplicationError(
+                code="UNPACK_SOURCE_SCAN_NOT_FOUND",
+                status=404,
+                title="目录扫描不存在",
+                detail="目录扫描不存在或已经失效，请重新扫描",
+            )
+        selected = self._source_scans.selected_sources(
+            session,
+            scan_id=scan.id,
+            directory_path=directory_path,
+            file_filter=request.file_filter,
+        )
+        return (
+            tuple(
+                UnpackSelectedSourceCreate(
+                    source_object_key=item.source_object_key,
+                    canonical_path_hint=item.canonical_path_hint,
+                    filename=item.filename,
+                    size_bytes_at_selection=item.size_bytes,
+                    source_snapshot={
+                        "device": item.device,
+                        "inode": item.inode,
+                        "size": item.size_bytes,
+                        "mtime_ns": item.mtime_ns,
+                        "file_type": "regular",
+                    },
+                )
+                for item in selected
+            ),
+            scan,
+        )
 
     def _config_snapshot(
         self,
@@ -428,6 +573,7 @@ class UnpackDefinitionService:
                     "canonical_path_hint": item.canonical_path_hint,
                     "filename": item.filename,
                     "size_bytes_at_selection": item.size_bytes_at_selection,
+                    "source_snapshot": dict(item.source_snapshot or {}),
                 }
                 for item in selected
             ],
@@ -457,6 +603,8 @@ class UnpackDefinitionService:
             auto_match_threshold_bps=definition.auto_match_threshold_bps,
             cron_expression=definition.cron_expression,
             timezone=definition.timezone,
+            next_run_at=definition.next_run_at,
+            last_triggered_at=definition.last_triggered_at,
             selected_source_count=selected_count,
             version=definition.version,
             created_at=definition.created_at,

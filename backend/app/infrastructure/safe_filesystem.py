@@ -1107,6 +1107,184 @@ class SafeFilesystemGateway:
             os.close(source_parent_fd)
             os.close(target_parent_fd)
 
+    def create_symlink_atomic(
+        self,
+        *,
+        source_relative_path: str,
+        target_root_relative_path: str,
+        target_relative_path: str,
+        expected_source_snapshot: FileSnapshot,
+        expected_target_parent_snapshot: FilesystemSnapshot,
+        operation_token: str,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> FilesystemSnapshot:
+        """以 deterministic 临时 symlink + renameat2(NOREPLACE) 原子落位。"""
+
+        _validate_operation_token(operation_token)
+        _, source_parts = self._normalize_path(source_relative_path)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
+        _, target_parts = _normalize_relative_path(target_relative_path)
+        source_absolute = self.resolve_path(source_relative_path).as_posix()
+        source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
+        target_parent_fd = _open_directory_chain(
+            self._data_root,
+            target_root_parts + target_parts[:-1],
+        )
+        try:
+            source_name = source_parts[-1]
+            target_name = target_parts[-1]
+            observed_source = _stat_at(source_parent_fd, source_name)
+            if observed_source is None or observed_source.file_type != "regular":
+                raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "源文件必须是普通文件")
+            _assert_source_snapshot(observed_source, expected_source_snapshot)
+            observed_parent = _fstat_snapshot(target_parent_fd)
+            _assert_filesystem_snapshot(observed_parent, expected_target_parent_snapshot)
+            if _stat_at(target_parent_fd, target_name, missing_ok=True) is not None:
+                raise DomainViolation(ErrorCode.TARGET_CONFLICT, "软链接目标路径已存在")
+
+            temporary_name = f".packbreaker-symlink-{operation_token}.tmp"
+            temporary = _stat_at(target_parent_fd, temporary_name, missing_ok=True)
+            if temporary is not None:
+                if (
+                    temporary.file_type != "symlink"
+                    or _readlink_at(target_parent_fd, temporary_name) != source_absolute
+                ):
+                    raise DomainViolation(
+                        ErrorCode.TARGET_CONFLICT,
+                        "临时软链接存在但无法证明归属",
+                    )
+            else:
+                try:
+                    os.symlink(source_absolute, temporary_name, dir_fd=target_parent_fd)
+                except FileExistsError as exc:
+                    raise DomainViolation(ErrorCode.TARGET_CONFLICT, "临时软链接并发出现") from exc
+                except OSError as exc:
+                    raise DomainViolation(
+                        ErrorCode.PATH_MAPPING_INVALID,
+                        "无法安全创建临时软链接",
+                    ) from exc
+                _call_fault_hook(fault_hook, "after_temporary_symlink")
+
+            current_source = _stat_at(source_parent_fd, source_name)
+            if current_source is None:
+                raise DomainViolation(ErrorCode.SOURCE_CHANGED, "源文件在软链接落位前消失")
+            _assert_source_snapshot(current_source, expected_source_snapshot)
+            if _stat_at(target_parent_fd, target_name, missing_ok=True) is not None:
+                raise DomainViolation(ErrorCode.TARGET_CONFLICT, "软链接目标路径并发出现")
+            _rename_noreplace(
+                source_dir_fd=target_parent_fd,
+                source_name=temporary_name,
+                target_dir_fd=target_parent_fd,
+                target_name=target_name,
+            )
+            _call_fault_hook(fault_hook, "after_final_symlink")
+            final_snapshot = _stat_at(target_parent_fd, target_name)
+            if (
+                final_snapshot is None
+                or final_snapshot.file_type != "symlink"
+                or _readlink_at(target_parent_fd, target_name) != source_absolute
+            ):
+                raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "软链接落位后的目标状态异常")
+            return final_snapshot
+        finally:
+            os.close(source_parent_fd)
+            os.close(target_parent_fd)
+
+    def create_copy_atomic(
+        self,
+        *,
+        source_relative_path: str,
+        target_root_relative_path: str,
+        target_relative_path: str,
+        expected_source_snapshot: FileSnapshot,
+        expected_target_parent_snapshot: FilesystemSnapshot,
+        operation_token: str,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> FilesystemSnapshot:
+        """以 exclusive 临时文件 + fsync + renameat2(NOREPLACE) 原子复制。"""
+
+        _validate_operation_token(operation_token)
+        _, source_parts = self._normalize_path(source_relative_path)
+        _, target_root_parts = self._normalize_path(target_root_relative_path, allow_root=True)
+        _, target_parts = _normalize_relative_path(target_relative_path)
+        source_parent_fd = _open_directory_chain(self._data_root, source_parts[:-1])
+        target_parent_fd = _open_directory_chain(
+            self._data_root,
+            target_root_parts + target_parts[:-1],
+        )
+        source_fd: int | None = None
+        temporary_fd: int | None = None
+        try:
+            source_name = source_parts[-1]
+            target_name = target_parts[-1]
+            observed_source = _stat_at(source_parent_fd, source_name)
+            if observed_source is None or observed_source.file_type != "regular":
+                raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "源文件必须是普通文件")
+            _assert_source_snapshot(observed_source, expected_source_snapshot)
+            observed_parent = _fstat_snapshot(target_parent_fd)
+            _assert_filesystem_snapshot(observed_parent, expected_target_parent_snapshot)
+            if _stat_at(target_parent_fd, target_name, missing_ok=True) is not None:
+                raise DomainViolation(ErrorCode.TARGET_CONFLICT, "复制目标路径已存在")
+
+            temporary_name = f".packbreaker-copy-{operation_token}.tmp"
+            if _stat_at(target_parent_fd, temporary_name, missing_ok=True) is not None:
+                raise DomainViolation(ErrorCode.TARGET_CONFLICT, "临时复制文件存在但无法证明归属")
+            source_fd = _open_regular_file_at(source_parent_fd, source_name, write=False)
+            try:
+                temporary_fd = os.open(
+                    temporary_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    0o644,
+                    dir_fd=target_parent_fd,
+                )
+            except FileExistsError as exc:
+                raise DomainViolation(ErrorCode.TARGET_CONFLICT, "临时复制文件并发出现") from exc
+            except OSError as exc:
+                raise DomainViolation(
+                    ErrorCode.PATH_MAPPING_INVALID, "无法创建临时复制文件"
+                ) from exc
+
+            copied = _copy_fd(source_fd, temporary_fd)
+            if copied != expected_source_snapshot.size:
+                raise DomainViolation(ErrorCode.SOURCE_CHANGED, "源文件在复制期间长度发生变化")
+            os.fsync(temporary_fd)
+            _call_fault_hook(fault_hook, "after_temporary_copy_fsync")
+            current_source = _stat_at(source_parent_fd, source_name)
+            if current_source is None:
+                raise DomainViolation(ErrorCode.SOURCE_CHANGED, "源文件在复制落位前消失")
+            _assert_source_snapshot(current_source, expected_source_snapshot)
+            temporary = _stat_at(target_parent_fd, temporary_name)
+            if (
+                temporary is None
+                or temporary.file_type != "regular"
+                or temporary.size != expected_source_snapshot.size
+            ):
+                raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "临时复制文件状态异常")
+            if _stat_at(target_parent_fd, target_name, missing_ok=True) is not None:
+                raise DomainViolation(ErrorCode.TARGET_CONFLICT, "复制目标路径并发出现")
+            _rename_noreplace(
+                source_dir_fd=target_parent_fd,
+                source_name=temporary_name,
+                target_dir_fd=target_parent_fd,
+                target_name=target_name,
+            )
+            _call_fault_hook(fault_hook, "after_final_copy")
+            final_snapshot = _stat_at(target_parent_fd, target_name)
+            if (
+                final_snapshot is None
+                or final_snapshot.file_type != "regular"
+                or final_snapshot.size != expected_source_snapshot.size
+            ):
+                raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "复制落位后的目标状态异常")
+            return final_snapshot
+        finally:
+            if temporary_fd is not None:
+                os.close(temporary_fd)
+            if source_fd is not None:
+                os.close(source_fd)
+            os.close(source_parent_fd)
+            os.close(target_parent_fd)
+
     def exchange_duplicate_with_hardlink(
         self,
         *,

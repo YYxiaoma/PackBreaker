@@ -110,6 +110,11 @@ _TERMINAL_MESSAGES: dict[str, tuple[str, NotificationSeverity]] = {
     "CANCELLED": ("辅种任务已取消", NotificationSeverity.INFO),
 }
 
+_UNPACK_TERMINAL_MESSAGES: dict[str, tuple[str, NotificationSeverity]] = {
+    "COMPLETED": ("数据拆包任务已完成", NotificationSeverity.INFO),
+    "COMPLETED_WITH_ERRORS": ("数据拆包任务完成但存在异常", NotificationSeverity.WARNING),
+}
+
 
 def notification_message_for_site_reliability_event(
     *,
@@ -178,3 +183,23 @@ def notification_message_for_task_event(
             link=link,
         )
     return None
+
+
+def notification_message_for_unpack_execution_result(
+    *,
+    execution_id: str,
+    status: str,
+    link: str | None = None,
+) -> NotificationMessage | None:
+    terminal = _UNPACK_TERMINAL_MESSAGES.get(status)
+    if terminal is None:
+        return None
+    title, severity = terminal
+    status_label = "已完成" if status == "COMPLETED" else "已完成，但存在异常"
+    return NotificationMessage(
+        title=title,
+        body=f"数据拆包执行 {execution_id} {status_label}。",
+        severity=severity,
+        event_key=f"UNPACK_{status}",
+        link=link,
+    )

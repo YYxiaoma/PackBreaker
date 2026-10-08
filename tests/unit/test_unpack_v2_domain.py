@@ -55,6 +55,22 @@ def test_auto_match_can_be_manually_reviewed_before_side_effects() -> None:
         UnpackItemStatus.MATCHED_AUTO,
         UnpackItemStatus.REVIEW_REQUIRED,
     )
+    for status in (
+        UnpackItemStatus.TORRENT_FETCHING,
+        UnpackItemStatus.CONTENT_VERIFYING,
+        UnpackItemStatus.CONTENT_VERIFIED,
+        UnpackItemStatus.PLAN_PENDING,
+    ):
+        assert item_transition_allowed(status, UnpackItemStatus.MATCHED_MANUAL)
+        assert item_transition_allowed(status, UnpackItemStatus.NO_MATCH)
+    assert not item_transition_allowed(
+        UnpackItemStatus.AUXILIARY_FETCHING,
+        UnpackItemStatus.MATCHED_MANUAL,
+    )
+    assert not item_transition_allowed(
+        UnpackItemStatus.EXECUTING,
+        UnpackItemStatus.MATCHED_MANUAL,
+    )
 
 
 def test_terminal_item_cannot_restart() -> None:

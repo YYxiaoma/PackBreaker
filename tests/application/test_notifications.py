@@ -260,8 +260,6 @@ async def test_site_reliability_events_use_shared_aggregation_without_task_or_se
         outbox = rows[0]
         assert outbox.subject_kind == "SITE"
         assert outbox.subject_id == site_id
-        assert outbox.task_id is None
-        assert outbox.last_event_id is None
         assert outbox.event_key == "SITE_CIRCUIT_OPENED"
         assert outbox.pending_count == 2
         assert "SITE_RELIABILITY_FAILURE" in outbox.body

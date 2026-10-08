@@ -19,8 +19,7 @@ from backend.app.api.movie_dedup import router as movie_dedup_router
 from backend.app.api.notifications import router as notification_router
 from backend.app.api.sites import router as site_router
 from backend.app.api.system import router as system_router
-from backend.app.api.task_definitions import router as task_definition_router
-from backend.app.api.tasks import router as task_router
+from backend.app.api.unpack import router as unpack_router
 from backend.app.application.admin_notifications import AdminNotificationService
 from backend.app.application.ai_agent import AIAgentService
 from backend.app.application.ai_runtime import AIReadOnlyAgent
@@ -31,58 +30,35 @@ from backend.app.application.auth import AuthService
 from backend.app.application.backup_schedule import BackupDriver, BackupScheduleService
 from backend.app.application.cookiecloud import CookieCloudService
 from backend.app.application.cookiecloud_driver import CookieCloudDriver
-from backend.app.application.downloader_operations import (
-    QbittorrentAddOperationService,
-    QbittorrentJournalReconcileService,
-    QbittorrentRecheckOperationService,
-    QbittorrentRemoveOperationService,
-    QbittorrentStartOperationService,
-)
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
-from backend.app.application.filesystem_operations import FilesystemOperationService
 from backend.app.application.movie_dedup import MovieDedupService
 from backend.app.application.movie_dedup_driver import MovieDedupDriver
 from backend.app.application.notification_driver import NotificationDriver
 from backend.app.application.notifications import NotificationService
-from backend.app.application.repair_downloader_operations import RepairDownloadOperationService
 from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
 from backend.app.application.system_health import SystemResourceSampler
 from backend.app.application.system_upgrades import SystemUpgradeService
-from backend.app.application.task_actions import TaskActionService
-from backend.app.application.task_adding import TaskAddingCoordinator
-from backend.app.application.task_cancellation import TaskCancellationCoordinator
-from backend.app.application.task_client_verification import TaskClientVerificationCoordinator
-from backend.app.application.task_definition_driver import TaskDefinitionDriver
-from backend.app.application.task_definition_executions import TaskDefinitionExecutionService
-from backend.app.application.task_definitions import TaskDefinitionService
-from backend.app.application.task_driver import ActiveTaskDriver
-from backend.app.application.task_events import TaskEventService
-from backend.app.application.task_linking import TaskLinkingCoordinator
-from backend.app.application.task_operations import TaskOperationService
-from backend.app.application.task_recovery import TaskRecoveryCoordinator
-from backend.app.application.task_repair_actions import TaskRepairActionService
-from backend.app.application.task_repairs import (
-    TaskRepairCoordinator,
-    TaskRepairIsolationCoordinator,
-    TaskRepairPlanService,
+from backend.app.application.unpack_auxiliary import UnpackAuxiliaryStagingService
+from backend.app.application.unpack_content_verification import (
+    UnpackContentVerificationService,
 )
-from backend.app.application.task_seeding import TaskSeedingCoordinator
-from backend.app.application.task_telegram_approvals import TaskTelegramApprovalService
-from backend.app.application.tasks import TaskAnalysisService
-from backend.app.application.transmission_operations import (
-    TransmissionAddOperationService,
-    TransmissionJournalReconcileService,
-    TransmissionRemoveOperationService,
-    TransmissionStartOperationService,
-    TransmissionVerifyOperationService,
-)
+from backend.app.application.unpack_definitions import UnpackDefinitionService
+from backend.app.application.unpack_discovery import UnpackDiscoveryService
+from backend.app.application.unpack_driver import UnpackDriver
+from backend.app.application.unpack_execution_plans import UnpackExecutionPlanService
+from backend.app.application.unpack_executions import UnpackExecutionQueryService
+from backend.app.application.unpack_item_actions import UnpackItemActionService
+from backend.app.application.unpack_matching import UnpackMatchCoordinator
+from backend.app.application.unpack_materialization import UnpackMaterializationService
+from backend.app.application.unpack_monitor import UnpackMonitorService
+from backend.app.application.unpack_seeding import UnpackSeedingService
+from backend.app.application.unpack_source_scans import UnpackSourceScanService
 from backend.app.config import AppSettings
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
 from backend.app.infrastructure.runtime import RuntimeManager
-from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 from backend.app.infrastructure.site_reliability import SiteReliabilityRegistry
 from backend.app.versioning import app_version
 
@@ -97,6 +73,8 @@ _HTTP_EXACT_RESOURCE_LABELS: dict[str, str] = {
     "/api/v1/system/logs": "运行日志列表",
     "/api/v1/downloaders": "下载器列表",
     "/api/v1/movie-dedup/jobs": "影片去重任务列表",
+    "/api/v1/unpack/definitions": "数据拆包任务列表",
+    "/api/v1/unpack/source-scans": "数据拆包目录扫描",
     "/api/v1/sites": "站点列表",
     "/api/v1/task-definitions": "任务定义列表",
 }
@@ -110,6 +88,8 @@ _HTTP_RESOURCE_LABELS: tuple[tuple[str, str], ...] = (
     ("/api/v1/system/backups", "备份配置"),
     ("/api/v1/system/upgrade", "系统升级"),
     ("/api/v1/movie-dedup", "影片去重"),
+    ("/api/v1/unpack", "数据拆包"),
+    ("/api/v1/files/tree", "目录选择"),
     ("/api/v1/health/live", "服务存活状态"),
     ("/api/v1/health/ready", "服务就绪状态"),
     ("/api/v1/task-definitions", "任务定义"),
@@ -205,6 +185,28 @@ def create_app(
             config_dir=resolved_settings.config_dir,
         )
         app.state.authorized_path_scope = path_scope
+        unpack_source_scan_service = UnpackSourceScanService(
+            resolved_runtime.session_factory,
+            path_scope=path_scope,
+        )
+        app.state.unpack_source_scan_service = unpack_source_scan_service
+        app.state.unpack_definition_service = UnpackDefinitionService(
+            resolved_runtime.session_factory,
+            data_root=resolved_settings.data_dir,
+            timezone=resolved_settings.timezone,
+            path_scope=path_scope,
+        )
+        unpack_discovery_service = UnpackDiscoveryService(
+            resolved_runtime.session_factory,
+            path_scope=path_scope,
+        )
+        app.state.unpack_discovery_service = unpack_discovery_service
+        app.state.unpack_execution_query_service = UnpackExecutionQueryService(
+            resolved_runtime.session_factory
+        )
+        app.state.unpack_item_action_service = UnpackItemActionService(
+            resolved_runtime.session_factory
+        )
         app.state.auth_service = AuthService(resolved_runtime.session_factory)
         app.state.admin_notification_service = AdminNotificationService(
             resolved_runtime.session_factory
@@ -231,44 +233,11 @@ def create_app(
             data_root=resolved_settings.data_dir,
         )
         app.state.downloader_service = downloader_service
-        qbit_operations = QbittorrentAddOperationService(resolved_runtime.session_factory)
-        app.state.qbittorrent_add_operation_service = qbit_operations
-        qbit_recheck_operations = QbittorrentRecheckOperationService(
-            resolved_runtime.session_factory
+        unpack_monitor_service = UnpackMonitorService(
+            resolved_runtime.session_factory,
+            downloader_service,
         )
-        app.state.qbittorrent_recheck_operation_service = qbit_recheck_operations
-        repair_download_operations = RepairDownloadOperationService(
-            resolved_runtime.session_factory
-        )
-        app.state.repair_download_operation_service = repair_download_operations
-        transmission_add_operations = TransmissionAddOperationService(
-            resolved_runtime.session_factory
-        )
-        app.state.transmission_add_operation_service = transmission_add_operations
-        transmission_verify_operations = TransmissionVerifyOperationService(
-            resolved_runtime.session_factory
-        )
-        app.state.transmission_verify_operation_service = transmission_verify_operations
-        transmission_start_operations = TransmissionStartOperationService(
-            resolved_runtime.session_factory
-        )
-        app.state.transmission_start_operation_service = transmission_start_operations
-        transmission_remove_operations = TransmissionRemoveOperationService(
-            resolved_runtime.session_factory
-        )
-        app.state.transmission_remove_operation_service = transmission_remove_operations
-        qbit_start_operations = QbittorrentStartOperationService(resolved_runtime.session_factory)
-        app.state.qbittorrent_start_operation_service = qbit_start_operations
-        qbit_remove_operations = QbittorrentRemoveOperationService(resolved_runtime.session_factory)
-        app.state.qbittorrent_remove_operation_service = qbit_remove_operations
-        qbit_journal_reconcile = QbittorrentJournalReconcileService(
-            resolved_runtime.session_factory
-        )
-        app.state.qbittorrent_journal_reconcile_service = qbit_journal_reconcile
-        transmission_journal_reconcile = TransmissionJournalReconcileService(
-            resolved_runtime.session_factory
-        )
-        app.state.transmission_journal_reconcile_service = transmission_journal_reconcile
+        app.state.unpack_monitor_service = unpack_monitor_service
         site_reliability_registry = SiteReliabilityRegistry(
             event_sink=notification_service.record_site_reliability_event
         )
@@ -279,6 +248,51 @@ def create_app(
             reliability_registry=site_reliability_registry,
         )
         app.state.site_service = site_service
+        unpack_match_coordinator = UnpackMatchCoordinator(
+            resolved_runtime.session_factory,
+            site_service,
+            max_site_concurrency=resolved_settings.unpack_match_site_concurrency,
+            max_queries_per_site=resolved_settings.unpack_match_max_queries_per_site,
+            site_timeout_seconds=resolved_settings.unpack_match_site_timeout_seconds,
+            max_candidates_per_item=resolved_settings.unpack_match_candidate_limit,
+        )
+        app.state.unpack_match_coordinator = unpack_match_coordinator
+        unpack_content_verification_service = UnpackContentVerificationService(
+            resolved_runtime.session_factory,
+            site_service,
+            path_scope=path_scope,
+            fetch_timeout_seconds=resolved_settings.unpack_content_fetch_timeout_seconds,
+        )
+        app.state.unpack_content_verification_service = unpack_content_verification_service
+        unpack_auxiliary_service = UnpackAuxiliaryStagingService(
+            resolved_runtime.session_factory,
+            site_service,
+            downloader_service,
+            path_scope=path_scope,
+            fetch_timeout_seconds=resolved_settings.unpack_auxiliary_fetch_timeout_seconds,
+        )
+        app.state.unpack_auxiliary_service = unpack_auxiliary_service
+        unpack_execution_plan_service = UnpackExecutionPlanService(
+            resolved_runtime.session_factory,
+            site_service,
+            downloader_service,
+            path_scope=path_scope,
+            fetch_timeout_seconds=resolved_settings.unpack_content_fetch_timeout_seconds,
+        )
+        app.state.unpack_execution_plan_service = unpack_execution_plan_service
+        unpack_materialization_service = UnpackMaterializationService(
+            resolved_runtime.session_factory,
+            data_root=resolved_settings.data_dir,
+            path_scope=path_scope,
+        )
+        app.state.unpack_materialization_service = unpack_materialization_service
+        unpack_seeding_service = UnpackSeedingService(
+            resolved_runtime.session_factory,
+            site_service,
+            downloader_service,
+            fetch_timeout_seconds=resolved_settings.unpack_content_fetch_timeout_seconds,
+        )
+        app.state.unpack_seeding_service = unpack_seeding_service
         cookiecloud_service = CookieCloudService(
             resolved_runtime.session_factory,
             secret_store,
@@ -292,171 +306,28 @@ def create_app(
             timezone=resolved_settings.timezone,
         )
         app.state.cookiecloud_driver = cookiecloud_driver
-        app.state.task_definition_service = TaskDefinitionService(
-            resolved_runtime.session_factory,
-            data_root=resolved_settings.data_dir,
-            timezone=resolved_settings.timezone,
-            path_scope=path_scope,
+        unpack_driver = UnpackDriver(
+            unpack_discovery_service,
+            unpack_monitor_service,
+            unpack_match_coordinator,
+            unpack_content_verification_service,
+            unpack_auxiliary_service,
+            unpack_execution_plan_service,
+            unpack_materialization_service,
+            unpack_seeding_service,
+            notification_service,
+            interval_seconds=resolved_settings.unpack_driver_interval_seconds,
+            execution_limit=resolved_settings.unpack_driver_execution_limit,
+            discovery_batch_size=resolved_settings.unpack_discovery_batch_size,
+            match_batch_size=resolved_settings.unpack_match_batch_size,
+            content_verification_batch_size=resolved_settings.unpack_content_verify_batch_size,
+            auxiliary_batch_size=resolved_settings.unpack_auxiliary_batch_size,
+            execution_plan_batch_size=resolved_settings.unpack_execution_plan_batch_size,
+            materialization_batch_size=resolved_settings.unpack_materialization_batch_size,
+            seeding_batch_size=resolved_settings.unpack_seeding_batch_size,
         )
-        task_analysis_service = TaskAnalysisService(
-            resolved_runtime.session_factory,
-            site_service,
-            data_root=resolved_settings.data_dir,
-            path_scope=path_scope,
-        )
-        app.state.task_analysis_service = task_analysis_service
-        task_repair_plan_service = TaskRepairPlanService(
-            resolved_runtime.session_factory,
-            site_service,
-            downloader_service,
-            data_root=resolved_settings.data_dir,
-            path_scope=path_scope,
-        )
-        app.state.task_repair_plan_service = task_repair_plan_service
-        app.state.task_event_service = TaskEventService(resolved_runtime.session_factory)
-        filesystem_operations = FilesystemOperationService(
-            resolved_runtime.session_factory,
-            SafeFilesystemGateway(resolved_settings.data_dir, path_scope=path_scope),
-        )
-        app.state.filesystem_operation_service = filesystem_operations
-        task_repair_isolation_coordinator = TaskRepairIsolationCoordinator(
-            task_repair_plan_service,
-            filesystem_operations,
-        )
-        app.state.task_repair_isolation_coordinator = task_repair_isolation_coordinator
-        task_repair_coordinator = TaskRepairCoordinator(
-            resolved_runtime.session_factory,
-            task_repair_plan_service,
-            task_repair_isolation_coordinator,
-        )
-        app.state.task_repair_coordinator = task_repair_coordinator
-        app.state.task_repair_action_service = TaskRepairActionService(
-            resolved_runtime.session_factory,
-            task_repair_coordinator,
-        )
-        app.state.task_operation_service = TaskOperationService(
-            resolved_runtime.session_factory,
-            filesystem_operations,
-            downloader_service,
-            qbit_journal_reconcile,
-            transmission_journal_reconcile,
-            repair_download_operations,
-        )
-        task_linking_coordinator = TaskLinkingCoordinator(
-            resolved_runtime.session_factory,
-            task_analysis_service,
-            filesystem_operations,
-            data_root=resolved_settings.data_dir,
-            path_scope=path_scope,
-        )
-        app.state.task_linking_coordinator = task_linking_coordinator
-        task_adding_coordinator = TaskAddingCoordinator(
-            resolved_runtime.session_factory,
-            site_service,
-            downloader_service,
-            qbit_operations,
-            transmission_add_operations,
-            data_root=resolved_settings.data_dir,
-            path_scope=path_scope,
-        )
-        app.state.task_adding_coordinator = task_adding_coordinator
-        task_client_verification_coordinator = TaskClientVerificationCoordinator(
-            resolved_runtime.session_factory,
-            downloader_service,
-            qbit_recheck_operations,
-            transmission_verify_operations,
-            repair_download_operations,
-            data_root=resolved_settings.data_dir,
-            path_scope=path_scope,
-        )
-        app.state.task_client_verification_coordinator = task_client_verification_coordinator
-        task_seeding_coordinator = TaskSeedingCoordinator(
-            resolved_runtime.session_factory,
-            downloader_service,
-            qbit_start_operations,
-            transmission_start_operations,
-            data_root=resolved_settings.data_dir,
-            path_scope=path_scope,
-        )
-        app.state.task_seeding_coordinator = task_seeding_coordinator
-        task_cancellation_coordinator = TaskCancellationCoordinator(
-            resolved_runtime.session_factory,
-            downloader_service,
-            qbit_remove_operations,
-            filesystem_operations,
-            transmission_remove_operations,
-        )
-        app.state.task_cancellation_coordinator = task_cancellation_coordinator
-        task_action_service = TaskActionService(
-            resolved_runtime.session_factory,
-            task_linking_coordinator,
-            task_cancellation_coordinator,
-            task_cancellation_coordinator,
-        )
-        app.state.task_action_service = task_action_service
-        task_definition_execution_service = TaskDefinitionExecutionService(
-            resolved_runtime.session_factory,
-            downloader_service,
-            task_action_service,
-            task_analysis_service,
-            data_root=resolved_settings.data_dir,
-            path_scope=path_scope,
-            directory_scan_batch_size=resolved_settings.task_definition_directory_scan_batch_size,
-        )
-        app.state.task_definition_execution_service = task_definition_execution_service
-        task_telegram_approval_service = TaskTelegramApprovalService(
-            resolved_runtime.session_factory,
-            task_definition_execution_service,
-        )
-        app.state.task_telegram_approval_service = task_telegram_approval_service
-        task_recovery_coordinator = TaskRecoveryCoordinator(
-            resolved_runtime.session_factory,
-            task_linking_coordinator,
-            task_adding_coordinator,
-            task_client_verification_coordinator,
-            task_seeding_coordinator,
-            task_cancellation_coordinator,
-        )
-        app.state.task_recovery_coordinator = task_recovery_coordinator
-        try:
-            recovery_report = await task_recovery_coordinator.reconcile_once(
-                recover_abandoned_analysis=True
-            )
-        except BaseException:
-            resolved_runtime.stop()
-            raise
-        app.state.task_recovery_report = recovery_report
-        if recovery_report.blocked_count:
-            _recovery_logger.warning(
-                "启动恢复发现阻断任务 blocked_tasks=%s scanned=%s truncated=%s",
-                recovery_report.blocked_count,
-                recovery_report.scanned_count,
-                recovery_report.truncated,
-            )
-        elif recovery_report.scanned_count:
-            _recovery_logger.info(
-                "启动恢复完成 scanned=%s completed=%s waiting=%s truncated=%s",
-                recovery_report.scanned_count,
-                recovery_report.completed_count,
-                recovery_report.waiting_count,
-                recovery_report.truncated,
-            )
-        task_driver = ActiveTaskDriver(
-            task_recovery_coordinator,
-            interval_seconds=resolved_settings.task_driver_interval_seconds,
-            limit=resolved_settings.task_driver_limit,
-            max_steps_per_task=resolved_settings.task_driver_max_steps_per_task,
-        )
-        app.state.task_driver = task_driver
-        task_driver.start()
-        task_definition_driver = TaskDefinitionDriver(
-            task_definition_execution_service,
-            interval_seconds=resolved_settings.task_definition_driver_interval_seconds,
-            scan_limit=resolved_settings.task_definition_driver_scan_limit,
-            retry_limit=resolved_settings.task_definition_driver_retry_limit,
-        )
-        app.state.task_definition_driver = task_definition_driver
-        task_definition_driver.start()
+        app.state.unpack_driver = unpack_driver
+        unpack_driver.start()
         movie_dedup_driver = MovieDedupDriver(
             movie_dedup_service,
             interval_seconds=resolved_settings.movie_dedup_driver_interval_seconds,
@@ -490,11 +361,12 @@ def create_app(
             settings=resolved_settings,
             runtime=resolved_runtime,
             site_reliability_registry=site_reliability_registry,
-            task_definition_service=app.state.task_definition_service,
+            unpack_definition_service=app.state.unpack_definition_service,
+            unpack_execution_query_service=app.state.unpack_execution_query_service,
             downloader_service=downloader_service,
             site_service=site_service,
             system_upgrade_service=system_upgrade_service,
-            task_driver=task_driver,
+            unpack_driver=unpack_driver,
             notification_driver=notification_driver,
             backup_driver=backup_driver,
             help_root=Path(__file__).resolve().parents[2],
@@ -515,7 +387,7 @@ def create_app(
             interval_seconds=resolved_settings.ai_telegram_driver_interval_seconds,
             poll_timeout_seconds=resolved_settings.ai_telegram_poll_timeout_seconds,
             poll_limit=resolved_settings.ai_telegram_poll_limit,
-            approval_service=task_telegram_approval_service,
+            approval_service=None,
         )
         app.state.ai_telegram_driver = ai_telegram_driver
         cookiecloud_driver.start()
@@ -533,8 +405,7 @@ def create_app(
             await cookiecloud_driver.stop()
             await notification_driver.stop()
             await movie_dedup_driver.stop()
-            await task_definition_driver.stop()
-            await task_driver.stop()
+            await unpack_driver.stop()
             resolved_runtime.stop()
 
     app = FastAPI(
@@ -628,8 +499,7 @@ def create_app(
     app.include_router(notification_router, prefix="/api/v1")
     app.include_router(site_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
-    app.include_router(task_definition_router, prefix="/api/v1")
-    app.include_router(task_router, prefix="/api/v1")
+    app.include_router(unpack_router, prefix="/api/v1")
     _attach_frontend(app, resolved_settings)
     return app
 

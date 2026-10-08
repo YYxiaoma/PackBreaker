@@ -745,6 +745,7 @@ class UnpackDefinition(Base):
         ),
         Index("ix_unpack_definition_status_updated", "status", "updated_at"),
         Index("ix_unpack_definition_trigger_status", "trigger_kind", "status"),
+        Index("ix_unpack_definition_status_next_run", "status", "next_run_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -762,7 +763,56 @@ class UnpackDefinition(Base):
     auto_match_threshold_bps: Mapped[int] = mapped_column(nullable=False, default=10000)
     cron_expression: Mapped[str | None] = mapped_column(String(160), nullable=True)
     timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackSourceScan(Base):
+    __tablename__ = "unpack_source_scan"
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("discovered_count >= 0", name="discovered_count"),
+        Index("ix_unpack_source_scan_expires", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    directory_path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_filter: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    discovered_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackSourceScanItem(Base):
+    __tablename__ = "unpack_source_scan_item"
+    __table_args__ = (
+        CheckConstraint("size_bytes >= 0", name="size_bytes"),
+        UniqueConstraint("scan_id", "source_object_key", name="uq_unpack_source_scan_item_key"),
+        UniqueConstraint("scan_id", "relative_path", name="uq_unpack_source_scan_item_path"),
+        Index("ix_unpack_source_scan_item_scan_selected", "scan_id", "selected", "id"),
+        Index("ix_unpack_source_scan_item_scan_extension", "scan_id", "extension", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    scan_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_source_scan.id", ondelete="CASCADE"), nullable=False
+    )
+    source_object_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_path_hint: Mapped[str] = mapped_column(Text, nullable=False)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    extension: Mapped[str] = mapped_column(String(32), nullable=False)
+    resolution: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    device: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inode: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    mtime_ns: Mapped[str] = mapped_column(String(32), nullable=False)
+    selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
@@ -784,6 +834,7 @@ class UnpackDefinitionSelectedSource(Base):
     canonical_path_hint: Mapped[str] = mapped_column(Text, nullable=False)
     filename: Mapped[str] = mapped_column(Text, nullable=False)
     size_bytes_at_selection: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
@@ -856,11 +907,16 @@ class UnpackExecutionItem(Base):
     media_identity: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     selected_candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    match_origin: Mapped[str | None] = mapped_column(String(16), nullable=True)
     candidate_generation: Mapped[int] = mapped_column(nullable=False, default=0)
     retry_count: Mapped[int] = mapped_column(nullable=False, default=0)
     content_verification_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
     torrent_metainfo_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     auxiliary_state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    execution_plan: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    execution_plan_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_plan_created_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    execution_state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(96), nullable=True)
     last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     match_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -927,6 +983,7 @@ class UnpackReviewDecisionModel(Base):
             name="candidate_binding",
         ),
         Index("ix_unpack_review_item_decided", "item_id", "decided_at"),
+        UniqueConstraint("idempotency_key", name="uq_unpack_review_idempotency_key"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -939,7 +996,39 @@ class UnpackReviewDecisionModel(Base):
         String(36), ForeignKey("unpack_match_candidate.id", ondelete="SET NULL"), nullable=True
     )
     item_version_before: Mapped[int] = mapped_column(nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     decided_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackExternalOperationJournal(Base):
+    __tablename__ = "unpack_external_operation_journal"
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_OPERATION_STATUS_SQL})", name="status"),
+        UniqueConstraint("idempotency_key", name="uq_unpack_external_operation_key"),
+        Index(
+            "ix_unpack_external_operation_item_status",
+            "item_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    item_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("unpack_execution_item.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    target: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    intent: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    before_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    after_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
 class MovieDedupJob(Base):
@@ -1165,13 +1254,7 @@ class NotificationOutbox(Base):
         CheckConstraint(f"severity IN ({_NOTIFICATION_SEVERITY_SQL})", name="severity"),
         CheckConstraint("pending_count >= 0", name="pending_count"),
         CheckConstraint("attempt_count >= 0", name="attempt_count"),
-        CheckConstraint("subject_kind IN ('TASK', 'SITE')", name="subject_kind"),
-        CheckConstraint(
-            "(subject_kind = 'TASK' AND task_id IS NOT NULL AND last_event_id IS NOT NULL "
-            "AND subject_id = task_id) OR "
-            "(subject_kind = 'SITE' AND task_id IS NULL AND last_event_id IS NULL)",
-            name="subject_identity",
-        ),
+        CheckConstraint("subject_kind IN ('TASK', 'SITE', 'UNPACK')", name="subject_kind"),
         UniqueConstraint(
             "channel_id",
             "subject_kind",
@@ -1180,7 +1263,6 @@ class NotificationOutbox(Base):
             name="uq_notification_outbox_channel_subject_event_key",
         ),
         Index("ix_notification_outbox_due", "state", "next_attempt_at"),
-        Index("ix_notification_outbox_task_updated", "task_id", "updated_at"),
         Index("ix_notification_outbox_subject_updated", "subject_kind", "subject_id", "updated_at"),
     )
 
@@ -1192,12 +1274,6 @@ class NotificationOutbox(Base):
     )
     subject_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     subject_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    task_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("unpack_task.id", ondelete="CASCADE"), nullable=True
-    )
-    last_event_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("task_event.id", ondelete="CASCADE"), nullable=True
-    )
     channel_version: Mapped[int] = mapped_column(nullable=False)
     event_key: Mapped[str] = mapped_column(String(128), nullable=False)
     title: Mapped[str] = mapped_column(String(64), nullable=False)

@@ -19,6 +19,7 @@ from backend.app.domain.unpack import (
 )
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.models import (
+    Downloader,
     Site,
     UnpackDefinitionSelectedSource,
     UnpackExecution,
@@ -39,18 +40,33 @@ def _service(tmp_path: Path) -> tuple[UnpackDefinitionService, sessionmaker[Sess
         expire_on_commit=False,
     )
     with factory() as session:
-        session.add(
-            Site(
-                id="site-mteam",
-                name="M-TEAM",
-                type="MTEAM",
-                base_url="https://kp.m-team.cc",
-                credential_kind="API_KEY",
-                capabilities={},
-                connection_status="OK",
-                enabled=True,
-                version=1,
-            )
+        session.add_all(
+            [
+                Site(
+                    id="site-mteam",
+                    name="M-TEAM",
+                    type="MTEAM",
+                    base_url="https://kp.m-team.cc",
+                    credential_kind="API_KEY",
+                    capabilities={},
+                    connection_status="OK",
+                    enabled=True,
+                    version=1,
+                ),
+                Downloader(
+                    id="downloader-target",
+                    name="目标 qB",
+                    type="QBITTORRENT",
+                    base_url="http://qb.test",
+                    monitor_rules={},
+                    path_mappings=[],
+                    capabilities={"supports_selective_files": True},
+                    connection_status="OK",
+                    path_mapping_status="OK",
+                    enabled=True,
+                    version=1,
+                ),
+            ]
         )
         session.commit()
 
@@ -83,6 +99,7 @@ def _request(
             "output_directory": (source.parent / "seeding").as_posix(),
             "storage_mode": "HARDLINK",
             "conflict_policy": "VERIFY_REUSE_OR_STOP",
+            "target_downloader_id": "downloader-target",
         },
         auto_match_threshold_bps=9680,
         selected_sources=selected_sources,
@@ -150,14 +167,15 @@ def test_selected_media_is_persisted_and_frozen_into_execution(tmp_path: Path) -
     with factory() as session:
         execution = session.get(UnpackExecution, result.execution_id)
         assert execution is not None
-        assert execution.config_snapshot["selected_sources"] == [
-            {
-                "source_object_key": "movie-key",
-                "canonical_path_hint": movie.as_posix(),
-                "filename": movie.name,
-                "size_bytes_at_selection": len(b"synthetic"),
-            }
-        ]
+        selected_snapshot = execution.config_snapshot["selected_sources"]
+        assert len(selected_snapshot) == 1
+        assert selected_snapshot[0]["source_object_key"] == "movie-key"
+        assert selected_snapshot[0]["canonical_path_hint"] == movie.as_posix()
+        assert selected_snapshot[0]["filename"] == movie.name
+        assert selected_snapshot[0]["size_bytes_at_selection"] == len(b"synthetic")
+        assert selected_snapshot[0]["source_snapshot"]["size"] == len(b"synthetic")
+        assert selected_snapshot[0]["source_snapshot"]["file_type"] == "regular"
+        assert isinstance(selected_snapshot[0]["source_snapshot"]["mtime_ns"], str)
 
 
 def test_selected_media_requires_at_least_one_selection(tmp_path: Path) -> None:
@@ -188,6 +206,7 @@ def test_monitor_save_is_pending_and_run_only_enables_schedule(tmp_path: Path) -
             "output_directory": (source.parent / "seeding").as_posix(),
             "storage_mode": "HARDLINK",
             "conflict_policy": "VERIFY_REUSE_OR_STOP",
+            "target_downloader_id": "downloader-target",
         },
         cron_expression="*/10 * * * *",
     )
@@ -198,8 +217,34 @@ def test_monitor_save_is_pending_and_run_only_enables_schedule(tmp_path: Path) -
 
     assert result.execution_id is None
     assert result.definition.status is UnpackDefinitionStatus.ENABLED
+    assert result.definition.next_run_at is not None
+    assert result.definition.last_triggered_at is None
     with factory() as session:
         assert session.scalar(select(func.count(UnpackExecution.id))) == 0
+
+
+def test_monitor_rejects_invalid_timezone(tmp_path: Path) -> None:
+    service, _factory, source = _service(tmp_path)
+    request = UnpackDefinitionCreate(
+        name="无效时区监控",
+        trigger_kind=UnpackTriggerKind.MONITOR,
+        source_kind=UnpackSourceKind.DIRECTORY,
+        execution_scope_kind=UnpackExecutionScopeKind.ALL_MATCHING_MEDIA,
+        source_config={"directory_path": source.as_posix()},
+        file_filter={"extensions": [".mkv"]},
+        site_ids=("site-mteam",),
+        output_config={
+            "output_directory": (source.parent / "seeding").as_posix(),
+            "storage_mode": "HARDLINK",
+            "conflict_policy": "VERIFY_REUSE_OR_STOP",
+            "target_downloader_id": "downloader-target",
+        },
+        cron_expression="*/10 * * * *",
+        timezone="Mars/Olympus_Mons",
+    )
+
+    with pytest.raises(ApplicationError, match="时区或 Cron 无效"):
+        service.create(request)
 
 
 def test_manual_directory_rejects_cron(tmp_path: Path) -> None:
@@ -208,4 +253,20 @@ def test_manual_directory_rejects_cron(tmp_path: Path) -> None:
     invalid = replace(request, cron_expression="*/10 * * * *")
 
     with pytest.raises(ApplicationError, match="不能配置 Cron"):
+        service.create(invalid)
+
+
+def test_manual_directory_requires_explicit_target_downloader(tmp_path: Path) -> None:
+    service, _factory, source = _service(tmp_path)
+    request = _request(source)
+    invalid = replace(
+        request,
+        output_config={
+            key: value
+            for key, value in request.output_config.items()
+            if key != "target_downloader_id"
+        },
+    )
+
+    with pytest.raises(ApplicationError, match="必须选择目标下载器"):
         service.create(invalid)

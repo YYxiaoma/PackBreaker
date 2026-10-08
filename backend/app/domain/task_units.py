@@ -241,6 +241,25 @@ def _apply_episode_directory_context(
     )
 
 
+def apply_episode_directory_context(
+    descriptor: MediaDescriptor,
+    *,
+    display_name: str,
+    episode_context: str,
+) -> MediaDescriptor:
+    """为已确认是媒体文件的描述符补充 Season/Specials 目录上下文。
+
+    与 identify_task_units 不同，这个入口不再次检查扩展名；调用方负责先完成
+    自己的媒体过滤，因此适合 Unpack v2 的用户自定义后缀场景。
+    """
+
+    return _apply_episode_directory_context(
+        descriptor,
+        display_name=display_name,
+        episode_context=episode_context,
+    )
+
+
 def _episode_directory_context(value: str) -> _EpisodeDirectoryContext | None:
     normalized = unicodedata.normalize("NFC", value).replace("\\", "/")
     parts = tuple(part for part in normalized.split("/") if part and part != ".")

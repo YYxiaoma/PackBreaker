@@ -170,6 +170,85 @@ def test_hardlink_inspection_uses_nearest_existing_parent_snapshot(tmp_path: Pat
     assert result.missing_directories == ("Pack/Season",)
 
 
+def test_create_symlink_atomic_uses_frozen_source_and_never_overwrites(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "movie.mkv"
+    target_root = tmp_path / "target"
+    source.parent.mkdir()
+    target_root.mkdir()
+    source.write_bytes(b"synthetic")
+    gateway = SafeFilesystemGateway(tmp_path)
+    parent = gateway.assert_directory(relative_path="target")
+
+    result = gateway.create_symlink_atomic(
+        source_relative_path="source/movie.mkv",
+        target_root_relative_path="target",
+        target_relative_path="movie.mkv",
+        expected_source_snapshot=_snapshot(source),
+        expected_target_parent_snapshot=parent,
+        operation_token="d" * 64,
+    )
+
+    target = target_root / "movie.mkv"
+    assert result.file_type == "symlink"
+    assert target.is_symlink()
+    assert os.readlink(target) == str(source)
+    assert source.read_bytes() == b"synthetic"
+    current_parent = gateway.assert_directory(relative_path="target")
+
+    with pytest.raises(DomainViolation) as failure:
+        gateway.create_symlink_atomic(
+            source_relative_path="source/movie.mkv",
+            target_root_relative_path="target",
+            target_relative_path="movie.mkv",
+            expected_source_snapshot=_snapshot(source),
+            expected_target_parent_snapshot=current_parent,
+            operation_token="e" * 64,
+        )
+    assert failure.value.code is ErrorCode.TARGET_CONFLICT
+
+
+def test_create_copy_atomic_keeps_distinct_inode_and_rejects_changed_source(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source" / "movie.mkv"
+    target_root = tmp_path / "target"
+    source.parent.mkdir()
+    target_root.mkdir()
+    source.write_bytes(b"synthetic-copy")
+    gateway = SafeFilesystemGateway(tmp_path)
+    expected = _snapshot(source)
+    parent = gateway.assert_directory(relative_path="target")
+
+    result = gateway.create_copy_atomic(
+        source_relative_path="source/movie.mkv",
+        target_root_relative_path="target",
+        target_relative_path="movie.mkv",
+        expected_source_snapshot=expected,
+        expected_target_parent_snapshot=parent,
+        operation_token="f" * 64,
+    )
+
+    target = target_root / "movie.mkv"
+    assert result.file_type == "regular"
+    assert target.read_bytes() == source.read_bytes()
+    assert target.stat(follow_symlinks=False).st_ino != source.stat(follow_symlinks=False).st_ino
+
+    changed = tmp_path / "source" / "changed.mkv"
+    changed.write_bytes(b"first")
+    stale = _snapshot(changed)
+    changed.write_bytes(b"second-content")
+    with pytest.raises(DomainViolation) as failure:
+        gateway.create_copy_atomic(
+            source_relative_path="source/changed.mkv",
+            target_root_relative_path="target",
+            target_relative_path="changed.mkv",
+            expected_source_snapshot=stale,
+            expected_target_parent_snapshot=parent,
+            operation_token="0" * 64,
+        )
+    assert failure.value.code is ErrorCode.SOURCE_CHANGED
+
+
 def test_repair_target_inspection_proves_shared_inode_without_writing(tmp_path: Path) -> None:
     source = tmp_path / "source" / "movie.mkv"
     target_root = tmp_path / "target"

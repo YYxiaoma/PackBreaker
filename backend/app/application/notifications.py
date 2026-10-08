@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Protocol
 from urllib.parse import quote
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -28,7 +29,7 @@ from backend.app.domain.notification import (
 )
 from backend.app.domain.proxy import ProxyConfig
 from backend.app.infrastructure.adapters.notifications import NotificationProviderFactory
-from backend.app.infrastructure.persistence.models import NotificationChannel
+from backend.app.infrastructure.persistence.models import NotificationChannel, UnpackExecution
 from backend.app.infrastructure.persistence.notification_repositories import (
     NotificationChannelRepository,
     NotificationOutboxRepository,
@@ -470,6 +471,29 @@ class NotificationService:
                 occurred_at=datetime.now(UTC),
             )
             session.commit()
+
+    def project_unpack_execution_results(self, execution_ids: tuple[str, ...]) -> int:
+        if not execution_ids:
+            return 0
+        unique_ids = tuple(dict.fromkeys(execution_ids))
+        with self._session_factory() as session:
+            executions = session.scalars(
+                select(UnpackExecution)
+                .where(UnpackExecution.id.in_(unique_ids))
+                .where(UnpackExecution.status.in_(("COMPLETED", "COMPLETED_WITH_ERRORS")))
+                .order_by(UnpackExecution.id)
+            ).all()
+            repository = NotificationOutboxRepository(session)
+            projected = sum(
+                repository.project_unpack_execution_result(
+                    execution_id=execution.id,
+                    status=execution.status,
+                    occurred_at=execution.finished_at or execution.updated_at,
+                )
+                for execution in executions
+            )
+            session.commit()
+            return projected
 
     async def deliver_due_once(
         self,

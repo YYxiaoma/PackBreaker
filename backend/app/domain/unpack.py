@@ -105,6 +105,17 @@ TERMINAL_ITEM_STATUSES = frozenset(
     }
 )
 
+REVIEWABLE_ITEM_STATUSES = frozenset(
+    {
+        UnpackItemStatus.REVIEW_REQUIRED,
+        UnpackItemStatus.MATCHED_AUTO,
+        UnpackItemStatus.TORRENT_FETCHING,
+        UnpackItemStatus.CONTENT_VERIFYING,
+        UnpackItemStatus.CONTENT_VERIFIED,
+        UnpackItemStatus.PLAN_PENDING,
+    }
+)
+
 
 _EXECUTION_TRANSITIONS: dict[UnpackExecutionStatus, frozenset[UnpackExecutionStatus]] = {
     UnpackExecutionStatus.DISCOVERING: frozenset(
@@ -202,6 +213,7 @@ _ITEM_TRANSITIONS: dict[UnpackItemStatus, frozenset[UnpackItemStatus]] = {
         {
             UnpackItemStatus.REVIEW_REQUIRED,
             UnpackItemStatus.MATCHED_MANUAL,
+            UnpackItemStatus.NO_MATCH,
             UnpackItemStatus.TORRENT_FETCHING,
             UnpackItemStatus.CANCELLED,
         }
@@ -227,6 +239,8 @@ _ITEM_TRANSITIONS: dict[UnpackItemStatus, frozenset[UnpackItemStatus]] = {
         {
             UnpackItemStatus.AUXILIARY_FETCHING,
             UnpackItemStatus.CONTENT_VERIFYING,
+            UnpackItemStatus.MATCHED_MANUAL,
+            UnpackItemStatus.NO_MATCH,
             UnpackItemStatus.MATCH_ERROR,
             UnpackItemStatus.CANCELLED,
         }
@@ -243,11 +257,18 @@ _ITEM_TRANSITIONS: dict[UnpackItemStatus, frozenset[UnpackItemStatus]] = {
             UnpackItemStatus.CONTENT_VERIFIED,
             UnpackItemStatus.CONTENT_MISMATCH,
             UnpackItemStatus.REVIEW_REQUIRED,
+            UnpackItemStatus.MATCHED_MANUAL,
+            UnpackItemStatus.NO_MATCH,
             UnpackItemStatus.CANCELLED,
         }
     ),
     UnpackItemStatus.CONTENT_VERIFIED: frozenset(
-        {UnpackItemStatus.PLAN_PENDING, UnpackItemStatus.CANCELLED}
+        {
+            UnpackItemStatus.MATCHED_MANUAL,
+            UnpackItemStatus.NO_MATCH,
+            UnpackItemStatus.PLAN_PENDING,
+            UnpackItemStatus.CANCELLED,
+        }
     ),
     UnpackItemStatus.CONTENT_MISMATCH: frozenset(
         {
@@ -258,6 +279,8 @@ _ITEM_TRANSITIONS: dict[UnpackItemStatus, frozenset[UnpackItemStatus]] = {
     ),
     UnpackItemStatus.PLAN_PENDING: frozenset(
         {
+            UnpackItemStatus.MATCHED_MANUAL,
+            UnpackItemStatus.NO_MATCH,
             UnpackItemStatus.EXECUTING,
             UnpackItemStatus.EXECUTION_ERROR,
             UnpackItemStatus.CANCELLED,

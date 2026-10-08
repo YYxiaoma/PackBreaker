@@ -24,4 +24,6 @@ def test_browser_ci_does_not_prestart_dev_server_on_preview_port() -> None:
     assert "pnpm dev" not in command, "Preview owns port 5173; a dev server would block it"
     assert "vite_pid" not in command
     assert "packbreaker-vite.log" not in command
-    assert "check-web-approval-e2e.cjs" in "\n".join(step.get("run", "") for step in steps)
+    all_commands = "\n".join(step.get("run", "") for step in steps)
+    assert "check-unpack-v2-ui.cjs" in all_commands
+    assert "check-web-approval-e2e.cjs" not in all_commands

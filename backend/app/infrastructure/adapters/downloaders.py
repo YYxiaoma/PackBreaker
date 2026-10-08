@@ -151,6 +151,16 @@ class QbittorrentTorrentState:
         return self.state in _SEEDING_STATES and self.progress == 1.0
 
 
+class DownloaderFileSelectionAdapter(Protocol):
+    async def set_file_selection(
+        self,
+        torrent_hash: str,
+        *,
+        wanted: tuple[int, ...],
+        unwanted: tuple[int, ...],
+    ) -> None: ...
+
+
 class QbittorrentWriteAdapter(Protocol):
     async def add_torrent(self, request: QbittorrentAddRequest) -> QbittorrentAddResult: ...
 
@@ -315,6 +325,7 @@ class QbittorrentAdapter:
                 supports_skip_checking=(parsed_webapi_version < _QBITTORRENT_SKIP_CHECKING_REMOVED),
                 supports_force_recheck=True,
                 supports_verify_progress=True,
+                supports_selective_files=True,
             )
         )
 
@@ -582,6 +593,38 @@ class QbittorrentAdapter:
     async def recheck_torrent(self, torrent_hash: str) -> None:
         await self._torrent_action("recheck", torrent_hash)
 
+    async def set_file_selection(
+        self,
+        torrent_hash: str,
+        *,
+        wanted: tuple[int, ...],
+        unwanted: tuple[int, ...],
+    ) -> None:
+        normalized = _normalize_torrent_hash(torrent_hash)
+        wanted_ids, unwanted_ids = _normalize_file_selection(wanted, unwanted)
+        async with self._authenticated_client() as client:
+            for file_ids, priority in ((unwanted_ids, 0), (wanted_ids, 1)):
+                if not file_ids:
+                    continue
+                response = await client.post(
+                    f"{self._base_url}/api/v2/torrents/filePrio",
+                    data={
+                        "hash": normalized,
+                        "id": "|".join(str(item) for item in file_ids),
+                        "priority": str(priority),
+                    },
+                )
+                if response.status_code in {401, 403}:
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_AUTH_FAILED",
+                        "qBittorrent 认证失败",
+                    )
+                if response.status_code not in {200, 204}:
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_WRITE_FAILED",
+                        "qBittorrent 文件选择设置失败",
+                    )
+
     async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
         normalized = _normalize_torrent_hash(torrent_hash)
         async with self._authenticated_client() as client:
@@ -797,6 +840,7 @@ class TransmissionAdapter:
                 supports_skip_checking=False,
                 supports_force_recheck=True,
                 supports_verify_progress=True,
+                supports_selective_files=True,
             )
         )
 
@@ -1038,6 +1082,23 @@ class TransmissionAdapter:
     async def verify_torrent(self, torrent_hash: str) -> None:
         await self._torrent_action("torrent_verify", torrent_hash)
 
+    async def set_file_selection(
+        self,
+        torrent_hash: str,
+        *,
+        wanted: tuple[int, ...],
+        unwanted: tuple[int, ...],
+    ) -> None:
+        wanted_ids, unwanted_ids = _normalize_file_selection(wanted, unwanted)
+        await self._rpc(
+            "torrent_set",
+            {
+                "ids": [_normalize_torrent_hash(torrent_hash)],
+                "files_wanted": list(wanted_ids),
+                "files_unwanted": list(unwanted_ids),
+            },
+        )
+
     async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
         await self._rpc(
             "torrent_remove",
@@ -1121,6 +1182,24 @@ class TransmissionAdapter:
             raise DownloaderAdapterError(
                 "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC 响应无法解析"
             ) from exc
+
+
+def _normalize_file_selection(
+    wanted: tuple[int, ...],
+    unwanted: tuple[int, ...],
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    def normalize(values: tuple[int, ...]) -> tuple[int, ...]:
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values
+        ):
+            raise ValueError("torrent 文件索引必须是非负整数")
+        return tuple(sorted(set(values)))
+
+    wanted_ids = normalize(wanted)
+    unwanted_ids = normalize(unwanted)
+    if set(wanted_ids) & set(unwanted_ids):
+        raise ValueError("同一 torrent 文件不能同时设为 wanted 与 unwanted")
+    return wanted_ids, unwanted_ids
 
 
 def _remote_child(root: str, name: str) -> str:
