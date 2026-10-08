@@ -15,7 +15,7 @@ import {
   Menu,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import TaskDefinitionCenter from './components/TaskDefinitionCenter.vue';
+import TaskCenterV2 from './components/TaskCenterV2.vue';
 import OverviewDashboard from './components/OverviewDashboard.vue';
 import WorkspaceManagement from './components/WorkspaceManagement.vue';
 import AuthGate from './components/AuthGate.vue';
@@ -271,7 +271,7 @@ function openVersionPopover(): void {
         </div>
       </header>
       <main>
-        <TaskDefinitionCenter
+        <TaskCenterV2
           v-if="route === '任务中心'"
           @navigate="route = normalizePrimaryRoute($event)"
         />
