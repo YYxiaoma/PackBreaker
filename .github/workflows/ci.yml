@@ -234,7 +234,7 @@ jobs:
           # makes the production browser gate fail or target stale dev assets.
           (cd frontend && corepack pnpm test:e2e)
       - name: Run data unpack v2 browser gate
-        run: node scripts/check-unpack-v2-ui.cjs
+        run: PB_UNPACK_V2_E2E_PRODUCTION=1 node scripts/check-unpack-v2-ui.cjs
 
   container:
     runs-on: ubuntu-latest

@@ -6,6 +6,7 @@ const { spawn } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const frontendUrl = 'http://127.0.0.1:5175';
+const productionPreview = process.env.PB_UNPACK_V2_E2E_PRODUCTION === '1';
 const children = [];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -25,7 +26,11 @@ async function waitReady(url) {
 function startFrontend() {
   const child = spawn(
     'corepack',
-    ['pnpm', 'exec', 'vite', '--host', '127.0.0.1', '--port', '5175', '--strictPort'],
+    [
+      'pnpm', 'exec', 'vite',
+      ...(productionPreview ? ['preview'] : []),
+      '--host', '127.0.0.1', '--port', '5175', '--strictPort',
+    ],
     {
       cwd: path.join(root, 'frontend'),
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -53,6 +58,13 @@ const fulfillJson = (route, body, status = 200) =>
     // 预期端口未占用。
   }
   assert.equal(listening, false, `拒绝使用已有前端服务：${frontendUrl}`);
+  if (productionPreview) {
+    assert.equal(
+      require('node:fs').existsSync(path.join(root, 'frontend/dist/index.html')),
+      true,
+      '生产构建产物不存在，拒绝静默回退到开发服务器',
+    );
+  }
   startFrontend();
   await waitReady(frontendUrl);
 
@@ -417,6 +429,11 @@ const fulfillJson = (route, body, status = 200) =>
     assert.equal(await modeCards.filter({ hasText: '数据拆包' }).count(), 1);
     assert.equal(await modeCards.filter({ hasText: '数据去重' }).count(), 1);
     assert.equal(await modeCards.filter({ hasText: '数据拆包' }).evaluate((el) => el.classList.contains('active')), true);
+    assert.equal(
+      await page.getByRole('button', { name: '清理历史 payload', exact: true }).count(),
+      0,
+      'v2 任务中心不得暴露旧 retention/purge 入口',
+    );
 
     await page.getByText('电影库手动拆包', { exact: true }).waitFor();
     await page.getByText('新番持续监控', { exact: true }).waitFor();
@@ -524,7 +541,7 @@ const fulfillJson = (route, body, status = 200) =>
 
     assert.deepEqual(unmocked, [], 'v1.0.15 UI 烟测不得请求未显式 mock 的 API');
     assert.deepEqual(errors, []);
-    console.log('通过：v1.0.15 两卡任务中心、Cron 辅助、下载器来源、保存语义、自动匹配审核、重试与 390px 响应式烟测。');
+    console.log(`通过：v1.0.15 ${productionPreview ? '生产构建' : '开发构建'}两卡任务中心、Cron 辅助、下载器来源、保存语义、自动匹配审核、重试与 390px 响应式烟测。`);
   } finally {
     await browser.close();
   }

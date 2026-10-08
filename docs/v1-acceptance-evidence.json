@@ -189,11 +189,12 @@
     },
     {
       "id": "V1-021",
-      "criterion": "retention 前端门禁必须只把服务端 `retention-plan` 中 `eligible=true` 的单条 journal 暴露为 purge",
+      "criterion": "数据拆包 v2 不得暴露旧任务的 retention/purge 前端入口；历史 journal 清理继续在后端 fail-closed 并支持同键重放",
       "status": "covered",
       "evidence": [
-        {"path": "scripts/check-prototype.cjs", "contains": "只有 retention-plan eligible journal 才显示 purge 按钮"},
-        {"path": "scripts/check-prototype.cjs", "contains": "retention purge 必须复用相同 Idempotency-Key"}
+        {"path": "scripts/check-unpack-v2-ui.cjs", "contains": "v2 任务中心不得暴露旧 retention/purge 入口"},
+        {"path": "tests/application/test_task_operations.py", "contains": "test_retention_purge_commits_tombstone_and_replays_after_response_loss"},
+        {"path": "tests/application/test_task_operations.py", "contains": "test_retention_plan_and_purge_fail_closed_on_all_reference_types"}
       ]
     },
     {
