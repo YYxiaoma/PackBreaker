@@ -2963,7 +2963,14 @@
           "BTSCHOOL",
           "PTTIME",
           "ROUSI_PRO",
-          "LINGYIN_CLUB"
+          "LINGYIN_CLUB",
+          "PTERCLUB",
+          "AUDIENCES",
+          "SPRING_SUNDAY",
+          "HDDOLBY",
+          "U2",
+          "TANGPT",
+          "CARPT"
         ],
         "title": "SiteKind",
         "type": "string"
@@ -5432,7 +5439,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.1.0"
+    "version": "1.1.1"
   },
   "openapi": "3.1.0",
   "paths": {

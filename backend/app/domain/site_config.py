@@ -17,6 +17,13 @@ class SiteKind(StrEnum):
     PTTIME = "PTTIME"
     ROUSI_PRO = "ROUSI_PRO"
     LINGYIN_CLUB = "LINGYIN_CLUB"
+    PTERCLUB = "PTERCLUB"
+    AUDIENCES = "AUDIENCES"
+    SPRING_SUNDAY = "SPRING_SUNDAY"
+    HDDOLBY = "HDDOLBY"
+    U2 = "U2"
+    TANGPT = "TANGPT"
+    CARPT = "CARPT"
 
 
 class SiteCredentialKind(StrEnum):
@@ -150,16 +157,98 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         supports_user_agent=True,
         supports_browser_emulation=True,
     ),
+    SiteKind.PTERCLUB: SiteProfile(
+        kind=SiteKind.PTERCLUB,
+        display_name="PTerClub",
+        base_url="https://pterclub.net",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
+    ),
+    SiteKind.AUDIENCES: SiteProfile(
+        kind=SiteKind.AUDIENCES,
+        display_name="Audiences",
+        base_url="https://audiences.me",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
+    ),
+    SiteKind.SPRING_SUNDAY: SiteProfile(
+        kind=SiteKind.SPRING_SUNDAY,
+        display_name="SpringSunday",
+        base_url="https://springsunday.net",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
+    ),
+    SiteKind.HDDOLBY: SiteProfile(
+        kind=SiteKind.HDDOLBY,
+        display_name="HDDolby",
+        base_url="https://www.hddolby.com",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
+    ),
+    SiteKind.U2: SiteProfile(
+        kind=SiteKind.U2,
+        display_name="U2",
+        base_url="https://u2.dmhy.org",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
+    ),
+    SiteKind.TANGPT: SiteProfile(
+        kind=SiteKind.TANGPT,
+        display_name="不可躺",
+        base_url="https://tangpt.top",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
+    ),
+    SiteKind.CARPT: SiteProfile(
+        kind=SiteKind.CARPT,
+        display_name="CarPT",
+        base_url="https://carpt.net",
+        credential_kind=SiteCredentialKind.COOKIE,
+        search_interval_seconds=2.0,
+        supports_user_agent=True,
+        supports_browser_emulation=True,
+        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
+    ),
 }
 
 
-# v1.0.5: every implemented site profile may participate in production tasks.
-# The historical name is kept to avoid an unnecessary public/domain rename.
-PERSISTED_SITE_KINDS = frozenset(SiteKind)
+# v1.1.1: seven newly registered sites are configurable but not yet eligible
+# for production jobs. Never implicitly authorize future enum members.
+PERSISTED_SITE_KINDS = frozenset(
+    {
+        SiteKind.MTEAM,
+        SiteKind.HDTIME,
+        SiteKind.HHCLUB,
+        SiteKind.KEEPFRDS,
+        SiteKind.HDHOME,
+        SiteKind.UBITS,
+        SiteKind.HDFANS,
+        SiteKind.BTSCHOOL,
+        SiteKind.PTTIME,
+        SiteKind.ROUSI_PRO,
+        SiteKind.LINGYIN_CLUB,
+    }
+)
 CONFIGURABLE_SITE_KINDS = frozenset(SiteKind)
-# Schema capacity remains explicit even though all current SiteKind values are
-# also production-capable. Future pending adapters may still be registered
-# without being added to PERSISTED_SITE_KINDS.
+# Database capacity includes pending kinds without permitting execution.
 DATABASE_SITE_KINDS = frozenset(SiteKind)
 PERSISTED_SITE_CREDENTIAL_KINDS = frozenset({SiteCredentialKind.API_KEY, SiteCredentialKind.COOKIE})
 

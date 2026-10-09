@@ -257,6 +257,9 @@ _ITEM_TRANSITIONS: dict[UnpackItemStatus, frozenset[UnpackItemStatus]] = {
     ),
     UnpackItemStatus.CONTENT_VERIFYING: frozenset(
         {
+            # Recheck another auto-proposed candidate before any downloader
+            # or filesystem side effect. The service checks origin and journal.
+            UnpackItemStatus.MATCHED_AUTO,
             UnpackItemStatus.CONTENT_VERIFIED,
             UnpackItemStatus.CONTENT_MISMATCH,
             UnpackItemStatus.REVIEW_REQUIRED,

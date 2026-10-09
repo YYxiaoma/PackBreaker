@@ -24,6 +24,11 @@ _OFFICIAL_CURRENT_IMAGE_ALIASES: dict[str, tuple[str, ...]] = {
     "ghcr.io/yyxiaoma/packbreaker": (
         "yyxiaoma/packbreaker",
         "docker.io/yyxiaoma/packbreaker",
+        # Official Docker Hub repository was published under yyxiaoma01.
+        # These are current-image aliases only: target upgrades must still
+        # point to the approved immutable GHCR release digest.
+        "yyxiaoma01/packbreaker",
+        "docker.io/yyxiaoma01/packbreaker",
     )
 }
 _HOST_CONFIG_KEYS = (

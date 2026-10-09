@@ -1,14 +1,14 @@
-name: v1.1.0 Candidate Dual Registry Delivery
+name: v1.1.1 Candidate Dual Registry Delivery
 
 # Manual-only candidate delivery. Requires exact candidate branch HEAD and
-# successful SHA-bound CI before it publishes the reviewed source to
+# successful SHA-bound CI and candidate Docker E2E before it publishes the reviewed source to
 # GHCR and Docker Hub under an immutable candidate tag, but never creates a
 # formal Git tag/Release and never advances latest/stable.
 on:
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: "Full 40-character SHA of the reviewed v1.1.0 candidate commit"
+        description: "Full 40-character SHA of the reviewed v1.1.1 candidate commit"
         required: true
         type: string
 
@@ -16,12 +16,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: packbreaker-candidate-v110-dual-registry-delivery
+  group: packbreaker-candidate-v111-dual-registry-delivery
   cancel-in-progress: false
 
 env:
   CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-  CANDIDATE_VERSION: 1.1.0
+  CANDIDATE_VERSION: 1.1.1
   GHCR_IMAGE: ghcr.io/yyxiaoma/packbreaker
   DOCKERHUB_IMAGE: docker.io/yyxiaoma01/packbreaker
 
@@ -38,10 +38,10 @@ jobs:
       digest: ${{ steps.build.outputs.digest }}
       tag: ${{ steps.identity.outputs.tag }}
     steps:
-      - name: Check out candidate/v1.1.0 for source verification
+      - name: Check out candidate/v1.1.1 for source verification
         uses: actions/checkout@v4
         with:
-          ref: candidate/v1.1.0
+          ref: candidate/v1.1.1
           fetch-depth: 0
           persist-credentials: false
       - name: Verify candidate source identity and version
@@ -51,15 +51,32 @@ jobs:
           set -euo pipefail
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           git cat-file -e "$CANDIDATE_SHA^{commit}"
-          test "$(git rev-parse refs/remotes/origin/candidate/v1.1.0)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse refs/remotes/origin/candidate/v1.1.1)" = "$CANDIDATE_SHA"
           git checkout --detach "$CANDIDATE_SHA"
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           test "$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" = "$CANDIDATE_VERSION"
-          tag="candidate-v1.1.0-${CANDIDATE_SHA:0:12}"
+          tag="candidate-v1.1.1-${CANDIDATE_SHA:0:12}"
           echo "CANDIDATE_TAG=$tag" >> "$GITHUB_ENV"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "build_date=$(git show -s --format=%cI "$CANDIDATE_SHA")" >> "$GITHUB_OUTPUT"
-      - name: Require successful CI for the exact reviewed candidate SHA
+      - name: Require verified v1.1.0 immutable upgrade baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from scripts.validate_release_baseline import load_release_baseline
+
+          baseline = load_release_baseline()
+          assert baseline.version == "1.1.0"
+          assert baseline.tag == "v1.1.0"
+          assert baseline.commit == "8cf4d0c41faa7d31643d438d429ed4f450d7b2c5"
+          assert baseline.image_digest == (
+              "sha256:9c436d036a165fc419e1347ee954680cabd68a8b8aa358908ebd48328360d255"
+          )
+          assert baseline.alembic_revision == "0044_retire_legacy_task_runtime"
+          assert baseline.platforms == ("linux/amd64", "linux/arm64")
+          PY
+      - name: Require successful CI and Docker E2E for the exact candidate SHA
         shell: bash
         env:
           CI_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -71,32 +88,35 @@ jobs:
           import urllib.request
 
           sha = os.environ["CANDIDATE_SHA"]
-          url = (
-              "https://api.github.com/repos/YYxiaoma/PackBreaker/"
-              f"actions/workflows/ci.yml/runs?head_sha={sha}&event=push&per_page=100"
-          )
-          request = urllib.request.Request(
-              url,
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {os.environ['CI_READ_TOKEN']}",
-                  "User-Agent": "PackBreaker-v1.1.0-candidate-delivery",
-              },
-          )
-          with urllib.request.urlopen(request, timeout=30) as response:
-              runs = json.load(response).get("workflow_runs", [])
-          matched = [
-              run for run in runs
-              if run.get("head_sha") == sha
-              and run.get("head_branch") == "candidate/v1.1.0"
-              and run.get("event") == "push"
-              and run.get("conclusion") == "success"
-              and run.get("status") == "completed"
-              and run.get("path", "").endswith("/ci.yml")
-          ]
-          if not matched:
-              raise SystemExit("Candidate SHA lacks a completed successful CI run")
-          print(f"Verified exact candidate CI run {matched[0]['id']}")
+          for workflow in ("ci.yml", "candidate-docker-e2e.yml"):
+              url = (
+                  "https://api.github.com/repos/YYxiaoma/PackBreaker/"
+                  f"actions/workflows/{workflow}/runs?head_sha={sha}&event=push&per_page=100"
+              )
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {os.environ['CI_READ_TOKEN']}",
+                      "User-Agent": "PackBreaker-v1.1.1-candidate-delivery",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  runs = json.load(response).get("workflow_runs", [])
+              matched = [
+                  run for run in runs
+                  if run.get("head_sha") == sha
+                  and run.get("head_branch") == "candidate/v1.1.1"
+                  and run.get("event") == "push"
+                  and run.get("conclusion") == "success"
+                  and run.get("status") == "completed"
+                  and run.get("path", "").endswith("/" + workflow)
+              ]
+              if not matched:
+                  raise SystemExit(
+                      f"Candidate SHA lacks a completed successful {workflow} push run"
+                  )
+              print(f"Verified exact candidate {workflow} run {matched[0]['id']}")
           PY
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -156,13 +176,13 @@ jobs:
           test "$dockerhub_digest" = "$digest"
           python3 scripts/verify_release_platforms.py \
             --image "$GHCR_IMAGE@$digest" \
-            --tag v1.1.0 \
+            --tag v1.1.1 \
             --commit "$CANDIDATE_SHA" \
             --multiarch
           bash scripts/check-immutable-image-runtime.sh \
-            "$GHCR_IMAGE@$digest" linux/amd64 v1.1.0 "$CANDIDATE_SHA"
+            "$GHCR_IMAGE@$digest" linux/amd64 v1.1.1 "$CANDIDATE_SHA"
           bash scripts/check-immutable-image-runtime.sh \
-            "$DOCKERHUB_IMAGE@$digest" linux/amd64 v1.1.0 "$CANDIDATE_SHA"
+            "$DOCKERHUB_IMAGE@$digest" linux/amd64 v1.1.1 "$CANDIDATE_SHA"
           echo "GHCR candidate: $GHCR_IMAGE@$digest" >> "$GITHUB_STEP_SUMMARY"
           echo "Docker Hub candidate: $DOCKERHUB_IMAGE@$digest" >> "$GITHUB_STEP_SUMMARY"
 
@@ -201,7 +221,7 @@ jobs:
           digest='${{ needs.publish-candidate.outputs.digest }}'
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           bash scripts/check-immutable-image-runtime.sh \
-            "$GHCR_IMAGE@$digest" linux/arm64 v1.1.0 "$CANDIDATE_SHA"
+            "$GHCR_IMAGE@$digest" linux/arm64 v1.1.1 "$CANDIDATE_SHA"
           bash scripts/check-immutable-image-runtime.sh \
-            "$DOCKERHUB_IMAGE@$digest" linux/arm64 v1.1.0 "$CANDIDATE_SHA"
+            "$DOCKERHUB_IMAGE@$digest" linux/arm64 v1.1.1 "$CANDIDATE_SHA"
           echo "Native ARM64 verified both registries at $digest" >> "$GITHUB_STEP_SUMMARY"

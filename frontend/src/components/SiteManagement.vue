@@ -15,6 +15,7 @@ import type {
   SiteTemporaryProbeInput,
 } from '../api/sites';
 import { useSiteStore } from '../stores/sites';
+import { siteProfileOptionLabel } from '../api/sites';
 
 interface SiteDraft {
   id: string | null;
@@ -90,13 +91,6 @@ function credentialLabel(kind: SiteKind): string {
   const credentialKind = profileFor(kind)?.credential_kind;
   if (credentialKind === 'API_KEY') return 'API Key';
   return 'Cookie';
-}
-
-function supportLabel(profile: SiteProfile | undefined): string {
-  if (!profile) return '配置未加载';
-  if (profile.support_status === 'SUPPORTED') return '已完成适配';
-  if (profile.support_status === 'PENDING_REAL_VALIDATION') return '待真实验收';
-  return '待适配';
 }
 
 function profileConfigurable(profile: SiteProfile | undefined): boolean {
@@ -618,7 +612,7 @@ async function remove(item: Site) {
               <el-option
                 v-for="profile in profiles"
                 :key="profile.kind"
-                :label="`${profile.display_name} · ${supportLabel(profile)}`"
+                :label="siteProfileOptionLabel(profile)"
                 :value="profile.kind"
                 :disabled="!profileConfigurable(profile)"
               />

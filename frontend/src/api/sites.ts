@@ -11,6 +11,16 @@ export type SiteProbeResult = components['schemas']['SiteProbeResponse'];
 export type SiteProfile = components['schemas']['SiteProfileResponse'];
 export type SiteTemporaryProbeInput = components['schemas']['SiteTemporaryProbeRequest'];
 
+export function siteProfileOptionLabel(
+  profile: Pick<SiteProfile, 'display_name' | 'support_status'>,
+): string {
+  // SUPPORTED identifies a registered adapter, not successful real-site
+  // credential validation or cross-seeding acceptance.
+  if (profile.support_status === 'SUPPORTED') return profile.display_name;
+  const status = profile.support_status === 'PENDING_REAL_VALIDATION' ? '待真实验收' : '待适配';
+  return `${profile.display_name} · ${status}`;
+}
+
 export function credentialKindForSite(kind: SiteKind): SiteCredentialKind {
   return kind === 'MTEAM' || kind === 'ROUSI_PRO' ? 'API_KEY' : 'COOKIE';
 }

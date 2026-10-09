@@ -42,6 +42,9 @@ async def check_one_site(
     site: str,
     *,
     config: dict[str, Any],
+    query_text: str = "2024",
+    search_only: bool = False,
+    require_title_match: bool = False,
     factory: SiteAdapterFactory | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> dict[str, object]:
@@ -88,7 +91,7 @@ async def check_one_site(
         )
         stage = "SEARCH"
         page = await adapter.search(
-            SearchQuery(("2024",), SearchMediaType.MOVIE, page=1, page_size=20)
+            SearchQuery((query_text,), SearchMediaType.MOVIE, page=1, page_size=20)
         )
         candidate = next(
             (
@@ -100,6 +103,31 @@ async def check_one_site(
         )
         if candidate is None:
             return {"site": site, "status": "NO_ELIGIBLE_CANDIDATE"}
+        if require_title_match:
+            candidate = next(
+                (
+                    item
+                    for item in page.items
+                    if item.total_size is not None
+                    and (item.seeders or 0) > 0
+                    and query_text.casefold() in item.display_name.casefold()
+                ),
+                None,
+            )
+            if candidate is None:
+                return {
+                    "site": site,
+                    "status": "NO_TITLE_MATCH",
+                    "returned_candidates": len(page.items),
+                }
+        if search_only:
+            # No detail/download requests, torrent metainfo or downloader writes.
+            return {
+                "site": site,
+                "status": "CANDIDATE_FOUND",
+                "client_or_tracker_contacted": False,
+                "torrent_saved": False,
+            }
         # Keep the explicit profile interval between search and details. No
         # retry or extra candidate on any failed torrent fetch.
         await sleep(max(2.0, profile.search_interval_seconds))
@@ -142,9 +170,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--site", choices=tuple(_SITE_LABELS), required=True)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--acknowledge-download-record", action="store_true")
+    parser.add_argument("--search-only", action="store_true")
+    parser.add_argument("--require-title-match", action="store_true")
+    parser.add_argument("--query", default="2024")
     args = parser.parse_args(argv)
-    if not (args.live and args.acknowledge_download_record):
-        print("未发起站点请求：须同时指定 --live 与 --acknowledge-download-record")
+    if not args.live or (not args.search_only and not args.acknowledge_download_record):
+        print("未发起站点请求：搜索需 --live --search-only；取种还需确认下载记录")
+        return 2
+    if not args.query.strip() or len(args.query) > 120:
+        print("未发起站点请求：搜索词长度无效")
         return 2
     try:
         if not _SECRET_PATH.is_file() or stat.S_IMODE(_SECRET_PATH.stat().st_mode) != 0o600:
@@ -157,9 +191,17 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, UnicodeError):
         print("配置文件无法安全读取；未发起站点请求")
         return 2
-    result = asyncio.run(check_one_site(args.site, config=config))
+    result = asyncio.run(
+        check_one_site(
+            args.site,
+            config=config,
+            query_text=args.query,
+            search_only=args.search_only,
+            require_title_match=args.require_title_match,
+        )
+    )
     print(json.dumps(result, ensure_ascii=False))
-    return 0 if result.get("status") == "VALID_METAINFO" else 1
+    return 0 if result.get("status") in {"VALID_METAINFO", "CANDIDATE_FOUND"} else 1
 
 
 if __name__ == "__main__":

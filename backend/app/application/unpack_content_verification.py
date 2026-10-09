@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol
@@ -10,13 +12,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
-from backend.app.domain.errors import DomainViolation
+from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.file_mapping import AutoMappingDecision, SourceFileCandidate, auto_map_files
 from backend.app.domain.torrent import TorrentKind, TorrentMeta
 from backend.app.domain.unpack import (
     UnpackCandidateVerificationStatus,
     UnpackExecutionStatus,
     UnpackItemStatus,
+    item_transition_allowed,
 )
 from backend.app.domain.unpack_auxiliary import is_auxiliary_torrent_path
 from backend.app.domain.verification import (
@@ -35,6 +38,7 @@ from backend.app.infrastructure.persistence.database import begin_immediate_writ
 from backend.app.infrastructure.persistence.models import (
     UnpackExecution,
     UnpackExecutionItem,
+    UnpackExternalOperationJournal,
     UnpackMatchCandidate,
     utc_now,
 )
@@ -93,6 +97,8 @@ class _VerificationOutcome:
 
 class UnpackContentVerificationService:
     """Unpack v2 只读 torrent 内容验证。此服务不写下载器，也不修改源文件。"""
+
+    _MAX_AUTO_CANDIDATE_ATTEMPTS = 3
 
     def __init__(
         self,
@@ -287,7 +293,13 @@ class UnpackContentVerificationService:
                     detail="站点返回的 torrent 身份与选中候选不一致",
                 )
             meta = parse_torrent(payload.content)
-            mappings = auto_map_files(meta, (source,))
+            # A torrent may contain several existing movie files in the same
+            # authorized directory, even though discovery created one task
+            # item for just one video. Inspect only direct regular siblings
+            # named in this torrent; never recursively scan the media library.
+            source = self._current_source(claim)
+            candidates = self._source_candidates_for_torrent(source, meta)
+            mappings = auto_map_files(meta, candidates)
             phase = (
                 UnpackItemStatus.AUXILIARY_FETCHING
                 if _only_auxiliary_missing(mappings)
@@ -295,6 +307,19 @@ class UnpackContentVerificationService:
             )
             self._mark_verification_phase(claim, phase)
             verification = await asyncio.to_thread(_verify_torrent, meta, mappings)
+            # Never persist FULL_VERIFIED if a media file changed during the
+            # potentially lengthy torrent download or piece hashing.
+            self._current_source(claim)
+            for mapping in mappings:
+                if mapping.source_path is None or mapping.snapshot is None:
+                    continue
+                if current_file_snapshot(Path(mapping.source_path)) != mapping.snapshot:
+                    raise ApplicationError(
+                        code="SOURCE_SNAPSHOT_CHANGED",
+                        status=409,
+                        title="来源文件已变化",
+                        detail="内容校验期间来源目录文件已变化，请重新匹配",
+                    )
             outcome = _build_outcome(meta, mappings, verification)
         except TimeoutError:
             self._finalize_failure(
@@ -393,6 +418,51 @@ class UnpackContentVerificationService:
             snapshot=observed,
         )
 
+    def _source_candidates_for_torrent(
+        self, source: SourceFileCandidate, meta: TorrentMeta
+    ) -> tuple[SourceFileCandidate, ...]:
+        """Bounded, same-directory, read-only lookup for torrent file basenames."""
+        source_path = Path(source.source_path)
+        self._path_scope.resolve_existing_directory(source_path.parent.as_posix())
+        lengths_by_name: dict[str, set[int]] = {}
+        for torrent_file in meta.files:
+            if torrent_file.padding or torrent_file.zero_length:
+                continue
+            basename = PurePosixPath(torrent_file.path).name
+            lengths_by_name.setdefault(basename, set()).add(torrent_file.length)
+
+        siblings: list[SourceFileCandidate] = [source]
+        try:
+            with os.scandir(source_path.parent) as entries:
+                for index, entry in enumerate(entries):
+                    if index >= 2048:
+                        raise DomainViolation(
+                            ErrorCode.TORRENT_LIMIT_EXCEEDED,
+                            "影片同级目录条目数超出安全扫描上限",
+                        )
+                    if entry.name == source_path.name or entry.name not in lengths_by_name:
+                        continue
+                    observed = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISREG(observed.st_mode):
+                        continue
+                    if observed.st_size not in lengths_by_name[entry.name]:
+                        continue
+                    child_path = source_path.parent / entry.name
+                    snapshot = current_file_snapshot(child_path)
+                    siblings.append(
+                        SourceFileCandidate(
+                            relative_path=entry.name,
+                            source_path=child_path.as_posix(),
+                            length=snapshot.size,
+                            snapshot=snapshot,
+                        )
+                    )
+        except OSError as exc:
+            raise DomainViolation(
+                ErrorCode.PATH_MAPPING_INVALID, "无法安全读取来源影片所在目录"
+            ) from exc
+        return tuple(sorted(siblings, key=lambda item: (item.relative_path, item.source_path)))
+
     def _finalize_outcome(
         self,
         claim: _VerificationClaim,
@@ -418,6 +488,23 @@ class UnpackContentVerificationService:
                 **dict(candidate.evidence),
                 "content_verification": outcome.evidence,
             }
+            if (
+                outcome.item_status is UnpackItemStatus.CONTENT_MISMATCH
+                and outcome.error_code
+                in {"UNPACK_CONTENT_MISMATCH", "UNPACK_CONTENT_REQUIRED_FILE_MISSING"}
+                and self._select_auto_fallback(session, item, candidate, execution)
+            ):
+                item.content_verification_level = None
+                item.torrent_metainfo_digest = None
+                item.auxiliary_state = None
+                item.last_error_code = None
+                item.last_error_message = None
+                item.updated_at = now
+                item.version += 1
+                session.flush()
+                self._refresh_execution_state(session, execution)
+                session.commit()
+                return
             if item.status == UnpackItemStatus.AUXILIARY_FETCHING.value and outcome.item_status in {
                 UnpackItemStatus.CONTENT_VERIFIED,
                 UnpackItemStatus.CONTENT_MISMATCH,
@@ -436,6 +523,91 @@ class UnpackContentVerificationService:
             session.flush()
             self._refresh_execution_state(session, execution)
             session.commit()
+
+    def _select_auto_fallback(
+        self,
+        session: Session,
+        item: UnpackExecutionItem,
+        failed: UnpackMatchCandidate,
+        execution: UnpackExecution,
+    ) -> bool:
+        """Select at most three auto-proposed candidates in one generation."""
+        if item.match_origin != "AUTO" or not item_transition_allowed(
+            UnpackItemStatus(item.status), UnpackItemStatus.MATCHED_AUTO
+        ):
+            return False
+        # A prior auxiliary downloader request or materialization may already
+        # have side effects. Do not silently change torrents after that point.
+        if (
+            session.scalar(
+                select(UnpackExternalOperationJournal.id)
+                .where(UnpackExternalOperationJournal.item_id == item.id)
+                .limit(1)
+            )
+            is not None
+        ):
+            return False
+        snapshot = execution.config_snapshot
+        matching = snapshot.get("matching") if isinstance(snapshot, dict) else None
+        threshold = matching.get("auto_match_threshold_bps") if isinstance(matching, dict) else None
+        if (
+            not isinstance(threshold, int)
+            or isinstance(threshold, bool)
+            or not 0 <= threshold <= 10000
+        ):
+            return False
+        generation = session.scalars(
+            select(UnpackMatchCandidate)
+            .where(UnpackMatchCandidate.item_id == item.id)
+            .where(UnpackMatchCandidate.generation == item.candidate_generation)
+            .order_by(UnpackMatchCandidate.score_bps.desc(), UnpackMatchCandidate.id)
+        ).all()
+        attempts = sum(
+            candidate.verification_status
+            in {
+                UnpackCandidateVerificationStatus.MISMATCH.value,
+                UnpackCandidateVerificationStatus.UNAVAILABLE.value,
+                UnpackCandidateVerificationStatus.VERIFYING.value,
+                UnpackCandidateVerificationStatus.VERIFIED.value,
+            }
+            for candidate in generation
+        )
+        if attempts >= self._MAX_AUTO_CANDIDATE_ATTEMPTS:
+            return False
+        for candidate in generation:
+            if (
+                candidate.id == failed.id
+                or candidate.verification_status
+                != UnpackCandidateVerificationStatus.NOT_CHECKED.value
+                or candidate.score_bps < threshold
+            ):
+                continue
+            evidence = candidate.evidence
+            if not isinstance(evidence, dict) or evidence.get("hard_conflicts") != []:
+                continue
+            exact = evidence.get("exact")
+            if (
+                not isinstance(exact, dict)
+                or exact.get("title") is not True
+                or exact.get("size") is not True
+            ):
+                continue
+            ref = candidate.raw_ref
+            if (
+                not isinstance(ref, dict)
+                or ref.get("site_config_id") != candidate.site_id
+                or not isinstance(ref.get("torrent_id"), str)
+                or not ref["torrent_id"]
+                or not isinstance(ref.get("adapter_site_id"), str)
+                or not ref["adapter_site_id"]
+                or type(ref.get("site_config_version")) is not int
+                or ref["site_config_version"] < 1
+            ):
+                continue
+            item.selected_candidate_id = candidate.id
+            item.status = UnpackItemStatus.MATCHED_AUTO.value
+            return True
+        return False
 
     def _finalize_failure(
         self,

@@ -139,6 +139,63 @@ async def test_rousi_acceptance_requires_both_secrets_and_trusted_origin(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("search_titles", "search_only", "expected_status"),
+    (
+        (("Unrelated.Media.2024",), True, "NO_TITLE_MATCH"),
+        (("Unrelated.Media.2024",), False, "NO_TITLE_MATCH"),
+        (("Unrelated.Media.2024", "九品芝麻官.1994.1080p"), True, "CANDIDATE_FOUND"),
+    ),
+)
+async def test_search_acceptance_requires_real_title_match_when_requested(
+    search_titles: tuple[str, ...], search_only: bool, expected_status: str
+) -> None:
+    class FakeAdapter:
+        async def search(self, query: SearchQuery) -> SearchPage:
+            assert query.query_text == "九品芝麻官"
+            return SearchPage(
+                "keepfrds",
+                1,
+                tuple(
+                    normalize_candidate_meta(
+                        site_id="keepfrds",
+                        torrent_id=str(index + 1),
+                        display_name=title,
+                        total_size=1024,
+                        seeders=3,
+                    )
+                    for index, title in enumerate(search_titles)
+                ),
+                False,
+            )
+
+        async def fetch_torrent(self, torrent_id: str) -> TorrentPayload:
+            raise AssertionError("只读搜索不应下载任何种子")
+
+    class Factory:
+        def create(self, **_kwargs: object) -> FakeAdapter:
+            return FakeAdapter()
+
+    result = await acceptance.check_one_site(
+        "keepfrds",
+        config={
+            "KeepFrds": {
+                "url": site_profile(SiteKind.KEEPFRDS).base_url,
+                "auth_type": "cookie",
+                "cookie": "synthetic-secret",
+            }
+        },
+        query_text="九品芝麻官",
+        search_only=search_only,
+        require_title_match=True,
+        factory=cast(SiteAdapterFactory, Factory()),
+    )
+    assert result["status"] == expected_status
+    assert "synthetic-secret" not in json.dumps(result, ensure_ascii=False)
+    assert "九品芝麻官" not in json.dumps(result, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
 async def test_candidate_torrent_acceptance_one_fetch_without_sensitive_output() -> None:
     class FakeAdapter:
         fetch_count = 0

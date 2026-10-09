@@ -257,6 +257,58 @@ def test_rate_limited_site_uses_broad_title_search_instead_of_false_no_match() -
     assert report.no_match_count == 0
 
 
+@pytest.mark.parametrize("english_size", (1600, 1000))
+def test_rate_limited_bilingual_fallback_checks_size_before_stopping(english_size: int) -> None:
+    filename = "Hail.the.Judge.1994.1080p.BluRay.mkv"
+    factory = _factory(threshold=0, filename=filename, size=1000)
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        snapshot = dict(item.source_snapshot)
+        snapshot["path"] = f"/data/九品芝麻官.Hail.the.Judge.1994.1080p.BluRay/{filename}"
+        item.source_snapshot = snapshot
+        session.commit()
+
+    class BilingualSearch(_FakeSiteAdapter):
+        async def capabilities(self) -> SiteSearchCapabilities:
+            return SiteSearchCapabilities(min_request_interval_seconds=0.001)
+
+        async def search(self, query: SearchQuery) -> SearchPage:
+            self.queries.append(query)
+            items: tuple[CandidateMeta, ...]
+            if query.query_text == "hail the judge":
+                items = (
+                    _candidate(
+                        "Hail.the.Judge.1994.1080p.BluRay", torrent_id="english", size=english_size
+                    ),
+                )
+            elif query.query_text == "九品芝麻官":
+                items = (
+                    _candidate("九品芝麻官.1994.1080p.BluRay", torrent_id="chinese", size=1000),
+                )
+            else:
+                items = ()
+            return SearchPage("fake-site", 1, items, False)
+
+    adapter = BilingualSearch()
+    report = asyncio.run(
+        UnpackMatchCoordinator(
+            factory, _FakeSiteProvider(adapter), max_queries_per_site=2
+        ).match_next_batch("execution-1")
+    )
+    assert report.matched_auto_count == 1
+    expected_queries = (
+        ["hail the judge", "九品芝麻官"] if english_size == 1600 else ["hail the judge"]
+    )
+    assert [query.query_text for query in adapter.queries] == expected_queries
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None and item.selected_candidate_id
+        selected = session.get(UnpackMatchCandidate, item.selected_candidate_id)
+        assert selected is not None
+        assert selected.candidate_key == ("chinese" if english_size == 1600 else "english")
+
+
 def test_search_diagnostics_explain_each_title_stage_without_leaking_queries(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

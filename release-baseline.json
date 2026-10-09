@@ -1,16 +1,16 @@
 {
   "format_version": 2,
-  "version": "1.0.15",
-  "tag": "v1.0.15",
-  "commit": "9150824f049ac2ae3b69feafb31a4abab30d235c",
+  "version": "1.1.0",
+  "tag": "v1.1.0",
+  "commit": "8cf4d0c41faa7d31643d438d429ed4f450d7b2c5",
   "platform": "multi",
   "platforms": [
     "linux/amd64",
     "linux/arm64"
   ],
   "image": "ghcr.io/yyxiaoma/packbreaker",
-  "image_digest": "sha256:aa5c259cadc69852e19de7d0da7748979e77f03c2b128598d131eb1d8f8c7b4b",
-  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:aa5c259cadc69852e19de7d0da7748979e77f03c2b128598d131eb1d8f8c7b4b",
+  "image_digest": "sha256:9c436d036a165fc419e1347ee954680cabd68a8b8aa358908ebd48328360d255",
+  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:9c436d036a165fc419e1347ee954680cabd68a8b8aa358908ebd48328360d255",
   "alembic_revision": "0044_retire_legacy_task_runtime",
-  "release_workflow_run_id": 37717632954
+  "release_workflow_run_id": 37874282427
 }

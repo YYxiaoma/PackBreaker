@@ -473,8 +473,18 @@ class UnpackMatchCoordinator:
                                 )
                                 break
                             previous_page_identity = page_identity
+                            # A title-related result is not necessarily a
+                            # plausible cross-seed candidate: some trackers
+                            # return other encodes with very different sizes.
+                            # Preserve the Chinese/English fallback unless a
+                            # candidate has both matching title evidence and
+                            # near-exact source size. The later torrent hash
+                            # verification gate is unchanged.
                             if interval > 0 and any(
-                                not item.assessment.rejected for item in found.values()
+                                not item.assessment.rejected
+                                and item.assessment.evidence["exact"]["title"]
+                                and item.assessment.evidence["exact"]["size"]
+                                for item in found.values()
                             ):
                                 break
                         return list(found.values()), failures

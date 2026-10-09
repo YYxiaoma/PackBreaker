@@ -59,6 +59,13 @@ _CANDIDATE_NEXUS_KINDS = frozenset(
         SiteKind.BTSCHOOL,
         SiteKind.PTTIME,
         SiteKind.LINGYIN_CLUB,
+        SiteKind.PTERCLUB,
+        SiteKind.AUDIENCES,
+        SiteKind.SPRING_SUNDAY,
+        SiteKind.HDDOLBY,
+        SiteKind.U2,
+        SiteKind.TANGPT,
+        SiteKind.CARPT,
     }
 )
 

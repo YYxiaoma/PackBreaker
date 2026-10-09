@@ -97,6 +97,13 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
             "PTTIME",
             "ROUSI_PRO",
             "LINGYIN_CLUB",
+            "PTERCLUB",
+            "AUDIENCES",
+            "SPRING_SUNDAY",
+            "HDDOLBY",
+            "U2",
+            "TANGPT",
+            "CARPT",
         }
         assert items["MTEAM"]["base_url"] == "https://kp.m-team.cc"
         assert items["HDTIME"]["base_url"] == "https://hdtime.org"
@@ -108,15 +115,21 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
         assert items["LINGYIN_CLUB"]["base_url"] == "https://pt.soulvoice.club"
         assert items["LINGYIN_CLUB"]["credential_kind"] == "COOKIE"
         assert items["LINGYIN_CLUB"]["support_status"] == "SUPPORTED"
+        assert items["HDDOLBY"]["base_url"] == "https://www.hddolby.com"
+        assert items["TANGPT"]["base_url"] == "https://tangpt.top"
+        for kind in ("PTERCLUB", "AUDIENCES", "SPRING_SUNDAY", "HDDOLBY", "U2", "TANGPT", "CARPT"):
+            assert items[kind]["credential_kind"] == "COOKIE"
+            assert items[kind]["support_status"] == "PENDING_REAL_VALIDATION"
     finally:
         client.__exit__(None, None, None)
 
 
-def test_all_site_profiles_can_enable_without_connection_probe(tmp_path: Path) -> None:
+def test_supported_site_profiles_can_enable_without_connection_probe(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
-        assert all(site_kind_is_persistable(kind) for kind in SiteKind)
-        for kind in SiteKind:
+        supported = [kind for kind in SiteKind if site_kind_is_persistable(kind)]
+        assert len(supported) == 11
+        for kind in supported:
             profile = site_profile(kind)
             secret = f"synthetic-secret-for-{kind.value}"
             payload = {
@@ -147,11 +160,60 @@ def test_all_site_profiles_can_enable_without_connection_probe(tmp_path: Path) -
             assert secret not in enabled.text
         with app.state.runtime.session_factory() as session:
             records = list(session.scalars(select(Site)))
-            assert len(records) == len(SiteKind)
+            assert len(records) == len(supported)
             assert all(row.enabled and row.secret_id is not None for row in records)
-            assert len(list(session.scalars(select(SecretRecord)))) == len(SiteKind) + 1
-        assert len(app.state.site_service.enabled_site_versions()) == len(SiteKind)
-        assert len(app.state.site_service.enabled_adapters()) == len(SiteKind)
+            assert len(list(session.scalars(select(SecretRecord)))) == len(supported) + 1
+        assert len(app.state.site_service.enabled_site_versions()) == len(supported)
+        assert len(app.state.site_service.enabled_adapters()) == len(supported)
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
+        SiteKind.PTERCLUB,
+        SiteKind.AUDIENCES,
+        SiteKind.SPRING_SUNDAY,
+        SiteKind.HDDOLBY,
+        SiteKind.U2,
+        SiteKind.TANGPT,
+        SiteKind.CARPT,
+    ),
+)
+def test_v111_pending_site_saves_encrypted_cookie_but_cannot_enable(
+    tmp_path: Path, kind: SiteKind
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    cookie = "synthetic-do-not-leak-cookie"
+    try:
+        response = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={
+                "name": f"Pending {kind.value}",
+                "type": kind.value,
+                "base_url": "https://outside.invalid",
+                "credential": {"kind": "COOKIE", "value": cookie},
+            },
+        )
+        assert response.status_code == 201
+        assert response.json()["base_url"] == site_profile(kind).base_url
+        assert response.json()["enabled"] is False
+        assert cookie not in response.text
+        site_id = response.json()["id"]
+        enable = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={**_csrf(client), "If-Match": '"1"'},
+            json={"action": "enable"},
+        )
+        assert enable.status_code == 409
+        assert enable.json()["code"] == "SITE_ADAPTER_PENDING"
+        with app.state.runtime.session_factory() as session:
+            row = session.get(Site, site_id)
+            assert row is not None and row.enabled is False and row.secret_id is not None
+            encrypted = session.get(SecretRecord, row.secret_id)
+            assert encrypted is not None and cookie not in encrypted.ciphertext
     finally:
         client.__exit__(None, None, None)
 
@@ -167,6 +229,13 @@ def test_all_site_profiles_can_enable_without_connection_probe(tmp_path: Path) -
         SiteKind.PTTIME,
         SiteKind.ROUSI_PRO,
         SiteKind.LINGYIN_CLUB,
+        SiteKind.PTERCLUB,
+        SiteKind.AUDIENCES,
+        SiteKind.SPRING_SUNDAY,
+        SiteKind.HDDOLBY,
+        SiteKind.U2,
+        SiteKind.TANGPT,
+        SiteKind.CARPT,
     ),
 )
 def test_new_site_saved_and_unsaved_connection_probes_stay_read_only(

@@ -1149,6 +1149,13 @@ class SiteService:
             SiteKind.BTSCHOOL,
             SiteKind.PTTIME,
             SiteKind.LINGYIN_CLUB,
+            SiteKind.PTERCLUB,
+            SiteKind.AUDIENCES,
+            SiteKind.SPRING_SUNDAY,
+            SiteKind.HDDOLBY,
+            SiteKind.U2,
+            SiteKind.TANGPT,
+            SiteKind.CARPT,
         }:
             return kind.value.lower()
         raise ValueError("暂不支持该站点类型")

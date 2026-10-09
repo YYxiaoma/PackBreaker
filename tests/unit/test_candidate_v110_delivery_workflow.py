@@ -22,7 +22,7 @@ def test_v110_candidate_delivery_is_manual_and_sha_bound() -> None:
     assert set(workflow["jobs"]) == {"publish-candidate", "native-arm64-candidate"}
 
     publish = workflow["jobs"]["publish-candidate"]
-    assert "refs/heads/candidate/v1.1.0" in publish["if"]
+    assert "refs/heads/main" in publish["if"]
     assert publish["permissions"]["actions"] == "read"
     assert publish["permissions"]["packages"] == "write"
     assert "ref: candidate/v1.1.0" in text
@@ -43,7 +43,7 @@ def test_v110_candidate_delivery_does_not_advance_formal_channels() -> None:
     assert "verify_release_platforms.py" in text
     assert "check-immutable-image-runtime.sh" in text
     assert "candidate-v1.1.0-" in text
-    assert "refs/heads/main" not in text
+    assert "refs/remotes/origin/candidate/v1.1.0" in text
     assert "ref: main" not in text
     assert ":latest" not in text
     assert ":stable" not in text
