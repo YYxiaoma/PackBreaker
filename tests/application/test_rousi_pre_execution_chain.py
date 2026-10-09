@@ -92,26 +92,23 @@ async def test_rousi_dual_secret_candidate_cannot_link_without_verified_approval
         assert request.url.host == "rousi.pro"
         assert request.headers.get("authorization") is None
         if request.url.path == "/api/v1/torrents":
-            assert request.headers.get("api-token") == api_key
+            assert request.headers.get("api-token") is None
             assert request.headers.get("cookie") is None
             return httpx2.Response(
                 200,
                 json={
-                    "code": 0,
-                    "data": {
-                        "torrents": [
-                            {
-                                "id": 123,
-                                "title": "Movie.2026",
-                                "size": len(contents),
-                                "seeders": 1,
-                                "leechers": 0,
-                            }
-                        ],
-                        "page": 1,
-                        "page_size": 100,
-                        "total": 1,
-                    },
+                    "items": [
+                        {
+                            "id": 123,
+                            "name": "Movie.2026",
+                            "size_bytes": len(contents),
+                            "seeders": 1,
+                            "leechers": 0,
+                        }
+                    ],
+                    "limit": 50,
+                    "offset": 0,
+                    "total": 1,
                 },
             )
         assert request.url.path == "/api/v1/torrents/123/download"

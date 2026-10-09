@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
+from backend.app.application.unpack_item_actions import _reset_item_for_match_retry
 from backend.app.domain.candidate_scoring import candidate_search_relevant
 from backend.app.domain.media_matching import (
     EpisodeIdentity,
@@ -17,7 +21,7 @@ from backend.app.domain.media_matching import (
     MediaFileSummary,
     parse_media_name,
 )
-from backend.app.domain.site_search import CandidateMeta
+from backend.app.domain.site_search import CandidateMeta, SearchQuery
 from backend.app.domain.task_units import (
     TaskUnit,
     TaskUnitKind,
@@ -35,12 +39,26 @@ from backend.app.domain.unpack_matching import (
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.persistence.database import begin_immediate_write
 from backend.app.infrastructure.persistence.models import (
+    UnpackDefinition,
     UnpackExecution,
     UnpackExecutionItem,
     UnpackMatchCandidate,
     new_uuid,
     utc_now,
 )
+
+_search_diagnostics = logging.getLogger("packbreaker.unpack.search_diagnostics")
+
+
+def _diagnostic_query_stage(query: SearchQuery, descriptor: MediaDescriptor) -> str:
+    """Stable stage labels only: no raw search terms or external IDs in logs."""
+    if query.external_ids:
+        return "EXTERNAL_ID"
+    if any(any("\u4e00" <= ch <= "\u9fff" for ch in token) for token in query.keywords):
+        return "CHINESE_TITLE"
+    if query.keywords in descriptor.alias_tokens:
+        return "ENGLISH_TITLE"
+    return "RELEASE_FALLBACK"
 
 
 class UnpackMatchSiteProvider(Protocol):
@@ -159,6 +177,15 @@ class UnpackMatchCoordinator:
                 select(UnpackExecutionItem)
                 .where(UnpackExecutionItem.execution_id == execution_id)
                 .where(UnpackExecutionItem.status == UnpackItemStatus.MATCH_PENDING.value)
+                .where(
+                    or_(
+                        UnpackExecutionItem.auxiliary_state["auto_retry_not_before"]
+                        .as_string()
+                        .is_(None),
+                        UnpackExecutionItem.auxiliary_state["auto_retry_not_before"].as_string()
+                        <= utc_now().isoformat(),
+                    )
+                )
                 .order_by(UnpackExecutionItem.id)
                 .limit(1)
             )
@@ -224,7 +251,9 @@ class UnpackMatchCoordinator:
     async def _match_claimed(self, claimed: _ClaimedItem) -> None:
         try:
             bindings, missing_site_ids = self._selected_bindings(claimed.site_config_ids)
-            candidates, failures = await self._search_sites(claimed.unit, bindings)
+            candidates, failures = await self._search_sites(
+                claimed.unit, bindings, item_id=claimed.item_id, generation=claimed.generation
+            )
             failures = (
                 *failures,
                 *(
@@ -254,6 +283,9 @@ class UnpackMatchCoordinator:
         self,
         unit: TaskUnit,
         bindings: tuple[EnabledSiteAdapter, ...],
+        *,
+        item_id: str,
+        generation: int,
     ) -> tuple[tuple[_FoundCandidate, ...], tuple[_SearchFailure, ...]]:
         semaphore = asyncio.Semaphore(self._max_site_concurrency)
 
@@ -261,6 +293,8 @@ class UnpackMatchCoordinator:
             binding: EnabledSiteAdapter,
         ) -> tuple[list[_FoundCandidate], list[_SearchFailure]]:
             async with semaphore:
+                active_query_index = 0
+                active_query_stage = "CAPABILITIES"
                 try:
                     async with asyncio.timeout(self._site_timeout_seconds):
                         capabilities = await binding.adapter.capabilities()
@@ -270,14 +304,41 @@ class UnpackMatchCoordinator:
                             capabilities=capabilities,
                             max_queries=self._max_queries_per_site,
                         )
-                        if capabilities.min_request_interval_seconds > 0:
-                            queries = queries[:1]
+                        # The domain query builder already orders the fallback
+                        # tiers: external ID > English title > Chinese title.
+                        # Resorting by token count would discard that priority.
+                        interval = capabilities.min_request_interval_seconds
                         found: dict[str, _FoundCandidate] = {}
                         failures: list[_SearchFailure] = []
-                        for query in queries:
+                        previous_page_identity: tuple[int | None, tuple[str, ...]] | None = None
+                        for query_index, query in enumerate(queries):
+                            if query_index and interval > 0:
+                                await asyncio.sleep(interval)
+                            query_stage = _diagnostic_query_stage(query, unit.descriptor)
+                            active_query_index = query_index + 1
+                            active_query_stage = query_stage
+                            started = time.perf_counter()
                             try:
                                 page = await binding.adapter.search(query)
                             except SiteAdapterError as exc:
+                                _search_diagnostics.info(
+                                    "影片站点搜索阶段失败",
+                                    extra={
+                                        "fields": {
+                                            "item_id": item_id,
+                                            "generation": generation,
+                                            "site_kind": binding.site_id,
+                                            "query_index": query_index + 1,
+                                            "query_stage": query_stage,
+                                            "requested_limit": query.page_size,
+                                            "outcome": "SITE_ERROR",
+                                            "error_code": exc.code,
+                                            "duration_ms": round(
+                                                (time.perf_counter() - started) * 1000, 2
+                                            ),
+                                        }
+                                    },
+                                )
                                 failures.append(
                                     _SearchFailure(
                                         binding.config_id,
@@ -287,6 +348,21 @@ class UnpackMatchCoordinator:
                                 )
                                 continue
                             if page.site_id != binding.site_id:
+                                _search_diagnostics.warning(
+                                    "影片站点搜索身份校验失败",
+                                    extra={
+                                        "fields": {
+                                            "item_id": item_id,
+                                            "generation": generation,
+                                            "site_kind": binding.site_id,
+                                            "query_index": query_index + 1,
+                                            "query_stage": query_stage,
+                                            "requested_limit": query.page_size,
+                                            "outcome": "SITE_IDENTITY_MISMATCH",
+                                            "returned_count": len(page.items),
+                                        }
+                                    },
+                                )
                                 failures.append(
                                     _SearchFailure(
                                         binding.config_id,
@@ -295,8 +371,14 @@ class UnpackMatchCoordinator:
                                     )
                                 )
                                 continue
+                            identity_filtered = 0
+                            title_filtered = 0
+                            hard_conflicts = 0
+                            selectable = 0
+                            new_candidates = 0
                             for candidate in page.items:
                                 if candidate.site_id != binding.site_id:
+                                    identity_filtered += 1
                                     failures.append(
                                         _SearchFailure(
                                             binding.config_id,
@@ -308,16 +390,109 @@ class UnpackMatchCoordinator:
                                 if not candidate_search_relevant(
                                     unit.descriptor, candidate.descriptor
                                 ):
+                                    title_filtered += 1
                                     continue
                                 assessment = assess_unpack_candidate(
                                     unit.descriptor, candidate.descriptor
                                 )
+                                if assessment.rejected:
+                                    hard_conflicts += 1
+                                else:
+                                    selectable += 1
+                                if candidate.torrent_id not in found:
+                                    new_candidates += 1
                                 found.setdefault(
                                     candidate.torrent_id,
                                     _FoundCandidate(binding, candidate, assessment),
                                 )
+                            _search_diagnostics.info(
+                                "影片站点搜索阶段统计",
+                                extra={
+                                    "fields": {
+                                        "item_id": item_id,
+                                        "generation": generation,
+                                        "site_kind": binding.site_id,
+                                        "query_index": query_index + 1,
+                                        "query_stage": query_stage,
+                                        "requested_limit": query.page_size,
+                                        "outcome": "OK",
+                                        "returned_count": len(page.items),
+                                        "reported_total": page.total_hint,
+                                        "has_more": page.has_more,
+                                        "identity_filtered_count": identity_filtered,
+                                        "title_filtered_count": title_filtered,
+                                        "hard_conflict_count": hard_conflicts,
+                                        "selectable_count": selectable,
+                                        "new_candidate_count": new_candidates,
+                                        "duration_ms": round(
+                                            (time.perf_counter() - started) * 1000, 2
+                                        ),
+                                    }
+                                },
+                            )
+                            page_identity = (
+                                page.total_hint,
+                                tuple(candidate.torrent_id for candidate in page.items),
+                            )
+                            # A tracker returning the identical broad 100-result
+                            # list for *different* English/Chinese keywords is
+                            # likely ignoring the query filter. Do not mislabel
+                            # this as the movie having no match; stop wasteful
+                            # follow-up requests and surface a site query error.
+                            if (
+                                binding.site_id == "rousi_pro"
+                                and previous_page_identity == page_identity
+                                and len(page.items) >= 30
+                                and page.total_hint is not None
+                                and page.total_hint >= 5 * len(page.items)
+                                and selectable == 0
+                            ):
+                                failures.append(
+                                    _SearchFailure(
+                                        binding.config_id,
+                                        "SITE_SEARCH_FILTER_IGNORED_SUSPECTED",
+                                        False,
+                                    )
+                                )
+                                _search_diagnostics.warning(
+                                    "站点疑似忽略搜索过滤条件",
+                                    extra={
+                                        "fields": {
+                                            "item_id": item_id,
+                                            "generation": generation,
+                                            "site_kind": binding.site_id,
+                                            "query_index": query_index + 1,
+                                            "query_stage": query_stage,
+                                            "outcome": "QUERY_FILTER_IGNORED_SUSPECTED",
+                                            "requested_limit": query.page_size,
+                                            "error_code": "SITE_SEARCH_FILTER_IGNORED_SUSPECTED",
+                                            "returned_count": len(page.items),
+                                            "reported_total": page.total_hint,
+                                        }
+                                    },
+                                )
+                                break
+                            previous_page_identity = page_identity
+                            if interval > 0 and any(
+                                not item.assessment.rejected for item in found.values()
+                            ):
+                                break
                         return list(found.values()), failures
                 except TimeoutError:
+                    _search_diagnostics.warning(
+                        "影片站点搜索阶段超时",
+                        extra={
+                            "fields": {
+                                "item_id": item_id,
+                                "generation": generation,
+                                "site_kind": binding.site_id,
+                                "query_index": active_query_index,
+                                "query_stage": active_query_stage,
+                                "outcome": "TIMEOUT",
+                                "error_code": "UNPACK_MATCH_TIMEOUT",
+                            }
+                        },
+                    )
                     return [], [
                         _SearchFailure(
                             binding.config_id,
@@ -326,6 +501,20 @@ class UnpackMatchCoordinator:
                         )
                     ]
                 except SiteAdapterError as exc:
+                    _search_diagnostics.warning(
+                        "影片站点搜索能力获取失败",
+                        extra={
+                            "fields": {
+                                "item_id": item_id,
+                                "generation": generation,
+                                "site_kind": binding.site_id,
+                                "query_index": active_query_index,
+                                "query_stage": active_query_stage,
+                                "outcome": "SITE_ERROR",
+                                "error_code": exc.code,
+                            }
+                        },
+                    )
                     return [], [
                         _SearchFailure(
                             binding.config_id,
@@ -432,19 +621,37 @@ class UnpackMatchCoordinator:
             elif failures:
                 item.selected_candidate_id = None
                 item.match_origin = None
-                if any(failure.retryable for failure in failures):
+                is_timeout = any(failure.retryable for failure in failures)
+                if self._schedule_automatic_retry(session, execution, item, now):
+                    item.last_error_code = None
+                    item.last_error_message = None
+                elif is_timeout:
                     item.status = UnpackItemStatus.MATCH_TIMEOUT.value
                     item.last_error_code = "UNPACK_MATCH_TIMEOUT"
-                    item.last_error_message = "站点匹配超时，可重试该影片"
+                    item.last_error_message = "站点匹配超时，自动重试已结束，请人工处理"
                 else:
                     item.status = UnpackItemStatus.MATCH_ERROR.value
                     item.last_error_code = failures[0].code
-                    item.last_error_message = "站点匹配失败，可重试该影片"
+                    item.last_error_message = (
+                        "Rousi 搜索接口疑似忽略关键词，重复返回未过滤的种子列表；"
+                        "请核对接口参数或 API Key 搜索权限"
+                        if any(
+                            failure.code == "SITE_SEARCH_FILTER_IGNORED_SUSPECTED"
+                            for failure in failures
+                        )
+                        else "站点匹配失败，自动重试已结束，请人工处理"
+                    )
             else:
                 item.status = UnpackItemStatus.NO_MATCH.value
                 item.selected_candidate_id = None
                 item.match_origin = None
+                item.last_error_message = (
+                    "站点返回了候选，但均存在年份或身份冲突，未找到可选影片"
+                    if persisted
+                    else "站点搜索完成，未找到符合影片名称的相关候选"
+                )
             item.auxiliary_state = {
+                **(item.auxiliary_state or {}),
                 "search_failures": [
                     {
                         "site_config_id": failure.site_config_id,
@@ -461,6 +668,29 @@ class UnpackMatchCoordinator:
             self._refresh_execution_state(session, execution)
             session.commit()
 
+    @staticmethod
+    def _schedule_automatic_retry(
+        session: Session,
+        execution: UnpackExecution,
+        item: UnpackExecutionItem,
+        now: datetime,
+    ) -> bool:
+        definition = session.get(UnpackDefinition, execution.definition_id)
+        if (
+            definition is None
+            or not definition.retry_enabled
+            or item.retry_count >= definition.max_retries
+        ):
+            return False
+        wait_seconds = min(30, 2 ** min(item.retry_count + 1, 4))
+        _reset_item_for_match_retry(
+            item,
+            now,
+            automatic=True,
+            retry_not_before=now + timedelta(seconds=wait_seconds),
+        )
+        return True
+
     def _finalize_unexpected_error(self, claimed: _ClaimedItem, exc: Exception) -> None:
         with self._session_factory() as session:
             begin_immediate_write(session)
@@ -475,13 +705,18 @@ class UnpackMatchCoordinator:
             execution = session.get(UnpackExecution, item.execution_id)
             if execution is None:
                 return
-            item.status = UnpackItemStatus.MATCH_ERROR.value
-            item.last_error_code = "UNPACK_MATCH_ERROR"
-            item.last_error_message = "匹配阶段发生内部错误，可重试该影片"
-            item.match_finished_at = utc_now()
-            item.updated_at = item.match_finished_at
-            item.version += 1
-            item.auxiliary_state = {"error_type": type(exc).__name__}
+            now = utc_now()
+            if not self._schedule_automatic_retry(session, execution, item, now):
+                item.status = UnpackItemStatus.MATCH_ERROR.value
+                item.last_error_code = "UNPACK_MATCH_ERROR"
+                item.last_error_message = "匹配阶段发生内部错误，自动重试已结束，请人工处理"
+                item.match_finished_at = now
+                item.updated_at = now
+                item.version += 1
+            item.auxiliary_state = {
+                **(item.auxiliary_state or {}),
+                "error_type": type(exc).__name__,
+            }
             session.flush()
             self._refresh_execution_state(session, execution)
             session.commit()
@@ -522,15 +757,20 @@ class UnpackMatchCoordinator:
             execution.status = UnpackExecutionStatus.CONTENT_VERIFYING.value
             execution.finished_at = None
         else:
-            execution.status = (
-                UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value
-                if (
-                    counts[UnpackItemStatus.NO_MATCH]
-                    or counts[UnpackItemStatus.MATCH_TIMEOUT]
-                    or counts[UnpackItemStatus.MATCH_ERROR]
+            failed_count = sum(
+                counts[status]
+                for status in (
+                    UnpackItemStatus.NO_MATCH,
+                    UnpackItemStatus.MATCH_TIMEOUT,
+                    UnpackItemStatus.MATCH_ERROR,
                 )
-                else UnpackExecutionStatus.COMPLETED.value
             )
+            if execution.total_count > 0 and failed_count == execution.total_count:
+                execution.status = UnpackExecutionStatus.FAILED.value
+            elif failed_count:
+                execution.status = UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value
+            else:
+                execution.status = UnpackExecutionStatus.COMPLETED.value
             execution.finished_at = now
         execution.updated_at = now
         execution.version += 1
@@ -635,8 +875,20 @@ def _task_unit_from_item(item: UnpackExecutionItem) -> TaskUnit:
     normalized_path = PurePosixPath(raw_path.replace("\\", "/"))
     relative = normalized_path.name
     display_name = PurePosixPath(relative).stem
+    aliases: tuple[str, ...] = ()
+    # A downloaded film may use the English filename, while its immediate
+    # parent is "九品芝麻官.Hail.the.Judge.1994...". Never trust an arbitrary
+    # parent/library label: it must end with this exact filename stem.
+    full_source_path = snapshot.get("path")
+    if isinstance(full_source_path, str):
+        parent_name = PurePosixPath(full_source_path.replace(chr(92), "/")).parent.name
+        if parent_name.casefold().endswith(display_name.casefold()):
+            prefix = parent_name[: -len(display_name)].strip(" ._-")
+            if prefix and any("\u4e00" <= char <= "\u9fff" for char in prefix):
+                aliases = (prefix,)
     descriptor = parse_media_name(
         display_name,
+        aliases=aliases,
         total_size=size,
         files=(MediaFileSummary(relative, size),),
     )

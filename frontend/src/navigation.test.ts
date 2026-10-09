@@ -14,4 +14,10 @@ describe('v0.1.8 primary navigation', () => {
     expect(normalizePrimaryRoute('unknown')).toBe('总览');
     expect(normalizePrimaryRoute('任务中心')).toBe('任务中心');
   });
+  it('moves downloaders and logs into system settings without breaking old URLs', () => {
+    expect(PRIMARY_ROUTE_NAMES).not.toContain('下载器');
+    expect(PRIMARY_ROUTE_NAMES).not.toContain('日志');
+    expect(normalizePrimaryRoute('下载器')).toBe('系统设置');
+    expect(normalizePrimaryRoute('日志')).toBe('系统设置');
+  });
 });

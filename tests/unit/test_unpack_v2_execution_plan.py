@@ -1,9 +1,11 @@
 import asyncio
 import hashlib
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -352,6 +354,47 @@ def test_target_exists_is_frozen_as_blocked_plan_without_writing_target(
         plan = unpack_execution_plan_from_payload(item.execution_plan)
         assert ExecutionPlanBlockReason.TARGET_EXISTS in plan.blocked_reasons
         assert item.last_error_code == "UNPACK_EXECUTION_PLAN_BLOCKED"
+
+
+@pytest.mark.parametrize("same_inode", [True, False])
+def test_existing_identical_target_freezes_safe_reuse_proof(
+    tmp_path: Path, same_inode: bool
+) -> None:
+    service, factory, source, output, _site = _fixture(tmp_path)
+    target = output / "Movie.mkv"
+    if same_inode:
+        os.link(source, target)
+    else:
+        target.write_bytes(source.read_bytes())
+    before = current_file_snapshot(target)
+
+    report = asyncio.run(service.plan_next_batch("execution-1"))
+
+    assert report.ready_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.PLAN_PENDING.value
+        plan = unpack_execution_plan_from_payload(item.execution_plan)
+        assert plan.ready
+        assert plan.actions[0].reuse_target_snapshot == before
+        if same_inode:
+            assert plan.actions[0].reuse_sha256 is None
+        else:
+            assert plan.actions[0].reuse_sha256 == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert current_file_snapshot(target) == before
+
+
+def test_existing_symlink_target_does_not_pass_reuse_gate(tmp_path: Path) -> None:
+    service, factory, source, output, _site = _fixture(tmp_path)
+    (output / "Movie.mkv").symlink_to(source)
+    report = asyncio.run(service.plan_next_batch("execution-1"))
+    assert report.blocked_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        plan = unpack_execution_plan_from_payload(item.execution_plan)
+        assert ExecutionPlanBlockReason.TARGET_EXISTS in plan.blocked_reasons
 
 
 def test_transmission_plan_always_requires_client_verification(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ import { apiClient } from './client';
 import {
   browseUnpackTree,
   createUnpackSourceScan,
+  deleteUnpackExecutionItem,
   getUnpackExecution,
   listUnpackExecutionItems,
   listUnpackItemCandidates,
@@ -188,5 +189,15 @@ describe('unpack api', () => {
       { action: 'retry_match' },
       { headers: { 'If-Match': '3' } },
     );
+  });
+
+  it('deletes only an execution item record using an explicit version', async () => {
+    const request = vi
+      .spyOn(apiClient, 'delete')
+      .mockResolvedValue({ data: undefined, headers: {} });
+    await deleteUnpackExecutionItem('item-1', 3);
+    expect(request).toHaveBeenCalledWith('/unpack/items/item-1', {
+      headers: { 'If-Match': '3' },
+    });
   });
 });

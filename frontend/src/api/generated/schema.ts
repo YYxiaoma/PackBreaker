@@ -1035,9 +1035,11 @@ export interface paths {
     };
     /** Get Unpack Definition */
     get: operations['get_unpack_definition_api_v1_unpack_definitions__definition_id__get'];
-    put?: never;
+    /** Update Unpack Definition */
+    put: operations['update_unpack_definition_api_v1_unpack_definitions__definition_id__put'];
     post?: never;
-    delete?: never;
+    /** Delete Unpack Definition */
+    delete: operations['delete_unpack_definition_api_v1_unpack_definitions__definition_id__delete'];
     options?: never;
     head?: never;
     patch?: never;
@@ -1094,6 +1096,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/unpack/executions/{execution_id}/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Act On Unpack Execution */
+    post: operations['act_on_unpack_execution_api_v1_unpack_executions__execution_id__actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/unpack/executions/{execution_id}/items': {
     parameters: {
       query?: never;
@@ -1106,6 +1125,23 @@ export interface paths {
     put?: never;
     post?: never;
     delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/unpack/items/{item_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /** Delete Unpack Execution Item */
+    delete: operations['delete_unpack_execution_item_api_v1_unpack_items__item_id__delete'];
     options?: never;
     head?: never;
     patch?: never;
@@ -1693,11 +1729,18 @@ export interface components {
     };
     /** CookieCloudSyncResponse */
     CookieCloudSyncResponse: {
+      /**
+       * Created Sites
+       * @default 0
+       */
+      created_sites: number;
       crypto_type: components['schemas']['CookieCloudCryptoType'];
       /** Eligible Sites */
       eligible_sites: number;
       /** Matched Sites */
       matched_sites: number;
+      /** Skipped Api Key Sites */
+      skipped_api_key_sites?: string[];
       /** Source Cookies */
       source_cookies: number;
       /** Source Domains */
@@ -2789,6 +2832,8 @@ export interface components {
       created_at: string;
       /** Execution Id */
       execution_id: string;
+      /** Has External Operations */
+      has_external_operations: boolean;
       /** Id */
       id: string;
       /** Last Error Code */
@@ -2860,6 +2905,8 @@ export interface components {
       id: string;
       /** Matched Auto Count */
       matched_auto_count: number;
+      /** No Match Count */
+      no_match_count: number;
       /** Review Count */
       review_count: number;
       /**
@@ -3002,6 +3049,21 @@ export interface components {
       verification_level: string | null;
       /** Verification Status */
       verification_status: string;
+    };
+    /** UnpackRetryFailedMatchesRequest */
+    UnpackRetryFailedMatchesRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: 'retry_failed_matches';
+    };
+    /** UnpackRetryFailedMatchesResponse */
+    UnpackRetryFailedMatchesResponse: {
+      /** Execution Id */
+      execution_id: string;
+      /** Retried Count */
+      retried_count: number;
     };
     /**
      * UnpackReviewDecision
@@ -5817,6 +5879,82 @@ export interface operations {
       };
     };
   };
+  update_unpack_definition_api_v1_unpack_definitions__definition_id__put: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UnpackDefinitionCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackDefinitionResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  delete_unpack_definition_api_v1_unpack_definitions__definition_id__delete: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        definition_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   act_on_unpack_definition_api_v1_unpack_definitions__definition_id__actions_post: {
     parameters: {
       query?: never;
@@ -5925,6 +6063,47 @@ export interface operations {
       };
     };
   };
+  act_on_unpack_execution_api_v1_unpack_executions__execution_id__actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        execution_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UnpackRetryFailedMatchesRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackRetryFailedMatchesResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   list_unpack_execution_items_api_v1_unpack_executions__execution_id__items_get: {
     parameters: {
       query?: {
@@ -5951,6 +6130,41 @@ export interface operations {
         content: {
           'application/json': components['schemas']['UnpackExecutionItemListResponse'];
         };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  delete_unpack_execution_item_api_v1_unpack_items__item_id__delete: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        item_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Validation Error */
       422: {

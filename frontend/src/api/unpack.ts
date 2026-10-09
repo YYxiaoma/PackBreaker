@@ -143,6 +143,49 @@ export async function createUnpackDefinition(
   }
 }
 
+export async function updateUnpackDefinition(
+  definitionId: string,
+  version: number,
+  payload: UnpackDefinitionCreate,
+): Promise<UnpackDefinition> {
+  try {
+    const response = await apiClient.put<UnpackDefinition>(
+      `/unpack/definitions/${requiredId(definitionId, 'definitionId')}`,
+      payload,
+      { headers: { 'If-Match': String(version) } },
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function deleteUnpackDefinition(definitionId: string, version: number): Promise<void> {
+  try {
+    await apiClient.delete(`/unpack/definitions/${requiredId(definitionId, 'definitionId')}`, {
+      headers: { 'If-Match': String(version) },
+    });
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function retryUnpackFailedMatches(
+  executionId: string,
+  version: number,
+): Promise<{ execution_id: string; retried_count: number }> {
+  try {
+    const response = await apiClient.post<{ execution_id: string; retried_count: number }>(
+      `/unpack/executions/${requiredId(executionId, 'executionId')}/actions`,
+      { action: 'retry_failed_matches' },
+      { headers: { 'If-Match': String(version) } },
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
 export async function listUnpackDefinitions(): Promise<UnpackDefinition[]> {
   try {
     const response = await apiClient.get<{ items: UnpackDefinition[] }>('/unpack/definitions');
@@ -289,6 +332,22 @@ export async function retryUnpackItemMatch(
       { headers: { 'If-Match': String(itemVersion) } },
     );
     return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function deleteUnpackExecutionItem(
+  itemId: string,
+  itemVersion: number,
+): Promise<void> {
+  if (!Number.isInteger(itemVersion) || itemVersion < 1) {
+    throw new Error('itemVersion 必须是正整数');
+  }
+  try {
+    await apiClient.delete(`/unpack/items/${requiredId(itemId, 'itemId')}`, {
+      headers: { 'If-Match': String(itemVersion) },
+    });
   } catch (error) {
     throw toApiProblem(error);
   }

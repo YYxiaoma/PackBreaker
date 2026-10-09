@@ -7,13 +7,14 @@ import {
   Eye,
   FolderOpen,
   FolderSearch,
+  Ellipsis,
   Play,
   Plus,
   RefreshCw,
   RotateCcw,
   Search,
 } from '@lucide/vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 
 import { toApiProblem } from '../api/client';
 import { listDownloaders, type Downloader } from '../api/downloaders';
@@ -21,6 +22,8 @@ import { listSites, type Site } from '../api/sites';
 import {
   browseUnpackTree,
   createUnpackDefinition,
+  deleteUnpackExecutionItem,
+  deleteUnpackDefinition,
   createUnpackSourceScan,
   getUnpackExecution,
   getUnpackSourceScanSelectionSummary,
@@ -31,9 +34,11 @@ import {
   listUnpackSourceScanItems,
   listUnpackTreeRoots,
   retryUnpackItemMatch,
+  retryUnpackFailedMatches,
   reviewUnpackItem,
   runUnpackDefinition,
   updateUnpackSourceScanSelection,
+  updateUnpackDefinition,
   type UnpackDefinition,
   type UnpackDefinitionCreate,
   type UnpackExecution,
@@ -100,6 +105,7 @@ interface Draft {
 }
 
 const activeView = ref<ActiveView>('UNPACK');
+const dedupPanel = ref<InstanceType<typeof MovieDedupPanel> | null>(null);
 const loading = ref(false);
 const saving = ref(false);
 const definitions = ref<UnpackDefinition[]>([]);
@@ -113,6 +119,7 @@ const statusFilter = ref('');
 const keyword = ref('');
 
 const createVisible = ref(false);
+const editingDefinition = ref<UnpackDefinition | null>(null);
 const scopeConfirmVisible = ref(false);
 const mediaSelectVisible = ref(false);
 const directoryPickerVisible = ref(false);
@@ -140,6 +147,10 @@ const executionLoading = ref(false);
 const itemCursor = ref<string | undefined>();
 const itemNextCursor = ref<string | null>(null);
 const itemCursorHistory = ref<Array<string | undefined>>([]);
+const itemPageSize = ref(20);
+const itemPageIndex = ref(1);
+const executionItemStatusFilter = ref('');
+const executionItemKeyword = ref('');
 
 const reviewVisible = ref(false);
 const reviewLoading = ref(false);
@@ -323,7 +334,11 @@ function itemStatusTag(
 ): 'primary' | 'success' | 'warning' | 'danger' | 'info' {
   if (status === 'COMPLETED' || status === 'CONTENT_VERIFIED') return 'success';
   if (status === 'REVIEW_REQUIRED') return 'warning';
-  if (['MATCH_TIMEOUT', 'MATCH_ERROR', 'CONTENT_MISMATCH', 'EXECUTION_ERROR'].includes(status)) {
+  if (
+    ['NO_MATCH', 'MATCH_TIMEOUT', 'MATCH_ERROR', 'CONTENT_MISMATCH', 'EXECUTION_ERROR'].includes(
+      status,
+    )
+  ) {
     return 'danger';
   }
   if (status === 'DISCOVERED' || status === 'MATCH_PENDING') return 'info';
@@ -338,7 +353,9 @@ function resultText(row: TaskRow): string {
       : '全部影视文件';
   }
   return (
-    '自动 ' +
+    '无匹配 ' +
+    execution.no_match_count +
+    ' · 自动 ' +
     execution.matched_auto_count +
     ' · 待审核 ' +
     execution.review_count +
@@ -347,7 +364,10 @@ function resultText(row: TaskRow): string {
     ' · 完成 ' +
     execution.completed_count +
     ' · 异常 ' +
-    (execution.timeout_count + execution.error_count + execution.content_mismatch_count)
+    (execution.no_match_count +
+      execution.timeout_count +
+      execution.error_count +
+      execution.content_mismatch_count)
   );
 }
 
@@ -358,6 +378,7 @@ function progressText(execution: UnpackExecution | null): string {
     execution.completed_count +
       execution.content_verified_count +
       execution.content_mismatch_count +
+      execution.no_match_count +
       execution.review_count +
       execution.timeout_count +
       execution.error_count,
@@ -408,8 +429,93 @@ async function refresh(): Promise<void> {
 }
 
 function openCreate(): void {
+  editingDefinition.value = null;
   resetDraft();
   createVisible.value = true;
+}
+
+function openEdit(row: TaskRow): void {
+  const definition = row.definition;
+  editingDefinition.value = definition;
+  resetDraft();
+  const source = asRecord(definition.source_config);
+  const filter = asRecord(definition.file_filter);
+  const output = asRecord(definition.output_config);
+  Object.assign(draft, {
+    name: definition.name,
+    triggerKind: definition.trigger_kind,
+    sourceKind: definition.source_kind,
+    siteIds: [...definition.site_ids],
+    sourceDirectory: stringValue(source.directory_path),
+    sourceDownloaderId: stringValue(source.downloader_id),
+    downloaderNameContains: stringValue(source.name_contains),
+    downloaderCategories: stringList(source.categories).join(', '),
+    downloaderTags: stringList(source.tags).join(', '),
+    outputDirectory: stringValue(output.output_directory),
+    targetDownloaderId: stringValue(output.target_downloader_id),
+    extensions: stringList(filter.extensions).join(', '),
+    minSizeMb: typeof filter.min_size_bytes === 'number' ? filter.min_size_bytes / 1048576 : null,
+    maxSizeMb: typeof filter.max_size_bytes === 'number' ? filter.max_size_bytes / 1048576 : null,
+    includeName: stringValue(filter.include_name),
+    excludeNames: stringList(filter.exclude_names).join(', '),
+    includeSubdirectories: filter.include_subdirectories !== false,
+    storageMode:
+      output.storage_mode === 'SYMLINK' || output.storage_mode === 'COPY'
+        ? output.storage_mode
+        : 'HARDLINK',
+    retryEnabled: definition.retry_enabled,
+    maxRetries: definition.max_retries,
+    autoMatchPercent: definition.auto_match_threshold_bps / 100,
+    cronExpression: definition.cron_expression ?? '*/10 * * * *',
+  });
+  if (definition.cron_expression) applyCronPreset(definition.cron_expression);
+  createVisible.value = true;
+}
+
+async function deleteDefinition(row: TaskRow): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      '确认删除“' +
+        row.definition.name +
+        '”？删除会移除任务及其没有外部写操作的已结束执行历史；运行中任务或存在外部操作 journal 的任务将被服务端拒绝。此操作不会删除任何媒体文件。',
+      '删除数据拆包任务',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
+    );
+  } catch (caught) {
+    if (caught === 'cancel' || caught === 'close') return;
+    throw caught;
+  }
+  try {
+    await deleteUnpackDefinition(row.definition.id, row.definition.version);
+    ElMessage.success('任务已删除');
+    await refresh();
+  } catch (caught) {
+    ElMessage.error(toApiProblem(caught).message);
+  }
+}
+
+async function retryDefinition(row: TaskRow): Promise<void> {
+  const execution = row.execution;
+  if (!execution) return;
+  try {
+    const result = await retryUnpackFailedMatches(execution.id, execution.version);
+    ElMessage.success(
+      '已将 ' +
+        result.retried_count +
+        ' 个失败影片重新加入处理队列；已开始辅助下载的影片会优先安全续跑',
+    );
+    await refresh();
+  } catch (caught) {
+    ElMessage.error(toApiProblem(caught).message);
+  }
+}
+
+function handleDefinitionMenu(command: string, row: TaskRow): void {
+  if (command === 'edit') {
+    openEdit(row);
+  } else if (command === 'delete') {
+    void deleteDefinition(row);
+  }
 }
 
 function chooseTrigger(kind: TriggerKind): void {
@@ -543,13 +649,17 @@ function createPayload(
     max_retries: draft.maxRetries,
     auto_match_threshold_bps: Math.round(Math.min(100, Math.max(0, draft.autoMatchPercent)) * 100),
     cron_expression: draft.triggerKind === 'MONITOR' ? draft.cronExpression.trim() : null,
-    timezone: null,
+    timezone: draft.triggerKind === 'MONITOR' ? (editingDefinition.value?.timezone ?? null) : null,
     source_scan_id: selectedScanId ?? null,
   };
 }
 
 async function saveDraft(): Promise<void> {
   if (!validateDraft()) return;
+  if (editingDefinition.value) {
+    await persistDefinition(editingDefinition.value.execution_scope_kind);
+    return;
+  }
   if (draft.triggerKind === 'MANUAL' && draft.sourceKind === 'DIRECTORY') {
     createVisible.value = false;
     scopeConfirmVisible.value = true;
@@ -564,11 +674,22 @@ async function persistDefinition(
 ): Promise<void> {
   saving.value = true;
   try {
-    await createUnpackDefinition(createPayload(scope, selectedScanId));
+    if (editingDefinition.value) {
+      await updateUnpackDefinition(
+        editingDefinition.value.id,
+        editingDefinition.value.version,
+        createPayload(scope, selectedScanId),
+      );
+    } else {
+      await createUnpackDefinition(createPayload(scope, selectedScanId));
+    }
     createVisible.value = false;
     scopeConfirmVisible.value = false;
     mediaSelectVisible.value = false;
-    ElMessage.success('任务已保存，当前状态为“待执行”');
+    ElMessage.success(
+      editingDefinition.value ? '任务配置已更新' : '任务已保存，当前状态为“待执行”',
+    );
+    editingDefinition.value = null;
     await refresh();
   } catch (caught) {
     ElMessage.error(toApiProblem(caught).message);
@@ -756,6 +877,10 @@ async function openExecution(row: TaskRow): Promise<void> {
   activeDefinition.value = row.definition;
   activeExecution.value = await getUnpackExecution(execution.id);
   itemCursorHistory.value = [];
+  itemPageSize.value = 20;
+  itemPageIndex.value = 1;
+  executionItemStatusFilter.value = '';
+  executionItemKeyword.value = '';
   await loadExecutionItems();
   executionVisible.value = true;
 }
@@ -766,7 +891,9 @@ async function loadExecutionItems(cursor?: string): Promise<void> {
   try {
     const result = await listUnpackExecutionItems(activeExecution.value.id, {
       cursor,
-      limit: 20,
+      limit: itemPageSize.value,
+      status: (executionItemStatusFilter.value || undefined) as UnpackItemStatus | undefined,
+      q: executionItemKeyword.value.trim() || undefined,
     });
     itemCursor.value = cursor;
     executionItems.value = result.items;
@@ -783,12 +910,31 @@ async function nextItemPage(): Promise<void> {
   if (!itemNextCursor.value) return;
   itemCursorHistory.value.push(itemCursor.value);
   await loadExecutionItems(itemNextCursor.value);
+  itemPageIndex.value += 1;
 }
 
 async function previousItemPage(): Promise<void> {
   if (!itemCursorHistory.value.length) return;
   const previous = itemCursorHistory.value.pop();
   await loadExecutionItems(previous);
+  itemPageIndex.value -= 1;
+}
+
+async function changeItemPageSize(value: number): Promise<void> {
+  itemPageSize.value = value;
+  itemPageIndex.value = 1;
+  itemCursorHistory.value = [];
+  await loadExecutionItems();
+}
+
+async function applyExecutionItemFilters(): Promise<void> {
+  itemPageIndex.value = 1;
+  itemCursorHistory.value = [];
+  await loadExecutionItems();
+}
+
+async function refreshExecutionItems(): Promise<void> {
+  await loadExecutionItems(itemCursor.value);
 }
 
 function mediaTitle(item: UnpackExecutionItem): string {
@@ -820,16 +966,86 @@ function itemCanReview(item: UnpackExecutionItem): boolean {
 }
 
 function itemCanRetry(item: UnpackExecutionItem): boolean {
-  return item.status === 'MATCH_TIMEOUT' || item.status === 'MATCH_ERROR';
+  return ['NO_MATCH', 'MATCH_TIMEOUT', 'MATCH_ERROR'].includes(item.status);
+}
+
+function itemRetryLabel(item: UnpackExecutionItem): string {
+  const state = asRecord(item.auxiliary_state);
+  if (
+    item.status === 'MATCH_ERROR' &&
+    item.has_external_operations &&
+    item.last_error_code === 'UNPACK_AUXILIARY_CONFLICT' &&
+    state.state === 'DOWNLOADING'
+  ) {
+    return '核对后续跑';
+  }
+  return item.status === 'MATCH_ERROR' &&
+    [
+      'DOWNLOADER_UNAVAILABLE',
+      'DOWNLOADER_CONNECTION_FAILED',
+      'SITE_UNAVAILABLE',
+      'SITE_RATE_LIMITED',
+    ].includes(item.last_error_code ?? '') &&
+    state.state === 'DOWNLOADING'
+    ? '继续补齐'
+    : '重新匹配';
 }
 
 async function retryItem(item: UnpackExecutionItem): Promise<void> {
   try {
-    await retryUnpackItemMatch(item.id, item.version);
-    ElMessage.success('已重新进入匹配队列');
+    const result = await retryUnpackItemMatch(item.id, item.version);
+    ElMessage.success(
+      result.item_status === 'AUXILIARY_FETCHING'
+        ? '已恢复原有辅助文件补齐，将校验已下载文件，不会重复添加种子'
+        : '已重新进入匹配队列',
+    );
     await loadExecutionItems(itemCursor.value);
   } catch (caught) {
     ElMessage.error(toApiProblem(caught).message);
+  }
+}
+
+function itemCanDelete(item: UnpackExecutionItem): boolean {
+  return (
+    [
+      'NO_MATCH',
+      'MATCH_ERROR',
+      'MATCH_TIMEOUT',
+      'CONTENT_MISMATCH',
+      'EXECUTION_ERROR',
+      'COMPLETED',
+      'CANCELLED',
+    ].includes(item.status) &&
+    !item.has_external_operations &&
+    !!activeExecution.value &&
+    ['COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELLED'].includes(
+      activeExecution.value.status,
+    )
+  );
+}
+
+async function deleteExecutionItem(item: UnpackExecutionItem): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      '确认从本次拆包执行记录中移除影片“' +
+        mediaTitle(item) +
+        '”？此操作不会删除磁盘上的影片或辅助文件。若存在下载器或文件系统外部操作记录，服务端会拒绝删除，防止丢失对账依据。',
+      '删除影片记录',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await deleteUnpackExecutionItem(item.id, item.version);
+    ElMessage.success('影片记录已删除，原始媒体文件未受影响');
+    // Deleting a row invalidates previously remembered cursor anchors.
+    itemCursorHistory.value = [];
+    itemPageIndex.value = 1;
+    await loadExecutionItems();
+    await refresh();
+  } catch (error) {
+    ElMessage.error(toApiProblem(error).message);
   }
 }
 
@@ -971,7 +1187,10 @@ onMounted(() => {
       </div>
       <div class="toolbar-actions">
         <el-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</el-button>
-        <el-button v-if="activeView === 'UNPACK'" type="primary" @click="openCreate">
+        <el-button
+          type="primary"
+          @click="activeView === 'UNPACK' ? openCreate() : dedupPanel?.openCreate()"
+        >
           <Plus :size="15" />新增任务
         </el-button>
       </div>
@@ -1025,6 +1244,7 @@ onMounted(() => {
             <el-option label="下载器校验中" value="CLIENT_VERIFYING" />
             <el-option label="已完成" value="COMPLETED" />
             <el-option label="完成但有异常" value="COMPLETED_WITH_ERRORS" />
+            <el-option label="失败" value="FAILED" />
           </el-select>
           <el-input
             v-model="keyword"
@@ -1085,32 +1305,59 @@ onMounted(() => {
         <el-table-column label="结果" min-width="210" show-overflow-tooltip>
           <template #default="{ row }">{{ resultText(row) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" width="242" fixed="right" class-name="unpack-actions-column">
           <template #default="{ row }">
-            <el-button
-              v-if="!row.execution && row.definition.status === 'PENDING_EXECUTION'"
-              link
-              type="success"
-              @click="runDefinition(row)"
-            >
-              <Play :size="14" />执行
-            </el-button>
-            <el-button v-if="row.execution" link type="primary" @click="openExecution(row)">
-              <Eye :size="14" />查看
-            </el-button>
+            <div class="task-row-actions">
+              <el-button
+                v-if="!row.execution && row.definition.status === 'PENDING_EXECUTION'"
+                link
+                type="success"
+                @click="runDefinition(row)"
+              >
+                <Play :size="14" />执行
+              </el-button>
+              <el-button v-if="row.execution" link type="primary" @click="openExecution(row)">
+                <Eye :size="14" />查看
+              </el-button>
+              <el-button
+                v-if="
+                  row.execution &&
+                  ['FAILED', 'COMPLETED_WITH_ERRORS'].includes(row.execution.status)
+                "
+                link
+                type="warning"
+                @click="retryDefinition(row)"
+                ><RotateCcw :size="14" />重新匹配</el-button
+              >
+              <el-dropdown
+                trigger="click"
+                placement="bottom-end"
+                @command="(command: string) => handleDefinitionMenu(command, row)"
+              >
+                <el-button link type="primary" class="task-more-trigger" aria-label="更多操作">
+                  <Ellipsis :size="18" />
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="edit">编辑</el-dropdown-item>
+                    <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </template>
         </el-table-column>
       </el-table>
       <div class="table-note">
-        保存任务只创建“待执行”任务，不会自动启动；达到自动匹配阈值的候选仍必须通过种子内容校验后才能辅种。
+        保存任务只创建“待执行”任务，不会自动启动。列表「重新匹配」会重试当前执行的全部失败影片；如仅需重试单部影片，请先点击「查看」，再点击对应影片的「重新匹配」。候选仍须通过种子内容校验后才能辅种。
       </div>
     </div>
 
-    <MovieDedupPanel v-else @stats="dedupStats = $event" />
+    <MovieDedupPanel v-else ref="dedupPanel" @stats="dedupStats = $event" />
 
     <el-dialog
       v-model="createVisible"
-      title="新增数据拆包任务"
+      :title="editingDefinition ? '编辑数据拆包任务' : '新增数据拆包任务'"
       width="min(980px, 96vw)"
       destroy-on-close
     >
@@ -1338,10 +1585,10 @@ onMounted(() => {
         <section class="form-section advanced">
           <h3>5. 高级执行规则</h3>
           <div class="form-grid three">
-            <el-form-item label="自动重试"
+            <el-form-item label="匹配异常自动重试"
               ><el-switch v-model="draft.retryEnabled" active-text="开启" inactive-text="关闭"
             /></el-form-item>
-            <el-form-item label="自动重试次数"
+            <el-form-item label="异常自动重试上限"
               ><el-input-number v-model="draft.maxRetries" :min="0" :max="10"
             /></el-form-item>
             <el-form-item label="自动匹配阈值（%）"
@@ -1354,7 +1601,7 @@ onMounted(() => {
             /></el-form-item>
           </div>
           <small
-            >候选匹配度达到阈值时可自动选择，但仍必须通过种子内容校验，不能仅凭匹配分数直接辅种。</small
+            >仅当匹配发生错误或超时时，才根据上限及退避间隔自动重试；达到上限后需要人工处理。无匹配不会自动重试，手动重试不受此上限限制。候选仍须通过种子内容校验才能辅种。</small
           >
         </section>
       </div>
@@ -1524,6 +1771,10 @@ onMounted(() => {
             ><small>自动匹配</small>
           </div>
           <div>
+            <b>{{ activeExecution.no_match_count }}</b
+            ><small>无匹配</small>
+          </div>
+          <div>
             <b>{{ activeExecution.review_count }}</b
             ><small>待人工审核</small>
           </div>
@@ -1545,14 +1796,50 @@ onMounted(() => {
             :type="
               activeExecution.status === 'COMPLETED'
                 ? 'success'
-                : activeExecution.status === 'REVIEW_REQUIRED'
-                  ? 'warning'
-                  : 'primary'
+                : activeExecution.status === 'FAILED'
+                  ? 'danger'
+                  : activeExecution.status === 'COMPLETED_WITH_ERRORS'
+                    ? 'danger'
+                    : activeExecution.status === 'REVIEW_REQUIRED'
+                      ? 'warning'
+                      : 'primary'
             "
             >{{ unpackExecutionStatusLabel(activeExecution.status) }}</el-tag
           ><span
             >完成 {{ activeExecution.completed_count }} / {{ activeExecution.total_count }}</span
           >
+        </div>
+        <div class="execution-item-filters">
+          <el-select
+            v-model="executionItemStatusFilter"
+            clearable
+            placeholder="全部影片状态"
+            style="width: 170px"
+            @change="applyExecutionItemFilters"
+          >
+            <el-option label="无匹配" value="NO_MATCH" />
+            <el-option label="匹配中" value="MATCHING" />
+            <el-option label="匹配错误" value="MATCH_ERROR" />
+            <el-option label="匹配超时" value="MATCH_TIMEOUT" />
+            <el-option label="人工审核" value="REVIEW_REQUIRED" />
+            <el-option label="自动匹配" value="MATCHED_AUTO" />
+            <el-option label="已完成" value="COMPLETED" />
+            <el-option label="执行异常" value="EXECUTION_ERROR" />
+          </el-select>
+          <el-input
+            v-model="executionItemKeyword"
+            clearable
+            placeholder="搜索影片名或来源路径"
+            style="width: 265px"
+            @keyup.enter="applyExecutionItemFilters"
+            @clear="applyExecutionItemFilters"
+          >
+            <template #prefix><Search :size="14" /></template>
+          </el-input>
+          <el-button @click="applyExecutionItemFilters">筛选</el-button>
+          <el-button :loading="executionLoading" @click="refreshExecutionItems">
+            <RefreshCw :size="14" />刷新
+          </el-button>
         </div>
         <el-table :data="executionItems" v-loading="executionLoading" max-height="500">
           <el-table-column label="影片" min-width="270" show-overflow-tooltip
@@ -1585,18 +1872,38 @@ onMounted(() => {
               row.last_error_message || '—'
             }}</template></el-table-column
           >
-          <el-table-column label="操作" width="145" fixed="right">
+          <el-table-column label="操作" width="242" fixed="right">
             <template #default="{ row }">
-              <el-button v-if="itemCanReview(row)" link type="primary" @click="openReview(row)"
-                >审核</el-button
-              >
-              <el-button v-if="itemCanRetry(row)" link type="danger" @click="retryItem(row)"
-                ><RotateCcw :size="14" />重试</el-button
-              >
+              <div class="task-row-actions">
+                <el-button v-if="itemCanReview(row)" link type="primary" @click="openReview(row)"
+                  >审核</el-button
+                >
+                <el-button v-if="itemCanRetry(row)" link type="warning" @click="retryItem(row)"
+                  ><RotateCcw :size="14" />{{ itemRetryLabel(row) }}</el-button
+                >
+                <el-button
+                  link
+                  type="danger"
+                  :disabled="!itemCanDelete(row)"
+                  :title="
+                    row.has_external_operations
+                      ? '此影片已发生辅助下载或其他外部操作，必须保留对账记录'
+                      : itemCanDelete(row)
+                        ? '仅删除执行记录，不删除媒体文件'
+                        : '执行中或待审核影片不可删除'
+                  "
+                  @click="deleteExecutionItem(row)"
+                  >删除</el-button
+                >
+              </div>
             </template>
           </el-table-column>
         </el-table>
         <div class="pager">
+          <span>第 {{ itemPageIndex }} 页 · 每页</span>
+          <el-select :model-value="itemPageSize" style="width: 95px" @change="changeItemPageSize">
+            <el-option v-for="size in [20, 50, 100]" :key="size" :label="size" :value="size" />
+          </el-select>
           <el-button :disabled="!itemCursorHistory.length" @click="previousItemPage"
             >上一页</el-button
           ><el-button :disabled="!itemNextCursor" @click="nextItemPage">下一页</el-button>
@@ -1808,6 +2115,24 @@ onMounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.task-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  width: 100%;
+  white-space: nowrap;
+}
+.task-row-actions :deep(.el-button) {
+  flex-shrink: 0;
+  margin: 0;
+}
+.task-more-trigger {
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border-radius: 6px;
 }
 .primary-cell {
   display: block;

@@ -49,26 +49,23 @@ async def test_rousi_one_shot_acceptance_separates_api_key_and_cookie() -> None:
         assert request.url.host == "rousi.pro"
         assert request.headers.get("authorization") is None
         if request.url.path == "/api/v1/torrents":
-            assert request.headers.get("api-token") == key
+            assert request.headers.get("api-token") is None
             assert request.headers.get("cookie") is None
             return httpx2.Response(
                 200,
                 json={
-                    "code": 0,
-                    "data": {
-                        "page": 1,
-                        "page_size": 100,
-                        "total": 1,
-                        "torrents": [
-                            {
-                                "id": 123,
-                                "title": "Synthetic.Movie.2024",
-                                "size": 1,
-                                "seeders": 1,
-                                "leechers": 0,
-                            }
-                        ],
-                    },
+                    "limit": 20,
+                    "offset": 0,
+                    "total": 1,
+                    "items": [
+                        {
+                            "id": 123,
+                            "name": "Synthetic.Movie.2024",
+                            "size_bytes": 1,
+                            "seeders": 1,
+                            "leechers": 0,
+                        }
+                    ],
                 },
             )
         assert request.url.path == "/api/v1/torrents/123/download"

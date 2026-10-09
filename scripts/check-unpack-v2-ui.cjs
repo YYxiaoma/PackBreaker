@@ -122,6 +122,16 @@ const fulfillJson = (route, body, status = 200) =>
   await page.route('**/api/v1/downloaders', (route) => fulfillJson(route, { items: downloaders }));
   const createdDefinitionBodies = [];
   const scanSelectedKeys = new Set();
+  let largePageMode = false;
+  const observedPageLimits = [];
+  const observedExecutionFilters = [];
+  let updatedDefinitionBody = null;
+  let updatedMonitorBody = null;
+  let deletedDefinitionVersion = null;
+  let bulkRetryBody = null;
+  await page.route('**/api/v1/movie-dedup/jobs', (route) =>
+    fulfillJson(route, { items: [] }),
+  );
 
   const manualDefinition = {
     id: 'definition-manual',
@@ -158,6 +168,54 @@ const fulfillJson = (route, body, status = 200) =>
     cron_expression: '*/10 * * * *',
     timezone: 'Asia/Shanghai',
   };
+  const failedDefinition = {
+    ...manualDefinition,
+    id: 'definition-failed',
+    name: '匹配失败重试测试',
+  };
+  const failedExecution = {
+    id: 'execution-failed',
+    definition_id: 'definition-failed',
+    trigger: 'MANUAL',
+    status: 'FAILED',
+    total_count: 1,
+    matched_auto_count: 0,
+    no_match_count: 1,
+    review_count: 0,
+    content_verified_count: 0,
+    content_mismatch_count: 0,
+    timeout_count: 0,
+    error_count: 0,
+    completed_count: 0,
+    version: 5,
+    created_at: now,
+    updated_at: now,
+  };
+  await page.route('**/api/v1/unpack/definitions/definition-manual', (route) => {
+    const req = route.request();
+    if (req.method() === 'PUT') {
+      updatedDefinitionBody = req.postDataJSON();
+      assert.equal(req.headers()['if-match'], '1');
+      return fulfillJson(route, { ...manualDefinition, ...updatedDefinitionBody, version: 2 });
+    }
+    if (req.method() === 'DELETE') {
+      deletedDefinitionVersion = req.headers()['if-match'];
+      return route.fulfill({ status: 204, body: '' });
+    }
+    return fulfillJson(route, { code: 'UNMOCKED_DEFINITION', detail: '未授权操作' }, 501);
+  });
+  await page.route('**/api/v1/unpack/definitions/definition-monitor', (route) => {
+    const req = route.request();
+    assert.equal(req.method(), 'PUT');
+    assert.equal(req.headers()['if-match'], '1');
+    updatedMonitorBody = req.postDataJSON();
+    return fulfillJson(route, { ...monitorDefinition, ...updatedMonitorBody, version: 2 });
+  });
+  await page.route('**/api/v1/unpack/executions/execution-failed/actions', (route) => {
+    bulkRetryBody = route.request().postDataJSON();
+    assert.equal(route.request().headers()['if-match'], '5');
+    return fulfillJson(route, { execution_id: 'execution-failed', retried_count: 1 });
+  });
   const execution = {
     id: 'execution-review',
     definition_id: 'definition-monitor',
@@ -167,6 +225,7 @@ const fulfillJson = (route, body, status = 200) =>
     discovery_cursor: null,
     total_count: 3,
     matched_auto_count: 1,
+    no_match_count: 0,
     review_count: 1,
     content_verified_count: 0,
     content_mismatch_count: 0,
@@ -195,10 +254,10 @@ const fulfillJson = (route, body, status = 200) =>
         output_config: body.output_config,
       }, 201);
     }
-    return fulfillJson(route, { items: [manualDefinition, monitorDefinition] });
+    return fulfillJson(route, { items: [manualDefinition, monitorDefinition, failedDefinition] });
   });
   await page.route('**/api/v1/unpack/executions?**', (route) =>
-    fulfillJson(route, { items: [execution] }),
+    fulfillJson(route, { items: [execution, failedExecution] }),
   );
   await page.route('**/api/v1/unpack/executions/execution-review', (route) =>
     fulfillJson(route, execution),
@@ -257,15 +316,38 @@ const fulfillJson = (route, body, status = 200) =>
       id: 'item-error',
       source_object_key: 'source-error',
       status: 'MATCH_ERROR',
-      selected_candidate_id: null,
+      selected_candidate_id: 'candidate-auto',
       match_origin: null,
-      last_error_code: 'UNPACK_MATCH_SITE_ERROR',
-      last_error_message: '站点匹配失败，可重试该影片',
+      last_error_code: 'DOWNLOADER_UNAVAILABLE',
+      last_error_message: '辅助文件已下载，查询 Transmission 暂时失败',
+      auxiliary_state: { state: 'DOWNLOADING', missing_paths: ['Release/Movie.nfo'] },
     },
   ];
-  await page.route('**/api/v1/unpack/executions/execution-review/items**', (route) =>
-    fulfillJson(route, { items: executionItems, next_cursor: null, has_more: false }),
-  );
+  await page.route('**/api/v1/unpack/executions/execution-review/items**', (route) => {
+    const url = new URL(route.request().url());
+    const limit = Number(url.searchParams.get('limit'));
+    observedPageLimits.push(limit);
+    observedExecutionFilters.push({
+      status: url.searchParams.get('item_status'),
+      q: url.searchParams.get('q'),
+    });
+    if (!largePageMode) {
+      return fulfillJson(route, { items: executionItems, next_cursor: null, has_more: false });
+    }
+    const offset = Number(url.searchParams.get('cursor') || 0);
+    const sample = Array.from({ length: 61 }, (_, i) => ({
+      ...sourceBase,
+      id: 'page-item-' + i,
+      source_object_key: 'page-object-' + i,
+      status: 'NO_MATCH',
+      selected_candidate_id: null,
+      match_origin: null,
+      review_allowed: false,
+      media_identity: { ...sourceBase.media_identity, raw_name: '分页影片-' + i },
+    }));
+    const next = offset + limit < sample.length ? String(offset + limit) : null;
+    return fulfillJson(route, { items: sample.slice(offset, offset + limit), next_cursor: next, has_more: Boolean(next) });
+  });
 
   const candidateList = (itemId) => ({
     item_id: itemId,
@@ -315,6 +397,17 @@ const fulfillJson = (route, body, status = 200) =>
   });
   await page.route('**/api/v1/unpack/items/**', (route) => {
     const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/api/v1/unpack/items/item-error/actions' && route.request().method() === 'POST') {
+      assert.deepEqual(route.request().postDataJSON(), { action: 'retry_match' });
+      assert.equal(route.request().headers()['if-match'], '3');
+      return fulfillJson(route, {
+        item_id: 'item-error',
+        generation: 1,
+        retry_count: 0,
+        item_version: 4,
+        item_status: 'AUXILIARY_FETCHING',
+      });
+    }
     const match = pathname.match(/\/unpack\/items\/([^/]+)\/candidates\/?$/);
     if (!match) {
       return fulfillJson(
@@ -423,6 +516,23 @@ const fulfillJson = (route, body, status = 200) =>
   try {
     await page.goto(`${frontendUrl}/#%E4%BB%BB%E5%8A%A1%E4%B8%AD%E5%BF%83`, { waitUntil: 'domcontentloaded' });
     await page.getByRole('heading', { name: '任务中心', exact: true, level: 2 }).waitFor();
+    assert.equal(await page.locator('aside.sidebar nav').getByText('关于', { exact: true }).count(), 0);
+    const aboutCorner = page.getByRole('button', { name: '关于 PackBreaker' });
+    await aboutCorner.waitFor({ state: 'visible' });
+    const cornerRect = await aboutCorner.boundingBox();
+    assert.ok(cornerRect, '关于入口必须在可访问区域');
+    assert.ok(cornerRect.x + cornerRect.width >= 1440 - 44, '关于入口应位于页面右侧');
+    assert.ok(cornerRect.y + cornerRect.height >= 980 - 44, '关于入口应位于页面底部');
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileCorner = await aboutCorner.boundingBox();
+    assert.ok(mobileCorner, '移动端必须显示关于入口');
+    assert.ok(mobileCorner.x >= 0 && mobileCorner.x + mobileCorner.width <= 390, '移动端关于入口超出屏幕');
+    assert.ok(mobileCorner.y >= 0 && mobileCorner.y + mobileCorner.height <= 844, '移动端关于入口超出屏幕');
+    await aboutCorner.click();
+    await page.waitForURL(/#(?:%E5%85%B3%E4%BA%8E|关于)/i);
+    await page.goto(`${frontendUrl}/#%E4%BB%BB%E5%8A%A1%E4%B8%AD%E5%BF%83`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('heading', { name: '任务中心', exact: true, level: 2 }).waitFor();
+    await page.setViewportSize({ width: 1440, height: 980 });
 
     const modeCards = page.locator('.mode-card');
     assert.equal(await modeCards.count(), 2, 'v1.0.15 顶部必须只保留两个任务卡片');
@@ -439,8 +549,29 @@ const fulfillJson = (route, body, status = 200) =>
     await page.getByText('新番持续监控', { exact: true }).waitFor();
     const manualRow = page.locator('.unpack-table .el-table__row').filter({ hasText: '电影库手动拆包' }).first();
     const monitorRow = page.locator('.unpack-table .el-table__row').filter({ hasText: '新番持续监控' }).first();
+    const failedRow = page.locator('.unpack-table .el-table__row').filter({ hasText: '匹配失败重试测试' }).first();
     assert.equal(await manualRow.getByText('待执行', { exact: true }).count(), 1);
     assert.equal(await monitorRow.getByText('待人工审核', { exact: true }).count(), 1);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 980 });
+      const actions = failedRow.locator('.task-row-actions');
+      const positions = await actions.locator('button').evaluateAll((buttons) =>
+        buttons.map((button) => {
+          const bounds = button.getBoundingClientRect();
+          return { left: bounds.left, right: bounds.right, width: bounds.width };
+        }),
+      );
+      assert.equal(positions.length, 3, '失败任务应仅展示查看、重新匹配、更多操作');
+      for (let index = 1; index < positions.length; index++) {
+        assert.ok(positions[index].left >= positions[index - 1].right - 1, width + 'px 操作按钮发生重叠');
+      }
+      assert.ok(positions.every((bounds) => bounds.width >= 28), width + 'px 操作按钮触发区域过窄');
+      await failedRow.getByRole('button', { name: '更多操作' }).click();
+      await page.getByRole('menuitem', { name: '编辑', exact: true }).waitFor();
+      await page.getByRole('menuitem', { name: '删除', exact: true }).waitFor();
+      await page.keyboard.press('Escape');
+    }
+    await page.setViewportSize({ width: 1440, height: 980 });
 
     await page.getByRole('button', { name: '新增任务', exact: true }).click();
     const createDialog = page.locator('.el-dialog').filter({ hasText: '新增数据拆包任务' }).last();
@@ -468,7 +599,14 @@ const fulfillJson = (route, body, status = 200) =>
     assert.equal(await executionDialog.getByText('自动匹配成功', { exact: true }).count(), 1);
     assert.equal(await executionDialog.getByText('匹配错误', { exact: true }).count(), 1);
     assert.equal(await executionDialog.getByRole('button', { name: '审核', exact: true }).count(), 2, '自动匹配成功与待人工审核都必须提供审核按钮');
-    assert.equal(await executionDialog.getByRole('button', { name: '重试', exact: true }).count(), 1);
+    assert.equal(await executionDialog.getByRole('button', { name: '继续补齐', exact: true }).count(), 1);
+    assert.equal(await executionDialog.getByRole('button', { name: '删除', exact: true }).count(), 3);
+    const deletedDisabled = await executionDialog
+      .getByRole('button', { name: '删除', exact: true })
+      .evaluateAll((buttons) => buttons.map((button) => button.disabled));
+    assert.deepEqual(deletedDisabled, [true, true, true], '待审核的执行中禁止删除影片记录');
+    await executionDialog.getByRole('button', { name: '继续补齐', exact: true }).click();
+    await page.getByText('已恢复原有辅助文件补齐，将校验已下载文件，不会重复添加种子').waitFor();
 
     await executionDialog.getByRole('button', { name: '审核', exact: true }).first().click();
     const reviewDialog = page.locator('.el-dialog').filter({ hasText: '人工审核候选' }).last();
@@ -484,6 +622,71 @@ const fulfillJson = (route, body, status = 200) =>
 
     await reviewDialog.locator('.el-dialog__headerbtn').click();
     await executionDialog.locator('.el-dialog__headerbtn').click();
+
+    // Read-only cursor pagination must round-trip to the backend with the
+    // selected page size; changing it resets the cursor to page 1.
+    largePageMode = true;
+    await monitorRow.getByRole('button', { name: '查看', exact: true }).click();
+    await executionDialog.getByText('分页影片-0', { exact: true }).waitFor();
+    assert.equal(await executionDialog.locator('.el-table__body .el-table__row').count(), 20);
+    assert.equal(
+      await executionDialog.getByRole('button', { name: '重新匹配', exact: true }).count(),
+      20,
+      '每个无匹配影片都应提供受任务重试策略约束的重试入口',
+    );
+    await executionDialog.getByRole('button', { name: '下一页' }).click();
+    await executionDialog.getByText('分页影片-20', { exact: true }).waitFor();
+    assert.equal(await executionDialog.getByText('第 2 页', { exact: false }).count(), 1);
+    await executionDialog.getByRole('button', { name: '上一页' }).click();
+    await executionDialog.getByText('分页影片-0', { exact: true }).waitFor();
+    await executionDialog.locator('.pager .el-select').click();
+    await page.getByRole('option', { name: '50', exact: true }).click();
+    await executionDialog.getByText('分页影片-49', { exact: true }).waitFor();
+    assert.equal(await executionDialog.locator('.el-table__body .el-table__row').count(), 50);
+    await executionDialog.locator('.pager .el-select').click();
+    await page.getByRole('option', { name: '100', exact: true }).click();
+    await executionDialog.getByText('分页影片-60', { exact: true }).waitFor();
+    assert.equal(await executionDialog.locator('.el-table__body .el-table__row').count(), 61);
+    assert.deepEqual(observedPageLimits.slice(-4), [20, 20, 50, 100]);
+    await executionDialog.locator('.execution-item-filters .el-select').click();
+    await page.getByRole('option', { name: '无匹配', exact: true }).click();
+    assert.equal(observedExecutionFilters.at(-1)?.status, 'NO_MATCH');
+    await executionDialog.getByPlaceholder('搜索影片名或来源路径').fill('九品芝麻官');
+    await executionDialog.getByPlaceholder('搜索影片名或来源路径').press('Enter');
+    assert.equal(observedExecutionFilters.at(-1)?.q, '九品芝麻官');
+    await executionDialog.locator('.execution-item-filters').getByRole('button', { name: '刷新' }).click();
+    assert.equal(observedExecutionFilters.at(-1)?.status, 'NO_MATCH');
+    assert.equal(observedExecutionFilters.at(-1)?.q, '九品芝麻官');
+    await executionDialog.locator('.el-dialog__headerbtn').click();
+
+    assert.match(await failedRow.textContent(), /无匹配 1/);
+    assert.match(await failedRow.textContent(), /异常 1/);
+    const bulkRetryRequest = page.waitForRequest((request) =>
+      request.url().includes('/api/v1/unpack/executions/execution-failed/actions'),
+    );
+    await failedRow.getByRole('button', { name: '重新匹配', exact: true }).click();
+    await bulkRetryRequest;
+    assert.deepEqual(bulkRetryBody, { action: 'retry_failed_matches' });
+    await manualRow.getByRole('button', { name: '更多操作' }).click();
+    await page.getByRole('menuitem', { name: '编辑', exact: true }).click();
+    const editDialog = page.locator('.el-dialog').filter({ hasText: '编辑数据拆包任务' }).last();
+    await editDialog.waitFor({ state: 'visible' });
+    await editDialog.locator('.el-form-item').filter({ hasText: '任务名称' }).locator('input').fill('人工编辑 E2E');
+    await editDialog.getByRole('button', { name: '保存', exact: true }).click();
+    assert.equal(updatedDefinitionBody?.name, '人工编辑 E2E');
+    await monitorRow.getByRole('button', { name: '更多操作' }).click();
+    await page.getByRole('menuitem', { name: '编辑', exact: true }).click();
+    await editDialog.waitFor({ state: 'visible' });
+    await editDialog.getByRole('button', { name: '保存', exact: true }).click();
+    assert.equal(
+      updatedMonitorBody?.timezone,
+      'Asia/Shanghai',
+      '编辑监控任务不得无意重置原时区',
+    );
+    await manualRow.getByRole('button', { name: '更多操作' }).click();
+    await page.getByRole('menuitem', { name: '删除', exact: true }).click();
+    await page.getByRole('button', { name: '确认删除', exact: true }).click();
+    assert.equal(deletedDefinitionVersion, '1');
 
     await page.getByRole('button', { name: '新增任务', exact: true }).click();
     const manualDialog = page.locator('.el-dialog').filter({ hasText: '新增数据拆包任务' }).last();
@@ -530,6 +733,13 @@ const fulfillJson = (route, body, status = 200) =>
     assert.equal(createdDefinitionBodies[0].execution_scope_kind, 'SELECTED_MEDIA');
     assert.equal(createdDefinitionBodies[0].source_scan_id, 'scan-1');
     assert.equal(createdDefinitionBodies[0].source_kind, 'DIRECTORY');
+
+    await modeCards.filter({ hasText: '数据去重' }).click();
+    await page.getByRole('button', { name: '新增任务', exact: true }).click();
+    const dedupDialog = page.locator('.el-dialog').filter({ hasText: '新增影片去重任务' }).last();
+    await dedupDialog.waitFor({ state: 'visible' });
+    await dedupDialog.locator('.el-dialog__headerbtn').click();
+    await modeCards.filter({ hasText: '数据拆包' }).click();
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(100);

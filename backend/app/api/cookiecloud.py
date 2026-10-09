@@ -85,6 +85,8 @@ class CookieCloudSyncResponse(BaseModel):
     eligible_sites: int
     matched_sites: int
     updated_sites: int
+    created_sites: int = 0
+    skipped_api_key_sites: list[str] = Field(default_factory=list)
     unchanged_sites: int
     unmatched_domains: int
     update_time: str | None
@@ -260,6 +262,8 @@ async def sync_cookiecloud(
         eligible_sites=report.eligible_sites,
         matched_sites=report.matched_sites,
         updated_sites=report.updated_sites,
+        created_sites=report.created_sites,
+        skipped_api_key_sites=list(report.skipped_api_key_sites),
         unchanged_sites=report.unchanged_sites,
         unmatched_domains=report.unmatched_domains,
         update_time=report.update_time,

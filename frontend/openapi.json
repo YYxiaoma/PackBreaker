@@ -1146,6 +1146,11 @@
       },
       "CookieCloudSyncResponse": {
         "properties": {
+          "created_sites": {
+            "default": 0,
+            "title": "Created Sites",
+            "type": "integer"
+          },
           "crypto_type": {
             "$ref": "#/components/schemas/CookieCloudCryptoType"
           },
@@ -1156,6 +1161,13 @@
           "matched_sites": {
             "title": "Matched Sites",
             "type": "integer"
+          },
+          "skipped_api_key_sites": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped Api Key Sites",
+            "type": "array"
           },
           "source_cookies": {
             "title": "Source Cookies",
@@ -4274,6 +4286,10 @@
             "title": "Execution Id",
             "type": "string"
           },
+          "has_external_operations": {
+            "title": "Has External Operations",
+            "type": "boolean"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -4407,6 +4423,7 @@
           "torrent_metainfo_digest",
           "auxiliary_state",
           "review_allowed",
+          "has_external_operations",
           "last_error_code",
           "last_error_message",
           "match_started_at",
@@ -4496,6 +4513,10 @@
             "title": "Matched Auto Count",
             "type": "integer"
           },
+          "no_match_count": {
+            "title": "No Match Count",
+            "type": "integer"
+          },
           "review_count": {
             "title": "Review Count",
             "type": "integer"
@@ -4539,6 +4560,7 @@
           "discovery_cursor",
           "total_count",
           "matched_auto_count",
+          "no_match_count",
           "review_count",
           "content_verified_count",
           "content_mismatch_count",
@@ -4829,6 +4851,38 @@
           "created_at"
         ],
         "title": "UnpackMatchCandidateResponse",
+        "type": "object"
+      },
+      "UnpackRetryFailedMatchesRequest": {
+        "properties": {
+          "action": {
+            "const": "retry_failed_matches",
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "UnpackRetryFailedMatchesRequest",
+        "type": "object"
+      },
+      "UnpackRetryFailedMatchesResponse": {
+        "properties": {
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "retried_count": {
+            "title": "Retried Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "execution_id",
+          "retried_count"
+        ],
+        "title": "UnpackRetryFailedMatchesResponse",
         "type": "object"
       },
       "UnpackReviewDecision": {
@@ -5378,7 +5432,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.0.15"
+    "version": "1.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11206,6 +11260,103 @@
       }
     },
     "/api/v1/unpack/definitions/{definition_id}": {
+      "delete": {
+        "operationId": "delete_unpack_definition_api_v1_unpack_definitions__definition_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Unpack Definition",
+        "tags": [
+          "unpack-v2"
+        ]
+      },
       "get": {
         "operationId": "get_unpack_definition_api_v1_unpack_definitions__definition_id__get",
         "parameters": [
@@ -11258,6 +11409,120 @@
           }
         },
         "summary": "Get Unpack Definition",
+        "tags": [
+          "unpack-v2"
+        ]
+      },
+      "put": {
+        "operationId": "update_unpack_definition_api_v1_unpack_definitions__definition_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "definition_id",
+            "required": true,
+            "schema": {
+              "title": "Definition Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnpackDefinitionCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackDefinitionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Unpack Definition",
         "tags": [
           "unpack-v2"
         ]
@@ -11514,6 +11779,122 @@
         ]
       }
     },
+    "/api/v1/unpack/executions/{execution_id}/actions": {
+      "post": {
+        "operationId": "act_on_unpack_execution_api_v1_unpack_executions__execution_id__actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnpackRetryFailedMatchesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackRetryFailedMatchesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Act On Unpack Execution",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
     "/api/v1/unpack/executions/{execution_id}/items": {
       "get": {
         "operationId": "list_unpack_execution_items_api_v1_unpack_executions__execution_id__items_get",
@@ -11628,6 +12009,105 @@
           }
         },
         "summary": "List Unpack Execution Items",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/items/{item_id}": {
+      "delete": {
+        "operationId": "delete_unpack_execution_item_api_v1_unpack_items__item_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Unpack Execution Item",
         "tags": [
           "unpack-v2"
         ]

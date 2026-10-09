@@ -33,6 +33,7 @@ const loading = ref(false);
 const saving = ref(false);
 const probing = ref(false);
 const syncing = ref(false);
+const lastSyncDetail = ref('');
 const cronInputMode = ref<CronInputMode>('VISUAL');
 const cronVisualKind = ref<CronVisualKind>('EVERY_MINUTES');
 const cronVisualInterval = ref(30);
@@ -43,6 +44,29 @@ const cronVisualMonthDay = ref(1);
 const cronPreview = ref<CookieCloudCronPreview | null>(null);
 const cronPreviewLoading = ref(false);
 const cronPreviewError = ref('');
+const cronMinute = ref('*/30');
+const cronHour = ref('*');
+const cronDay = ref('*');
+const cronMonth = ref('*');
+const cronWeekday = ref('*');
+
+function applyCronPreset(expression: string): void {
+  draft.syncCronExpression = expression;
+  const parts = expression.split(' ');
+  if (parts.length === 5) {
+    [cronMinute.value, cronHour.value, cronDay.value, cronMonth.value, cronWeekday.value] =
+      parts as [string, string, string, string, string];
+  }
+}
+function rebuildCron(): void {
+  draft.syncCronExpression = [
+    cronMinute.value,
+    cronHour.value,
+    cronDay.value,
+    cronMonth.value,
+    cronWeekday.value,
+  ].join(' ');
+}
 let cronPreviewTimer: ReturnType<typeof setTimeout> | null = null;
 let cronPreviewSequence = 0;
 
@@ -226,6 +250,13 @@ function applySettings(value: CookieCloudSettings): void {
     requestTimeoutSeconds: value.request_timeout_seconds,
   });
   hydrateVisualCron(value.sync_cron_expression);
+  // Retired visual input must not overwrite the shared Cron-helper presets.
+  cronInputMode.value = 'CRON';
+  const parts = value.sync_cron_expression.split(' ');
+  if (parts.length === 5) {
+    [cronMinute.value, cronHour.value, cronDay.value, cronMonth.value, cronWeekday.value] =
+      parts as [string, string, string, string, string];
+  }
   scheduleCronPreview();
 }
 
@@ -323,12 +354,18 @@ async function syncNow(): Promise<void> {
   try {
     const result = await syncCookieCloud();
     await refresh();
+    lastSyncDetail.value =
+      `同步诊断：新建 ${result.created_sites} 个站点，更新合计 ${result.updated_sites} 个，已有 ${result.unchanged_sites} 个无变化。` +
+      ((result.skipped_api_key_sites ?? []).length
+        ? `需要手动填写 API Key 的站点：${(result.skipped_api_key_sites ?? []).join('、')}。`
+        : '');
     ElMessage.success(
       `同步完成：读取 ${result.source_domains} 个域名 / ${result.source_cookies} 条 Cookie，` +
         `可同步站点 ${result.eligible_sites}，匹配 ${result.matched_sites}，` +
         `更新 ${result.updated_sites}，无变化 ${result.unchanged_sites}，未匹配域名 ${result.unmatched_domains}`,
     );
   } catch (caught) {
+    lastSyncDetail.value = '同步失败：' + toApiProblem(caught).message + '（未记录 Cookie 值）';
     await refresh();
     ElMessage.error(errorText(caught, 'CookieCloud 同步失败'));
   } finally {
@@ -377,6 +414,12 @@ onMounted(() => void refresh());
       </div>
     </div>
 
+    <el-alert v-if="lastSyncDetail" type="info" :closable="false" :title="lastSyncDetail" />
+    <el-alert
+      type="info"
+      :closable="false"
+      title="同步时自动导入已支持且具有 Cookie 的站点；M-TEAM 与 Rousi Pro 的 API Key 仍需分别配置。诊断仅显示站点名称及数量，不记录 Cookie 原文。"
+    />
     <el-alert
       v-if="insecureHttp"
       type="warning"
@@ -427,50 +470,72 @@ onMounted(() => void refresh());
 
       <el-form-item v-if="draft.autoSync" label="自动同步时间">
         <div class="cron-editor">
-          <el-radio-group v-model="cronInputMode" size="small">
-            <el-radio-button value="VISUAL">图形化</el-radio-button>
-            <el-radio-button value="CRON">Cron</el-radio-button>
-          </el-radio-group>
-
-          <template v-if="cronInputMode === 'VISUAL'">
-            <div class="cron-visual-row">
-              <el-select v-model="cronVisualKind" class="cron-kind-select">
-                <el-option label="每隔 N 分钟" value="EVERY_MINUTES" />
-                <el-option label="每隔 N 小时" value="EVERY_HOURS" />
-                <el-option label="每天固定时间" value="DAILY" />
-                <el-option label="每周" value="WEEKLY" />
-                <el-option label="每月" value="MONTHLY" />
-              </el-select>
-              <el-input-number
-                v-if="cronVisualKind === 'EVERY_MINUTES' || cronVisualKind === 'EVERY_HOURS'"
-                v-model="cronVisualInterval"
-                :min="1"
-                :max="cronVisualKind === 'EVERY_MINUTES' ? 59 : 23"
-              />
-              <el-select v-if="cronVisualKind === 'WEEKLY'" v-model="cronVisualWeekday">
-                <el-option label="周日" :value="0" />
-                <el-option label="周一" :value="1" />
-                <el-option label="周二" :value="2" />
-                <el-option label="周三" :value="3" />
-                <el-option label="周四" :value="4" />
-                <el-option label="周五" :value="5" />
-                <el-option label="周六" :value="6" />
-              </el-select>
-              <el-input-number
-                v-if="cronVisualKind === 'MONTHLY'"
-                v-model="cronVisualMonthDay"
-                :min="1"
-                :max="31"
-              />
-              <template v-if="cronVisualKind !== 'EVERY_MINUTES'">
-                <el-input-number v-model="cronVisualHour" :min="0" :max="23" />
-                <span>:</span>
-                <el-input-number v-model="cronVisualMinute" :min="0" :max="59" />
-              </template>
+          <el-input v-model="draft.syncCronExpression" placeholder="*/30 * * * *" />
+          <div class="cookiecloud-cron-helper">
+            <b>Cron 辅助</b>
+            <div class="cookiecloud-cron-presets">
+              <el-button @click="applyCronPreset('*/5 * * * *')">每 5 分钟</el-button>
+              <el-button @click="applyCronPreset('*/10 * * * *')">每 10 分钟</el-button>
+              <el-button @click="applyCronPreset('0 * * * *')">每小时</el-button>
+              <el-button @click="applyCronPreset('0 3 * * *')">每天 03:00</el-button>
+              <el-button @click="applyCronPreset('0 3 * * 1')">每周一 03:00</el-button>
             </div>
-            <el-input v-model="draft.syncCronExpression" readonly />
-          </template>
-          <el-input v-else v-model="draft.syncCronExpression" placeholder="例如：0 */6 * * *" />
+            <div class="cookiecloud-cron-parts">
+              <el-form-item label="分钟">
+                <el-select v-model="cronMinute" @change="rebuildCron">
+                  <el-option
+                    v-for="value in ['*', '*/5', '*/10', '0', '30']"
+                    :key="value"
+                    :label="value"
+                    :value="value"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="小时">
+                <el-select v-model="cronHour" @change="rebuildCron">
+                  <el-option
+                    v-for="value in ['*', '0', '3', '12']"
+                    :key="value"
+                    :label="value"
+                    :value="value"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="日期">
+                <el-select v-model="cronDay" @change="rebuildCron">
+                  <el-option
+                    v-for="value in ['*', '1', '15']"
+                    :key="value"
+                    :label="value"
+                    :value="value"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="月份">
+                <el-select v-model="cronMonth" @change="rebuildCron">
+                  <el-option
+                    v-for="value in ['*', '1', '6', '12']"
+                    :key="value"
+                    :label="value"
+                    :value="value"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="星期">
+                <el-select v-model="cronWeekday" @change="rebuildCron">
+                  <el-option
+                    v-for="value in ['*', '1', '1-5', '0,6']"
+                    :key="value"
+                    :label="value"
+                    :value="value"
+                  />
+                </el-select>
+              </el-form-item>
+            </div>
+            <small class="field-hint"
+              >与新增拆包任务一致；支持预设、逐字段组合及直接输入表达式。</small
+            >
+          </div>
 
           <small v-if="cronPreviewLoading" class="field-hint">正在计算执行时间…</small>
           <small v-else-if="cronPreviewError" class="field-error">{{ cronPreviewError }}</small>
@@ -574,6 +639,29 @@ onMounted(() => void refresh());
   flex-wrap: wrap;
   gap: 8px;
 }
+.cookiecloud-cron-helper {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+}
+.cookiecloud-cron-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cookiecloud-cron-presets .el-button {
+  margin-left: 0;
+}
+.cookiecloud-cron-parts {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+.cookiecloud-cron-parts .el-form-item {
+  margin-bottom: 0;
+}
 
 .cron-kind-select {
   width: 180px;
@@ -590,6 +678,9 @@ onMounted(() => void refresh());
 }
 
 @media (max-width: 900px) {
+  .cookiecloud-cron-parts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .cookiecloud-status-grid,
   .cookiecloud-form-grid {
     grid-template-columns: 1fr;

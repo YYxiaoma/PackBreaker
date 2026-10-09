@@ -21,11 +21,13 @@ from backend.app.domain.unpack import (
 )
 from backend.app.domain.verification import VerificationLevel
 from backend.app.infrastructure.adapters.downloaders import (
+    DownloaderAdapterError,
     QbittorrentAddRequest,
     QbittorrentAddResult,
     QbittorrentTorrentState,
     QbittorrentWriteAdapter,
 )
+from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.models import (
@@ -78,9 +80,12 @@ def _torrent(movie: bytes, nfo: bytes) -> bytes:
 class _FakeSite:
     def __init__(self, torrent: bytes) -> None:
         self._torrent = torrent
+        self.transient_error = False
 
     async def fetch_torrent(self, torrent_id: str) -> TorrentPayload:
         assert torrent_id == "torrent-1"
+        if self.transient_error:
+            raise SiteAdapterError("SITE_UNAVAILABLE", "temporary server error", retryable=True)
         return TorrentPayload("fake-site", torrent_id, self._torrent)
 
 
@@ -115,6 +120,15 @@ class _FakeQb:
         self.wanted: tuple[int, ...] = ()
         self.unwanted: tuple[int, ...] = ()
         self.calls: list[str] = []
+        self.connection_unavailable = False
+        self.remove_connection_unknown_once = False
+        self.stop_connection_unknown_once = False
+        self.stop_disconnect_before_status_once = False
+        self.remove_disconnect_before_status_once = False
+        self.stop_visible_after_queries = 0
+        self._pending_stop_queries = 0
+        self.remove_visible_after_queries = 0
+        self._pending_remove_queries = 0
 
     def _assert_intent(self, operation_type: str) -> None:
         with self._factory() as session:
@@ -145,6 +159,16 @@ class _FakeQb:
         self,
         torrent_hashes: tuple[str, ...],
     ) -> tuple[QbittorrentTorrentState, ...]:
+        if self.connection_unavailable:
+            raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "temporary RPC outage")
+        if self._pending_stop_queries:
+            self._pending_stop_queries -= 1
+            if self._pending_stop_queries == 0 and self.state is not None:
+                self.state = replace(self.state, state="stoppedDL")
+        if self._pending_remove_queries:
+            self._pending_remove_queries -= 1
+            if self._pending_remove_queries == 0:
+                self.state = None
         if self.state is None or self.state.torrent_hash not in torrent_hashes:
             return ()
         return (self.state,)
@@ -178,12 +202,36 @@ class _FakeQb:
         self._assert_intent("UNPACK_AUX_TORRENT_STOP")
         assert self.state is not None and torrent_hash == self.state.torrent_hash
         self.calls.append("stop")
+        if self.stop_disconnect_before_status_once:
+            self.stop_disconnect_before_status_once = False
+            self.connection_unavailable = True
+            raise DownloaderAdapterError(
+                "DOWNLOADER_UNAVAILABLE", "stop and status probe both lost"
+            )
+        if self.stop_connection_unknown_once:
+            self.stop_connection_unknown_once = False
+            raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "uncertain stop outcome")
+        if self.stop_visible_after_queries:
+            self._pending_stop_queries = self.stop_visible_after_queries
+            return
         self.state = replace(self.state, state="stoppedDL")
 
     async def remove_torrent_keep_files(self, torrent_hash: str) -> None:
         self._assert_intent("UNPACK_AUX_TORRENT_REMOVE")
         assert self.state is not None and torrent_hash == self.state.torrent_hash
         self.calls.append("remove")
+        if self.remove_disconnect_before_status_once:
+            self.remove_disconnect_before_status_once = False
+            self.connection_unavailable = True
+            raise DownloaderAdapterError(
+                "DOWNLOADER_UNAVAILABLE", "remove and status probe both lost"
+            )
+        if self.remove_connection_unknown_once:
+            self.remove_connection_unknown_once = False
+            raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "uncertain remove outcome")
+        if self.remove_visible_after_queries:
+            self._pending_remove_queries = self.remove_visible_after_queries
+            return
         self.state = None
 
     def _container_path(self, remote: str) -> Path:
@@ -204,6 +252,8 @@ class _DownloaderProvider:
 
 def _fixture(
     tmp_path: Path,
+    *,
+    mapped_root: Path | None = None,
 ) -> tuple[
     UnpackAuxiliaryStagingService,
     sessionmaker[Session],
@@ -355,7 +405,12 @@ def _fixture(
         downloader_id="downloader-target",
         downloader_version=3,
         binding_digest="b" * 64,
-        path_mappings=(PathMappingRule("/downloads", data_root.as_posix()),),
+        path_mappings=(
+            PathMappingRule(
+                "/downloads",
+                (mapped_root if mapped_root is not None else data_root).as_posix(),
+            ),
+        ),
         capabilities={"supports_selective_files": True, "api_version": "2.11.0"},
         adapter=cast(QbittorrentWriteAdapter, fake_qb),
         data_root=data_root,
@@ -367,6 +422,29 @@ def _fixture(
         path_scope=AuthorizedPathScope.legacy_only(legacy_data_root=data_root),
     )
     return service, factory, fake_qb, data_root
+
+
+def test_auxiliary_staging_unmapped_path_fails_before_any_external_write(
+    tmp_path: Path,
+) -> None:
+    """A stale path mapping must not create staging or dispatch a torrent."""
+    service, factory, fake_qb, data_root = _fixture(
+        tmp_path, mapped_root=tmp_path / "stale-container-path"
+    )
+    original = (data_root / "movies" / "Movie.mkv").read_bytes()
+
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert report.error_count == 1
+    assert fake_qb.calls == []
+    assert not (data_root / ".packbreaker-staging").exists()
+    assert (data_root / "movies" / "Movie.mkv").read_bytes() == original
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCH_ERROR.value
+        assert item.last_error_code == "UNPACK_AUX_STAGING_PATH_UNMAPPED"
+        assert session.scalar(select(UnpackExternalOperationJournal.id)) is None
 
 
 def test_auxiliary_staging_journals_writes_and_never_places_main_movie_in_staging(
@@ -439,6 +517,243 @@ def test_auxiliary_staging_reverifies_cross_file_piece_then_removes_torrent_keep
         }
         assert operations["UNPACK_AUX_TORRENT_STOP"] == OperationStatus.APPLIED.value
         assert operations["UNPACK_AUX_TORRENT_REMOVE"] == OperationStatus.APPLIED.value
+
+
+def test_auxiliary_stop_response_precedes_status_visibility_without_duplicate_stop(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    fake_qb.stop_visible_after_queries = 4
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert report.verified_count == 1
+    assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.CONTENT_VERIFIED.value
+        stop = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_STOP"
+            )
+        )
+        assert stop is not None
+        assert stop.status == OperationStatus.APPLIED.value
+
+
+def test_auxiliary_remove_response_precedes_status_visibility_without_duplicate_remove(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    fake_qb.remove_visible_after_queries = 3
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert report.verified_count == 1
+    assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+    with factory() as session:
+        removal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_REMOVE"
+            )
+        )
+        assert removal is not None
+        assert removal.status == OperationStatus.APPLIED.value
+
+
+def test_auxiliary_remove_unknown_keeps_journal_and_prevents_duplicate_remove(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    fake_qb.remove_connection_unknown_once = True
+
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.downloading_count == 1
+    assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_REMOVE"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+    assert second.error_count == 1
+    assert fake_qb.calls.count("remove") == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.last_error_code == "UNPACK_AUX_REMOVE_RECONCILE_REQUIRED"
+
+
+def test_auxiliary_stop_unknown_prevents_duplicate_stop(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    fake_qb.stop_connection_unknown_once = True
+    pending = asyncio.run(service.advance_next_batch("execution-1"))
+    assert pending.downloading_count == 1
+    assert fake_qb.calls.count("stop") == 1
+
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+    assert second.error_count == 1
+    assert fake_qb.calls.count("stop") == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.last_error_code == "UNPACK_AUX_STOP_RECONCILE_REQUIRED"
+
+
+def test_auxiliary_stop_and_state_probe_both_disconnect_marks_reconcile(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    fake_qb.stop_disconnect_before_status_once = True
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.downloading_count == 1
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_STOP"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+    fake_qb.connection_unavailable = False
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+    assert second.error_count == 1
+    assert fake_qb.calls.count("stop") == 1
+
+
+def test_auxiliary_remove_and_state_probe_both_disconnect_marks_reconcile(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    fake_qb.remove_disconnect_before_status_once = True
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.downloading_count == 1
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_REMOVE"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+    fake_qb.connection_unavailable = False
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+    assert second.error_count == 1
+    assert fake_qb.calls.count("remove") == 1
+
+
+def test_auxiliary_confirmed_stop_drifting_to_running_does_not_send_second_stop(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    fake_qb.remove_connection_unknown_once = True
+    asyncio.run(service.advance_next_batch("execution-1"))
+    assert fake_qb.state is not None
+    fake_qb.state = replace(fake_qb.state, state="downloading")
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert report.error_count == 1
+    assert fake_qb.calls.count("stop") == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.last_error_code == "UNPACK_AUX_STOP_STATE_DRIFTED"
+
+
+def test_auxiliary_recovers_when_remote_remove_applied_but_verification_not_committed(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    asyncio.run(service.advance_next_batch("execution-1"))
+    assert fake_qb.state is None
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.status = UnpackItemStatus.AUXILIARY_FETCHING.value
+        item.content_verification_level = None
+        item.auxiliary_state = {
+            **dict(item.auxiliary_state or {}),
+            "state": "DOWNLOADING",
+        }
+        session.commit()
+
+    resumed = asyncio.run(service.advance_next_batch("execution-1"))
+    assert resumed.verified_count == 1
+    assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+
+
+def test_auxiliary_poll_recovers_after_transient_downloader_unavailable(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    fake_qb.connection_unavailable = True
+
+    pending = asyncio.run(service.advance_next_batch("execution-1"))
+    assert pending.downloading_count == 1
+    assert pending.error_count == 0
+    assert fake_qb.calls == ["add", "select", "start"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
+        assert item.auxiliary_state is not None
+        assert item.auxiliary_state["state"] == "DOWNLOADING"
+        assert item.last_error_code == "UNPACK_AUXILIARY_FILES_REQUIRED"
+
+    fake_qb.connection_unavailable = False
+    recovered = asyncio.run(service.advance_next_batch("execution-1"))
+    assert recovered.verified_count == 1
+    assert recovered.error_count == 0
+    assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+    assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
+
+
+def test_auxiliary_poll_survives_temporary_site_download_500_without_readding(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    site = cast(_SiteProvider, service._site_provider)._site
+    site.transient_error = True
+
+    pending = asyncio.run(service.advance_next_batch("execution-1"))
+    assert pending.downloading_count == 1
+    assert pending.error_count == 0
+    assert fake_qb.calls == ["add", "select", "start"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
+        assert item.auxiliary_state is not None
+        assert item.auxiliary_state["state"] == "DOWNLOADING"
+        assert (
+            session.scalar(
+                select(UnpackExternalOperationJournal.id).where(
+                    UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_STOP"
+                )
+            )
+            is None
+        )
+
+    site.transient_error = False
+    resumed = asyncio.run(service.advance_next_batch("execution-1"))
+    assert resumed.verified_count == 1
+    assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+    assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
 
 
 def test_auxiliary_restart_reconciles_applied_operations_without_repeating_writes(

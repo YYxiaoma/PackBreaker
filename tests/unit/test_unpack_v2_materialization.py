@@ -1,9 +1,12 @@
+import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.app.application.unpack_existing_reuse import verify_existing_reuse
 from backend.app.application.unpack_materialization import UnpackMaterializationService
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_definition import TaskConflictPolicy, TaskStorageMode
@@ -12,6 +15,7 @@ from backend.app.domain.unpack_execution_plan import (
     UnpackExecutionAction,
     UnpackExecutionActionKind,
     UnpackExecutionPlan,
+    unpack_execution_plan_from_payload,
     unpack_execution_plan_to_payload,
 )
 from backend.app.domain.verification import VerificationLevel
@@ -159,6 +163,104 @@ def _fixture(
         path_scope=scope,
     )
     return service, factory, source, output
+
+
+def _freeze_reuse_plan(
+    service: UnpackMaterializationService,
+    factory: sessionmaker[Session],
+    source: Path,
+    output: Path,
+    *,
+    same_inode: bool,
+) -> Path:
+    target = output / "Pack" / "Movie.mkv"
+    target.parent.mkdir(parents=True)
+    if same_inode:
+        os.link(source, target)
+    else:
+        target.write_bytes(source.read_bytes())
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        plan = unpack_execution_plan_from_payload(item.execution_plan)
+        action = plan.actions[0]
+        assert action.source_path is not None and action.source_snapshot is not None
+        evidence = verify_existing_reuse(
+            service._filesystem,
+            source_path=action.source_path,
+            source_snapshot=action.source_snapshot,
+            target_path=target.as_posix(),
+        )
+        changed = replace(
+            action,
+            reuse_target_snapshot=evidence.target_snapshot,
+            reuse_sha256=evidence.sha256,
+        )
+        plan = replace(plan, actions=(changed,), create_directories=(), plan_digest="")
+        item.execution_plan = unpack_execution_plan_to_payload(plan)
+        item.execution_plan_digest = plan.plan_digest
+        session.commit()
+    return target
+
+
+@pytest.mark.parametrize("same_inode", [True, False])
+def test_reuse_existing_file_journal_is_read_only_and_idempotent(
+    tmp_path: Path, same_inode: bool
+) -> None:
+    service, factory, source, output = _fixture(tmp_path, TaskStorageMode.HARDLINK)
+    target = _freeze_reuse_plan(service, factory, source, output, same_inode=same_inode)
+    previous_target_stat = target.stat(follow_symlinks=False)
+    previous_source_stat = source.stat(follow_symlinks=False)
+
+    first = service.materialize_next_batch("execution-1")
+    assert first.materialized_count == 1
+    assert target.stat(follow_symlinks=False) == previous_target_stat
+    assert source.stat(follow_symlinks=False) == previous_source_stat
+    with factory() as session:
+        journals = session.scalars(select(UnpackExternalOperationJournal)).all()
+        assert len(journals) == 1
+        assert journals[0].operation_type == "UNPACK_EXEC_REUSE_EXISTING"
+        assert journals[0].status == OperationStatus.APPLIED.value
+        assert journals[0].intent["no_file_mutation"] is True
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.execution_state = {
+            "stage": "MATERIALIZING",
+            "plan_digest": item.execution_plan_digest,
+        }
+        session.commit()
+    second = service.materialize_next_batch("execution-1")
+    assert second.materialized_count == 1
+    assert target.stat(follow_symlinks=False) == previous_target_stat
+    with factory() as session:
+        assert len(session.scalars(select(UnpackExternalOperationJournal)).all()) == 1
+
+
+@pytest.mark.parametrize("replace_with_symlink", [False, True])
+def test_reuse_fails_closed_when_frozen_target_changes(
+    tmp_path: Path, replace_with_symlink: bool
+) -> None:
+    service, factory, source, output = _fixture(tmp_path, TaskStorageMode.HARDLINK)
+    target = _freeze_reuse_plan(service, factory, source, output, same_inode=False)
+    if replace_with_symlink:
+        target.unlink()
+        target.symlink_to(source)
+    else:
+        target.write_bytes(b"X" + source.read_bytes()[1:])
+    actual_bytes = target.read_bytes()
+    source_bytes = source.read_bytes()
+    report = service.materialize_next_batch("execution-1")
+    assert report.error_count == 1
+    assert source.read_bytes() == source_bytes
+    assert target.read_bytes() == actual_bytes
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert item.last_error_code == "UNPACK_EXEC_REUSE_TARGET_CHANGED"
+        journals = session.scalars(select(UnpackExternalOperationJournal)).all()
+        assert len(journals) == 1
+        assert journals[0].status == OperationStatus.RECONCILE_REQUIRED.value
 
 
 @pytest.mark.parametrize(

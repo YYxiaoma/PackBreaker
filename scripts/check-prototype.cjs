@@ -794,12 +794,14 @@ const path = require('node:path');
     assert.equal(await page.locator('.header-health').count(),0,'右上角用户框左侧不应再显示系统状态提示');
     assert.equal(await page.getByText('系统需要关注',{exact:true}).count(),0,'顶栏不应继续显示系统需要关注文本');
     await page.getByRole('button',{name:'查看通知',exact:true}).click();
-    await page.locator('.user-menu-drawer').waitFor({state:'visible'});
+    await page.locator('.notification-inbox-drawer').waitFor({state:'visible'});
+    assert.equal(await page.locator('.user-menu-drawer:visible').count(),0,'通知和用户信息抽屉必须独立');
     await page.keyboard.press('Escape');
-    await page.locator('.user-menu-drawer').waitFor({state:'hidden'});
+    await page.locator('.notification-inbox-drawer').waitFor({state:'hidden'});
     const globalSearch=page.getByRole('searchbox',{name:'搜索页面或功能',exact:true});
     await globalSearch.fill('日志');
-    await page.getByRole('listbox',{name:'可前往的功能'}).getByRole('option',{name:'日志',exact:true}).click();
+    await page.getByRole('listbox',{name:'可前往的功能'}).getByRole('option',{name:'系统设置',exact:true}).click();
+    await page.getByRole('tab',{name:'日志',exact:true}).click();
     await page.getByRole('heading',{name:'运行日志',exact:true,level:2}).waitFor();
     await globalSearch.fill('站点');
     await globalSearch.press('Enter');
@@ -907,13 +909,23 @@ const path = require('node:path');
     assert.equal(siteHealthReads,0,'站点连接测试后前端仍不得读取内部 health/circuit 状态');
     assert.equal(await siteCard.getByText(/熔断/).count(),0,'连接测试后也不得显示熔断状态');
 
-    for(const name of ['总览','任务中心','站点管理','下载器','日志','系统设置','关于']){
+    for(const name of ['总览','任务中心','站点管理','系统设置','关于']){
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.waitForTimeout(50);
       if(name!=='总览')assert.equal(await page.locator('.page-hero').count(),0,`${name} 不应继续显示顶部说明卡片`);
       assert.equal(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`${name} 桌面溢出`);
     }
     await page.locator('nav').getByRole('button',{name:'系统设置',exact:true}).click();
+    const settingsFill=await page.evaluate(()=>{
+      const container=document.querySelector('.system-settings-panel');
+      const section=document.querySelector('.system-settings-panel .settings-content');
+      return container&&section?{
+        container:container.getBoundingClientRect().width,
+        content:section.getBoundingClientRect().width,
+      }:null;
+    });
+    assert.ok(settingsFill&&settingsFill.content>=settingsFill.container-52,
+      '系统设置内容必须铺满卡片，不能保留旧版 820px 最大宽度');
     await page.getByRole('tab',{name:'备份恢复',exact:true}).click();
     await page.getByText('SQLite 一致性备份',{exact:true}).waitFor();
     await page.getByRole('button',{name:'立即备份',exact:true}).click();
@@ -934,7 +946,7 @@ const path = require('node:path');
     await userDrawer.getByText('深色',{exact:true}).click();
     await page.keyboard.press('Escape');
     await page.screenshot({path:path.join(output,'mobile-dark.png'),fullPage:true});
-    for(const name of ['总览','任务中心','站点管理','下载器','日志','系统设置','关于']){
+    for(const name of ['总览','任务中心','站点管理','系统设置','关于']){
       await page.getByRole('button',{name:'展开导航',exact:true}).click();
       await page.locator('nav').getByRole('button',{name,exact:false}).click();
       await page.waitForTimeout(50);

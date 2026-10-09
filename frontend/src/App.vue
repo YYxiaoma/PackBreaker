@@ -4,8 +4,6 @@ import {
   LayoutDashboard,
   ListChecks,
   Globe,
-  HardDrive,
-  ScrollText,
   Settings,
   Info,
   ChevronRight,
@@ -21,6 +19,7 @@ import WorkspaceManagement from './components/WorkspaceManagement.vue';
 import AuthGate from './components/AuthGate.vue';
 import PasswordChangeGate from './components/PasswordChangeGate.vue';
 import UserMenuDrawer from './components/UserMenuDrawer.vue';
+import NotificationInboxDrawer from './components/NotificationInboxDrawer.vue';
 import VersionPopover from './components/VersionPopover.vue';
 import packBreakerIcon from './assets/packbreaker-icon.png';
 import AboutPage from './components/AboutPage.vue';
@@ -34,6 +33,7 @@ type ThemeMode = 'light' | 'dark' | 'system';
 const auth = useAuthStore();
 const versionPopover = ref<InstanceType<typeof VersionPopover> | null>(null);
 const userDrawerVisible = ref(false);
+const notificationDrawerVisible = ref(false);
 const unreadCount = ref(0);
 const searchQuery = ref('');
 const searchOpen = ref(false);
@@ -77,23 +77,19 @@ const nav: Array<{ name: PrimaryRoute; icon: typeof LayoutDashboard }> = [
   { name: '总览', icon: LayoutDashboard },
   { name: '任务中心', icon: ListChecks },
   { name: '站点管理', icon: Globe },
-  { name: '下载器', icon: HardDrive },
-  { name: '日志', icon: ScrollText },
   { name: '系统设置', icon: Settings },
-  { name: '关于', icon: Info },
 ];
+const searchableNav = [...nav, { name: '关于' as const, icon: Info }];
 const searchResults = computed(() => {
   const query = searchQuery.value.trim().toLocaleLowerCase();
   const aliases: Partial<Record<PrimaryRoute, string>> = {
     总览: '仪表盘 dashboard 状态',
     任务中心: '任务 审批 执行 计划 重试',
     站点管理: '站点 pt cookie api',
-    下载器: '下载 qb transmission',
-    日志: '日志 记录 查询 log',
-    系统设置: '通知 备份 ai 设置',
+    系统设置: '通知 备份 ai 设置 下载器 qb transmission 日志 记录 查询 log',
     关于: '版本 帮助',
   };
-  return nav.filter(
+  return searchableNav.filter(
     (item) =>
       !query || (item.name + ' ' + (aliases[item.name] ?? '')).toLocaleLowerCase().includes(query),
   );
@@ -135,6 +131,7 @@ watch(
     if (!ready) {
       unreadCount.value = 0;
       userDrawerVisible.value = false;
+      notificationDrawerVisible.value = false;
       return;
     }
     void refreshUnreadCount();
@@ -252,7 +249,7 @@ function openVersionPopover(): void {
             type="button"
             class="header-bell"
             aria-label="查看通知"
-            @click="userDrawerVisible = true"
+            @click="notificationDrawerVisible = true"
           >
             <Bell :size="20" />
             <span v-if="unreadCount > 0" class="header-unread-dot"></span>
@@ -284,13 +281,27 @@ function openVersionPopover(): void {
         <footer><span>PackBreaker</span></footer>
       </main>
     </div>
+    <button
+      type="button"
+      class="about-corner-button"
+      :class="{ active: route === '关于' }"
+      aria-label="关于 PackBreaker"
+      :aria-current="route === '关于' ? 'page' : undefined"
+      @click="route = '关于'"
+    >
+      <Info :size="17" aria-hidden="true" />
+      <span>关于</span>
+    </button>
     <UserMenuDrawer
       v-model="userDrawerVisible"
       :username="auth.username || 'admin'"
       :theme-mode="themeMode"
       @update:theme-mode="themeMode = $event"
-      @unread-change="unreadCount = $event"
       @logout="logout"
+    />
+    <NotificationInboxDrawer
+      v-model="notificationDrawerVisible"
+      @unread-change="unreadCount = $event"
     />
   </div>
 </template>
