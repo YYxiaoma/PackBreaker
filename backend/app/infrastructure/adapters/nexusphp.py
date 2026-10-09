@@ -482,6 +482,7 @@ class NexusPhpWebAdapter:
                 site_id=self._profile.site_id,
                 torrent_id=normalized_id,
                 display_name=display_name,
+                total_size=_explicit_detail_size(parser),
                 external_ids=_external_ids(parser.all_links),
             )
         )
@@ -769,6 +770,28 @@ def _parse_search_rows(
         richness = 100 + sum(bool(_card_text(card, key)) for key in ("size", "seeders", "leechers"))
         _keep_richer_candidate(best_by_id, torrent_id, richness, candidate)
     return tuple(item[1] for item in best_by_id.values())
+
+
+def _explicit_detail_size(parser: _NexusHtmlParser) -> int | None:
+    """Accept only unambiguous labeled size cells in a torrent details table.
+
+    A details page often has no search-result row. Do not infer a torrent size
+    from free text, user totals, sibling torrents or the page's other numbers.
+    """
+    sizes: set[int] = set()
+    for row in parser.rows:
+        if len(row.cells) != 2:
+            continue
+        label = _clean_text(row.cells[0]).rstrip(":：").casefold()
+        if label not in {"大小", "文件大小", "种子大小", "体积", "size", "torrent size"}:
+            continue
+        value = _parse_size(row.cells[1])
+        if value is None or value <= 0:
+            return None
+        sizes.add(value)
+        if len(sizes) > 1:
+            return None
+    return next(iter(sizes)) if sizes else None
 
 
 def _details_link(links: list[tuple[str, str | None, str]]) -> tuple[str, str] | None:

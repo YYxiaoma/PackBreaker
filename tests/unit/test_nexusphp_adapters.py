@@ -20,6 +20,45 @@ _TORRENT = b"d4:infod4:name9:syntheticee"
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("detail_rows", "expected_size"),
+    [
+        ("<tr><td>大小：</td><td>7.25 GiB</td></tr>", int(7.25 * 1024**3)),
+        ("<tr><td>Size</td><td>4.00 GiB</td></tr>", 4 * 1024**3),
+        ("<tr><td>用户总大小</td><td>8.00 GiB</td></tr>", None),
+        (
+            "<tr><td>大小</td><td>4.00 GiB</td></tr><tr><td>大小</td><td>8.00 GiB</td></tr>",
+            None,
+        ),
+        ("<tr><td>大小</td><td>unknown</td></tr>", None),
+    ],
+)
+async def test_nexusphp_details_only_accept_explicit_unambiguous_size(
+    detail_rows: str, expected_size: int | None
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.host == "hdtime.org"
+        assert request.url.path == "/details.php"
+        assert request.url.params["id"] == "123"
+        return httpx2.Response(
+            200,
+            text=(
+                "<html><body><h1>Synthetic.Movie.2026</h1>"
+                f"<table>{detail_rows}</table>"
+                '<a href="download.php?id=123">Download</a>'
+                "</body></html>"
+            ),
+        )
+
+    details = await HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler)).fetch_details(
+        "123"
+    )
+    assert details.site_id == "hdtime"
+    assert details.torrent_id == "123"
+    assert details.candidate.total_size == expected_size
+
+
+@pytest.mark.asyncio
 async def test_hdtime_adapter_satisfies_shared_contract_with_cookie_only_on_origin() -> None:
     requests: list[httpx2.Request] = []
 
