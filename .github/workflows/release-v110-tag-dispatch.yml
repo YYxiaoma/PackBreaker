@@ -1,0 +1,78 @@
+name: v1.1.0 Formal Tag and Release Kickoff
+
+# Manual-only, one-shot. Formal release assets and channels are owned by release.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: "Full 40-character approved v1.1.0 merge commit"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: packbreaker-v110-formal-kickoff
+  cancel-in-progress: false
+
+jobs:
+  tag-and-dispatch:
+    if: github.repository == 'YYxiaoma/PackBreaker' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out main with complete history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Enforce approved target, published baseline and successful main CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPROVED_SHA: ${{ inputs.approved_commit }}
+        run: |
+          set -euo pipefail
+          tag=v1.1.0
+          test "$APPROVED_SHA" = "8cf4d0c41faa7d31643d438d429ed4f450d7b2c5"
+          test "$GITHUB_REF" = "refs/heads/main"
+          git fetch --no-tags origin main
+          git cat-file -e "$APPROVED_SHA^{commit}"
+          git merge-base --is-ancestor "$APPROVED_SHA" origin/main
+          test -z "$(git ls-remote --tags origin "refs/tags/$tag")"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists" >&2
+            exit 1
+          fi
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "v1.0.15"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/37872998526" --jq .head_sha)" = "$APPROVED_SHA"
+          for run in 37872998526 37872998497 37872998516; do
+            test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq .conclusion)" = "success"
+          done
+          git checkout --detach "$APPROVED_SHA"
+          python3 scripts/release_manifest.py --tag "$tag" --validate-tag-only
+          python3 scripts/validate_release_baseline.py
+          test "$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" = "1.1.0"
+      - name: Create one tag at the reviewed merge commit
+        shell: bash
+        env:
+          APPROVED_SHA: ${{ inputs.approved_commit }}
+        run: |
+          set -euo pipefail
+          git tag v1.1.0 "$APPROVED_SHA"
+          git push origin refs/tags/v1.1.0
+          published="$(git ls-remote origin refs/tags/v1.1.0 | awk '{print $1}')"
+          test "$published" = "$APPROVED_SHA"
+          echo "v1.1.0 tag: $published" >> "$GITHUB_STEP_SUMMARY"
+      - name: Start existing formal Release workflow once on v1.1.0
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPROVED_SHA: ${{ inputs.approved_commit }}
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/tags/v1.1.0 | awk '{print $1}')" = "$APPROVED_SHA"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref v1.1.0
+          echo "Formal Release workflow dispatched on v1.1.0" >> "$GITHUB_STEP_SUMMARY"
