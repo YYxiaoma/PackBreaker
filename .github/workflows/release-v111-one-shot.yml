@@ -1,0 +1,84 @@
+name: v1.1.1 One-time Formal Release Tag Gate
+
+# Temporary version-specific bridge. The GITHUB_TOKEN does not trigger
+# push workflows; explicitly dispatch release.yml after pushing the tag.
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: "Expected v1.1.1 release commit (40-char SHA)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packbreaker-v111-one-shot-formal-tag
+  cancel-in-progress: false
+
+jobs:
+  create-tag-and-start-release:
+    if: github.repository == 'YYxiaoma/PackBreaker' && github.ref == 'refs/heads/main' && github.actor == 'YYxiaoma'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
+    env:
+      TARGET_SHA: b779e3270f2a3b3d8c380e22ac36f06ce55f8252
+      EXPECTED_TREE: 4d9cee5c6d382d2d5c98c61954d290761efdb211
+      REQUESTED_SHA: ${{ inputs.release_sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out the registration commit and historical release target
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Refuse wrong source, altered main, existing tag or release
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_SHA" = "$TARGET_SHA"
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD^)" = "$TARGET_SHA"
+          test "$(git rev-parse "$TARGET_SHA^{tree}")" = "$EXPECTED_TREE"
+          test "$(git show "$TARGET_SHA:pyproject.toml" | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["project"]["version"])')" = 1.1.1
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')" = v1.1.0
+          if git ls-remote --exit-code --tags origin refs/tags/v1.1.1 >/dev/null 2>&1; then
+            echo "::error::v1.1.1 tag already exists; refusing duplicate"
+            exit 1
+          fi
+          if gh release view v1.1.1 >/dev/null 2>&1; then
+            echo "::error::v1.1.1 Release already exists; refusing duplicate"
+            exit 1
+          fi
+          python3 scripts/release_manifest.py --tag v1.1.1 --validate-tag-only
+      - name: Create immutable v1.1.1 Git tag pointing to reviewed merge commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag v1.1.1 "$TARGET_SHA"
+          git push origin refs/tags/v1.1.1
+      - name: Verify the tag points to the exact reviewed commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=0
+          for attempt in $(seq 1 12); do
+            actual="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.1.1" --jq '.object.sha' 2>/dev/null || true)"
+            if [[ "$actual" == "$TARGET_SHA" ]]; then
+              found=1
+              break
+            fi
+            sleep 2
+          done
+          test "$found" = 1
+      - name: Manually dispatch existing formal release workflow on the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GITHUB_TOKEN tag pushes do not automatically start push-tag workflows.
+          gh workflow run release.yml --ref v1.1.1
+          echo "Dispatched formal release.yml exactly once for v1.1.1 -> $TARGET_SHA" >> "$GITHUB_STEP_SUMMARY"
