@@ -84,7 +84,7 @@ class _Prepared:
     torrent_id: str
     plan: UnpackExecutionPlan
     binding: QbittorrentWriteBinding | TransmissionWriteBinding
-    torrent_content: bytes
+    torrent_content: bytes | None
     expected_hashes: tuple[str, ...]
     ownership_tag: str
 
@@ -175,6 +175,7 @@ class UnpackSeedingService:
                 ApplicationError,
                 DownloaderAdapterError,
                 SiteAdapterError,
+                TimeoutError,
                 ValueError,
             ) as exc:
                 code, message = _safe_error(exc)
@@ -290,24 +291,6 @@ class UnpackSeedingService:
             raise self._conflict("候选站点当前不可用")
         if site.config_version != version or site.site_id != adapter_site_id:
             raise self._conflict("候选站点配置已变化，请重新匹配")
-        async with asyncio.timeout(self._fetch_timeout_seconds):
-            payload = await site.adapter.fetch_torrent(torrent_id)
-        if payload.site_id != adapter_site_id or payload.torrent_id != torrent_id:
-            raise self._conflict("重新获取的 torrent 身份与候选不一致")
-        meta = parse_torrent(payload.content)
-        if meta.metainfo_digest != plan.metainfo_digest:
-            raise ApplicationError(
-                code="UNPACK_SEED_TORRENT_CHANGED",
-                status=409,
-                title="候选 torrent 已变化",
-                detail="最终辅种前 metainfo digest 与冻结执行计划不一致",
-            )
-        expected_hashes = tuple(
-            value.lower() for value in (meta.v1_info_hash, meta.v2_info_hash) if value is not None
-        )
-        if not expected_hashes:
-            raise self._conflict("torrent 缺少可用于下载器确认的 info hash")
-
         binding = self._downloader_provider.write_binding(plan.target_downloader_id)
         if (
             binding.downloader_version != plan.target_downloader_version
@@ -322,6 +305,67 @@ class UnpackSeedingService:
             )
         ownership_digest = hashlib.sha256(f"{item_id}:{plan.plan_digest}".encode()).hexdigest()
         ownership_tag = f"packbreaker-unpack-{ownership_digest[:16]}"
+        torrent_content: bytes | None = None
+        if stage == "FILES_MATERIALIZED":
+            # Before ADD, always re-fetch and validate the frozen metainfo.
+            async with asyncio.timeout(self._fetch_timeout_seconds):
+                payload = await site.adapter.fetch_torrent(torrent_id)
+            if payload.site_id != adapter_site_id or payload.torrent_id != torrent_id:
+                raise self._conflict("重新获取的 torrent 身份与候选不一致")
+            meta = parse_torrent(payload.content)
+            if meta.metainfo_digest != plan.metainfo_digest:
+                raise ApplicationError(
+                    code="UNPACK_SEED_TORRENT_CHANGED",
+                    status=409,
+                    title="候选 torrent 已变化",
+                    detail="最终辅种前 metainfo digest 与冻结执行计划不一致",
+                )
+            expected_hashes = tuple(
+                value.lower()
+                for value in (meta.v1_info_hash, meta.v2_info_hash)
+                if value is not None
+            )
+            if not expected_hashes:
+                raise self._conflict("torrent 缺少可用于下载器确认的 info hash")
+            torrent_content = payload.content
+        else:
+            # Only an APPLIED ADD journal can authorize client-only resume.
+            # An unrelated torrent with the same hash must never be adopted.
+            operation_type = _QB_ADD if isinstance(binding, QbittorrentWriteBinding) else _TR_ADD
+            journal = self._load_by_key(_operation_key_values(item_id, plan, operation_type))
+            if journal is None:
+                raise self._reconcile_required("已添加 torrent 缺少 ADD 流水")
+            intent = journal.intent if isinstance(journal.intent, dict) else {}
+            after = journal.after_snapshot if isinstance(journal.after_snapshot, dict) else {}
+            raw_hashes = intent.get("expected_hashes")
+            if (
+                journal.item_id != item_id
+                or journal.operation_type != operation_type
+                or journal.status != OperationStatus.APPLIED.value
+                or journal.target
+                != {
+                    "downloader_id": plan.target_downloader_id,
+                    "remote_save_path": plan.target_remote_save_path,
+                }
+                or intent.get("schema_version") != _SCHEMA_VERSION
+                or intent.get("plan_digest") != plan.plan_digest
+                or intent.get("ownership_tag") != ownership_tag
+                or not isinstance(raw_hashes, list)
+                or not raw_hashes
+                or not all(
+                    isinstance(value, str)
+                    and len(value) in (40, 64)
+                    and all(char in "0123456789abcdef" for char in value)
+                    for value in raw_hashes
+                )
+                or len(raw_hashes) != len(set(raw_hashes))
+                or after.get("ownership_tag") != ownership_tag
+                or after.get("save_path") != plan.target_remote_save_path
+                or after.get("torrent_hash") not in raw_hashes
+                or dict(item.execution_state or {}).get("torrent_hash") not in raw_hashes
+            ):
+                raise self._reconcile_required("已添加 torrent 的冻结身份或流水不一致")
+            expected_hashes = tuple(raw_hashes)
         return _Prepared(
             execution_id=execution_id,
             item_id=item_id,
@@ -334,7 +378,7 @@ class UnpackSeedingService:
             torrent_id=torrent_id,
             plan=plan,
             binding=binding,
-            torrent_content=payload.content,
+            torrent_content=torrent_content,
             expected_hashes=expected_hashes,
             ownership_tag=ownership_tag,
         )
@@ -425,6 +469,9 @@ class UnpackSeedingService:
         self,
         prepared: _Prepared,
     ) -> QbittorrentTorrentState | TransmissionTorrentState:
+        torrent_content = prepared.torrent_content
+        if torrent_content is None:
+            raise self._reconcile_required("ADD 前缺少已验证 torrent 内容")
         is_qb = isinstance(prepared.binding, QbittorrentWriteBinding)
         operation_type = _QB_ADD if is_qb else _TR_ADD
         key = _operation_key(prepared, operation_type)
@@ -437,7 +484,7 @@ class UnpackSeedingService:
             "plan_digest": prepared.plan.plan_digest,
             "expected_hashes": list(prepared.expected_hashes),
             "ownership_tag": prepared.ownership_tag,
-            "torrent_payload_digest": hashlib.sha256(prepared.torrent_content).hexdigest(),
+            "torrent_payload_digest": hashlib.sha256(torrent_content).hexdigest(),
             "skip_checking": is_qb and not prepared.plan.client_check_required,
         }
         journal = self._load_by_key(key)
@@ -481,7 +528,7 @@ class UnpackSeedingService:
                 qb_binding = cast(QbittorrentWriteBinding, prepared.binding)
                 qb_result = await qb_binding.adapter.add_torrent(
                     QbittorrentAddRequest(
-                        torrent_content=prepared.torrent_content,
+                        torrent_content=torrent_content,
                         save_path=prepared.plan.target_remote_save_path,
                         verification_level=VerificationLevel.FULL_VERIFIED,
                         skip_checking=not prepared.plan.client_check_required,
@@ -509,7 +556,7 @@ class UnpackSeedingService:
                 transmission_binding = cast(TransmissionWriteBinding, prepared.binding)
                 transmission_result = await transmission_binding.adapter.add_torrent(
                     TransmissionAddRequest(
-                        torrent_content=prepared.torrent_content,
+                        torrent_content=torrent_content,
                         save_path=prepared.plan.target_remote_save_path,
                         labels=(prepared.ownership_tag,),
                         paused=True,
@@ -1145,10 +1192,14 @@ class UnpackSeedingService:
 
 
 def _operation_key(prepared: _Prepared, operation_type: str) -> str:
+    return _operation_key_values(prepared.item_id, prepared.plan, operation_type)
+
+
+def _operation_key_values(item_id: str, plan: UnpackExecutionPlan, operation_type: str) -> str:
     return hashlib.sha256(
         (
-            f"{_SCHEMA_VERSION}:{prepared.item_id}:{prepared.plan.plan_digest}:"
-            f"{prepared.plan.target_downloader_id}:{operation_type}"
+            f"{_SCHEMA_VERSION}:{item_id}:{plan.plan_digest}:"
+            f"{plan.target_downloader_id}:{operation_type}"
         ).encode()
     ).hexdigest()
 
@@ -1264,7 +1315,7 @@ def _refresh_execution_state(session: Session, execution: UnpackExecution) -> No
 
 
 def _safe_error(
-    exc: ApplicationError | DownloaderAdapterError | SiteAdapterError | ValueError,
+    exc: ApplicationError | DownloaderAdapterError | SiteAdapterError | TimeoutError | ValueError,
 ) -> tuple[str, str]:
     if isinstance(exc, ApplicationError):
         return exc.code, exc.detail
@@ -1272,4 +1323,6 @@ def _safe_error(
         return exc.code, "最终辅种下载器操作失败"
     if isinstance(exc, SiteAdapterError):
         return exc.code, "最终辅种获取 torrent 失败"
+    if isinstance(exc, TimeoutError):
+        return "UNPACK_SEED_TIMEOUT", "最终辅种网络或外部操作超时"
     return "UNPACK_SEED_INVALID", str(exc)

@@ -41,6 +41,7 @@ from backend.app.infrastructure.adapters.downloaders import (
     TransmissionTorrentState,
     TransmissionWriteAdapter,
 )
+from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
@@ -89,10 +90,16 @@ class _FakeSite:
     def __init__(self, torrent: bytes) -> None:
         self._torrent = torrent
         self.calls: list[str] = []
+        self.fail_fetch = False
+        self.delay_seconds = 0.0
 
     async def fetch_torrent(self, torrent_id: str) -> TorrentPayload:
         assert torrent_id == "torrent-1"
         self.calls.append(torrent_id)
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
+        if self.fail_fetch:
+            raise SiteAdapterError("SITE_UNAVAILABLE", "synthetic maintenance", retryable=True)
         return TorrentPayload("fake-site", torrent_id, self._torrent)
 
 
@@ -502,6 +509,93 @@ def test_qb_full_verified_skip_checking_adds_paused_then_starts(tmp_path: Path) 
         assert all(row.status == OperationStatus.APPLIED.value for row in journals)
 
 
+def test_final_seeding_site_timeout_is_recorded_without_side_effects(tmp_path: Path) -> None:
+    service, factory, fake, _torrent_bytes = _fixture(tmp_path, kind="transmission")
+    site = cast(_SiteProvider, service._site_provider)._site
+    site.delay_seconds = 0.1
+    service._fetch_timeout_seconds = 0.001
+
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert report.processed_count == 1
+    assert report.error_count == 1
+    assert fake.calls == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert item.last_error_code == "UNPACK_SEED_TIMEOUT"
+        assert session.scalars(select(UnpackExternalOperationJournal)).all() == []
+
+
+def test_transmission_resumes_after_add_when_site_goes_down(tmp_path: Path) -> None:
+    service, factory, fake, _torrent_bytes = _fixture(tmp_path, kind="transmission")
+    site = cast(_SiteProvider, service._site_provider)._site
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.client_verifying_count == 1
+    assert site.calls == ["torrent-1"]
+
+    site.fail_fetch = True
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert second.completed_count == 1
+    assert site.calls == ["torrent-1"]
+    assert fake.calls == ["add", "verify", "start"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.COMPLETED.value
+
+
+def test_qb_resumes_client_check_after_add_when_site_goes_down(tmp_path: Path) -> None:
+    service, factory, fake, _torrent_bytes = _fixture(tmp_path, kind="qb", force_client_check=True)
+    qb = cast(_FakeQb, fake)
+    site = cast(_SiteProvider, service._site_provider)._site
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.client_verifying_count == 1
+    assert site.calls == ["torrent-1"]
+
+    site.fail_fetch = True
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert second.completed_count == 1
+    assert site.calls == ["torrent-1"]
+    assert qb.calls == ["add", "verify", "start"]
+    assert qb.state is not None and qb.state.seeding
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.COMPLETED.value
+
+
+def test_transmission_resume_rejects_tampered_add_journal(tmp_path: Path) -> None:
+    service, factory, fake, _torrent_bytes = _fixture(tmp_path, kind="transmission")
+    site = cast(_SiteProvider, service._site_provider)._site
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.client_verifying_count == 1
+    with factory() as session:
+        row = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_EXEC_TRANSMISSION_ADD"
+            )
+        )
+        assert row is not None
+        row.after_snapshot = {**(row.after_snapshot or {}), "ownership_tag": "unowned"}
+        session.commit()
+    site.fail_fetch = True
+
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert second.error_count == 1
+    assert site.calls == ["torrent-1"]
+    assert fake.calls == ["add"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert item.last_error_code == "UNPACK_SEED_RECONCILE_REQUIRED"
+
+
 def test_transmission_requires_explicit_verify_before_start(tmp_path: Path) -> None:
     service, factory, fake, _torrent_bytes = _fixture(tmp_path, kind="transmission")
     transmission = cast(_FakeTransmission, fake)
@@ -642,6 +736,33 @@ def test_qb_accepted_start_request_is_polled_without_replay(tmp_path: Path) -> N
         assert start.status == OperationStatus.INTENT_RECORDED.value
         assert start.after_snapshot is not None
         assert start.after_snapshot["request_accepted"] is True
+
+
+def test_qb_starting_checkpoint_with_site_offline_does_not_replay_start(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake, _torrent_bytes = _fixture(
+        tmp_path, kind="qb", start_behavior="accepted_no_state"
+    )
+    qb = cast(_FakeQb, fake)
+    site = cast(_SiteProvider, service._site_provider)._site
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.completed_count == 0
+    assert qb.calls == ["add", "start"]
+
+    site.fail_fetch = True
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert second.error_count == 0
+    assert second.completed_count == 0
+    assert site.calls == ["torrent-1"]
+    assert qb.calls == ["add", "start"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTING.value
+        assert item.execution_state is not None
+        assert item.execution_state["stage"] == "STARTING"
 
 
 def test_qb_lost_start_response_without_observed_effect_requires_reconcile(
