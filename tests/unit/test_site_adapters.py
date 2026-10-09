@@ -141,6 +141,7 @@ async def test_candidate_nexus_site_specific_search_columns_are_not_misclassifie
         SiteKind.HDHOME: (10, 7, 6, 5, 4),
         SiteKind.UBITS: (10, 7, 6, 5, 4),
         SiteKind.PTTIME: (12, 8, 7, 6, 5),
+        SiteKind.U2: (8, 5, 4, 3, 2),
     }
     count, date_offset, size_offset, seeders_offset, leechers_offset = columns.get(
         kind, (9, 6, 5, 4, 3)

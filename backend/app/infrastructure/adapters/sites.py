@@ -69,14 +69,18 @@ _CANDIDATE_NEXUS_KINDS = frozenset(
     }
 )
 
-# Positions are counted from the rightmost torrent-table cell. These three
-# sites include extra columns compared with the NexusPHP baseline. Keep these
-# offsets site-specific rather than applying them to every NexusPHP profile.
+# Positions are counted from the rightmost torrent-table cell. These sites
+# have layouts that differ from the NexusPHP baseline (extra or fewer columns).
+# Never apply their offsets to other profiles.
 _CANDIDATE_NEXUS_COLUMNS: dict[SiteKind, tuple[int, int, int, int]] = {
     # date, size, seeders, leechers
     SiteKind.HDHOME: (7, 6, 5, 4),
     SiteKind.UBITS: (7, 6, 5, 4),
     SiteKind.PTTIME: (8, 7, 6, 5),
+    # Real U2 eight-column results: size is fourth from right, followed by
+    # seeders / leechers / downloaded. The default size offset silently
+    # discarded all 19 actual sizes in a 2026-10-09 read-only probe.
+    SiteKind.U2: (5, 4, 3, 2),
 }
 
 
