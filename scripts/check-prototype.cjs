@@ -910,7 +910,13 @@ const path = require('node:path');
     assert.equal(await siteCard.getByText(/熔断/).count(),0,'连接测试后也不得显示熔断状态');
 
     for(const name of ['总览','任务中心','站点管理','系统设置','关于']){
-      await page.locator('nav').getByRole('button',{name,exact:false}).click();
+      if(name==='关于'){
+        assert.equal(await page.locator('nav').getByRole('button',{name,exact:true}).count(),0,'关于不应回到侧栏导航');
+        await page.getByRole('button',{name:'关于 PackBreaker',exact:true}).click();
+        assert.equal(await page.getByRole('button',{name:'关于 PackBreaker',exact:true}).getAttribute('aria-current'),'page','右下角关于入口应标记为当前页');
+      }else{
+        await page.locator('nav').getByRole('button',{name,exact:false}).click();
+      }
       await page.waitForTimeout(50);
       if(name!=='总览')assert.equal(await page.locator('.page-hero').count(),0,`${name} 不应继续显示顶部说明卡片`);
       assert.equal(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`${name} 桌面溢出`);
@@ -947,8 +953,14 @@ const path = require('node:path');
     await page.keyboard.press('Escape');
     await page.screenshot({path:path.join(output,'mobile-dark.png'),fullPage:true});
     for(const name of ['总览','任务中心','站点管理','系统设置','关于']){
-      await page.getByRole('button',{name:'展开导航',exact:true}).click();
-      await page.locator('nav').getByRole('button',{name,exact:false}).click();
+      if(name==='关于'){
+        assert.equal(await page.locator('nav').getByRole('button',{name,exact:true}).count(),0,'移动侧栏不应展示关于入口');
+        await page.getByRole('button',{name:'关于 PackBreaker',exact:true}).click();
+        assert.equal(await page.getByRole('button',{name:'关于 PackBreaker',exact:true}).getAttribute('aria-current'),'page','移动端关于入口应标记为当前页');
+      }else{
+        await page.getByRole('button',{name:'展开导航',exact:true}).click();
+        await page.locator('nav').getByRole('button',{name,exact:false}).click();
+      }
       await page.waitForTimeout(50);
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,`${name} 移动页溢出`);
     }
