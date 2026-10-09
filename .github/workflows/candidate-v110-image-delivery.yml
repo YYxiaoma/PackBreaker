@@ -27,7 +27,7 @@ env:
 
 jobs:
   publish-candidate:
-    if: github.repository == 'YYxiaoma/PackBreaker' && github.ref == 'refs/heads/candidate/v1.1.0'
+    if: github.repository == 'YYxiaoma/PackBreaker' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     permissions:
