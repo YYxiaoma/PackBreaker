@@ -50,6 +50,22 @@ def test_item_can_return_to_review_after_content_mismatch() -> None:
     )
 
 
+def test_automatic_content_candidate_fallback_only_before_side_effect_stage() -> None:
+    assert item_transition_allowed(
+        UnpackItemStatus.CONTENT_VERIFYING, UnpackItemStatus.MATCHED_AUTO
+    )
+    for status in (
+        UnpackItemStatus.TORRENT_FETCHING,
+        UnpackItemStatus.AUXILIARY_FETCHING,
+        UnpackItemStatus.CONTENT_VERIFIED,
+        UnpackItemStatus.PLAN_PENDING,
+        UnpackItemStatus.EXECUTING,
+        UnpackItemStatus.CLIENT_VERIFYING,
+        UnpackItemStatus.COMPLETED,
+    ):
+        assert not item_transition_allowed(status, UnpackItemStatus.MATCHED_AUTO)
+
+
 def test_auto_match_can_be_manually_reviewed_before_side_effects() -> None:
     assert item_transition_allowed(
         UnpackItemStatus.MATCHED_AUTO,

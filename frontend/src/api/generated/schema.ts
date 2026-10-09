@@ -2389,7 +2389,14 @@ export interface components {
       | 'BTSCHOOL'
       | 'PTTIME'
       | 'ROUSI_PRO'
-      | 'LINGYIN_CLUB';
+      | 'LINGYIN_CLUB'
+      | 'PTERCLUB'
+      | 'AUDIENCES'
+      | 'SPRING_SUNDAY'
+      | 'HDDOLBY'
+      | 'U2'
+      | 'TANGPT'
+      | 'CARPT';
     /** SiteListResponse */
     SiteListResponse: {
       /** Items */

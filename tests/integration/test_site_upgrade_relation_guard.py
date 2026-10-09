@@ -103,6 +103,54 @@ def test_site_relation_guard_preserves_real_historic_rows_during_upgrade(
         assert connection.execute("SELECT download_secret_id FROM site").fetchone() == (None,)
 
 
+def test_v110_formal_adjacent_sqlite_upgrade_preserves_existing_site_task_and_secret(
+    tmp_path: Path,
+) -> None:
+    """Official v1.1.0 schema (0044) → v1.1.1 (0045), with real FK rows."""
+    database = tmp_path / "v110-adjacent.db"
+    _historic_linked_database(database)
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database)
+    command.upgrade(config, "0044_retire_legacy_task_runtime")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "0044_retire_legacy_task_runtime",
+        )
+        connection.execute(
+            "INSERT INTO secret (id, kind, ciphertext, key_version, created_at, updated_at) "
+            "VALUES ('v110-secret', 'SITE_COOKIE', 'encrypted-synthetic-only', 1, "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        connection.execute("UPDATE site SET secret_id='v110-secret' WHERE id='old-site'")
+    before = _identity(database)
+
+    _upgrade(database, backup_dir=tmp_path / "backups")
+
+    assert _identity(database) == before
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "0045_seven_site_capacity_v111",
+        )
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute(
+            "SELECT secret_id, enabled FROM site WHERE id='old-site'"
+        ).fetchone() == ("v110-secret", 0)
+        assert connection.execute(
+            "SELECT ciphertext FROM secret WHERE id='v110-secret'"
+        ).fetchone() == ("encrypted-synthetic-only",)
+        assert connection.execute(
+            "SELECT site_id FROM task_definition WHERE id='old-task'"
+        ).fetchone() == ("old-site",)
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO site (id, name, type, base_url, credential_kind, "
+                "capabilities, connection_status, enabled, version, created_at, updated_at) "
+                "VALUES ('bad-site', 'unknown', 'NOT_A_REAL_KIND', 'https://unknown.invalid', "
+                "'COOKIE', '{}', 'UNTESTED', 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+
+
 def test_expanded_site_constraint_keeps_indexes_and_all_original_foreign_keys(
     tmp_path: Path,
 ) -> None:
@@ -150,10 +198,10 @@ def test_expanded_site_constraint_keeps_indexes_and_all_original_foreign_keys(
         assert site_sql is not None and isinstance(site_sql[0], str)
         type_check = re.search(r"\btype\s+IN\s*\(([^)]*)\)", site_sql[0])
         assert type_check is not None
-        # Snapshot the exact v1.0.1 revision contract: changing the runtime
-        # enum in a later version must not silently rewrite historical DDL.
+        # The head migration expands the allowed kinds without modifying the
+        # historic v1.0.1 revision or disturbing existing relationships.
         declared_types = re.findall(r"'([^']+)'", type_check.group(1))
-        assert len(declared_types) == 11
+        assert len(declared_types) == 18
         assert set(declared_types) == {
             "MTEAM",
             "HDTIME",
@@ -166,6 +214,13 @@ def test_expanded_site_constraint_keeps_indexes_and_all_original_foreign_keys(
             "PTTIME",
             "ROUSI_PRO",
             "LINGYIN_CLUB",
+            "PTERCLUB",
+            "AUDIENCES",
+            "SPRING_SUNDAY",
+            "HDDOLBY",
+            "U2",
+            "TANGPT",
+            "CARPT",
         }
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(

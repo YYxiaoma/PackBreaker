@@ -187,6 +187,58 @@ def test_transient_launcher_starts_auto_remove_helper_and_persists_accepted_stat
     assert len(create_calls_after) == 1
 
 
+def test_transient_launcher_accepts_official_docker_hub_v1015_compose_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actual one-shot helper bootstrap must use the same trusted alias."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(mode=0o700)
+    docker_socket = tmp_path / "docker.sock"
+    docker_socket.touch()
+    FakeDockerEngineClient.instances = []
+    FakeDockerEngineClient.helper_available = True
+    FakeDockerEngineClient.config_dir = config_dir
+    FakeDockerEngineClient.docker_socket = docker_socket
+
+    class DockerHubEngine(FakeDockerEngineClient):
+        def inspect_container(self, container: str) -> dict[str, Any]:
+            inspected = super().inspect_container(container)
+            if container != "packbreaker":
+                return inspected
+            inspected["Config"]["Image"] = "yyxiaoma01/packbreaker:latest"
+            inspected["HostConfig"]["PortBindings"] = {
+                "8000/tcp": [{"HostIp": "", "HostPort": "38000"}]
+            }
+            return inspected
+
+    monkeypatch.setattr(transient_module, "DockerEngineClient", DockerHubEngine)
+    launcher = TransientUpdaterLauncher(
+        config_dir=config_dir,
+        docker_socket=docker_socket,
+        target_container="packbreaker",
+        allowed_image=_OFFICIAL,
+    )
+    request = UpgradeHelperRequest(
+        request_id="dockerhub-v1015-to-v110",
+        current_version="1.0.15",
+        target_version="1.1.0",
+        target_image=_TARGET,
+        backup_database_file="packbreaker-20261009T010101Z-1234abcd.db",
+        backup_manifest_file="packbreaker-20261009T010101Z-1234abcd.json",
+    )
+
+    accepted = launcher.start_upgrade(request)
+
+    assert accepted.phase == "accepted"
+    assert accepted.target_version == "1.1.0"
+    creates = [item for engine in DockerHubEngine.instances for item in engine.created]
+    assert len(creates) == 1
+    _, payload = creates[0]
+    assert payload["Image"] == "sha256:" + "1" * 64
+    assert payload["HostConfig"]["AutoRemove"] is True
+    assert launcher.status().phase == "accepted"
+
+
 def test_transient_launcher_requires_mounted_docker_socket(tmp_path: Path) -> None:
     launcher = TransientUpdaterLauncher(
         config_dir=tmp_path,

@@ -19,6 +19,7 @@ on:
       - "README.md"
       - "LICENSE"
       - "scripts/check-updater-e2e.sh"
+      - "scripts/check-official-dockerhub-updater.sh"
       - "scripts/check-release-upgrade.sh"
       - "scripts/check-immutable-image-runtime.sh"
       - "scripts/check-v109-default-entrypoint.sh"
@@ -141,6 +142,9 @@ jobs:
 
       - name: Exercise v1.0.9 default PUID/PGID bootstrap without user or group_add
         run: bash scripts/check-v109-default-entrypoint.sh packbreaker:candidate-docker-e2e
+
+      - name: Inspect official Docker Hub mirror with Synology Compose parameters (no upgrade)
+        run: bash scripts/check-official-dockerhub-updater.sh packbreaker:candidate-docker-e2e
 
       - name: Exercise previous-release upgrade and rollback
         if: steps.release_relation.outputs.candidate_newer == 'true'

@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { apiClient } from './client';
-import { credentialKindForSite, deleteSite, setSiteEnabled, updateSite } from './sites';
+import {
+  credentialKindForSite,
+  deleteSite,
+  setSiteEnabled,
+  siteProfileOptionLabel,
+  updateSite,
+} from './sites';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -10,6 +16,31 @@ describe('站点 API 并发前置条件', () => {
     expect(credentialKindForSite('MTEAM')).toBe('API_KEY');
     expect(credentialKindForSite('HDTIME')).toBe('COOKIE');
     expect(credentialKindForSite('ROUSI_PRO')).toBe('API_KEY');
+  });
+
+  it('常规站点不再显示适配完成文案；待验收七站保持明确警示', () => {
+    expect(siteProfileOptionLabel({ display_name: 'KeepFrds', support_status: 'SUPPORTED' })).toBe(
+      'KeepFrds',
+    );
+    for (const displayName of [
+      'PTerClub',
+      'Audiences',
+      'SpringSunday',
+      'HDDolby',
+      'U2',
+      '不可躺',
+      'CarPT',
+    ]) {
+      expect(
+        siteProfileOptionLabel({
+          display_name: displayName,
+          support_status: 'PENDING_REAL_VALIDATION',
+        }),
+      ).toBe(`${displayName} · 待真实验收`);
+    }
+    expect(
+      siteProfileOptionLabel({ display_name: 'Future Site', support_status: 'PENDING_ADAPTER' }),
+    ).toBe('Future Site · 待适配');
   });
 
   it('PATCH 使用当前 version 生成强 If-Match', async () => {

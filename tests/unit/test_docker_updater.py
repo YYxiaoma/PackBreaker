@@ -360,6 +360,9 @@ def test_replacement_plan_accepts_private_registry_with_port_for_isolated_e2e() 
     [
         "yyxiaoma/packbreaker:latest",
         "docker.io/yyxiaoma/packbreaker:1.0.9",
+        "yyxiaoma01/packbreaker:latest",
+        "docker.io/yyxiaoma01/packbreaker:1.0.15",
+        "yyxiaoma01/packbreaker@sha256:" + "1" * 64,
     ],
 )
 def test_replacement_plan_accepts_official_docker_hub_mirror_as_current_image(
@@ -377,6 +380,85 @@ def test_replacement_plan_accepts_official_docker_hub_mirror_as_current_image(
 
     assert plan.old_image_reference == current_image
     assert plan.create_payload["Image"] == _TARGET
+
+
+def test_synology_official_docker_hub_compose_is_preserved_during_upgrade() -> None:
+    container = _container()
+    container["Config"]["Image"] = "yyxiaoma01/packbreaker:latest"
+    container["Config"]["Env"] = [
+        "PATH=/opt/venv/bin:/usr/local/bin",
+        "PYTHONUNBUFFERED=1",
+        "PUID=1026",
+        "PGID=100",
+        "PACKBREAKER_TIMEZONE=Asia/Shanghai",
+    ]
+    container["HostConfig"]["Binds"] = [
+        "/volume1/docker/packbreaker/config:/config",
+        "/volume2/videos/downloads:/downloads",
+        "/volume3/videos2/downloads:/downloads2",
+        "/var/run/docker.sock:/var/run/docker.sock",
+    ]
+    container["HostConfig"]["PortBindings"] = {"8000/tcp": [{"HostIp": "", "HostPort": "38000"}]}
+    # Mirror Docker Inspect's effective mounts, rather than leaving the
+    # original /data fixture mount behind as an unsupported phantom mount.
+    container["Mounts"] = [
+        {
+            "Type": "bind",
+            "Source": bind.split(":", 1)[0],
+            "Destination": bind.split(":", 1)[1],
+            "RW": True,
+        }
+        for bind in container["HostConfig"]["Binds"]
+    ]
+    plan = build_replacement_plan(
+        container,
+        _old_image(),
+        target_image=_TARGET,
+        allowed_image=_OFFICIAL,
+        preserve_docker_socket=True,
+    )
+
+    assert plan.old_image_reference == "yyxiaoma01/packbreaker:latest"
+    assert plan.create_payload["Image"] == _TARGET
+    assert set(plan.create_payload["Env"]) == {
+        "PUID=1026",
+        "PGID=100",
+        "PACKBREAKER_TIMEZONE=Asia/Shanghai",
+    }
+    assert set(plan.create_payload["HostConfig"]["Binds"]) == {
+        "/volume1/docker/packbreaker/config:/config",
+        "/volume2/videos/downloads:/downloads",
+        "/volume3/videos2/downloads:/downloads2",
+        "/var/run/docker.sock:/var/run/docker.sock",
+    }
+    assert plan.create_payload["HostConfig"]["PortBindings"]["8000/tcp"][0]["HostPort"] == "38000"
+    assert plan.create_payload["HostConfig"]["RestartPolicy"]["Name"] == "unless-stopped"
+    assert "no-new-privileges" in plan.create_payload["HostConfig"]["SecurityOpt"]
+
+
+@pytest.mark.parametrize(
+    "current_image",
+    [
+        "yyxiaoma01/packbreaker-evil:latest",
+        "yyxiaoma01/packbreaker.evil:latest",
+        "evil/yyxiaoma01/packbreaker:latest",
+        "registry.invalid/yyxiaoma01/packbreaker:latest",
+        "yyxiaoma02/packbreaker:latest",
+    ],
+)
+def test_untrusted_docker_hub_lookalikes_still_rejected(current_image: str) -> None:
+    container = _container()
+    container["Config"]["Image"] = current_image
+
+    with pytest.raises(DockerUpdaterError) as exc_info:
+        build_replacement_plan(
+            container,
+            _old_image(),
+            target_image=_TARGET,
+            allowed_image=_OFFICIAL,
+        )
+
+    assert exc_info.value.code == "UPGRADE_CURRENT_IMAGE_UNTRUSTED"
 
 
 def test_replacement_plan_still_requires_ghcr_release_digest_as_upgrade_target() -> None:
@@ -561,6 +643,53 @@ def test_upgrade_executor_switches_to_new_container_after_health() -> None:
     assert phases == ["pulling", "stopping", "starting", "verifying"]
     assert ("remove", ("old-container-id", False)) in docker.calls
     assert not any(call[0] == "restore" for call in docker.calls)
+
+
+@pytest.mark.parametrize(
+    ("arch", "fail_new_health", "expected_phase"),
+    [
+        ("amd64", False, "succeeded"),
+        ("arm64", False, "succeeded"),
+        ("amd64", True, "rolled_back"),
+        ("arm64", True, "rolled_back"),
+    ],
+)
+def test_official_docker_hub_current_image_reaches_real_executor_and_rollback(
+    arch: str, fail_new_health: bool, expected_phase: str
+) -> None:
+    """Helper re-inspection cannot reject a Docker Hub origin accepted at bootstrap."""
+
+    class DockerHubCurrentEngine(FakeDocker):
+        def inspect_container(self, container: str) -> dict[str, Any]:
+            inspected = super().inspect_container(container)
+            inspected["Config"]["Image"] = "yyxiaoma01/packbreaker:latest"
+            return inspected
+
+    docker = DockerHubCurrentEngine(
+        old_arch=arch, target_arch=arch, fail_new_health=fail_new_health
+    )
+    phases: list[str] = []
+    outcome = DockerUpgradeExecutor(
+        docker,
+        target_container="packbreaker",
+        allowed_image=_OFFICIAL,
+        config_dir=Path("/config"),
+        backup_factory=_backup_factory,
+        preserve_docker_socket=True,
+    ).execute(_request(), phase=lambda phase, _message: phases.append(phase))
+
+    assert outcome.phase == expected_phase
+    assert ("pull", _TARGET) in docker.calls
+    assert ("stop", "old-container-id") in docker.calls
+    if fail_new_health:
+        assert outcome.rollback_performed is True
+        assert "rolling_back" in phases
+        assert any(call[0] == "restore" for call in docker.calls)
+        assert ("start", "old-container-id") in docker.calls
+    else:
+        assert outcome.rollback_performed is False
+        assert phases == ["pulling", "stopping", "starting", "verifying"]
+        assert not any(call[0] == "restore" for call in docker.calls)
 
 
 @pytest.mark.parametrize("arch", ["amd64", "arm64"])
