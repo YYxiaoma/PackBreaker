@@ -144,8 +144,30 @@ def configure_logging(
 
     # 外部 HTTP 客户端的请求日志可能包含 URL；应用只保留自己的安全摘要。
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").disabled = True
+
+    # Alembic emits these two identical diagnostics on every read-only
+    # readiness/migration revision check. Preserve actual upgrade notices,
+    # warnings and failures; only drop the repetitive context boilerplate.
+    alembic_logger = logging.getLogger("alembic.runtime.migration")
+    for old in list(alembic_logger.filters):
+        if isinstance(old, AlembicContextNoiseFilter):
+            alembic_logger.removeFilter(old)
+    alembic_logger.addFilter(AlembicContextNoiseFilter())
+
+
+class AlembicContextNoiseFilter(logging.Filter):
+    _ROUTINE_MESSAGES = (
+        "Context impl SQLiteImpl.",
+        "Will assume non-transactional DDL.",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return (
+            record.levelno >= logging.WARNING or record.getMessage() not in self._ROUTINE_MESSAGES
+        )
 
 
 def _is_sensitive_key(key: str) -> bool:

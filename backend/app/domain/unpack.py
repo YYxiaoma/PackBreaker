@@ -232,6 +232,9 @@ _ITEM_TRANSITIONS: dict[UnpackItemStatus, frozenset[UnpackItemStatus]] = {
     UnpackItemStatus.MATCH_TIMEOUT: frozenset(
         {UnpackItemStatus.MATCH_PENDING, UnpackItemStatus.CANCELLED}
     ),
+    UnpackItemStatus.NO_MATCH: frozenset(
+        {UnpackItemStatus.MATCH_PENDING, UnpackItemStatus.CANCELLED}
+    ),
     UnpackItemStatus.MATCH_ERROR: frozenset(
         {UnpackItemStatus.MATCH_PENDING, UnpackItemStatus.CANCELLED}
     ),
@@ -316,6 +319,9 @@ def execution_transition_allowed(
 
 def item_transition_allowed(current: UnpackItemStatus, target: UnpackItemStatus) -> bool:
     if current == target:
+        return True
+    if current is UnpackItemStatus.NO_MATCH and target is UnpackItemStatus.MATCH_PENDING:
+        # An explicit, policy-gated retry may reopen a terminal no-match item.
         return True
     if current in TERMINAL_ITEM_STATUSES:
         return False

@@ -28,6 +28,8 @@ class UnpackExecutionAction:
     length: int
     source_path: str | None = None
     source_snapshot: FileSnapshot | None = None
+    reuse_target_snapshot: FileSnapshot | None = None
+    reuse_sha256: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "torrent_path", _safe_relative_path(self.torrent_path))
@@ -40,6 +42,31 @@ class UnpackExecutionAction:
                 raise ValueError("MATERIALIZE 长度必须与源快照一致")
         elif self.source_path is not None or self.source_snapshot is not None:
             raise ValueError("非 MATERIALIZE 动作不能绑定源文件")
+        if self.reuse_target_snapshot is None:
+            if self.reuse_sha256 is not None:
+                raise ValueError("没有冻结目标快照不能声明复用摘要")
+        else:
+            if self.kind is not UnpackExecutionActionKind.MATERIALIZE:
+                raise ValueError("只有 MATERIALIZE 可安全复用已有文件")
+            if (
+                self.reuse_target_snapshot.file_type != "regular"
+                or self.reuse_target_snapshot.size != self.length
+            ):
+                raise ValueError("冻结复用目标必须是等长普通文件")
+            if self.source_snapshot is None:
+                raise ValueError("复用目标缺少源快照")
+            same_inode = (
+                self.source_snapshot.device == self.reuse_target_snapshot.device
+                and self.source_snapshot.inode == self.reuse_target_snapshot.inode
+            )
+            if same_inode and self.reuse_sha256 is not None:
+                raise ValueError("同 inode 复用无需独立内容指纹")
+            if not same_inode and (
+                self.reuse_sha256 is None
+                or len(self.reuse_sha256) != 64
+                or any(c not in "0123456789abcdef" for c in self.reuse_sha256)
+            ):
+                raise ValueError("不同 inode 复用必须冻结完整 SHA-256")
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,13 +236,18 @@ def unpack_execution_plan_from_payload(payload: object) -> UnpackExecutionPlan:
 
 
 def _action_payload(action: UnpackExecutionAction) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "torrent_path": action.torrent_path,
         "kind": action.kind.value,
         "length": action.length,
         "source_path": action.source_path,
         "source_snapshot": _snapshot_payload(action.source_snapshot),
     }
+    # Omit unused new fields to keep previously frozen plan digests valid.
+    if action.reuse_target_snapshot is not None:
+        payload["reuse_target_snapshot"] = _snapshot_payload(action.reuse_target_snapshot)
+        payload["reuse_sha256"] = action.reuse_sha256
+    return payload
 
 
 def _action_from_payload(value: object) -> UnpackExecutionAction:
@@ -227,6 +259,8 @@ def _action_from_payload(value: object) -> UnpackExecutionAction:
         length=_required_int(value, "length"),
         source_path=_optional_text(value.get("source_path")),
         source_snapshot=_snapshot_from_payload(value.get("source_snapshot")),
+        reuse_target_snapshot=_snapshot_from_payload(value.get("reuse_target_snapshot")),
+        reuse_sha256=_optional_text(value.get("reuse_sha256")),
     )
 
 

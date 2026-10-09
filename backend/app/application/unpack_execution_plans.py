@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
@@ -15,6 +15,7 @@ from backend.app.application.downloaders import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
+from backend.app.application.unpack_existing_reuse import verify_existing_reuse
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.execution_plan import ExecutionPlanBlockReason
 from backend.app.domain.task_definition import TaskConflictPolicy, TaskStorageMode
@@ -39,6 +40,7 @@ from backend.app.infrastructure.persistence.models import (
     UnpackMatchCandidate,
     utc_now,
 )
+from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 from backend.app.infrastructure.source_inventory import current_file_snapshot
 from backend.app.infrastructure.torrent_parser import parse_torrent
 
@@ -106,6 +108,7 @@ class UnpackExecutionPlanService:
         self._site_provider = site_provider
         self._downloader_provider = downloader_provider
         self._path_scope = path_scope
+        self._filesystem = SafeFilesystemGateway(path_scope.legacy_data_root, path_scope=path_scope)
         self._fetch_timeout_seconds = fetch_timeout_seconds
 
     def list_plannable_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
@@ -296,6 +299,11 @@ class UnpackExecutionPlanService:
 
         actions, mapping_blockers = self._build_actions(meta.files, context.mapping_evidence)
         output_path = Path(self._path_scope.normalize_reference(context.output_directory))
+        if (
+            context.storage_mode is TaskStorageMode.HARDLINK
+            and context.conflict_policy is TaskConflictPolicy.VERIFY_REUSE_OR_STOP
+        ):
+            actions = self._freeze_existing_reuse(output_path, actions)
         layout = self._inspect_target_layout(
             output_path,
             actions,
@@ -344,6 +352,47 @@ class UnpackExecutionPlanService:
             blocked_reasons=blockers,
             created_at=utc_now(),
         )
+
+    def _freeze_existing_reuse(
+        self,
+        output_root: Path,
+        actions: tuple[UnpackExecutionAction, ...],
+    ) -> tuple[UnpackExecutionAction, ...]:
+        frozen: list[UnpackExecutionAction] = []
+        for action in actions:
+            if action.kind is not UnpackExecutionActionKind.MATERIALIZE:
+                frozen.append(action)
+                continue
+            assert action.source_path is not None and action.source_snapshot is not None
+            target = output_root.joinpath(*PurePosixPath(action.torrent_path).parts)
+            try:
+                target.lstat()
+            except FileNotFoundError:
+                frozen.append(action)
+                continue
+            except OSError:
+                frozen.append(action)
+                continue
+            try:
+                proof = verify_existing_reuse(
+                    self._filesystem,
+                    source_path=action.source_path,
+                    source_snapshot=action.source_snapshot,
+                    target_path=target.as_posix(),
+                )
+            except (DomainViolation, OSError, ValueError):
+                # Preserve TARGET_EXISTS: never assume existing content is safe
+                # without a source-bound full proof and a no-follow snapshot.
+                frozen.append(action)
+                continue
+            frozen.append(
+                replace(
+                    action,
+                    reuse_target_snapshot=proof.target_snapshot,
+                    reuse_sha256=proof.sha256,
+                )
+            )
+        return tuple(frozen)
 
     def _build_actions(
         self,
@@ -505,13 +554,29 @@ class UnpackExecutionPlanService:
             if not missing_parent and not unsafe_parent:
                 target = output_root.joinpath(*relative.parts)
                 try:
-                    target.stat(follow_symlinks=False)
+                    target_stat = target.stat(follow_symlinks=False)
                 except FileNotFoundError:
                     pass
                 except OSError:
                     blockers.add(ExecutionPlanBlockReason.TARGET_PARENT_UNSAFE)
                 else:
-                    blockers.add(ExecutionPlanBlockReason.TARGET_EXISTS)
+                    if (
+                        action.reuse_target_snapshot is None
+                        or not stat.S_ISREG(target_stat.st_mode)
+                        or (
+                            target_stat.st_dev,
+                            target_stat.st_ino,
+                            target_stat.st_size,
+                            target_stat.st_mtime_ns,
+                        )
+                        != (
+                            action.reuse_target_snapshot.device,
+                            action.reuse_target_snapshot.inode,
+                            action.reuse_target_snapshot.size,
+                            action.reuse_target_snapshot.mtime_ns,
+                        )
+                    ):
+                        blockers.add(ExecutionPlanBlockReason.TARGET_EXISTS)
 
             if (
                 storage_mode is TaskStorageMode.HARDLINK

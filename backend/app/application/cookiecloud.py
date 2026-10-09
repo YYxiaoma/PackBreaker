@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -19,7 +20,11 @@ from backend.app.domain.cookiecloud import (
     normalize_cookiecloud_server_url,
     normalize_cookiecloud_uuid,
 )
-from backend.app.domain.site_config import SiteCredentialKind, SiteKind
+from backend.app.domain.site_config import (
+    SiteCredentialKind,
+    SiteKind,
+    site_profiles,
+)
 from backend.app.domain.task_definition import normalize_cron_expression
 from backend.app.infrastructure.cookiecloud import (
     CookieCloudClient,
@@ -32,6 +37,7 @@ from backend.app.infrastructure.persistence.cookiecloud_repositories import (
 from backend.app.infrastructure.persistence.models import CookieCloudSetting
 
 _PASSWORD_SECRET_KIND = "COOKIECLOUD_PASSWORD"
+_logger = logging.getLogger("packbreaker.cookiecloud_sync")
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +99,8 @@ class CookieCloudSyncView:
     unchanged_sites: int
     unmatched_domains: int
     update_time: str | None
+    created_sites: int = 0
+    skipped_api_key_sites: tuple[str, ...] = ()
 
 
 class CookieCloudService:
@@ -275,6 +283,57 @@ class CookieCloudService:
             )
             self._require_current_version(version)
             sites = self._site_service.list_sites()
+            configured_kinds = {site.type for site in sites}
+            created_sites = 0
+            created_cookie_sites = 0
+            skipped_api_key_sites: list[str] = []
+            # Match only the fixed, reviewed PackBreaker profile registry.
+            # Do not automatically create or overwrite API key credentials:
+            # CookieCloud contains cookies, not API keys.
+            for profile in site_profiles():
+                if profile.kind in configured_kinds:
+                    continue
+                host = urlsplit(profile.base_url).hostname
+                if not host:
+                    continue
+                header = cookie_header_for_host(payload, host)
+                # M-TEAM's API host is kp.m-team.cc, while browser cookies
+                # may have been exported for a sibling *.m-team.cc domain.
+                # Detect that verified domain family for a site *placeholder*
+                # only. Never reuse the browser Cookie as an API token.
+                mteam_cookie_present = profile.kind is SiteKind.MTEAM and any(
+                    cookie_domain_matches_host("m-team.cc", cookie.domain or domain)
+                    for domain, cookies in payload.cookie_data.items()
+                    for cookie in cookies
+                    if not cookie.expired
+                )
+                if header is None and not mteam_cookie_present:
+                    continue
+                if profile.credential_kind is not SiteCredentialKind.COOKIE:
+                    skipped_api_key_sites.append(profile.display_name)
+                    if profile.kind is SiteKind.MTEAM:
+                        # Import a disabled, no-secret profile so it is visible
+                        # in 站点管理. The API adapter still requires a genuine
+                        # API Key before the site can be enabled or searched.
+                        self._site_service.create(
+                            name=profile.display_name,
+                            kind=profile.kind,
+                            credential_kind=None,
+                            credential=None,
+                        )
+                        created_sites += 1
+                    continue
+                self._site_service.create(
+                    name=profile.display_name,
+                    kind=profile.kind,
+                    credential_kind=SiteCredentialKind.COOKIE,
+                    credential=header,
+                    request_timeout_seconds=profile.request_timeout_seconds,
+                    search_interval_seconds=int(profile.search_interval_seconds),
+                )
+                created_sites += 1
+                created_cookie_sites += 1
+            sites = self._site_service.list_sites()
             targets: dict[str, tuple[Literal["PRIMARY", "DOWNLOAD"], str]] = {}
             target_hosts: list[str] = []
             eligible_sites = 0
@@ -310,7 +369,7 @@ class CookieCloudService:
             source_domains = len(payload.cookie_data)
             source_cookies = sum(len(items) for items in payload.cookie_data.values())
             updated_sites = self._site_service.sync_cookiecloud_credentials(targets)
-            unchanged_sites = max(0, len(targets) - updated_sites)
+            unchanged_sites = max(0, len(targets) - updated_sites - created_cookie_sites)
         except CookieCloudError as exc:
             self._store_sync_failure(
                 expected_version=version,
@@ -333,9 +392,22 @@ class CookieCloudService:
             source_cookies=source_cookies,
             eligible_sites=eligible_sites,
             matched_sites=len(targets),
-            updated_sites=updated_sites,
+            updated_sites=updated_sites + created_cookie_sites,
             unchanged_sites=unchanged_sites,
             unmatched_domains=unmatched_domains,
+        )
+        _logger.info(
+            "CookieCloud 同步诊断：源域名=%d，Cookie数量=%d，候选站点=%d，匹配站点=%d，"
+            "新增=%d，更新=%d，未变化=%d，需独立API Key=%d，未匹配域名=%d",
+            source_domains,
+            source_cookies,
+            eligible_sites,
+            len(targets),
+            created_sites,
+            updated_sites,
+            unchanged_sites,
+            len(skipped_api_key_sites),
+            unmatched_domains,
         )
         return (
             view,
@@ -346,10 +418,12 @@ class CookieCloudService:
                 source_cookies=source_cookies,
                 eligible_sites=eligible_sites,
                 matched_sites=len(targets),
-                updated_sites=updated_sites,
+                updated_sites=updated_sites + created_cookie_sites,
                 unchanged_sites=unchanged_sites,
                 unmatched_domains=unmatched_domains,
                 update_time=payload.update_time,
+                created_sites=created_sites,
+                skipped_api_key_sites=tuple(skipped_api_key_sites),
             ),
         )
 

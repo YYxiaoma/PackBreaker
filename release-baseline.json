@@ -1,16 +1,16 @@
 {
   "format_version": 2,
-  "version": "1.0.14",
-  "tag": "v1.0.14",
-  "commit": "07515bbadd2355635205d7aa3955c91b795ccf23",
+  "version": "1.0.15",
+  "tag": "v1.0.15",
+  "commit": "9150824f049ac2ae3b69feafb31a4abab30d235c",
   "platform": "multi",
   "platforms": [
     "linux/amd64",
     "linux/arm64"
   ],
   "image": "ghcr.io/yyxiaoma/packbreaker",
-  "image_digest": "sha256:a792f899c63ea3b65678b047d17c98c223421910246a86caee63dabc711627c9",
-  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:a792f899c63ea3b65678b047d17c98c223421910246a86caee63dabc711627c9",
-  "alembic_revision": "0034_cookiecloud_cron_v1010",
-  "release_workflow_run_id": 37484363348
+  "image_digest": "sha256:aa5c259cadc69852e19de7d0da7748979e77f03c2b128598d131eb1d8f8c7b4b",
+  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:aa5c259cadc69852e19de7d0da7748979e77f03c2b128598d131eb1d8f8c7b4b",
+  "alembic_revision": "0044_retire_legacy_task_runtime",
+  "release_workflow_run_id": 37717632954
 }

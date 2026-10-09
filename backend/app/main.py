@@ -64,6 +64,14 @@ from backend.app.versioning import app_version
 
 _request_logger = logging.getLogger("packbreaker.http")
 _recovery_logger = logging.getLogger("packbreaker.recovery")
+_QUIET_SUCCESSFUL_GET_PATHS = frozenset(
+    {
+        "/api/v1/health/live",
+        "/api/v1/health/ready",
+        "/api/v1/notifications/inbox/unread-count",
+        "/api/v1/auth/me",
+    }
+)
 
 _HTTP_EXACT_RESOURCE_LABELS: dict[str, str] = {
     "/": "管理页面",
@@ -141,6 +149,17 @@ def _http_request_message(method: str, path: str, status_code: int) -> str:
     else:
         action = f"{method} {resource}"
     return f"{action}{'失败' if status_code >= 400 else '完成'}"
+
+
+def _should_log_http_request(method: str, path: str, status_code: int, duration_ms: float) -> bool:
+    # Suppress high-frequency successful polling only. Errors and unusually
+    # slow requests still produce the full trace_id and status diagnostics.
+    return not (
+        method == "GET"
+        and path in _QUIET_SUCCESSFUL_GET_PATHS
+        and 200 <= status_code < 300
+        and duration_ms < 1000
+    )
 
 
 def _attach_frontend(app: FastAPI, settings: AppSettings) -> None:
@@ -475,19 +494,23 @@ def create_app(
         apply_security_headers(
             path=request.url.path, scheme=network.scheme, headers=response.headers
         )
-        _request_logger.info(
-            _http_request_message(request.method, request.url.path, response.status_code),
-            extra={
-                "fields": {
-                    "trace_id": str(trace_id),
-                    "method": request.method,
-                    "path": request.url.path,
-                    "status_code": response.status_code,
-                    "client_source": network.client_source,
-                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
-                }
-            },
-        )
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 3)
+        if _should_log_http_request(
+            request.method, request.url.path, response.status_code, duration_ms
+        ):
+            _request_logger.info(
+                _http_request_message(request.method, request.url.path, response.status_code),
+                extra={
+                    "fields": {
+                        "trace_id": str(trace_id),
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": response.status_code,
+                        "client_source": network.client_source,
+                        "duration_ms": duration_ms,
+                    }
+                },
+            )
         return response
 
     app.include_router(ai_agent_router, prefix="/api/v1")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
@@ -30,6 +30,7 @@ class UnpackExecutionView:
     discovery_cursor: str | None
     total_count: int
     matched_auto_count: int
+    no_match_count: int
     review_count: int
     content_verified_count: int
     content_mismatch_count: int
@@ -59,6 +60,7 @@ class UnpackExecutionItemView:
     torrent_metainfo_digest: str | None
     auxiliary_state: dict[str, object] | None
     review_allowed: bool
+    has_external_operations: bool
     last_error_code: str | None
     last_error_message: str | None
     match_started_at: datetime | None
@@ -130,11 +132,34 @@ class UnpackExecutionQueryService:
                     UnpackExecution.id.desc(),
                 ).limit(limit)
             ).all()
-            return tuple(self._execution_view(item) for item in records)
+            no_match_counts = self._no_match_counts(session, tuple(item.id for item in records))
+            return tuple(
+                self._execution_view(item, no_match_count=no_match_counts.get(item.id, 0))
+                for item in records
+            )
 
     def get(self, execution_id: str) -> UnpackExecutionView:
         with self._session_factory() as session:
-            return self._execution_view(self._require_execution(session, execution_id))
+            execution = self._require_execution(session, execution_id)
+            counts = self._no_match_counts(session, (execution.id,))
+            return self._execution_view(execution, no_match_count=counts.get(execution.id, 0))
+
+    @staticmethod
+    def _no_match_counts(session: Session, execution_ids: tuple[str, ...]) -> dict[str, int]:
+        if not execution_ids:
+            return {}
+        return {
+            execution_id: int(count)
+            for execution_id, count in session.execute(
+                select(
+                    UnpackExecutionItem.execution_id,
+                    func.count(UnpackExecutionItem.id),
+                )
+                .where(UnpackExecutionItem.execution_id.in_(execution_ids))
+                .where(UnpackExecutionItem.status == UnpackItemStatus.NO_MATCH.value)
+                .group_by(UnpackExecutionItem.execution_id)
+            )
+        }
 
     def list_items(
         self,
@@ -162,8 +187,16 @@ class UnpackExecutionQueryService:
             if query and query.strip():
                 pattern = f"%{query.strip().lower()}%"
                 statement = statement.where(
-                    func.lower(UnpackExecutionItem.source_snapshot["path"].as_string()).like(
-                        pattern
+                    or_(
+                        func.lower(UnpackExecutionItem.source_snapshot["path"].as_string()).like(
+                            pattern
+                        ),
+                        func.lower(
+                            UnpackExecutionItem.source_snapshot["relative_path"].as_string()
+                        ).like(pattern),
+                        func.lower(UnpackExecutionItem.media_identity["raw_name"].as_string()).like(
+                            pattern
+                        ),
                     )
                 )
             records = session.scalars(
@@ -191,6 +224,7 @@ class UnpackExecutionQueryService:
                             UnpackItemStatus(item.status) in REVIEWABLE_ITEM_STATUSES
                             and item.id not in side_effect_item_ids
                         ),
+                        has_external_operations=item.id in side_effect_item_ids,
                     )
                     for item in visible
                 ),
@@ -252,7 +286,7 @@ class UnpackExecutionQueryService:
         return execution
 
     @staticmethod
-    def _execution_view(record: UnpackExecution) -> UnpackExecutionView:
+    def _execution_view(record: UnpackExecution, *, no_match_count: int) -> UnpackExecutionView:
         return UnpackExecutionView(
             id=record.id,
             definition_id=record.definition_id,
@@ -262,6 +296,7 @@ class UnpackExecutionQueryService:
             discovery_cursor=record.discovery_cursor,
             total_count=record.total_count,
             matched_auto_count=record.matched_auto_count,
+            no_match_count=no_match_count,
             review_count=record.review_count,
             content_verified_count=record.content_verified_count,
             content_mismatch_count=record.content_mismatch_count,
@@ -280,6 +315,7 @@ class UnpackExecutionQueryService:
         record: UnpackExecutionItem,
         *,
         review_allowed: bool,
+        has_external_operations: bool,
     ) -> UnpackExecutionItemView:
         return UnpackExecutionItemView(
             id=record.id,
@@ -298,6 +334,7 @@ class UnpackExecutionQueryService:
                 dict(record.auxiliary_state) if record.auxiliary_state is not None else None
             ),
             review_allowed=review_allowed,
+            has_external_operations=has_external_operations,
             last_error_code=record.last_error_code,
             last_error_message=record.last_error_message,
             match_started_at=record.match_started_at,

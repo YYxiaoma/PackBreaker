@@ -16,6 +16,7 @@ from backend.app.infrastructure.persistence.models import (
     UnpackDefinitionSelectedSource,
     UnpackExecution,
     UnpackExecutionItem,
+    UnpackExternalOperationJournal,
     UnpackMatchCandidate,
     UnpackSourceScan,
     new_uuid,
@@ -527,6 +528,145 @@ def test_unpack_item_review_api_requires_version_and_replays_idempotently(
         client.__exit__(None, None, None)
 
 
+def test_unpack_definition_edit_delete_requires_csrf_and_current_version(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        site_id = _create_ready_site(app)
+        downloader_id = _create_ready_downloader(app)
+        movies = app.state.settings.data_dir / "movies"
+        output = app.state.settings.data_dir / "seeding"
+        movies.mkdir()
+        output.mkdir()
+        payload = {
+            "name": "影片匹配任务",
+            "trigger_kind": "MANUAL",
+            "source_kind": "DIRECTORY",
+            "execution_scope_kind": "ALL_MATCHING_MEDIA",
+            "source_config": {"directory_path": movies.as_posix()},
+            "file_filter": {"extensions": [".mkv"]},
+            "site_ids": [site_id],
+            "output_config": {
+                "output_directory": output.as_posix(),
+                "storage_mode": "HARDLINK",
+                "conflict_policy": "VERIFY_REUSE_OR_STOP",
+                "target_downloader_id": downloader_id,
+            },
+        }
+        created = client.post("/api/v1/unpack/definitions", json=payload, headers=_csrf(client))
+        assert created.status_code == 201
+        row = created.json()
+        endpoint = f"/api/v1/unpack/definitions/{row['id']}"
+        assert (
+            client.put(
+                endpoint, json={**payload, "name": "更新名称"}, headers=_csrf(client)
+            ).status_code
+            == 428
+        )
+        assert (
+            client.put(
+                endpoint, json={**payload, "name": "更新名称"}, headers={"If-Match": "1"}
+            ).status_code
+            == 403
+        )
+        updated = client.put(
+            endpoint,
+            json={**payload, "name": "更新名称"},
+            headers={**_csrf(client), "If-Match": "1"},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["version"] == 2
+        assert updated.json()["name"] == "更新名称"
+        assert (
+            client.delete(endpoint, headers={**_csrf(client), "If-Match": "1"}).status_code == 409
+        )
+        deleted = client.delete(endpoint, headers={**_csrf(client), "If-Match": "2"})
+        assert deleted.status_code == 204
+        assert client.get(endpoint).status_code == 404
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_no_match_count_is_reported_in_execution_detail_and_list(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _candidate_id = _seed_item_action_fixture(app, item_status="NO_MATCH")
+        with app.state.runtime.session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            assert item is not None
+            execution_id = item.execution_id
+        detail = client.get(f"/api/v1/unpack/executions/{execution_id}")
+        assert detail.status_code == 200
+        assert detail.json()["no_match_count"] == 1
+        listed = client.get("/api/v1/unpack/executions")
+        assert listed.status_code == 200
+        matching = next(row for row in listed.json()["items"] if row["id"] == execution_id)
+        assert matching["no_match_count"] == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_delete_completed_unmatched_task_removes_history_without_media_mutation(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _candidate_id = _seed_item_action_fixture(app, item_status="NO_MATCH")
+        with app.state.runtime.session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            assert item is not None
+            execution_id = item.execution_id
+            execution = session.get(UnpackExecution, execution_id)
+            assert execution is not None
+            definition_id = execution.definition_id
+        response = client.delete(
+            f"/api/v1/unpack/definitions/{definition_id}",
+            headers={**_csrf(client), "If-Match": "1"},
+        )
+        assert response.status_code == 204
+        with app.state.runtime.session_factory() as session:
+            assert session.get(UnpackDefinition, definition_id) is None
+            assert session.get(UnpackExecution, execution_id) is None
+            assert session.get(UnpackExecutionItem, item_id) is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_bulk_retry_no_match_api_uses_execution_version(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _candidate_id = _seed_item_action_fixture(app, item_status="NO_MATCH")
+        with app.state.runtime.session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            assert item is not None
+            execution_id = item.execution_id
+            execution = session.get(UnpackExecution, execution_id)
+            assert execution is not None
+            execution.status = "FAILED"
+            session.commit()
+            version = execution.version
+        endpoint = f"/api/v1/unpack/executions/{execution_id}/actions"
+        result = client.post(
+            endpoint,
+            headers={**_csrf(client), "If-Match": str(version)},
+            json={"action": "retry_failed_matches"},
+        )
+        assert result.status_code == 200
+        assert result.json()["retried_count"] == 1
+        assert (
+            client.get(f"/api/v1/unpack/executions/{execution_id}").json()["status"] == "MATCHING"
+        )
+        assert (
+            client.post(
+                endpoint,
+                headers={**_csrf(client), "If-Match": str(version)},
+                json={"action": "retry_failed_matches"},
+            ).status_code
+            == 409
+        )
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_unpack_item_retry_api_reopens_matching_with_new_generation(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
@@ -544,7 +684,7 @@ def test_unpack_item_retry_api_reopens_matching_with_new_generation(tmp_path: Pa
         assert response.json() == {
             "item_id": item_id,
             "generation": 3,
-            "retry_count": 1,
+            "retry_count": 0,
             "item_version": 4,
             "item_status": "MATCH_PENDING",
         }
@@ -555,6 +695,70 @@ def test_unpack_item_retry_api_reopens_matching_with_new_generation(tmp_path: Pa
             assert execution is not None
             assert execution.status == "MATCHING"
             assert execution.finished_at is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_unpack_item_delete_api_requires_csrf_and_version_and_preserves_media(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, candidate_id = _seed_item_action_fixture(app, item_status="NO_MATCH")
+        media = app.state.settings.data_dir / "movie.mkv"
+        media.write_bytes(b"original movie")
+        endpoint = f"/api/v1/unpack/items/{item_id}"
+        assert client.delete(endpoint, headers={"If-Match": "3"}).status_code == 403
+        assert (
+            client.delete(endpoint, headers={**_csrf(client), "If-Match": "2"}).status_code == 409
+        )
+        response = client.delete(endpoint, headers={**_csrf(client), "If-Match": "3"})
+        assert response.status_code == 204
+        assert media.read_bytes() == b"original movie"
+        with app.state.runtime.session_factory() as session:
+            assert session.get(UnpackExecutionItem, item_id) is None
+            assert session.get(UnpackMatchCandidate, candidate_id) is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_item_list_marks_external_journal_and_blocks_record_deletion(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _candidate_id = _seed_item_action_fixture(app, item_status="MATCH_ERROR")
+        with app.state.runtime.session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            assert item is not None
+            execution_id = item.execution_id
+        endpoint = f"/api/v1/unpack/executions/{execution_id}/items"
+        initial = client.get(endpoint)
+        assert initial.status_code == 200
+        assert initial.json()["items"][0]["has_external_operations"] is False
+        now = datetime.now(UTC)
+        with app.state.runtime.session_factory() as session:
+            session.add(
+                UnpackExternalOperationJournal(
+                    id=new_uuid(),
+                    item_id=item_id,
+                    idempotency_key="f" * 64,
+                    operation_type="UNPACK_AUX_STAGING_DIR",
+                    target={},
+                    intent={},
+                    status="APPLIED",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.commit()
+        blocked = client.get(endpoint)
+        assert blocked.status_code == 200
+        assert blocked.json()["items"][0]["has_external_operations"] is True
+        deleted = client.delete(
+            f"/api/v1/unpack/items/{item_id}",
+            headers={**_csrf(client), "If-Match": "3"},
+        )
+        assert deleted.status_code == 409
+        assert deleted.json()["code"] == "UNPACK_ITEM_DELETE_EXTERNAL_JOURNAL"
     finally:
         client.__exit__(None, None, None)
 

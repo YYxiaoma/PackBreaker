@@ -22,6 +22,7 @@ from backend.app.domain.task_definition import (
     normalize_cron_expression,
 )
 from backend.app.domain.unpack import (
+    TERMINAL_EXECUTION_STATUSES,
     UnpackDefinitionStatus,
     UnpackExecutionScopeKind,
     UnpackExecutionStatus,
@@ -31,12 +32,15 @@ from backend.app.domain.unpack import (
     validate_auto_match_threshold_bps,
 )
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
+from backend.app.infrastructure.persistence.database import begin_immediate_write
 from backend.app.infrastructure.persistence.models import (
     Downloader,
     Site,
     UnpackDefinition,
     UnpackDefinitionSelectedSource,
     UnpackExecution,
+    UnpackExecutionItem,
+    UnpackExternalOperationJournal,
     UnpackSourceScan,
     new_uuid,
     utc_now,
@@ -187,6 +191,120 @@ class UnpackDefinitionService:
                 )
             ).all()
             return tuple(self._view(session, item) for item in records)
+
+    def update(
+        self, definition_id: str, request: UnpackDefinitionCreate, *, expected_version: int
+    ) -> UnpackDefinitionView:
+        """Only future executions see edited settings; existing snapshots are immutable."""
+        with self._session_factory() as session:
+            begin_immediate_write(session)
+            definition = self._require_definition(session, definition_id)
+            if definition.version != expected_version:
+                raise self._conflict("任务配置已被其他操作修改，请刷新后重试")
+            selected = session.scalars(
+                select(UnpackDefinitionSelectedSource).where(
+                    UnpackDefinitionSelectedSource.definition_id == definition.id
+                )
+            ).all()
+            if selected:
+                if request.source_scan_id is not None:
+                    raise self._invalid("编辑指定影片任务不能更换扫描清单")
+                request = UnpackDefinitionCreate(
+                    name=request.name,
+                    trigger_kind=request.trigger_kind,
+                    source_kind=request.source_kind,
+                    execution_scope_kind=request.execution_scope_kind,
+                    source_config=request.source_config,
+                    file_filter=request.file_filter,
+                    site_ids=request.site_ids,
+                    output_config=request.output_config,
+                    retry_enabled=request.retry_enabled,
+                    max_retries=request.max_retries,
+                    auto_match_threshold_bps=request.auto_match_threshold_bps,
+                    cron_expression=request.cron_expression,
+                    timezone=request.timezone,
+                    selected_sources=tuple(
+                        UnpackSelectedSourceCreate(
+                            source_object_key=item.source_object_key,
+                            canonical_path_hint=item.canonical_path_hint,
+                            filename=item.filename,
+                            size_bytes_at_selection=item.size_bytes_at_selection,
+                            source_snapshot=item.source_snapshot,
+                        )
+                        for item in selected
+                    ),
+                )
+            normalized = self._normalize_request(request)
+            if selected and (
+                normalized.execution_scope_kind.value != definition.execution_scope_kind
+                or normalized.source_kind.value != definition.source_kind
+                or normalized.trigger_kind.value != definition.trigger_kind
+                or normalized.source_config != definition.source_config
+                or normalized.file_filter != definition.file_filter
+            ):
+                raise self._conflict("指定影片任务的来源和过滤条件已冻结，请新建任务重新选片")
+            self._validate_foreign_references(session, normalized)
+            now = utc_now()
+            definition.name = normalized.name
+            definition.trigger_kind = normalized.trigger_kind.value
+            definition.source_kind = normalized.source_kind.value
+            definition.execution_scope_kind = normalized.execution_scope_kind.value
+            definition.source_config = normalized.source_config
+            definition.file_filter = normalized.file_filter
+            definition.site_ids = list(normalized.site_ids)
+            definition.output_config = normalized.output_config
+            definition.retry_enabled = normalized.retry_enabled
+            definition.max_retries = normalized.max_retries
+            definition.auto_match_threshold_bps = normalized.auto_match_threshold_bps
+            definition.cron_expression = normalized.cron_expression
+            definition.timezone = normalized.timezone
+            if definition.status == UnpackDefinitionStatus.ENABLED.value:
+                if normalized.trigger_kind is UnpackTriggerKind.MONITOR:
+                    assert normalized.cron_expression and normalized.timezone
+                    definition.next_run_at = next_cron_run(
+                        normalized.cron_expression, now, timezone=normalized.timezone
+                    )
+                else:
+                    definition.status = UnpackDefinitionStatus.PENDING_EXECUTION.value
+                    definition.next_run_at = None
+            definition.updated_at = now
+            definition.version += 1
+            session.commit()
+            return self._view(session, definition)
+
+    def delete(self, definition_id: str, *, expected_version: int) -> None:
+        """Never erase active executions or durable external-side-effect journals."""
+        with self._session_factory() as session:
+            begin_immediate_write(session)
+            definition = self._require_definition(session, definition_id)
+            if definition.version != expected_version:
+                raise self._conflict("任务配置已更新，请刷新后确认删除")
+            execution_ids = session.scalars(
+                select(UnpackExecution.id).where(UnpackExecution.definition_id == definition_id)
+            ).all()
+            if session.scalar(
+                select(UnpackExecution.id)
+                .where(UnpackExecution.definition_id == definition_id)
+                .where(
+                    UnpackExecution.status.not_in(
+                        tuple(value.value for value in TERMINAL_EXECUTION_STATUSES)
+                    )
+                )
+                .limit(1)
+            ):
+                raise self._conflict("存在运行中或待审核的执行记录，请先处理，禁止删除")
+            if execution_ids and session.scalar(
+                select(UnpackExternalOperationJournal.id)
+                .join(
+                    UnpackExecutionItem,
+                    UnpackExecutionItem.id == UnpackExternalOperationJournal.item_id,
+                )
+                .where(UnpackExecutionItem.execution_id.in_(execution_ids))
+                .limit(1)
+            ):
+                raise self._conflict("任务存在外部操作 journal，必须保留追溯与恢复证据，禁止删除")
+            session.delete(definition)
+            session.commit()
 
     def run(self, definition_id: str) -> UnpackRunResult:
         with self._session_factory() as session:

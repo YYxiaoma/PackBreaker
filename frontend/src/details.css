@@ -570,7 +570,9 @@
   font-size: 11px;
 }
 .settings-content {
-  max-width: 820px;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
   padding: 12px 0;
 }
 .code-block {

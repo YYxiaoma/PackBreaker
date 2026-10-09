@@ -401,3 +401,144 @@ def test_cookiecloud_sync_updates_cookie_sites_and_preserves_rousi_api_key(tmp_p
         assert second.status_code == 200
         assert second.json()["matched_sites"] == 2
         assert second.json()["updated_sites"] == 0
+
+
+def test_cookiecloud_sync_imports_missing_supported_cookie_sites_without_api_keys(
+    tmp_path: Path,
+) -> None:
+    from urllib.parse import urlsplit
+
+    from backend.app.domain.site_config import SiteCredentialKind, site_profiles
+
+    profiles = site_profiles()
+    payload = {
+        "cookie_data": {
+            urlsplit(profile.base_url).hostname: [
+                {
+                    "name": "session",
+                    "value": "sensitive_" + profile.kind.value,
+                    "domain": urlsplit(profile.base_url).hostname,
+                    "path": "/",
+                }
+            ]
+            for profile in profiles
+        },
+        "local_storage_data": {},
+    }
+    encrypted = _fixed_encrypt("import-uuid", _COOKIECLOUD_PASSWORD, payload)
+    transport = httpx2.MockTransport(
+        lambda _request: httpx2.Response(
+            200, json={"encrypted": encrypted, "crypto_type": "aes-128-cbc-fixed"}
+        )
+    )
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        current = client.get("/api/v1/cookiecloud/config")
+        saved = client.put(
+            "/api/v1/cookiecloud/config",
+            headers={**headers, "If-Match": current.headers["etag"]},
+            json={
+                "enabled": True,
+                "server_url": "https://cookie.example.test",
+                "uuid": "import-uuid",
+                "password_action": "SET",
+                "password": _COOKIECLOUD_PASSWORD,
+                "auto_sync": False,
+                "sync_cron_expression": "*/30 * * * *",
+            },
+        )
+        assert saved.status_code == 200
+        app.state.cookiecloud_service = CookieCloudService(
+            app.state.runtime.session_factory,
+            app.state.secret_store,
+            client=CookieCloudClient(transport=transport),
+            site_service=app.state.site_service,
+        )
+        synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
+        assert synced.status_code == 200
+        report = synced.json()
+        expected_cookies = sum(
+            profile.credential_kind is SiteCredentialKind.COOKIE for profile in profiles
+        )
+        assert report["created_sites"] == expected_cookies + 1
+        assert report["updated_sites"] == expected_cookies
+        assert sorted(report["skipped_api_key_sites"]) == ["M-TEAM", "Rousi Pro"]
+        assert report["matched_sites"] == expected_cookies
+        imported = client.get("/api/v1/sites").json()["items"]
+        assert len(imported) == expected_cookies + 1
+        assert all(not row["enabled"] for row in imported)
+        mteam = next(row for row in imported if row["type"] == "MTEAM")
+        assert mteam["credential_configured"] is False
+        assert "sensitive_" not in synced.text
+
+        repeated = client.post("/api/v1/cookiecloud/sync", headers=headers)
+        assert repeated.status_code == 200
+        assert repeated.json()["created_sites"] == 0
+        assert repeated.json()["updated_sites"] == 0
+        assert repeated.json()["unchanged_sites"] == expected_cookies
+
+
+def test_cookiecloud_mteam_sibling_domain_imports_disabled_placeholder_only(tmp_path: Path) -> None:
+    uuid = "mteam-cookie-uuid"
+    encrypted = _fixed_encrypt(
+        uuid,
+        _COOKIECLOUD_PASSWORD,
+        {
+            "cookie_data": {
+                "https://www.m-team.cc/": [
+                    {
+                        "name": "session",
+                        "value": "SECRET_BROWSER_COOKIE_DO_NOT_PROMOTE",
+                        "domain": ".www.m-team.cc",
+                        "path": "/",
+                    }
+                ]
+            },
+            "local_storage_data": {},
+        },
+    )
+    transport = httpx2.MockTransport(
+        lambda _request: httpx2.Response(
+            200, json={"encrypted": encrypted, "crypto_type": "aes-128-cbc-fixed"}
+        )
+    )
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        current = client.get("/api/v1/cookiecloud/config")
+        response = client.put(
+            "/api/v1/cookiecloud/config",
+            headers={**headers, "If-Match": current.headers["etag"]},
+            json={
+                "enabled": True,
+                "server_url": "https://cookie.example.test",
+                "uuid": uuid,
+                "password_action": "SET",
+                "password": _COOKIECLOUD_PASSWORD,
+                "auto_sync": False,
+                "sync_cron_expression": "*/30 * * * *",
+            },
+        )
+        assert response.status_code == 200
+        app.state.cookiecloud_service = CookieCloudService(
+            app.state.runtime.session_factory,
+            app.state.secret_store,
+            client=CookieCloudClient(transport=transport),
+            site_service=app.state.site_service,
+        )
+        synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
+        assert synced.status_code == 200
+        assert synced.json()["created_sites"] == 1
+        assert synced.json()["updated_sites"] == 0
+        assert synced.json()["matched_sites"] == 0
+        assert synced.json()["skipped_api_key_sites"] == ["M-TEAM"]
+        assert "SECRET_BROWSER_COOKIE_DO_NOT_PROMOTE" not in synced.text
+        sites = client.get("/api/v1/sites").json()["items"]
+        assert len(sites) == 1
+        assert sites[0]["type"] == "MTEAM"
+        assert sites[0]["enabled"] is False
+        assert sites[0]["credential_configured"] is False
+        repeated = client.post("/api/v1/cookiecloud/sync", headers=headers)
+        assert repeated.status_code == 200
+        assert repeated.json()["created_sites"] == 0

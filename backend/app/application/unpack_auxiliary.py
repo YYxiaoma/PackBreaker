@@ -231,7 +231,22 @@ class UnpackAuxiliaryStagingService:
             if state == "READY_FOR_FINALIZATION":
                 return
             raise self._conflict("辅助文件状态无法继续")
-        except (ApplicationError, SiteAdapterError, DownloaderAdapterError, DomainViolation) as exc:
+        except DownloaderAdapterError as exc:
+            if exc.code in {"DOWNLOADER_UNAVAILABLE", "DOWNLOADER_CONNECTION_FAILED"}:
+                # Polling is read-only until the auxiliary files are present.
+                # Preserve the bound torrent and journal across transient RPC
+                # outages; a later worker pass must verify ownership again.
+                return
+            code, message = _safe_error(exc)
+            self._mark_error(item_id, code=code, message=message)
+        except SiteAdapterError as exc:
+            if exc.retryable or exc.code in {"SITE_UNAVAILABLE", "SITE_RATE_LIMITED"}:
+                # The original selected candidate and external journal must
+                # survive transient tracker outages during staging polling.
+                return
+            code, message = _safe_error(exc)
+            self._mark_error(item_id, code=code, message=message)
+        except (ApplicationError, DomainViolation) as exc:
             code, message = _safe_error(exc)
             self._mark_error(item_id, code=code, message=message)
 
@@ -612,11 +627,56 @@ class UnpackAuxiliaryStagingService:
         self._mark_applied(journal.id, _state_snapshot(current))
 
     async def _poll_downloading(self, prepared: _Prepared) -> None:
-        await _require_owned_torrent_state(prepared)
+        remote = await _owned_torrent_state(prepared)
+        if remote is None:
+            # A remote remove can succeed before its local verification status
+            # commits, or the acknowledgement can be lost. Only an existing,
+            # identity-bound remove intent plus a completed stop journal allow
+            # recovery without a still-present torrent.
+            with self._session_factory() as session:
+                stop = session.scalar(
+                    select(UnpackExternalOperationJournal).where(
+                        UnpackExternalOperationJournal.item_id == prepared.context.item_id,
+                        UnpackExternalOperationJournal.idempotency_key
+                        == _journal_key(prepared, _AUX_STOP_OPERATION),
+                    )
+                )
+                removal = session.scalar(
+                    select(UnpackExternalOperationJournal).where(
+                        UnpackExternalOperationJournal.item_id == prepared.context.item_id,
+                        UnpackExternalOperationJournal.idempotency_key
+                        == _journal_key(prepared, _AUX_REMOVE_OPERATION),
+                    )
+                )
+            if (
+                stop is None
+                or stop.status != OperationStatus.APPLIED.value
+                or removal is None
+                or removal.status
+                not in {
+                    OperationStatus.INTENT_RECORDED.value,
+                    OperationStatus.RECONCILE_REQUIRED.value,
+                    OperationStatus.APPLIED.value,
+                }
+            ):
+                raise self._conflict("临时种子已消失但缺少可信的停止/移除操作记录，必须人工对账")
+            if not self._auxiliary_files_ready(prepared):
+                raise self._conflict("种子已移除但辅助文件不完整，禁止继续")
+            verification, mappings = self._verify_combined_sources(prepared)
+            if verification.level is VerificationLevel.FULL_VERIFIED and not _has_mismatch(
+                verification
+            ):
+                await self._ensure_torrent_removed(prepared)
+                self._mark_verified(prepared, verification, mappings)
+            else:
+                self._mark_mismatch(prepared, verification, mappings)
+            return
         if not self._auxiliary_files_ready(prepared):
             return
         await self._ensure_torrent_stopped(prepared)
-        self._set_item_status(prepared.context.item_id, UnpackItemStatus.CONTENT_VERIFYING)
+        # Keep this item claimable by the auxiliary driver until after the
+        # final remote cleanup and result commit. Switching to CONTENT_VERIFYING
+        # here stranded items when Transmission disconnected on remove.
         verification, mappings = self._verify_combined_sources(prepared)
         if verification.level is VerificationLevel.FULL_VERIFIED and not _has_mismatch(
             verification
@@ -646,23 +706,61 @@ class UnpackAuxiliaryStagingService:
         state = await _require_owned_torrent_state(prepared)
         if journal.status == OperationStatus.APPLIED.value and state.stopped:
             return
+        if journal.status == OperationStatus.APPLIED.value and not state.stopped:
+            self._mark_reconcile(journal.id, "UNPACK_AUX_STOP_STATE_DRIFTED")
+            raise ApplicationError(
+                code="UNPACK_AUX_STOP_STATE_DRIFTED",
+                status=409,
+                title="临时种子暂停状态发生变化",
+                detail="先前已确认暂停的临时种子再次运行，禁止重复发送暂停命令",
+            )
         if state.stopped:
             self._mark_applied(journal.id, _state_snapshot(state))
             return
+        if journal.status == OperationStatus.RECONCILE_REQUIRED.value:
+            raise ApplicationError(
+                code="UNPACK_AUX_STOP_RECONCILE_REQUIRED",
+                status=409,
+                title="临时种子暂停结果未确认",
+                detail="临时种子仍在运行且上次暂停结果未知，禁止自动重复暂停",
+            )
         try:
             await prepared.binding.adapter.stop_torrent(prepared.torrent_hash)
         except DownloaderAdapterError:
-            current = await _owned_torrent_state(prepared)
+            try:
+                current = await self._wait_until_stopped(prepared)
+            except DownloaderAdapterError:
+                self._mark_reconcile(journal.id, "UNPACK_AUX_STOP_RESULT_UNKNOWN")
+                raise
             if current is not None and current.stopped:
                 self._mark_applied(journal.id, _state_snapshot(current))
                 return
             self._mark_reconcile(journal.id, "UNPACK_AUX_STOP_RESULT_UNKNOWN")
             raise
-        current = await _require_owned_torrent_state(prepared)
-        if not current.stopped:
+        try:
+            current = await self._wait_until_stopped(prepared)
+        except DownloaderAdapterError:
+            self._mark_reconcile(journal.id, "UNPACK_AUX_STOP_RESULT_UNKNOWN")
+            raise
+        if current is None or not current.stopped:
             self._mark_reconcile(journal.id, "UNPACK_AUX_STOP_NOT_OBSERVED")
             raise self._conflict("辅助文件已就绪，但下载器无法安全暂停 staging torrent")
         self._mark_applied(journal.id, _state_snapshot(current))
+
+    @staticmethod
+    async def _wait_until_stopped(
+        prepared: _Prepared,
+    ) -> QbittorrentTorrentState | TransmissionTorrentState | None:
+        # Transmission reports a successful torrent_stop RPC before the
+        # subsequent torrent_get necessarily observes status=0. Poll only the
+        # already-bound torrent; never send the stop operation twice.
+        for attempt in range(10):
+            if attempt:
+                await asyncio.sleep(0.3)
+            current = await _owned_torrent_state(prepared)
+            if current is None or current.stopped:
+                return current
+        return current
 
     async def _ensure_torrent_removed(self, prepared: _Prepared) -> None:
         target = {
@@ -694,20 +792,49 @@ class UnpackAuxiliaryStagingService:
         if state is None:
             self._mark_applied(journal.id, {"removed": True, "files_kept": True})
             return
+        if journal.status == OperationStatus.RECONCILE_REQUIRED.value:
+            raise ApplicationError(
+                code="UNPACK_AUX_REMOVE_RECONCILE_REQUIRED",
+                status=409,
+                title="临时种子移除结果未确认",
+                detail="远端仍存在临时种子且上次移除结果未知，禁止自动再次移除",
+            )
         try:
             await prepared.binding.adapter.remove_torrent_keep_files(prepared.torrent_hash)
         except DownloaderAdapterError:
-            current = await _owned_torrent_state(prepared)
+            try:
+                current = await self._wait_until_removed(prepared)
+            except DownloaderAdapterError:
+                self._mark_reconcile(journal.id, "UNPACK_AUX_REMOVE_RESULT_UNKNOWN")
+                raise
             if current is None:
                 self._mark_applied(journal.id, {"removed": True, "files_kept": True})
                 return
             self._mark_reconcile(journal.id, "UNPACK_AUX_REMOVE_RESULT_UNKNOWN")
             raise
-        current = await _owned_torrent_state(prepared)
+        try:
+            current = await self._wait_until_removed(prepared)
+        except DownloaderAdapterError:
+            self._mark_reconcile(journal.id, "UNPACK_AUX_REMOVE_RESULT_UNKNOWN")
+            raise
         if current is not None:
             self._mark_reconcile(journal.id, "UNPACK_AUX_REMOVE_NOT_OBSERVED")
             raise self._conflict("staging torrent 移除结果无法确认")
         self._mark_applied(journal.id, {"removed": True, "files_kept": True})
+
+    @staticmethod
+    async def _wait_until_removed(
+        prepared: _Prepared,
+    ) -> QbittorrentTorrentState | TransmissionTorrentState | None:
+        # The remote torrent list may briefly lag a successful remove RPC.
+        # Only observe the same identity-bound torrent; never remove twice.
+        for attempt in range(10):
+            if attempt:
+                await asyncio.sleep(0.3)
+            current = await _owned_torrent_state(prepared)
+            if current is None:
+                return None
+        return current
 
     def _auxiliary_files_ready(self, prepared: _Prepared) -> bool:
         files_by_path = {item.path: item for item in prepared.meta.files}
@@ -845,19 +972,6 @@ class UnpackAuxiliaryStagingService:
             if item.status != UnpackItemStatus.AUXILIARY_FETCHING.value:
                 raise self._conflict("影片项已离开辅助文件补齐阶段")
             item.auxiliary_state = state
-            item.updated_at = utc_now()
-            item.version += 1
-            session.commit()
-
-    def _set_item_status(self, item_id: str, status: UnpackItemStatus) -> None:
-        with self._session_factory() as session:
-            begin_immediate_write(session)
-            item = session.get(UnpackExecutionItem, item_id)
-            if item is None:
-                raise self._item_not_found()
-            if item.status != UnpackItemStatus.AUXILIARY_FETCHING.value:
-                raise self._conflict("影片项已离开辅助文件补齐阶段")
-            item.status = status.value
             item.updated_at = utc_now()
             item.version += 1
             session.commit()
@@ -1238,7 +1352,7 @@ def _current_records(
             detail="影片项或候选已不存在",
         )
     if (
-        item.status != UnpackItemStatus.CONTENT_VERIFYING.value
+        item.status != UnpackItemStatus.AUXILIARY_FETCHING.value
         or item.candidate_generation != context.generation
         or item.selected_candidate_id != context.candidate_id
         or candidate.item_id != item.id

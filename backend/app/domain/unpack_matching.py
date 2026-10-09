@@ -69,6 +69,37 @@ def build_unpack_search_queries(
         )
 
     if title_tokens:
+        # Legacy single-token names on rate-limited sites must still try the
+        # plain title before a title+year query, which many trackers reject.
+        if (
+            capabilities.min_request_interval_seconds > 0
+            and len(title_tokens) == 1
+            and not source.alias_tokens
+        ):
+            _append_query(
+                queries,
+                SearchQuery(keywords=title_tokens, media_type=media_type, episode=source.episode),
+            )
+        # Prefer the actual English title (before the release year) to noisy
+        # release attributes, then fall back to a verified Chinese alias.
+        # External IDs remain first where the site supports an ID query.
+        for alias in source.alias_tokens:
+            if len(alias) >= 2 and all(token.isascii() for token in alias):
+                _append_query(
+                    queries,
+                    SearchQuery(keywords=alias, media_type=media_type, episode=source.episode),
+                )
+        for alias in source.alias_tokens:
+            if len(alias) == 1 and any("\u4e00" <= char <= "\u9fff" for char in alias[0]):
+                _append_query(
+                    queries,
+                    SearchQuery(keywords=alias, media_type=media_type, episode=source.episode),
+                )
+        if len(title_tokens) == 1 and any("\u4e00" <= char <= "\u9fff" for char in title_tokens[0]):
+            _append_query(
+                queries,
+                SearchQuery(keywords=title_tokens, media_type=media_type, episode=source.episode),
+            )
         _append_query(
             queries,
             SearchQuery(

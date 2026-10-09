@@ -174,6 +174,8 @@ async def test_rousi_pro_explicit_cookie_rejects_untrusted_ids_before_network(
         (401, "text/plain", b"private-cookie", {}, "SITE_AUTH_FAILED"),
         (403, "text/plain", b"private-cookie", {}, "SITE_AUTH_FAILED"),
         (429, "text/plain", b"private-cookie", {}, "SITE_RATE_LIMITED"),
+        (500, "application/problem+json", b'{"error":"temporary"}', {}, "SITE_UNAVAILABLE"),
+        (503, "text/plain", b"temporary maintenance", {}, "SITE_UNAVAILABLE"),
         (
             302,
             "text/plain",
@@ -226,48 +228,47 @@ async def test_rousi_pro_cookie_download_fails_closed_without_secrets(
 
 
 @pytest.mark.asyncio
-async def test_rousi_pro_candidate_search_maps_actual_schema_and_effective_page_size() -> None:
+async def test_rousi_pro_candidate_search_uses_public_schema_without_credentials() -> None:
     requests: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
         assert request.method == "GET"
         assert request.url.path == "/api/v1/torrents"
-        assert request.headers.get("api-token") == _KEY
+        assert request.headers.get("api-token") is None
         assert request.headers.get("cookie") is None
+        assert request.headers.get("authorization") is None
         assert request.url.params["query"] == "synthetic"
-        assert request.url.params["page"] == "2"
+        assert request.url.params["offset"] == "10"
         assert request.url.params["limit"] == "10"
+        assert "page" not in request.url.params
         assert "api_token" not in request.url.params
         return httpx2.Response(
             200,
             json={
-                "code": 0,
-                "data": {
-                    "page": 2,
-                    "page_size": 100,
-                    "total": 301,
-                    "torrents": [
-                        {
-                            "id": 123,
-                            "title": "Synthetic.Movie.2026.1080p.WEB-DL",
-                            "size": 4294967296,
-                            "seeders": 8,
-                            "leechers": 2,
-                            "category": "movie",
-                            "created_at": "2026-09-09T12:00:00+08:00",
-                        },
-                        {
-                            "id": 124,
-                            "title": "Synthetic.Movie.2026.2160p.WEB-DL",
-                            "size": 8589934592,
-                            "seeders": 3,
-                            "leechers": 1,
-                            "category": "movie",
-                            "created_at": "2026-09-09T04:00:00Z",
-                        },
-                    ],
-                },
+                "limit": 10,
+                "offset": 10,
+                "total": 301,
+                "items": [
+                    {
+                        "id": 123,
+                        "name": "Synthetic.Movie.2026.1080p.WEB-DL",
+                        "size_bytes": 4294967296,
+                        "seeders": 8,
+                        "leechers": 2,
+                        "category": {"id": 1, "name": "movie"},
+                        "uploaded_at": "2026-09-09T12:00:00+08:00",
+                    },
+                    {
+                        "id": 124,
+                        "name": "Synthetic.Movie.2026.2160p.WEB-DL",
+                        "size_bytes": 8589934592,
+                        "seeders": 3,
+                        "leechers": 1,
+                        "category": "movie",
+                        "uploaded_at": "2026-09-09T04:00:00Z",
+                    },
+                ],
             },
         )
 
@@ -282,7 +283,7 @@ async def test_rousi_pro_candidate_search_maps_actual_schema_and_effective_page_
         SearchQuery(("Synthetic",), SearchMediaType.MOVIE, page=2, page_size=10)
     )
     assert page.page == 2
-    assert page.has_more  # 2 * effective_remote_page_size(100) < 301
+    assert page.has_more
     assert page.total_hint == 301
     assert len(page.items) == 2
     assert page.items[0].torrent_id == "123"
@@ -297,39 +298,108 @@ async def test_rousi_pro_candidate_search_maps_actual_schema_and_effective_page_
 
 
 @pytest.mark.asyncio
+async def test_rousi_query_uses_real_offset_and_accepts_offset_only_metadata() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/v1/torrents"
+        assert request.url.params["query"] == "九品芝麻官"
+        assert request.url.params["offset"] == "0"
+        assert request.url.params["limit"] == "20"
+        assert "page" not in request.url.params
+        assert request.headers.get("api-token") is None
+        assert request.headers.get("cookie") is None
+        return httpx2.Response(
+            200,
+            json={
+                "limit": 20,
+                "offset": 0,
+                "total": 4,
+                "items": [
+                    {
+                        "id": i + 101,
+                        "name": f"九品芝麻官.1994.{i}.1080p.BluRay",
+                        "size_bytes": 4_000_000_000,
+                    }
+                    for i in range(4)
+                ],
+            },
+        )
+
+    adapter = RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler))
+    result = await adapter.search(
+        SearchQuery(("九品芝麻官",), SearchMediaType.MOVIE, page=1, page_size=20)
+    )
+    assert len(result.items) == 4
+    assert result.total_hint == 4
+    assert result.has_more is False
+
+
+@pytest.mark.asyncio
+async def test_rousi_search_rejects_legacy_unfiltered_auth_envelope() -> None:
+    """The token-backed 8995-result response must never be treated as a match."""
+    calls: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request)
+        assert request.url.path == "/api/v1/torrents"
+        assert request.url.params["query"] == "九品芝麻官"
+        assert request.headers.get("api-token") is None
+        assert request.headers.get("cookie") is None
+        assert request.headers.get("authorization") is None
+        return httpx2.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "page": 1,
+                    "page_size": 100,
+                    "total": 8995,
+                    "torrents": [{"id": 123, "title": "Unrelated.Movie.2014", "size": 1234}],
+                },
+            },
+        )
+
+    adapter = RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler))
+    with pytest.raises(SiteAdapterError) as exc:
+        await adapter.search(
+            SearchQuery(("九品芝麻官",), SearchMediaType.MOVIE, page=1, page_size=20)
+        )
+    assert exc.value.code == "SITE_INVALID_RESPONSE"
+    assert _KEY not in str(exc.value)
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda data: data.update(page=2),
-        lambda data: data.update(page_size=0),
-        lambda data: data.update(page_size=501),
-        lambda data: data.update(
-            page_size=1, torrents=[*data["torrents"], {**data["torrents"][0], "id": 124}]
-        ),
+        lambda data: data.update(offset=50),
+        lambda data: data.update(limit=0),
+        lambda data: data.update(limit=100),
+        lambda data: data.update(limit=1, items=[*data["items"], {**data["items"][0], "id": 124}]),
         lambda data: data.update(total=-1),
-        lambda data: data.update(torrents=[], total=101),
-        lambda data: data.update(torrents="not-a-list"),
-        lambda data: data["torrents"][0].update(id=True),
-        lambda data: data["torrents"][0].update(title=""),
-        lambda data: data["torrents"][0].update(size=-1),
-        lambda data: data["torrents"].append(data["torrents"][0].copy()),
+        lambda data: data.update(items=[], total=101),
+        lambda data: data.update(items="not-a-list"),
+        lambda data: data["items"][0].update(id=True),
+        lambda data: data["items"][0].update(name=""),
+        lambda data: data["items"][0].update(size_bytes=-1),
+        lambda data: data["items"].append(data["items"][0].copy()),
     ],
 )
 async def test_rousi_pro_candidate_search_rejects_invalid_schema_without_echo(
     mutate: Callable[[dict[str, Any]], None],
 ) -> None:
     data: dict[str, Any] = {
-        "page": 1,
-        "page_size": 100,
+        "limit": 50,
+        "offset": 0,
         "total": 101,
-        "torrents": [
+        "items": [
             {
                 "id": 123,
-                "title": "Synthetic.Movie.2026",
-                "size": 42,
+                "name": "Synthetic.Movie.2026",
+                "size_bytes": 42,
                 "seeders": 8,
                 "leechers": 2,
-                "created_at": "2026-09-09T04:00:00Z",
+                "uploaded_at": "2026-09-09T04:00:00Z",
             }
         ],
     }
@@ -337,7 +407,8 @@ async def test_rousi_pro_candidate_search_rejects_invalid_schema_without_echo(
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         assert request.url.path == "/api/v1/torrents"
-        return httpx2.Response(200, json={"code": 0, "data": data, "message": _KEY})
+        assert request.headers.get("api-token") is None
+        return httpx2.Response(200, json=data)
 
     adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
         kind=SiteKind.ROUSI_PRO,
@@ -354,7 +425,7 @@ async def test_rousi_pro_candidate_search_rejects_invalid_schema_without_echo(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "incomplete_field",
-    ({"size": None}, {"size": 0}, {"id": 10**18}),
+    ({"size_bytes": None}, {"size_bytes": 0}, {"id": 10**18}),
 )
 async def test_rousi_isolated_analysis_refuses_incomplete_search_candidate(
     incomplete_field: dict[str, object],
@@ -362,8 +433,8 @@ async def test_rousi_isolated_analysis_refuses_incomplete_search_candidate(
     requests: list[str] = []
     candidate: dict[str, object] = {
         "id": 123,
-        "title": "Synthetic.Movie.2026",
-        "size": 16,
+        "name": "Synthetic.Movie.2026",
+        "size_bytes": 16,
         "seeders": 3,
         "leechers": 0,
     }
@@ -372,18 +443,15 @@ async def test_rousi_isolated_analysis_refuses_incomplete_search_candidate(
     def handler(request: httpx2.Request) -> httpx2.Response:
         requests.append(request.url.path)
         assert request.url.path == "/api/v1/torrents"
-        assert request.headers.get("api-token") == _KEY
+        assert request.headers.get("api-token") is None
         assert request.headers.get("cookie") is None
         return httpx2.Response(
             200,
             json={
-                "code": 0,
-                "data": {
-                    "page": 1,
-                    "page_size": 100,
-                    "total": 1,
-                    "torrents": [candidate],
-                },
+                "limit": 50,
+                "offset": 0,
+                "total": 1,
+                "items": [candidate],
             },
         )
 

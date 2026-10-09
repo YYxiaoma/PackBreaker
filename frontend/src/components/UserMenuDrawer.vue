@@ -1,16 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { Bell, CheckCheck, KeyRound, LogOut, Monitor, Moon, Sun, UserRound } from '@lucide/vue';
+import { KeyRound, LogOut, Monitor, Moon, Sun } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 
 import { ApiProblem } from '../api/client';
-import {
-  getAdminInboxUnreadCount,
-  listAdminInbox,
-  markAdminInboxRead,
-  markAllAdminInboxRead,
-  type AdminInboxNotification,
-} from '../api/notifications';
 import { getSystemHealth } from '../api/system';
 import { useAuthStore } from '../stores/auth';
 
@@ -24,14 +17,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: boolean];
   'update:themeMode': [value: ThemeMode];
-  'unread-change': [value: number];
   logout: [];
 }>();
 
 const auth = useAuthStore();
-const inbox = ref<AdminInboxNotification[]>([]);
-const unreadCount = ref(0);
-const inboxLoading = ref(false);
 const version = ref('—');
 const passwordDialogVisible = ref(false);
 const currentPassword = ref('');
@@ -52,45 +41,11 @@ watch(
 );
 
 async function refresh(): Promise<void> {
-  inboxLoading.value = true;
   try {
-    const [items, count, health] = await Promise.all([
-      listAdminInbox(false),
-      getAdminInboxUnreadCount(),
-      getSystemHealth(),
-    ]);
-    inbox.value = items;
-    unreadCount.value = count;
+    const health = await getSystemHealth();
     version.value = health.version;
-    emit('unread-change', count);
   } catch (caught) {
     ElMessage.error(caught instanceof ApiProblem ? caught.message : '读取用户信息失败');
-  } finally {
-    inboxLoading.value = false;
-  }
-}
-
-async function markRead(item: AdminInboxNotification): Promise<void> {
-  if (item.read_at) return;
-  try {
-    const updated = await markAdminInboxRead(item.id);
-    inbox.value = inbox.value.map((current) => (current.id === updated.id ? updated : current));
-    unreadCount.value = Math.max(0, unreadCount.value - 1);
-    emit('unread-change', unreadCount.value);
-  } catch (caught) {
-    ElMessage.error(caught instanceof ApiProblem ? caught.message : '更新通知状态失败');
-  }
-}
-
-async function markAllRead(): Promise<void> {
-  try {
-    await markAllAdminInboxRead();
-    const now = new Date().toISOString();
-    inbox.value = inbox.value.map((item) => ({ ...item, read_at: item.read_at ?? now }));
-    unreadCount.value = 0;
-    emit('unread-change', 0);
-  } catch (caught) {
-    ElMessage.error(caught instanceof ApiProblem ? caught.message : '全部标记已读失败');
   }
 }
 
@@ -123,16 +78,6 @@ async function changePassword(): Promise<void> {
     ElMessage.error(caught instanceof ApiProblem ? caught.message : '修改密码失败');
   }
 }
-
-function severityType(severity: AdminInboxNotification['severity']): 'info' | 'warning' | 'danger' {
-  if (severity === 'ERROR') return 'danger';
-  if (severity === 'WARNING') return 'warning';
-  return 'info';
-}
-
-function formatTime(value: string): string {
-  return new Date(value).toLocaleString();
-}
 </script>
 
 <template>
@@ -155,42 +100,6 @@ function formatTime(value: string): string {
         <el-radio-button value="dark"><Moon :size="14" />深色</el-radio-button>
         <el-radio-button value="system"><Monitor :size="14" />跟随系统</el-radio-button>
       </el-radio-group>
-    </section>
-
-    <section class="user-drawer-section">
-      <div class="user-drawer-section-heading">
-        <div class="user-drawer-section-title">
-          <Bell :size="16" />通知中心
-          <el-badge v-if="unreadCount" :value="unreadCount" />
-        </div>
-        <el-button v-if="unreadCount" link type="primary" @click="markAllRead">
-          <CheckCheck :size="14" />全部已读
-        </el-button>
-      </div>
-      <div v-loading="inboxLoading" class="admin-inbox-list">
-        <button
-          v-for="item in inbox"
-          :key="item.id"
-          class="admin-inbox-item"
-          :class="{ unread: !item.read_at }"
-          @click="markRead(item)"
-        >
-          <span class="admin-inbox-dot"></span>
-          <span class="admin-inbox-copy">
-            <span class="admin-inbox-title-row">
-              <strong>{{ item.title }}</strong>
-              <el-tag size="small" :type="severityType(item.severity)">{{ item.severity }}</el-tag>
-            </span>
-            <span>{{ item.message }}</span>
-            <small>{{ formatTime(item.created_at) }}</small>
-          </span>
-        </button>
-        <el-empty
-          v-if="!inboxLoading && !inbox.length"
-          description="暂无站内通知"
-          :image-size="60"
-        />
-      </div>
     </section>
 
     <section class="user-drawer-actions">

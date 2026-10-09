@@ -158,6 +158,15 @@ class UnpackDefinitionActionResponse(BaseModel):
     execution_id: str | None
 
 
+class UnpackRetryFailedMatchesRequest(BaseModel):
+    action: Literal["retry_failed_matches"]
+
+
+class UnpackRetryFailedMatchesResponse(BaseModel):
+    execution_id: str
+    retried_count: int
+
+
 class UnpackExecutionResponse(BaseModel):
     id: str
     definition_id: str
@@ -167,6 +176,7 @@ class UnpackExecutionResponse(BaseModel):
     discovery_cursor: str | None
     total_count: int
     matched_auto_count: int
+    no_match_count: int
     review_count: int
     content_verified_count: int
     content_mismatch_count: int
@@ -199,6 +209,7 @@ class UnpackExecutionItemResponse(BaseModel):
     torrent_metainfo_digest: str | None
     auxiliary_state: dict[str, Any] | None
     review_allowed: bool
+    has_external_operations: bool
     last_error_code: str | None
     last_error_message: str | None
     match_started_at: datetime | None
@@ -339,6 +350,7 @@ def _execution_response(view: UnpackExecutionView) -> UnpackExecutionResponse:
         discovery_cursor=view.discovery_cursor,
         total_count=view.total_count,
         matched_auto_count=view.matched_auto_count,
+        no_match_count=view.no_match_count,
         review_count=view.review_count,
         content_verified_count=view.content_verified_count,
         content_mismatch_count=view.content_mismatch_count,
@@ -369,6 +381,7 @@ def _execution_item_response(view: UnpackExecutionItemView) -> UnpackExecutionIt
         torrent_metainfo_digest=view.torrent_metainfo_digest,
         auxiliary_state=view.auxiliary_state,
         review_allowed=view.review_allowed,
+        has_external_operations=view.has_external_operations,
         last_error_code=view.last_error_code,
         last_error_message=view.last_error_message,
         match_started_at=view.match_started_at,
@@ -409,6 +422,25 @@ def _candidate_list_response(view: UnpackMatchCandidateList) -> UnpackMatchCandi
         default_candidate_id=view.default_candidate_id,
         candidates=[_candidate_response(item) for item in view.candidates],
     )
+
+
+def _required_definition_version(value: str | None) -> int:
+    if value is None:
+        raise ApplicationError(
+            code="UNPACK_VERSION_REQUIRED",
+            status=428,
+            title="缺少版本条件",
+            detail="写操作必须通过 If-Match 提交当前记录版本",
+        )
+    raw = value.strip().strip('"')
+    if not raw.isdigit() or int(raw) < 1:
+        raise ApplicationError(
+            code="UNPACK_VERSION_INVALID",
+            status=422,
+            title="版本条件无效",
+            detail="If-Match 必须为正整数版本",
+        )
+    return int(raw)
 
 
 def _required_item_version(value: str | None) -> int:
@@ -621,6 +653,55 @@ async def get_unpack_definition(
     return _definition_response(unpack_definition_service(request).get(definition_id))
 
 
+@router.put(
+    "/unpack/definitions/{definition_id}",
+    response_model=UnpackDefinitionResponse,
+)
+async def update_unpack_definition(
+    definition_id: str,
+    payload: UnpackDefinitionCreateRequest,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> UnpackDefinitionResponse:
+    view = unpack_definition_service(request).update(
+        definition_id,
+        UnpackDefinitionCreate(
+            name=payload.name,
+            trigger_kind=payload.trigger_kind,
+            source_kind=payload.source_kind,
+            execution_scope_kind=payload.execution_scope_kind,
+            source_config=payload.source_config,
+            file_filter=payload.file_filter,
+            site_ids=tuple(payload.site_ids),
+            output_config=payload.output_config,
+            retry_enabled=payload.retry_enabled,
+            max_retries=payload.max_retries,
+            auto_match_threshold_bps=payload.auto_match_threshold_bps,
+            cron_expression=payload.cron_expression,
+            timezone=payload.timezone,
+            source_scan_id=payload.source_scan_id,
+        ),
+        expected_version=_required_definition_version(if_match),
+    )
+    return _definition_response(view)
+
+
+@router.delete(
+    "/unpack/definitions/{definition_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_unpack_definition(
+    definition_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> None:
+    unpack_definition_service(request).delete(
+        definition_id, expected_version=_required_definition_version(if_match)
+    )
+
+
 @router.post(
     "/unpack/definitions/{definition_id}/actions",
     response_model=UnpackDefinitionActionResponse,
@@ -654,6 +735,25 @@ async def list_unpack_executions(
         limit=limit,
     )
     return UnpackExecutionListResponse(items=[_execution_response(item) for item in items])
+
+
+@router.post(
+    "/unpack/executions/{execution_id}/actions",
+    response_model=UnpackRetryFailedMatchesResponse,
+)
+async def act_on_unpack_execution(
+    execution_id: str,
+    payload: UnpackRetryFailedMatchesRequest,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> UnpackRetryFailedMatchesResponse:
+    if payload.action != "retry_failed_matches":
+        raise AssertionError("Pydantic 已限制 action")
+    count = unpack_item_action_service(request).retry_failed_matches(
+        execution_id, expected_execution_version=_required_definition_version(if_match)
+    )
+    return UnpackRetryFailedMatchesResponse(execution_id=execution_id, retried_count=count)
 
 
 @router.get(
@@ -772,4 +872,17 @@ async def act_on_unpack_item(
         retry_count=result.retry_count,
         item_version=result.item_version,
         item_status=result.item_status,
+    )
+
+
+@router.delete("/unpack/items/{item_id}", status_code=204)
+async def delete_unpack_execution_item(
+    item_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> None:
+    unpack_item_action_service(request).delete_item(
+        item_id,
+        expected_item_version=_required_item_version(if_match),
     )

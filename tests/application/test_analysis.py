@@ -456,28 +456,25 @@ async def test_rousi_factory_candidate_analysis_stops_at_unverified_torrent_deta
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(request.url.path)
         assert request.url.host == httpx2.URL(origin).host
-        assert request.headers.get("api-token") == "synthetic-api-key"
+        assert request.headers.get("api-token") is None
         assert request.headers.get("cookie") is None
         assert request.url.path == "/api/v1/torrents"
         return httpx2.Response(
             200,
             json={
-                "code": 0,
-                "data": {
-                    "torrents": [
-                        {
-                            "id": 123,
-                            "title": "Movie.2026",
-                            "size": 16,
-                            "seeders": 3,
-                            "leechers": 0,
-                            "created_at": "2026-09-09T12:00:00+08:00",
-                        }
-                    ],
-                    "page": 1,
-                    "page_size": 100,
-                    "total": 1,
-                },
+                "items": [
+                    {
+                        "id": 123,
+                        "name": "Movie.2026",
+                        "size_bytes": 16,
+                        "seeders": 3,
+                        "leechers": 0,
+                        "uploaded_at": "2026-09-09T12:00:00+08:00",
+                    }
+                ],
+                "limit": 50,
+                "offset": 0,
+                "total": 1,
             },
         )
 
@@ -540,33 +537,30 @@ async def test_rousi_isolated_dual_credential_adapter_can_reach_verified_preflig
         assert request.url.host == httpx2.URL(origin).host
         requests.append(request.url.path)
         if request.url.path == "/api/v1/torrents":
-            assert request.headers.get("api-token") == "synthetic-api-key"
+            assert request.headers.get("api-token") is None
             assert request.headers.get("cookie") is None
             return httpx2.Response(
                 200,
                 json={
-                    "code": 0,
-                    "data": {
-                        "torrents": [
-                            {
-                                "id": 123,
-                                "title": "Movie.2026",
-                                "size": 16,
-                                "seeders": 3,
-                                "leechers": 0,
-                            },
-                            {
-                                "id": 124,
-                                "title": "Movie.2026.Extra",
-                                "size": 16,
-                                "seeders": 2,
-                                "leechers": 0,
-                            },
-                        ],
-                        "page": 1,
-                        "page_size": 100,
-                        "total": 2,
-                    },
+                    "items": [
+                        {
+                            "id": 123,
+                            "name": "Movie.2026",
+                            "size_bytes": 16,
+                            "seeders": 3,
+                            "leechers": 0,
+                        },
+                        {
+                            "id": 124,
+                            "name": "Movie.2026.Extra",
+                            "size_bytes": 16,
+                            "seeders": 2,
+                            "leechers": 0,
+                        },
+                    ],
+                    "limit": 50,
+                    "offset": 0,
+                    "total": 2,
                 },
             )
         assert request.url.path == "/api/v1/torrents/123/download"

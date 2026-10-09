@@ -173,9 +173,26 @@ def parse_media_name(
         working = _blank_span(working, match.span())
 
     alias_tokens = tuple(tokens for alias in aliases if (tokens := tokenize_title(alias)))
+    title_tokens = tuple(_TOKEN_RE.findall(working))
+    # The title before a release year is useful independently of the
+    # subsequent codec, quality and team tokens. Retain it as a search alias.
+    if year_match is not None:
+        before_year = tuple(_TOKEN_RE.findall(normalize_text(raw_name[: year_match.start()])))
+        latin_title = tuple(token for token in before_year if token.isascii() and token.isalnum())
+        if 2 <= len(latin_title) <= 12 and latin_title not in alias_tokens:
+            alias_tokens = (*alias_tokens, latin_title)
+    # Bilingual movie filenames often start with an official Chinese title
+    # followed by the English release title and technical release metadata.
+    # Keep the complete title tokens, but preserve the Chinese title as an
+    # alternative for conservative candidate search and scoring. The later
+    # torrent-content verification gate is unchanged.
+    if len(title_tokens) > 1 and any("\u4e00" <= char <= "\u9fff" for char in title_tokens[0]):
+        chinese_title = (title_tokens[0],)
+        if chinese_title not in alias_tokens:
+            alias_tokens = (*alias_tokens, chinese_title)
     return MediaDescriptor(
         raw_name=raw_name,
-        title_tokens=tuple(_TOKEN_RE.findall(working)),
+        title_tokens=title_tokens,
         alias_tokens=alias_tokens,
         year=year,
         episode=episode,

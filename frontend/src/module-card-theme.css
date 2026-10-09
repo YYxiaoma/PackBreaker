@@ -181,6 +181,36 @@ body {
   box-shadow: inset 3px 0 0 var(--blue);
 }
 
+/* A persistent corner entry instead of another primary navigation item. */
+#app .about-corner-button {
+  position: fixed;
+  right: 24px;
+  bottom: 22px;
+  z-index: 18;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted);
+  box-shadow: 0 6px 20px rgba(28, 42, 64, 0.09);
+  cursor: pointer;
+}
+#app .about-corner-button:hover,
+#app .about-corner-button.active {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+@media (max-width: 800px) {
+  #app .about-corner-button {
+    right: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+  }
+}
+
 #app .profile {
   margin: 6px 0 0;
   padding: 15px 8px 5px;

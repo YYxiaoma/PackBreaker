@@ -44,7 +44,7 @@ _TORRENT_CONTENT_TYPES = frozenset(
 
 
 class RousiProCandidateAdapter:
-    """Rousi adapter: API key for search, independent Cookie for download.
+    """Rousi adapter: API key for authentication, public search, Cookie for download.
 
     The site service only loads a persisted download Cookie for a site that
     has passed the independent production support gate. While Rousi remains
@@ -107,8 +107,11 @@ class RousiProCandidateAdapter:
         params: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         # A strict path allowlist prevents accidentally attaching API keys to
-        # unreviewed endpoints. Do not follow redirects, forward Cookie, or put
-        # the API key in query parameters, response logs or exception messages.
+        # unreviewed endpoints. Crucially, /api/v1/torrents is a public search
+        # route with a DIFFERENT response contract when an api-token header
+        # is included: authenticated requests return a broad unfiltered list.
+        # Only the authentication test receives the API key. Never send Cookie
+        # or API key to public search, follow redirects or print credentials.
         if path not in {_READ_ONLY_AUTH_PATH, _SEARCH_PATH}:
             raise ValueError("Rousi Pro API 只允许已审查的只读接口")
         try:
@@ -123,7 +126,11 @@ class RousiProCandidateAdapter:
                 client.stream(
                     "GET",
                     f"{_BASE_URL}{path}",
-                    headers={"api-token": self._api_key, "Accept": "application/json"},
+                    headers=(
+                        {"api-token": self._api_key, "Accept": "application/json"}
+                        if path == _READ_ONLY_AUTH_PATH
+                        else {"Accept": "application/json"}
+                    ),
                     params=params,
                 ) as response,
             ):
@@ -155,10 +162,13 @@ class RousiProCandidateAdapter:
             data = json.loads(raw)
         except (ValueError, UnicodeError) as exc:
             raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro API JSON 无法解析") from exc
-        if not isinstance(data, dict) or type(data.get("code")) is not int:
+        if not isinstance(data, dict):
             raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro API 响应结构未知")
-        if data["code"] != 0:
-            raise SiteAdapterError("SITE_AUTH_FAILED", "Rousi Pro API Key 未通过只读认证")
+        if path == _READ_ONLY_AUTH_PATH:
+            if type(data.get("code")) is not int:
+                raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 认证响应格式未知")
+            if data["code"] != 0:
+                raise SiteAdapterError("SITE_AUTH_FAILED", "Rousi Pro API Key 未通过只读认证")
         return data
 
     async def fetch_user_profile(self) -> SiteUserProfile:
@@ -176,30 +186,34 @@ class RousiProCandidateAdapter:
             size_limit=_SEARCH_RESPONSE_LIMIT,
             params={
                 "query": query.query_text,
-                "page": str(query.page),
                 "limit": str(query.page_size),
+                # Rousi Pro's public search endpoint uses offset/limit, not
+                # page/limit. The old parameter made non-first pages repeat
+                # or return a misleading NO_MATCH after an invalid response.
+                "offset": str((query.page - 1) * query.page_size),
             },
         )
-        body = data.get("data")
-        if not isinstance(body, dict):
-            raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 搜索数据格式无效")
-        raw_rows = body.get("torrents")
-        page = body.get("page")
-        actual_size = body.get("page_size")
-        total = body.get("total")
+        # The public endpoint returns {items,limit,offset,total}. Reject the
+        # old {code,data:{torrents,...}} envelope: it indicates the token-based
+        # unfiltered route, not a valid keyword search.
+        raw_rows = data.get("items")
+        actual_size = data.get("limit")
+        offset = data.get("offset")
+        total = data.get("total")
+        expected_offset = (query.page - 1) * query.page_size
         if (
             not isinstance(raw_rows, list)
-            or len(raw_rows) > 500
-            or type(page) is not int
-            or page != query.page
+            or len(raw_rows) > query.page_size
             or type(actual_size) is not int
-            or not 1 <= actual_size <= 500
-            or len(raw_rows) > actual_size
+            or actual_size != query.page_size
+            or type(offset) is not int
+            or offset != expected_offset
             or type(total) is not int
             or total < 0
-            or (not raw_rows and page * actual_size < total)
+            or total < offset + len(raw_rows)
+            or (not raw_rows and offset < total)
         ):
-            raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 搜索分页或列表格式无效")
+            raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 公开搜索响应或分页格式无效")
         try:
             items = tuple(_parse_rousi_candidate(raw) for raw in raw_rows)
             if self._download_cookie is not None and any(
@@ -212,10 +226,8 @@ class RousiProCandidateAdapter:
                     "SITE_INVALID_RESPONSE",
                     "Rousi Pro 候选缺少隔离分析所需的种子标识或文件大小",
                 )
-            # The site's effective page_size is authoritative: it may ignore
-            # the client-supplied limit. Never truncate and skip unseen results.
-            has_more = bool(items) and page * actual_size < total
-            return SearchPage("rousi_pro", page, items, has_more, total)
+            has_more = bool(items) and (offset + len(items) < total)
+            return SearchPage("rousi_pro", query.page, items, has_more, total)
         except (ValueError, TypeError) as exc:
             raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 搜索候选字段无效") from exc
 
@@ -252,6 +264,12 @@ class RousiProCandidateAdapter:
                     raise SiteAdapterError("SITE_AUTH_FAILED", "Rousi Pro 取种认证失败")
                 if response.status_code == 429:
                     raise SiteAdapterError("SITE_RATE_LIMITED", "Rousi Pro 取种达到限流")
+                if 500 <= response.status_code <= 599:
+                    raise SiteAdapterError(
+                        "SITE_UNAVAILABLE",
+                        "Rousi Pro 取种服务暂时不可用",
+                        retryable=True,
+                    )
                 if response.status_code != 200:
                     raise SiteAdapterError("SITE_HTTP_ERROR", "Rousi Pro 取种接口不可用")
                 content_type = (
@@ -290,19 +308,21 @@ def _parse_rousi_candidate(raw: object) -> CandidateMeta:
     if not isinstance(raw, dict):
         raise ValueError("Rousi candidate row must be a mapping")
     torrent_id = raw.get("id")
-    title = raw.get("title")
+    title = raw.get("name")
     if type(torrent_id) is not int or torrent_id < 1 or not isinstance(title, str):
         raise ValueError("Rousi candidate lacks a valid identity or title")
     title = title.strip()
     if not title or len(title) > 1024:
         raise ValueError("Rousi candidate title is missing or too long")
-    size = _nonnegative_int(raw.get("size"))
+    size = _nonnegative_int(raw.get("size_bytes"))
     seeders = _nonnegative_int(raw.get("seeders"))
     leechers = _nonnegative_int(raw.get("leechers"))
     category = raw.get("category")
+    if isinstance(category, dict):
+        category = category.get("name")
     if not isinstance(category, str) or not category.strip() or len(category) > 128:
         category = None
-    date = raw.get("created_at")
+    date = raw.get("uploaded_at")
     published = None
     if isinstance(date, str):
         try:

@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
+from backend.app.application.unpack_existing_reuse import verify_existing_reuse
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_definition import TaskStorageMode
@@ -35,6 +36,7 @@ _DIRECTORY_OPERATION = "UNPACK_EXEC_CREATE_DIRECTORY"
 _HARDLINK_OPERATION = "UNPACK_EXEC_MATERIALIZE_HARDLINK"
 _SYMLINK_OPERATION = "UNPACK_EXEC_MATERIALIZE_SYMLINK"
 _COPY_OPERATION = "UNPACK_EXEC_MATERIALIZE_COPY"
+_REUSE_OPERATION = "UNPACK_EXEC_REUSE_EXISTING"
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +266,9 @@ class UnpackMaterializationService:
         action: UnpackExecutionAction,
     ) -> None:
         assert action.source_path is not None and action.source_snapshot is not None
+        if action.reuse_target_snapshot is not None:
+            self._reuse_existing(item_id, plan, action)
+            return
         operation_type = {
             TaskStorageMode.HARDLINK: _HARDLINK_OPERATION,
             TaskStorageMode.SYMLINK: _SYMLINK_OPERATION,
@@ -338,6 +343,71 @@ class UnpackMaterializationService:
                 self._mark_reconcile(journal.id, "UNPACK_EXEC_MATERIALIZE_RESULT_UNKNOWN")
             raise
         self._mark_applied(journal.id, result.to_payload())
+
+    def _reuse_existing(
+        self,
+        item_id: str,
+        plan: UnpackExecutionPlan,
+        action: UnpackExecutionAction,
+    ) -> None:
+        """Audit an existing identical file without creating, replacing or deleting it."""
+        assert action.source_path is not None and action.source_snapshot is not None
+        assert action.reuse_target_snapshot is not None
+        if plan.storage_mode is not TaskStorageMode.HARDLINK:
+            raise self._conflict("已有文件复用仅适用于 HARDLINK 安全策略")
+        target_path = Path(plan.output_directory).joinpath(
+            *PurePosixPath(action.torrent_path).parts
+        )
+        key = _materialize_key(item_id, plan.plan_digest, _REUSE_OPERATION, action.torrent_path)
+        target = {"path": target_path.as_posix(), "torrent_path": action.torrent_path}
+        intent = {
+            "schema_version": _SCHEMA_VERSION,
+            "plan_digest": plan.plan_digest,
+            "source_path": action.source_path,
+            "source_snapshot": _file_snapshot_payload(action.source_snapshot),
+            "target_snapshot": _file_snapshot_payload(action.reuse_target_snapshot),
+            "proof_sha256": action.reuse_sha256,
+            "operation_token": key,
+            "no_file_mutation": True,
+        }
+        journal, _created = self._record_intent(
+            item_id,
+            _REUSE_OPERATION,
+            key=key,
+            target=target,
+            intent=intent,
+            before_snapshot=_file_snapshot_payload(action.reuse_target_snapshot),
+        )
+        if journal.status == OperationStatus.RECONCILE_REQUIRED.value:
+            raise ApplicationError(
+                code="UNPACK_EXEC_REUSE_RECONCILE_REQUIRED",
+                status=409,
+                title="已有文件复用必须先对账",
+                detail="既有复用证据失效，禁止跳过文件安全验证",
+            )
+        try:
+            proof = verify_existing_reuse(
+                self._filesystem,
+                source_path=action.source_path,
+                source_snapshot=action.source_snapshot,
+                target_path=target_path.as_posix(),
+                expected_target=action.reuse_target_snapshot,
+                expected_sha256=action.reuse_sha256,
+            )
+        except (DomainViolation, OSError, ValueError) as exc:
+            self._mark_reconcile(journal.id, "UNPACK_EXEC_REUSE_TARGET_CHANGED")
+            raise ApplicationError(
+                code="UNPACK_EXEC_REUSE_TARGET_CHANGED",
+                status=409,
+                title="已有文件不再满足安全复用条件",
+                detail="目标文件身份、内容或冻结源证据已变化，禁止接管或覆盖",
+            ) from exc
+        if journal.status == OperationStatus.APPLIED.value:
+            if journal.after_snapshot != _file_snapshot_payload(proof.target_snapshot):
+                self._mark_reconcile(journal.id, "UNPACK_EXEC_REUSE_JOURNAL_MISMATCH")
+                raise self._conflict("已确认复用的目标快照与 journal 不一致")
+            return
+        self._mark_applied(journal.id, _file_snapshot_payload(proof.target_snapshot))
 
     def _recover_materialization(
         self,

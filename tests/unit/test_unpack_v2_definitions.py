@@ -120,6 +120,39 @@ def test_create_manual_definition_is_pending_and_does_not_start_execution(
         assert session.scalar(select(func.count(UnpackExecution.id))) == 0
 
 
+def test_edit_definition_keeps_id_and_rejects_stale_version(tmp_path: Path) -> None:
+    service, _factory, source = _service(tmp_path)
+    created = service.create(_request(source))
+    updated = service.update(
+        created.id,
+        replace(_request(source), name="改名后手动拆包"),
+        expected_version=created.version,
+    )
+    assert updated.id == created.id
+    assert updated.name == "改名后手动拆包"
+    assert updated.version == created.version + 1
+    with pytest.raises(ApplicationError) as failure:
+        service.update(created.id, _request(source), expected_version=created.version)
+    assert failure.value.code == "UNPACK_DEFINITION_CONFLICT"
+
+
+def test_delete_unrun_definition_and_preserve_active_execution(tmp_path: Path) -> None:
+    service, _factory, source = _service(tmp_path)
+    created = service.create(_request(source))
+    with pytest.raises(ApplicationError):
+        service.delete(created.id, expected_version=created.version + 1)
+    service.delete(created.id, expected_version=created.version)
+    with pytest.raises(ApplicationError) as missing:
+        service.get(created.id)
+    assert missing.value.status == 404
+
+    created = service.create(_request(source))
+    service.run(created.id)
+    with pytest.raises(ApplicationError) as running:
+        service.delete(created.id, expected_version=created.version)
+    assert running.value.code == "UNPACK_DEFINITION_CONFLICT"
+
+
 def test_manual_run_creates_execution_with_frozen_snapshot(tmp_path: Path) -> None:
     service, factory, source = _service(tmp_path)
     created = service.create(_request(source))
