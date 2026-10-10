@@ -119,3 +119,35 @@ def test_source_mutation_blocks_completion(tmp_path: Path, monkeypatch: pytest.M
         probe.check_local_torrent(torrent_file=torrent, source=source, data_root=root)["status"]
         == "SOURCE_SNAPSHOT_CHANGED"
     )
+
+
+def test_unrelated_source_cannot_claim_verified_torrent(tmp_path: Path) -> None:
+    torrent, source, root = _fixture(tmp_path)
+    other = source.parent / "Other.2024.mkv"
+    other.write_bytes(b"abcdefgh")
+    pieces = b"".join(hashlib.sha1(x).digest() for x in (b"abcd", b"efgh"))
+    torrent.write_bytes(
+        _bencode(
+            {
+                b"info": {
+                    b"length": 8,
+                    b"name": b"Other.2024.mkv",
+                    b"piece length": 4,
+                    b"pieces": pieces,
+                }
+            }
+        )
+    )
+    report = probe.check_local_torrent(torrent_file=torrent, source=source, data_root=root)
+    assert report["status"] == "SOURCE_NOT_REFERENCED"
+    assert report["approved_for_client_add"] is False
+
+
+def test_fifo_torrent_is_rejected_without_blocking(tmp_path: Path) -> None:
+    _, source, root = _fixture(tmp_path)
+    pipe = tmp_path / "fake.torrent"
+    os.mkfifo(pipe, 0o600)
+    assert (
+        probe.check_local_torrent(torrent_file=pipe, source=source, data_root=root)["status"]
+        == "TORRENT_FILE_BLOCKED"
+    )
