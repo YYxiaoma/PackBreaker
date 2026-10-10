@@ -5,6 +5,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from math import ceil, isfinite
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 
@@ -91,6 +92,7 @@ class _SearchFailure:
     site_config_id: str
     code: str
     retryable: bool
+    retry_after_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +346,7 @@ class UnpackMatchCoordinator:
                                         binding.config_id,
                                         exc.code,
                                         exc.retryable,
+                                        exc.retry_after_seconds,
                                     )
                                 )
                                 # Alternate title keywords cannot fix a
@@ -536,6 +539,7 @@ class UnpackMatchCoordinator:
                             binding.config_id,
                             exc.code,
                             exc.retryable,
+                            exc.retry_after_seconds,
                         )
                     ]
 
@@ -648,7 +652,13 @@ class UnpackMatchCoordinator:
                     failure.code in {"UNPACK_MATCH_TIMEOUT", "SITE_TIMEOUT"} for failure in failures
                 )
                 if retryable_failure and self._schedule_automatic_retry(
-                    session, execution, item, now
+                    session,
+                    execution,
+                    item,
+                    now,
+                    retry_after_seconds=tuple(
+                        failure.retry_after_seconds for failure in failures if failure.retryable
+                    ),
                 ):
                     item.last_error_code = None
                     item.last_error_message = None
@@ -701,6 +711,8 @@ class UnpackMatchCoordinator:
         execution: UnpackExecution,
         item: UnpackExecutionItem,
         now: datetime,
+        *,
+        retry_after_seconds: tuple[float | None, ...] = (),
     ) -> bool:
         definition = session.get(UnpackDefinition, execution.definition_id)
         if (
@@ -710,6 +722,21 @@ class UnpackMatchCoordinator:
         ):
             return False
         wait_seconds = min(30, 2 ** min(item.retry_count + 1, 4))
+        for requested in retry_after_seconds:
+            if requested is None:
+                continue
+            # Never turn an invalid or unbounded server cooldown into rapid
+            # retries or an overflowing timedelta. Require human intervention
+            # when the server requests more than a day of silence.
+            if (
+                isinstance(requested, bool)
+                or not isinstance(requested, (int, float))
+                or not isfinite(requested)
+                or requested < 0
+                or requested > 86_400
+            ):
+                return False
+            wait_seconds = max(wait_seconds, ceil(requested))
         _reset_item_for_match_retry(
             item,
             now,
