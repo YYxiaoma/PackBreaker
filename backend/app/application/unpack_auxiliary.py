@@ -231,6 +231,15 @@ class UnpackAuxiliaryStagingService:
             if state == "READY_FOR_FINALIZATION":
                 return
             raise self._conflict("辅助文件状态无法继续")
+        except TimeoutError:
+            # asyncio.timeout() around a slow torrent metadata fetch raises
+            # builtin TimeoutError (not SiteAdapterError). Treat it as a
+            # transient read-only failure so one stalled site cannot abort
+            # the whole auxiliary worker batch. Preserve the frozen candidate,
+            # selected torrent identity and all external-operation journals;
+            # the next worker pass must recheck them before any write.
+            # An external asyncio.CancelledError still propagates on shutdown.
+            return
         except DownloaderAdapterError as exc:
             if exc.code in {"DOWNLOADER_UNAVAILABLE", "DOWNLOADER_CONNECTION_FAILED"}:
                 # Polling is read-only until the auxiliary files are present.
