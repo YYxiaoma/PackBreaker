@@ -866,6 +866,62 @@ async def test_mteam_errors_do_not_echo_api_key_or_remote_message() -> None:
     assert api_key not in str(failure.value)
 
 
+@pytest.mark.asyncio
+async def test_mteam_http_date_retry_after_enforces_server_cooldown() -> None:
+    from datetime import timedelta
+    from email.utils import format_datetime
+
+    http_date = format_datetime(datetime.now(UTC) + timedelta(seconds=120), usegmt=True)
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(429, headers={"Retry-After": http_date})
+
+    adapter = MTeamAdapter("synthetic", transport=httpx2.MockTransport(handler))
+    with pytest.raises(SiteAdapterError) as failure:
+        await adapter.search(SearchQuery(("synthetic",), SearchMediaType.MOVIE))
+    assert failure.value.code == "SITE_RATE_LIMITED"
+    assert failure.value.retryable is True
+    assert failure.value.retry_after_seconds is not None
+    assert 115 <= failure.value.retry_after_seconds <= 121
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize(
+    "header",
+    ("NaN", "Infinity", "-5", "not-an-http-date", "86401"),
+)
+def test_mteam_invalid_retry_after_fails_closed(header: str) -> None:
+    from math import isfinite
+
+    from backend.app.infrastructure.adapters.sites import _retry_after_seconds
+
+    response = httpx2.Response(429, headers={"Retry-After": header})
+    delay = _retry_after_seconds(response)
+    assert delay is not None and not isfinite(delay)
+
+
+def test_mteam_retry_after_missing_and_numeric_values() -> None:
+    from backend.app.infrastructure.adapters.sites import _retry_after_seconds
+
+    assert _retry_after_seconds(httpx2.Response(429)) is None
+    assert _retry_after_seconds(httpx2.Response(429, headers={"Retry-After": "120"})) == 120
+    assert _retry_after_seconds(httpx2.Response(429, headers={"Retry-After": "0"})) == 0
+
+
+def test_mteam_retry_after_http_date_far_future_fails_closed() -> None:
+    from datetime import timedelta
+    from email.utils import format_datetime
+    from math import isfinite
+
+    from backend.app.infrastructure.adapters.sites import _retry_after_seconds
+
+    header = format_datetime(datetime.now(UTC) + timedelta(days=2), usegmt=True)
+    delay = _retry_after_seconds(httpx2.Response(429, headers={"Retry-After": header}))
+    assert delay is not None and not isfinite(delay)
+
+
 def _mteam_row() -> dict[str, object]:
     return {
         "id": "123",
