@@ -194,13 +194,15 @@ stateDiagram-v2
 
 ## 🌐 站点支持
 
-v1.0.5 当前内置的 11 个站点 Profile 均可配置、启用并直接参与正式拆包任务：
+v1.1.1 正式版已有 **11 个可按受信配置启用的内置站点 Profile**；是否能用于某条辅种任务仍取决于凭据、站点访问、目标媒体和下载器的完整安全验证：
 
 - **M-TEAM** — API Key
 - **Rousi Pro** — API Key + 独立下载 Cookie
 - **HDTime、HHClub、KeepFrds、HDHome、UBits、HDFans、BTSCHOOL、PTTime、聆音Club** — Cookie
 
-站点地址由后端受信任 Profile Registry 固定，避免把 Cookie / API Key 发送到用户误填的第三方域名。历史 `PENDING_ADAPTER` / `PENDING_REAL_VALIDATION` 标记不再作为当前站点的生产任务门禁；真实身份验证失败、凭据缺失、网络错误和不受信地址仍会失败关闭。
+站点地址由后端受信任 Profile Registry 固定，避免把 Cookie / API Key 发送到用户误填的第三方域名。上述 11 站的已实现适配器不代表每站真实辅种 E2E 已验收；认证失败、网络错误、外部已存在种子和无法确认的 Piece Hash 均保持安全阻断。
+
+**v1.1.2 开发分支还包含 7 个新站点**：PTerClub、Audiences、SpringSunday、HDDolby、U2、不可躺（TANGPT）和 CarPT。它们目前全部为 `PENDING_REAL_VALIDATION`，仅支持受控配置及只读检查，**不得启用正式辅种任务**。逐站剩余验证详见 [支持矩阵](./docs/support-matrix.md) 和 [收官任务 #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。
 
 Cookie 站点可通过系统设置中的 **CookieCloud** 对接 [easychen/CookieCloud](https://github.com/easychen/CookieCloud) 自动更新凭据。Rousi Pro 的 CookieCloud 同步只更新独立下载 Cookie，不会覆盖主 API Key。
 
@@ -298,7 +300,8 @@ PackBreaker 对“自动化”采用偏保守的设计：
 ```yaml
 services:
   packbreaker:
-    image: yyxiaoma01/packbreaker:latest
+    # 正式 v1.1.1 GHCR 不可变镜像；不要使用 v1.1.2 阶段性候选作为生产镜像。
+    image: ghcr.io/yyxiaoma/packbreaker@sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9
     container_name: packbreaker
     restart: unless-stopped
     ports:
@@ -370,7 +373,6 @@ http://<服务器IP>:8000
 docker run -d \
   --name packbreaker \
   --restart unless-stopped \
-  --user 1000:1000 \
   -e PUID=1000 \
   -e PGID=1000 \
   -e PACKBREAKER_TIMEZONE="Asia/Shanghai" \
@@ -378,15 +380,11 @@ docker run -d \
   -v /path/to/packbreaker/config:/config \
   -v /volume2/videos/downloads:/downloads \
   -v /volume3/videos2/downloads:/downloads2 \
-  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/yyxiaoma/packbreaker:latest
+  ghcr.io/yyxiaoma/packbreaker@sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9
 ```
 
-示例中的 `--group-add` 只用于 docker.sock；不需要 Web 一键升级时应同时删除
-`--group-add` 和 socket 挂载。挂载 `docker.sock` 等价于 Docker 主机级管理权限，
-只应在受信任宿主机上启用。不希望授予该权限时，请参考
-[部署文档](./docs/deployment.md) 使用手工 digest 升级或独立 updater helper。
+该命令使用镜像自身的安全入口读取 `PUID`/`PGID` 并执行必要的权限初始化；**不要额外设置 `--user` / `--group-add`**。如不需要 Web 一键升级，直接删除 `/var/run/docker.sock` 的 volume 挂载。挂载 `docker.sock` 等价于 Docker 主机级管理权限，只应在受信任宿主机上启用。不希望授予该权限时，请参考 [部署文档](./docs/deployment.md) 使用手工不可变 digest 升级或独立 updater helper。Docker Hub 官方镜像为 `yyxiaoma01/packbreaker`；若改用该来源，也应固定经发行验收的对应不可变 digest，而不是依赖可移动的 `latest`。
 
 ### 第一次登录
 
@@ -440,32 +438,22 @@ uv run python scripts/test.py
 
 ## 📊 当前状态
 
-**最新正式版本为 v1.0.5**，支持单个 Docker 镜像在 `linux/amd64` 和 `linux/arm64`（aarch64）上运行。[v1.0.5 GitHub Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.5) 已正式发布；生产安装和升级建议使用完整不可变 digest，而不是把可移动的 `stable/latest` 当作镜像身份。
+**最新正式版本为 v1.1.1**（不是 v1.0.5）；正式 Release 与 `linux/amd64` / `linux/arm64` 供应链身份已验证。[v1.1.1 GitHub Release](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.1.1)。
 
-- 正式源码 commit：`43a05a375be71dc89d32ec6eb0de4addda03799c`。
-- 正式镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:a617829574ef972f2118fb04bc6e08e973a94a44476f9ba8f32a82303b250a7c`。
-- 正式 Release workflow run：`36856714824`，已完成 AMD64、隔离 QEMU ARM64、原生 ARM64 的同一不可变 digest 回读、v1.0.4 → v1.0.5 升级/回滚、Web updater、失败自动回滚、匿名卷与独立下载器挂载保留、CookieCloud 固定 upstream 协议门以及 Release 资产回读。
-- `stable` 与 `latest` 已在 GitHub Release 资产回读成功后推进到同一 v1.0.5 正式 digest。
+- 正式源码：`b779e3270f2a3b3d8c380e22ac36f06ce55f8252`。
+- GHCR 正式不可变镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9`。
+- 正式 Release 工作流：[Actions #37912320819](https://github.com/YYxiaoma/PackBreaker/actions/runs/37912320819)。
+- 主线当前在研发 **v1.1.2**；已完成代码层面的匹配失败受限重试、站点 HTTP 429 `Retry-After`（秒数及 HTTP-date）、Rousi Pro/NexusPHP 只读恢复、浏览器 E2E 竞态等修复，并在合并后通过质量、原生 ARM64、升级回滚与隔离 Docker CI。但**v1.1.2 仍非正式 Release**。
+- 早期双架构标签 `candidate-v1.1.2-24f0213b07a1` 只是**过期的阶段性候选**，其镜像摘要并不包含后续主线修复；不能替代最新最终候选，更不应当作为生产升级目标。
 
-v1.0.5 重点包括：
+**当前尚未关闭的真实业务验收**：七个新增站点的合法取种与独立 Piece Hash、原有六站完整任务链路、部分 Rousi Pro/BTSCHOOL/UBits Tracker 异常根因，以及已补齐辅助文件/下载器失联恢复的现场可审计证据。既有客户端任务和 Mock/CI 成功都不能冒充新的合法 PackBreaker 辅种任务。此版本**不要求 Synology NAS 现场验收**，也不因此允许操作生产 NAS。
 
-- 当前 11 个内置站点全部解除历史未验证门禁，可按真实配置状态参与拆包任务；
-- 对接 easychen/CookieCloud，支持本地解密、测试连接、立即同步与自动同步；
-- 下载器来源路径不再强制位于 `/data`，可直接授权 `/downloads`、`/mnt/media` 等独立挂载目录；
-- 数据库 head 升级为 `0032_cookiecloud_v105`，v1.0.4 → v1.0.5 迁移与正式升级/回滚已通过；
-- 独立 `/downloads` / `/downloads2` 等下载器挂载在 Web updater 重建容器后会原样保留；
-- 真实外部 CookieCloud 服务验收需要专用的本地 `runtime/cookiecloud-acceptance.secret`，不会把凭据写入仓库。
+收官研发、站点真实只读结果、发布门槛与剩余问题：
 
-研发与验收细节见 [v1.0.5 研发设计与验收文档](./docs/v1.0.5-development.md) 和 [v1.0.5 正式发布记录](./docs/v1.0.5-release.md)。
-
-完整支持边界和已知限制请看：
-
-- [支持矩阵](./docs/support-matrix.md)
+- [v1.1.2 研发及验收记录](./docs/v1.1.2-development.md)
+- [收官 Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)
+- [当前支持矩阵](./docs/support-matrix.md)
 - [已知限制](./docs/known-limitations.md)
-- [v0.1.6 真实环境验收](./docs/v0.1.6-real-environment-acceptance.md)
-- [v0.1.7 开发与发布记录](./docs/v0.1.7-development.md)
-- [v0.1.8 研发文档](./docs/v0.1.8-development.md)
-- [v0.1.9 发布说明与验收范围](./docs/v0.1.9-release.md)
 - [部署与运维](./docs/deployment.md)
 - [研发文档索引](./docs/README.md)
 
