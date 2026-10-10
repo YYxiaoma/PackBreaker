@@ -165,8 +165,10 @@ class RousiProCandidateAdapter:
         except SiteAdapterError:
             raise
         except (httpx2.TimeoutException, httpx2.NetworkError) as exc:
-            # Only these credential check / public search GETs may use bounded
-            # reliability retries; download tokens must never be auto-replayed.
+            # Authentication and public keyword search are read-only GETs.
+            # Transient connectivity failures can be retried only by the
+            # caller's bounded site reliability / matching policy. Torrent
+            # download stays outside this retry contract.
             raise SiteAdapterError(
                 "SITE_UNAVAILABLE", "Rousi Pro 只读 API 连接失败", retryable=True
             ) from exc

@@ -21,7 +21,7 @@ _TORRENT = b"d4:infod4:name9:syntheticee"
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("date_header", (False, True))
-async def test_nexusphp_429_preserves_retry_after(date_header: bool) -> None:
+async def test_nexusphp_429_preserves_bounded_retry_after(date_header: bool) -> None:
     from datetime import UTC, datetime, timedelta
     from email.utils import format_datetime
 
@@ -36,6 +36,7 @@ async def test_nexusphp_429_preserves_retry_after(date_header: bool) -> None:
         calls.append(request)
         assert request.url.host == "hdtime.org"
         assert request.headers.get("cookie") == _COOKIE
+        assert request.url.path == "/torrents.php"
         return httpx2.Response(429, headers={"Retry-After": header})
 
     adapter = HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler))
