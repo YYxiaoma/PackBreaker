@@ -443,8 +443,8 @@ uv run python scripts/test.py
 - 正式源码：`b779e3270f2a3b3d8c380e22ac36f06ce55f8252`。
 - GHCR 正式不可变镜像：`ghcr.io/yyxiaoma/packbreaker@sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9`。
 - 正式 Release 工作流：[Actions #37912320819](https://github.com/YYxiaoma/PackBreaker/actions/runs/37912320819)。
-- 主线当前在研发 **v1.1.2**；已完成代码层面的匹配失败受限重试、站点 HTTP 429 `Retry-After`（秒数及 HTTP-date）、Rousi Pro/NexusPHP 只读恢复、浏览器 E2E 竞态等修复，并在合并后通过质量、原生 ARM64、升级回滚与隔离 Docker CI。但**v1.1.2 仍非正式 Release**。
-- 早期双架构标签 `candidate-v1.1.2-24f0213b07a1` 只是**过期的阶段性候选**，其镜像摘要并不包含后续主线修复；不能替代最新最终候选，更不应当作为生产升级目标。
+- 主线正在进行 **v1.1.2 收官真实业务验收**；已完成匹配错误受限重试、站点限流冷却、只读故障恢复、辅助文件外部操作 journal 对账等修复。最新源码 `e784c19` 已通过 main/候选各自 CI 与 Docker E2E，包含浏览器、原生 ARM64、升级和失败回滚；**仍未正式发布 v1.1.2**。
+- **最新已交付的不可变候选镜像**：`candidate-v1.1.2-e784c194a4af`，GHCR / Docker Hub 共用摘要 `sha256:b6289c9ebf311afe9a1ce9f49eb1eefb854d4885b7177b3d4065416a7cfcdc6c`；AMD64 与原生 ARM64 对两个注册表的校验已通过（[Actions #38025511243](https://github.com/YYxiaoma/PackBreaker/actions/runs/38025511243)）。该镜像**仅供隔离候选验收**，不应作为正式在线升级目标。早期 `24f0213` 候选已过期。
 
 **当前尚未关闭的真实业务验收**：七个新增站点的合法取种与独立 Piece Hash、原有六站完整任务链路、部分 Rousi Pro/BTSCHOOL/UBits Tracker 异常根因，以及已补齐辅助文件/下载器失联恢复的现场可审计证据。既有客户端任务和 Mock/CI 成功都不能冒充新的合法 PackBreaker 辅种任务。此版本**不要求 Synology NAS 现场验收**，也不因此允许操作生产 NAS。
 
