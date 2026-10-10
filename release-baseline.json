@@ -1,16 +1,16 @@
 {
   "format_version": 2,
-  "version": "1.1.0",
-  "tag": "v1.1.0",
-  "commit": "8cf4d0c41faa7d31643d438d429ed4f450d7b2c5",
+  "version": "1.1.1",
+  "tag": "v1.1.1",
+  "commit": "b779e3270f2a3b3d8c380e22ac36f06ce55f8252",
   "platform": "multi",
   "platforms": [
     "linux/amd64",
     "linux/arm64"
   ],
   "image": "ghcr.io/yyxiaoma/packbreaker",
-  "image_digest": "sha256:9c436d036a165fc419e1347ee954680cabd68a8b8aa358908ebd48328360d255",
-  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:9c436d036a165fc419e1347ee954680cabd68a8b8aa358908ebd48328360d255",
-  "alembic_revision": "0044_retire_legacy_task_runtime",
-  "release_workflow_run_id": 37874282427
+  "image_digest": "sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9",
+  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9",
+  "alembic_revision": "0045_seven_site_capacity_v111",
+  "release_workflow_run_id": 37912320819
 }
