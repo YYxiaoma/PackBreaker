@@ -142,6 +142,9 @@ async def test_candidate_nexus_site_specific_search_columns_are_not_misclassifie
         SiteKind.UBITS: (10, 7, 6, 5, 4),
         SiteKind.PTTIME: (12, 8, 7, 6, 5),
         SiteKind.U2: (8, 5, 4, 3, 2),
+        # Audiences' observed ten-cell search rows put date/size at -7/-6,
+        # while seeders/leechers remain at -4/-3. Entirely synthetic fixture.
+        SiteKind.AUDIENCES: (10, 7, 6, 4, 3),
     }
     count, date_offset, size_offset, seeders_offset, leechers_offset = columns.get(
         kind, (9, 6, 5, 4, 3)
