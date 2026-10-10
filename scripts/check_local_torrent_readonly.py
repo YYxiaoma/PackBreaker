@@ -34,7 +34,13 @@ _MAX_BYTES = BencodeLimits().max_payload_bytes
 
 def _read_user_torrent(path: Path) -> bytes | None:
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
     except OSError:
         return None
     try:
@@ -96,6 +102,16 @@ def check_local_torrent(*, torrent_file: Path, source: Path, data_root: Path) ->
         )
         if mapped != required:
             report["status"] = "FILE_MAPPING_INCOMPLETE"
+            return report
+        # Verified bytes for another nearby file must not count as evidence
+        # for the explicitly selected source video.
+        if not any(
+            entry.state is FileMappingState.MAPPED
+            and entry.source_path is not None
+            and entry.source_path.absolute() == source.absolute()
+            for entry in mapping
+        ):
+            report["status"] = "SOURCE_NOT_REFERENCED"
             return report
         result: V1VerificationResult | V2VerificationResult | HybridVerificationResult
         if meta.torrent_kind is TorrentKind.V1:
