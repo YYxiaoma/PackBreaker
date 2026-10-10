@@ -1,10 +1,11 @@
 # PackBreaker 已知限制（更新于 2026-10-10）
 
-**正式版本 v1.1.1，v1.1.2 处于遗留问题收官研发阶段。** 阶段性候选镜像、自动化回归和既有下载器做种状态均不能自动关闭真实站点验收。v1.1.2 不要求 Synology NAS 现场验收，不得因此擅自操作生产环境。完整清单与事实更新见 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。
+**正式版本仍为 v1.1.1；v1.1.2 已完成最新候选镜像交付，但真实站点与下载器业务验收尚未关闭。** 源码 `e784c19` 的 GHCR / Docker Hub 同摘要双架构候选已通过 AMD64、原生 ARM64 和隔离升级/回滚（[Actions #38025511243](https://github.com/YYxiaoma/PackBreaker/actions/runs/38025511243)），不能将其视为正式 Release 或真实辅种成功。v1.1.2 不要求 Synology NAS 现场验收，不得因此擅自操作生产环境。完整清单见 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。
 
 ## 1. 尚未完成的站点与内容校验
 
 - PTTime：搜索有六条结果，其中一条大小相符、详情身份匹配；详情页仍不能提供独立的可靠容量证据。尚未取得当前**新候选**的 `.torrent` 元信息及独立 Piece Hash。
+- 2026-10-10 新一轮 PTTime 只读关键词搜索返回 `CANDIDATE_FOUND`，没有 Torrent 下载或下载器写入，也不代表该搜索候选已与现有媒体完成内容绑定。当前独立工作区仅可直接访问历史站点验收凭据文件，未恢复新增七站原审核加密配置；Audiences、HDDolby、SpringSunday 的本轮 `CONFIG_BLOCKED` 是**检查前置配置缺失**，不得记录为新的站点网络故障。
 - HDFans：既有 Transmission 任务报告 7,321 个 Piece 均可用，但只是客户端对**旧种子**的校验，不能冒充当前新候选的独立验证。
 - HDHome、UBits、KeepFrds、BTSCHOOL、PTTime、聆音Club 还需逐站完成正式 PackBreaker 任务全链路验收。Tracker 现有种子在做种不代表新任务的操作流水或受控恢复已经通过。
 - 七新增站点 PTerClub、Audiences、SpringSunday、HDDolby、U2、不可躺、CarPT 全部保持 `PENDING_REAL_VALIDATION`，不能打开正式辅种；详见 [支持矩阵](./support-matrix.md)。
@@ -27,8 +28,8 @@
 
 ## 4. 发布与验收的界线
 
-- 已通过 v1.1.1 正式 AMD64/ARM64 发布身份，以及 v1.1.2 早期阶段性候选的两注册表摘要与原生 ARM64 运行检查。后续 PR #11–#14 合并源码 `40fe44c` 的主线 CI 与 Candidate Docker E2E 也已成功；**早期候选摘要不包含这些后续改动，v1.1.2 尚非正式 Release**。
-- v1.1.2 正式发布需要完成真实站点 / 内容 / 下载器受控验收、修复确认、适配状态及文档对账，再对**最终源码 SHA**重做 CI、相邻升级/回滚、不可变双架构候选验证。任何未关闭的外部阻断需明确记录和获批准的范围决策。
+- v1.1.1 正式双架构身份及 v1.1.2 当前源码 `e784c194a4af19f21b6fbce4ec4215f6b99fa444` 已经过四项精确 SHA CI/Docker E2E、双注册表同一不可变索引摘要 `sha256:b6289c9ebf311afe9a1ce9f49eb1eefb854d4885b7177b3d4065416a7cfcdc6c` 与原生 ARM64 运行验收；**v1.1.2 依然不是正式 Release，也未移动 latest/stable**。旧 `24f0213` 镜像不是当前候选。
+- 已完成候选源码 `e784c19` 的 CI、相邻升级/回滚与双架构镜像交付，但**后续任何代码改动**均需重新生成精确 SHA 候选并重做相关门禁。v1.1.2 正式发布前仍需真实站点 / 内容 / 下载器受控业务验收及用户单独授权；未解决的外部阻断需可审计记录和获批准的范围决策。
 - **Synology NAS 现场验收不在 v1.1.2 发布门槛中**；此决定不授予 NAS 生产读写、升级、回滚权限。
 - `latest`、`stable` 属于可变发布发现渠道，不可代替不可变 digest；只有用户正式发布授权后才推进。完整来源： [收官 Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)、[v1.1.2 研发记录](./v1.1.2-development.md)。
 
