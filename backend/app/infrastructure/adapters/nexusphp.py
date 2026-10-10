@@ -26,6 +26,7 @@ from backend.app.domain.site_search import (
     normalize_candidate_meta,
 )
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
+from backend.app.infrastructure.adapters.site_retry_after import retry_after_seconds
 from backend.app.infrastructure.torrent_parser import parse_torrent
 
 _DEFAULT_HTML_LIMIT_BYTES = 5 * 1024 * 1024
@@ -597,7 +598,12 @@ class NexusPhpWebAdapter:
         if response.status_code in {401, 403}:
             raise SiteAdapterError("SITE_AUTH_FAILED", "NexusPHP Cookie 无效或权限不足")
         if response.status_code == 429:
-            raise SiteAdapterError("SITE_RATE_LIMITED", "NexusPHP 请求达到限流", retryable=True)
+            raise SiteAdapterError(
+                "SITE_RATE_LIMITED",
+                "NexusPHP 请求达到限流",
+                retryable=True,
+                retry_after_seconds=retry_after_seconds(response),
+            )
         if response.status_code >= 500:
             raise SiteAdapterError("SITE_UNAVAILABLE", "NexusPHP 站点暂时不可用", retryable=True)
         if response.status_code != 200:
