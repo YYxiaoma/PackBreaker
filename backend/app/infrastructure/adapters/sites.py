@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator, Mapping
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
-from math import isfinite
+from datetime import datetime
 from typing import Any, cast
 from urllib.parse import urljoin, urlsplit
 
@@ -41,6 +39,7 @@ from backend.app.infrastructure.adapters.nexusphp import (
 )
 from backend.app.infrastructure.adapters.rousi_pro import RousiProCandidateAdapter
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError as SiteAdapterError
+from backend.app.infrastructure.adapters.site_retry_after import retry_after_seconds as _retry_after_seconds
 
 _MTEAM_SITE_ID = "mteam"
 _MTEAM_DEFAULT_BASE_URL = "https://kp.m-team.cc"
@@ -682,28 +681,3 @@ def _optional_aware_datetime(value: object) -> datetime | None:
     return parsed
 
 
-def _retry_after_seconds(response: httpx2.Response) -> float | None:
-    """Parse RFC Retry-After delay-seconds or HTTP-date without unsafe retries.
-
-    Missing headers retain normal bounded backoff. An explicitly malformed,
-    non-finite or unreasonably long header returns an infinite sentinel: the
-    reliability wrapper will not retry inside its deadline, and the matching
-    coordinator will require manual intervention rather than hammer a site.
-    """
-    value = response.headers.get("retry-after")
-    if value is None:
-        return None
-    value = value.strip()
-    try:
-        delay = float(value)
-    except ValueError:
-        try:
-            retry_at = parsedate_to_datetime(value)
-            if retry_at.tzinfo is None or retry_at.utcoffset() is None:
-                return float("inf")
-            delay = max(0.0, (retry_at.astimezone(UTC) - datetime.now(UTC)).total_seconds())
-        except (TypeError, ValueError, OverflowError):
-            return float("inf")
-    if not isfinite(delay) or delay < 0 or delay > 86_400:
-        return float("inf")
-    return delay
