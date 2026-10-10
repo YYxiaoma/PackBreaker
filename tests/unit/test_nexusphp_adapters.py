@@ -20,6 +20,35 @@ _TORRENT = b"d4:infod4:name9:syntheticee"
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("date_header", (False, True))
+async def test_nexusphp_429_preserves_retry_after(date_header: bool) -> None:
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    header = (
+        format_datetime(datetime.now(UTC) + timedelta(seconds=120), usegmt=True)
+        if date_header
+        else "120"
+    )
+    calls: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request)
+        assert request.url.host == "hdtime.org"
+        assert request.headers.get("cookie") == _COOKIE
+        return httpx2.Response(429, headers={"Retry-After": header})
+
+    adapter = HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler))
+    with pytest.raises(SiteAdapterError) as failure:
+        await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.MOVIE))
+    assert failure.value.code == "SITE_RATE_LIMITED"
+    assert failure.value.retryable is True
+    assert failure.value.retry_after_seconds is not None
+    assert 115 <= failure.value.retry_after_seconds <= 121
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("detail_rows", "expected_size"),
     [

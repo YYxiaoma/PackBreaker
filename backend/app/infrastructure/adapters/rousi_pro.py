@@ -23,6 +23,7 @@ from backend.app.domain.site_search import (
     normalize_candidate_meta,
 )
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
+from backend.app.infrastructure.adapters.site_retry_after import retry_after_seconds
 from backend.app.infrastructure.torrent_parser import parse_torrent
 
 _BASE_URL = "https://rousi.pro"
@@ -137,9 +138,18 @@ class RousiProCandidateAdapter:
                 if response.status_code in {401, 403}:
                     raise SiteAdapterError("SITE_AUTH_FAILED", "Rousi Pro API Key 无效或权限不足")
                 if response.status_code == 429:
-                    raise SiteAdapterError("SITE_RATE_LIMITED", "Rousi Pro 请求达到限流")
+                    raise SiteAdapterError(
+                        "SITE_RATE_LIMITED",
+                        "Rousi Pro 请求达到限流",
+                        retryable=True,
+                        retry_after_seconds=retry_after_seconds(response),
+                    )
+                if 500 <= response.status_code <= 599:
+                    raise SiteAdapterError(
+                        "SITE_UNAVAILABLE", "Rousi Pro 只读 API 暂时不可用", retryable=True
+                    )
                 if response.status_code != 200:
-                    raise SiteAdapterError("SITE_HTTP_ERROR", "Rousi Pro 只读认证接口不可用")
+                    raise SiteAdapterError("SITE_HTTP_ERROR", "Rousi Pro 只读接口返回异常状态")
                 if (
                     response.headers.get("content-type", "").split(";")[0].lower()
                     != "application/json"
@@ -155,7 +165,11 @@ class RousiProCandidateAdapter:
         except SiteAdapterError:
             raise
         except (httpx2.TimeoutException, httpx2.NetworkError) as exc:
-            raise SiteAdapterError("SITE_UNAVAILABLE", "Rousi Pro 只读 API 连接失败") from exc
+            # Only these credential check / public search GETs may use bounded
+            # reliability retries; download tokens must never be auto-replayed.
+            raise SiteAdapterError(
+                "SITE_UNAVAILABLE", "Rousi Pro 只读 API 连接失败", retryable=True
+            ) from exc
         except httpx2.HTTPError as exc:
             raise SiteAdapterError("SITE_HTTP_ERROR", "Rousi Pro HTTP 请求异常") from exc
         try:
