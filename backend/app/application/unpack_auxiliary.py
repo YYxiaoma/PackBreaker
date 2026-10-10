@@ -231,15 +231,6 @@ class UnpackAuxiliaryStagingService:
             if state == "READY_FOR_FINALIZATION":
                 return
             raise self._conflict("辅助文件状态无法继续")
-        except TimeoutError:
-            # asyncio.timeout() around a slow torrent metadata fetch raises
-            # builtin TimeoutError (not SiteAdapterError). Treat it as a
-            # transient read-only failure so one stalled site cannot abort
-            # the whole auxiliary worker batch. Preserve the frozen candidate,
-            # selected torrent identity and all external-operation journals;
-            # the next worker pass must recheck them before any write.
-            # An external asyncio.CancelledError still propagates on shutdown.
-            return
         except DownloaderAdapterError as exc:
             if exc.code in {"DOWNLOADER_UNAVAILABLE", "DOWNLOADER_CONNECTION_FAILED"}:
                 # Polling is read-only until the auxiliary files are present.
@@ -356,8 +347,19 @@ class UnpackAuxiliaryStagingService:
         ):
             raise self._conflict("候选站点配置已变化，请重新匹配")
 
-        async with asyncio.timeout(self._fetch_timeout_seconds):
-            payload = await site_binding.adapter.fetch_torrent(context.torrent_id)
+        try:
+            async with asyncio.timeout(self._fetch_timeout_seconds):
+                payload = await site_binding.adapter.fetch_torrent(context.torrent_id)
+        except TimeoutError as exc:
+            # Only the site's metadata read is safe to classify as transient.
+            # Do not swallow a raw TimeoutError from a downloader ADD/STOP/
+            # REMOVE write: its remote result may be unknown and requires
+            # explicit journal reconciliation rather than a silent retry.
+            raise SiteAdapterError(
+                "SITE_UNAVAILABLE",
+                "辅助文件 torrent 元信息读取超时",
+                retryable=True,
+            ) from exc
         if payload.site_id != context.adapter_site_id or payload.torrent_id != context.torrent_id:
             raise self._conflict("重新获取的 torrent 身份与候选不一致")
         meta = parse_torrent(payload.content)
@@ -541,14 +543,37 @@ class UnpackAuxiliaryStagingService:
                         paused=True,
                     )
                 )
+        except TimeoutError as exc:
+            # An uncertain ADD must never be repeated simply because the RPC
+            # timed out; require proof of ownership on a subsequent pass.
+            self._mark_reconcile(journal.id, "UNPACK_AUX_ADD_RESULT_UNKNOWN")
+            raise DownloaderAdapterError(
+                "DOWNLOADER_UNAVAILABLE", "辅助种子添加响应超时，结果需要对账"
+            ) from exc
         except DownloaderAdapterError:
-            recovered = await _owned_torrent_state(prepared)
+            try:
+                recovered = await _owned_torrent_state(prepared)
+            except (DownloaderAdapterError, TimeoutError) as exc:
+                self._mark_reconcile(journal.id, "UNPACK_AUX_ADD_RESULT_UNKNOWN")
+                if isinstance(exc, TimeoutError):
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_UNAVAILABLE", "添加后无法核对辅助种子状态"
+                    ) from exc
+                raise
             if recovered is not None:
                 self._mark_applied(journal.id, _state_snapshot(recovered))
                 return
             self._mark_reconcile(journal.id, "UNPACK_AUX_ADD_RESULT_UNKNOWN")
             raise
-        state = await _owned_torrent_state(prepared)
+        try:
+            state = await _owned_torrent_state(prepared)
+        except (DownloaderAdapterError, TimeoutError) as exc:
+            self._mark_reconcile(journal.id, "UNPACK_AUX_ADD_RESULT_UNKNOWN")
+            if isinstance(exc, TimeoutError):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_UNAVAILABLE", "添加后读取辅助种子状态超时"
+                ) from exc
+            raise
         if state is None:
             self._mark_reconcile(journal.id, "UNPACK_AUX_ADD_NOT_OBSERVED")
             raise self._conflict("下载器返回添加成功，但未观察到归属明确的 staging torrent")
@@ -575,6 +600,13 @@ class UnpackAuxiliaryStagingService:
         )
         if journal.status == OperationStatus.APPLIED.value:
             return
+        if journal.status == OperationStatus.RECONCILE_REQUIRED.value:
+            raise ApplicationError(
+                code="UNPACK_AUX_FILE_SELECTION_RECONCILE_REQUIRED",
+                status=409,
+                title="辅助文件选择结果需要对账",
+                detail="文件选择请求曾出现未知结果，禁止自动重复发送",
+            )
         await _require_owned_torrent_state(prepared)
         selector = cast(DownloaderFileSelectionAdapter, prepared.binding.adapter)
         try:
@@ -583,8 +615,12 @@ class UnpackAuxiliaryStagingService:
                 wanted=prepared.plan.wanted_indices,
                 unwanted=prepared.plan.unwanted_indices,
             )
-        except DownloaderAdapterError:
+        except (DownloaderAdapterError, TimeoutError) as exc:
             self._mark_reconcile(journal.id, "UNPACK_AUX_FILE_SELECTION_RESULT_UNKNOWN")
+            if isinstance(exc, TimeoutError):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_UNAVAILABLE", "辅助文件选择响应超时，结果需要对账"
+                ) from exc
             raise
         self._mark_applied(
             journal.id,
@@ -620,16 +656,41 @@ class UnpackAuxiliaryStagingService:
         if not state.stopped:
             self._mark_applied(journal.id, _state_snapshot(state))
             return
+        if journal.status == OperationStatus.RECONCILE_REQUIRED.value:
+            raise ApplicationError(
+                code="UNPACK_AUX_START_RECONCILE_REQUIRED",
+                status=409,
+                title="辅助种子启动结果需要对账",
+                detail="启动请求曾出现未知结果，禁止自动重复发送",
+            )
         try:
             await prepared.binding.adapter.start_torrent(prepared.torrent_hash)
-        except DownloaderAdapterError:
-            current = await _owned_torrent_state(prepared)
+        except (DownloaderAdapterError, TimeoutError) as exc:
+            try:
+                current = await _owned_torrent_state(prepared)
+            except (DownloaderAdapterError, TimeoutError):
+                self._mark_reconcile(journal.id, "UNPACK_AUX_START_RESULT_UNKNOWN")
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_UNAVAILABLE", "启动后无法核对辅助种子状态"
+                ) from exc
             if current is not None and not current.stopped:
                 self._mark_applied(journal.id, _state_snapshot(current))
                 return
             self._mark_reconcile(journal.id, "UNPACK_AUX_START_RESULT_UNKNOWN")
+            if isinstance(exc, TimeoutError):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_UNAVAILABLE", "辅助种子启动响应超时，结果需要对账"
+                ) from exc
             raise
-        current = await _require_owned_torrent_state(prepared)
+        try:
+            current = await _require_owned_torrent_state(prepared)
+        except (DownloaderAdapterError, TimeoutError) as exc:
+            self._mark_reconcile(journal.id, "UNPACK_AUX_START_RESULT_UNKNOWN")
+            if isinstance(exc, TimeoutError):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_UNAVAILABLE", "启动后读取辅助种子状态超时"
+                ) from exc
+            raise
         if current.stopped:
             self._mark_reconcile(journal.id, "UNPACK_AUX_START_NOT_OBSERVED")
             raise self._conflict("下载器未进入辅助文件下载状态")
@@ -735,11 +796,22 @@ class UnpackAuxiliaryStagingService:
             )
         try:
             await prepared.binding.adapter.stop_torrent(prepared.torrent_hash)
+        except TimeoutError as exc:
+            # Unknown write result: preserve intent and prohibit a second stop
+            # unless observation proves that the original stop completed.
+            self._mark_reconcile(journal.id, "UNPACK_AUX_STOP_RESULT_UNKNOWN")
+            raise DownloaderAdapterError(
+                "DOWNLOADER_UNAVAILABLE", "辅助种子暂停响应超时，结果需要对账"
+            ) from exc
         except DownloaderAdapterError:
             try:
                 current = await self._wait_until_stopped(prepared)
-            except DownloaderAdapterError:
+            except (DownloaderAdapterError, TimeoutError) as exc:
                 self._mark_reconcile(journal.id, "UNPACK_AUX_STOP_RESULT_UNKNOWN")
+                if isinstance(exc, TimeoutError):
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_UNAVAILABLE", "暂停后读取辅助种子状态超时"
+                    ) from exc
                 raise
             if current is not None and current.stopped:
                 self._mark_applied(journal.id, _state_snapshot(current))
@@ -748,8 +820,12 @@ class UnpackAuxiliaryStagingService:
             raise
         try:
             current = await self._wait_until_stopped(prepared)
-        except DownloaderAdapterError:
+        except (DownloaderAdapterError, TimeoutError) as exc:
             self._mark_reconcile(journal.id, "UNPACK_AUX_STOP_RESULT_UNKNOWN")
+            if isinstance(exc, TimeoutError):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_UNAVAILABLE", "暂停后读取辅助种子状态超时"
+                ) from exc
             raise
         if current is None or not current.stopped:
             self._mark_reconcile(journal.id, "UNPACK_AUX_STOP_NOT_OBSERVED")
@@ -810,11 +886,22 @@ class UnpackAuxiliaryStagingService:
             )
         try:
             await prepared.binding.adapter.remove_torrent_keep_files(prepared.torrent_hash)
+        except TimeoutError as exc:
+            # The torrent may already be removed: never blindly dispatch the
+            # same remove again after a response timeout.
+            self._mark_reconcile(journal.id, "UNPACK_AUX_REMOVE_RESULT_UNKNOWN")
+            raise DownloaderAdapterError(
+                "DOWNLOADER_UNAVAILABLE", "辅助种子移除响应超时，结果需要对账"
+            ) from exc
         except DownloaderAdapterError:
             try:
                 current = await self._wait_until_removed(prepared)
-            except DownloaderAdapterError:
+            except (DownloaderAdapterError, TimeoutError) as exc:
                 self._mark_reconcile(journal.id, "UNPACK_AUX_REMOVE_RESULT_UNKNOWN")
+                if isinstance(exc, TimeoutError):
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_UNAVAILABLE", "移除后读取辅助种子状态超时"
+                    ) from exc
                 raise
             if current is None:
                 self._mark_applied(journal.id, {"removed": True, "files_kept": True})
@@ -823,8 +910,12 @@ class UnpackAuxiliaryStagingService:
             raise
         try:
             current = await self._wait_until_removed(prepared)
-        except DownloaderAdapterError:
+        except (DownloaderAdapterError, TimeoutError) as exc:
             self._mark_reconcile(journal.id, "UNPACK_AUX_REMOVE_RESULT_UNKNOWN")
+            if isinstance(exc, TimeoutError):
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_UNAVAILABLE", "移除后读取辅助种子状态超时"
+                ) from exc
             raise
         if current is not None:
             self._mark_reconcile(journal.id, "UNPACK_AUX_REMOVE_NOT_OBSERVED")
