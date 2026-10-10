@@ -1,4 +1,4 @@
-# PackBreaker 已知限制（更新于 2026-10-09）
+# PackBreaker 已知限制（更新于 2026-10-10）
 
 **正式版本 v1.1.1，v1.1.2 处于遗留问题收官研发阶段。** 阶段性候选镜像、自动化回归和既有下载器做种状态均不能自动关闭真实站点验收。v1.1.2 不要求 Synology NAS 现场验收，不得因此擅自操作生产环境。完整清单与事实更新见 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。
 
@@ -13,8 +13,8 @@
 ## 2. 站点网络、Tracker 与错误处理
 
 - PTerClub、SpringSunday、U2、HDFans 存在间歇性连接、搜索失败或 `SITE_UNAVAILABLE` 记录；域名可以解析不证明站点稳定，不能将超时误判为 Cookie 永久失效。
-- 2026-10-09 真实 Transmission 只读 RPC 复查：UBits 的最近一次 announce 已报告成功；BTSCHOOL 有一条成功、一条超时；Rousi Pro 一条仍未报告成功（未标记超时）。这些是**客户端状态**，不说明 Tracker 根因，不输出 passkey、原始 announce URL 或凭证。
-- 自动匹配对错误/超时具备受限重试及人工介入流程，但在网络维护、下载器短暂离线或辅助文件已补齐情况下的真实受控恢复仍需单独核对。
+- 2026-10-09 单任务只读记录显示 UBits 最近一次 announce 成功、BTSCHOOL 两条一成一超时、Rousi Pro 一条未成功；2026-10-10 **更大范围** Transmission 只读快照返回 6,744 条客户端任务，其 Tracker 状态条目 BTSCHOOL 705 成功/3 失败（2 超时）、Rousi Pro 0 成功/3 失败、UBits 379 成功/81 失败（64 超时）。两次记录统计口径不同，不可相加；**不是**独立种子数量或 Tracker 故障根因。所有敏感 passkey、原始 announce URL 与凭证不得输出。
+- v1.1.2 主线已合并匹配错误/超时重试分类、限流 `Retry-After` 秒数与 HTTP-date 安全等待、Rousi/NexusPHP 临时故障受限恢复和浏览器 E2E 竞态修复（PR #11–#14）。相关自动化测试及合并后主线 CI 已通过，但**真实网络维护、下载器短暂离线、辅助文件已补齐、人工干预等受控恢复场景**仍需现场逐项验证。
 - 站点限流、身份验证、JS Challenge 和验证码不能靠自动浏览器或伪造来源跳过。具有一次性语义的 torrent 下载 token 不允许盲目重试。
 
 ## 3. 媒体、下载器和恢复安全
@@ -27,7 +27,7 @@
 
 ## 4. 发布与验收的界线
 
-- 已通过 v1.1.1 正式 AMD64/ARM64 发布身份，以及 v1.1.2 阶段性候选的两注册表摘要与原生 ARM64 运行检查。**v1.1.2 尚非正式 Release。**
+- 已通过 v1.1.1 正式 AMD64/ARM64 发布身份，以及 v1.1.2 早期阶段性候选的两注册表摘要与原生 ARM64 运行检查。后续 PR #11–#14 合并源码 `40fe44c` 的主线 CI 与 Candidate Docker E2E 也已成功；**早期候选摘要不包含这些后续改动，v1.1.2 尚非正式 Release**。
 - v1.1.2 正式发布需要完成真实站点 / 内容 / 下载器受控验收、修复确认、适配状态及文档对账，再对**最终源码 SHA**重做 CI、相邻升级/回滚、不可变双架构候选验证。任何未关闭的外部阻断需明确记录和获批准的范围决策。
 - **Synology NAS 现场验收不在 v1.1.2 发布门槛中**；此决定不授予 NAS 生产读写、升级、回滚权限。
 - `latest`、`stable` 属于可变发布发现渠道，不可代替不可变 digest；只有用户正式发布授权后才推进。完整来源： [收官 Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)、[v1.1.2 研发记录](./v1.1.2-development.md)。
