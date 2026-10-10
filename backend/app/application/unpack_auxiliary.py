@@ -238,6 +238,7 @@ class UnpackAuxiliaryStagingService:
             # the whole auxiliary worker batch. Preserve the frozen candidate,
             # selected torrent identity and all external-operation journals;
             # the next worker pass must recheck them before any write.
+            # An external asyncio.CancelledError still propagates on shutdown.
             return
         except DownloaderAdapterError as exc:
             if exc.code in {"DOWNLOADER_UNAVAILABLE", "DOWNLOADER_CONNECTION_FAILED"}:
