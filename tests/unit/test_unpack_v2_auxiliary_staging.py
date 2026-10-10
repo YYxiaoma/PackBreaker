@@ -805,6 +805,181 @@ def test_auxiliary_fetch_deadline_preserves_state_and_retries_on_next_worker_pas
     assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
 
 
+def test_auxiliary_unknown_add_timeout_requires_reconciliation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, factory, fake_qb, data_root = _fixture(tmp_path)
+
+    async def uncertain_add(_request: QbittorrentAddRequest) -> QbittorrentAddResult:
+        # The downloader may have received the write before its response was
+        # lost. This cannot be silently classified as a site read timeout.
+        fake_qb.calls.append("add-unknown")
+        raise TimeoutError("synthetic unknown downloader write result")
+
+    monkeypatch.setattr(fake_qb, "add_torrent", uncertain_add)
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.downloading_count == 1
+    assert fake_qb.calls == ["add-unknown"]
+    assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_ADD"
+            )
+        )
+        assert item is not None
+        assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+        assert journal.last_error_code == "UNPACK_AUX_ADD_RESULT_UNKNOWN"
+    followup = asyncio.run(service.advance_next_batch("execution-1"))
+    assert followup.error_count == 1
+    assert fake_qb.calls == ["add-unknown"]
+
+
+@pytest.mark.parametrize("error_type", ["adapter", "native"])
+def test_auxiliary_unknown_file_selection_is_not_replayed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_type: str
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+
+    async def uncertain_select(
+        _hash: str, *, wanted: tuple[int, ...], unwanted: tuple[int, ...]
+    ) -> None:
+        fake_qb.calls.append("select-unknown")
+        assert wanted == (1,) and unwanted == (0,)
+        if error_type == "native":
+            raise TimeoutError("synthetic selection outcome unknown")
+        raise DownloaderAdapterError(
+            "DOWNLOADER_UNAVAILABLE", "synthetic selection outcome unknown"
+        )
+
+    monkeypatch.setattr(fake_qb, "set_file_selection", uncertain_select)
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.downloading_count == 1
+    assert fake_qb.calls == ["add", "select-unknown"]
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_FILE_SELECTION"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+    assert second.error_count == 1
+    assert fake_qb.calls == ["add", "select-unknown"]
+
+
+@pytest.mark.parametrize("error_type", ["adapter", "native"])
+def test_auxiliary_unknown_start_is_not_replayed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_type: str
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+
+    async def uncertain_start(_hash: str) -> None:
+        fake_qb.calls.append("start-unknown")
+        if error_type == "native":
+            raise TimeoutError("synthetic start outcome unknown")
+        raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "synthetic start outcome unknown")
+
+    monkeypatch.setattr(fake_qb, "start_torrent", uncertain_start)
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.downloading_count == 1
+    assert fake_qb.calls == ["add", "select", "start-unknown"]
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_START"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+    assert second.error_count == 1
+    assert fake_qb.calls == ["add", "select", "start-unknown"]
+
+
+@pytest.mark.parametrize("operation", ["stop", "remove"])
+def test_auxiliary_native_timeout_on_cleanup_never_replays_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    assert fake_qb.calls == ["add", "select", "start"]
+
+    async def uncertain_write(_hash: str) -> None:
+        fake_qb.calls.append(operation + "-unknown")
+        raise TimeoutError("synthetic cleanup write outcome unknown")
+
+    if operation == "stop":
+        monkeypatch.setattr(fake_qb, "stop_torrent", uncertain_write)
+        op_type = "UNPACK_AUX_TORRENT_STOP"
+    else:
+        monkeypatch.setattr(fake_qb, "remove_torrent_keep_files", uncertain_write)
+        op_type = "UNPACK_AUX_TORRENT_REMOVE"
+
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.downloading_count == 1
+    assert fake_qb.calls.count(operation + "-unknown") == 1
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == op_type
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+    assert second.error_count == 1
+    assert fake_qb.calls.count(operation + "-unknown") == 1
+
+
+@pytest.mark.parametrize(
+    ("probe_number", "operation_type"),
+    (
+        (2, "UNPACK_AUX_TORRENT_ADD"),
+        (5, "UNPACK_AUX_TORRENT_START"),
+    ),
+)
+def test_auxiliary_write_ack_followed_by_native_probe_timeout_requires_reconcile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    probe_number: int,
+    operation_type: str,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    original_get = fake_qb.get_torrents
+    probes = 0
+
+    async def timed_get(hashes: tuple[str, ...]) -> tuple[QbittorrentTorrentState, ...]:
+        nonlocal probes
+        probes += 1
+        if probes == probe_number:
+            raise TimeoutError("synthetic post-write status response unknown")
+        return await original_get(hashes)
+
+    monkeypatch.setattr(fake_qb, "get_torrents", timed_get)
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert report.downloading_count == 1
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == operation_type
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+
+    # The remote write did happen; a fresh owned state may safely reconcile
+    # the existing journal without dispatching ADD/START a second time.
+    resumed = asyncio.run(service.advance_next_batch("execution-1"))
+    assert resumed.error_count == 0
+    assert fake_qb.calls == ["add", "select", "start"]
+
+
 def test_auxiliary_restart_reconciles_applied_operations_without_repeating_writes(
     tmp_path: Path,
 ) -> None:
