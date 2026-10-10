@@ -575,6 +575,59 @@ def test_retryable_site_unavailable_exhaustion_is_match_error_not_timeout() -> N
         assert item.retry_count == 1
 
 
+def test_site_retry_after_extends_automatic_match_backoff() -> None:
+    from datetime import datetime, timedelta
+
+    factory = _factory(threshold=10_000, retry_enabled=True, max_retries=2)
+    adapter = _FakeSiteAdapter(
+        error=SiteAdapterError(
+            "SITE_RATE_LIMITED",
+            "synthetic throttle",
+            retryable=True,
+            retry_after_seconds=120.0,
+        )
+    )
+    coordinator = UnpackMatchCoordinator(factory, _FakeSiteProvider(adapter))
+
+    started = utc_now()
+    report = asyncio.run(coordinator.match_next_batch("execution-1"))
+    assert report.execution_status is UnpackExecutionStatus.MATCHING
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCH_PENDING.value
+        assert item.retry_count == 1
+        state = item.auxiliary_state or {}
+        due = datetime.fromisoformat(state["auto_retry_not_before"])
+        assert due >= started + timedelta(seconds=120)
+    assert len(adapter.queries) == 1
+    assert asyncio.run(coordinator.match_next_batch("execution-1")).processed_count == 0
+
+
+@pytest.mark.parametrize("wait", (float("inf"), float("nan"), -10.0, 86401.0))
+def test_invalid_or_unbounded_site_retry_after_fails_closed(wait: float) -> None:
+    factory = _factory(threshold=10_000, retry_enabled=True, max_retries=3)
+    adapter = _FakeSiteAdapter(
+        error=SiteAdapterError(
+            "SITE_RATE_LIMITED",
+            "synthetic invalid cooldown",
+            retryable=True,
+            retry_after_seconds=wait,
+        )
+    )
+    report = asyncio.run(
+        UnpackMatchCoordinator(factory, _FakeSiteProvider(adapter)).match_next_batch("execution-1")
+    )
+    assert report.execution_status is UnpackExecutionStatus.FAILED
+    assert report.error_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCH_ERROR.value
+        assert item.last_error_code == "SITE_RATE_LIMITED"
+        assert item.retry_count == 0
+
+
 def test_match_timeout_automatically_retries_with_backoff_then_needs_manual_action() -> None:
     from datetime import timedelta
 
