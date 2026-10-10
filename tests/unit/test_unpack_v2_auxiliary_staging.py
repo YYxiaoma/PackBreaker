@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -81,9 +82,12 @@ class _FakeSite:
     def __init__(self, torrent: bytes) -> None:
         self._torrent = torrent
         self.transient_error = False
+        self.delay_seconds = 0.0
 
     async def fetch_torrent(self, torrent_id: str) -> TorrentPayload:
         assert torrent_id == "torrent-1"
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
         if self.transient_error:
             raise SiteAdapterError("SITE_UNAVAILABLE", "temporary server error", retryable=True)
         return TorrentPayload("fake-site", torrent_id, self._torrent)
@@ -753,6 +757,51 @@ def test_auxiliary_poll_survives_temporary_site_download_500_without_readding(
     resumed = asyncio.run(service.advance_next_batch("execution-1"))
     assert resumed.verified_count == 1
     assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+    assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
+
+
+@pytest.mark.parametrize("already_added", [False, True])
+def test_auxiliary_fetch_deadline_preserves_state_and_retries_on_next_worker_pass(
+    tmp_path: Path,
+    already_added: bool,
+) -> None:
+    service, factory, fake_qb, data_root = _fixture(tmp_path)
+    if already_added:
+        asyncio.run(service.advance_next_batch("execution-1"))
+        assert fake_qb.calls == ["add", "select", "start"]
+
+    site = cast(_SiteProvider, service._site_provider)._site
+    site.delay_seconds = 0.05
+    service._fetch_timeout_seconds = 0.001
+
+    # asyncio.timeout() raises builtin TimeoutError, not SiteAdapterError.
+    # A single slow site must not crash the auxiliary execution worker.
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert report.error_count == 0
+    assert fake_qb.calls == (["add", "select", "start"] if already_added else [])
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
+        assert item.auxiliary_state is not None
+        assert item.auxiliary_state["state"] == (
+            "DOWNLOADING" if already_added else "PENDING_FETCH"
+        )
+        assert len(session.scalars(select(UnpackExternalOperationJournal)).all()) == (
+            4 if already_added else 0
+        )
+    assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
+
+    site.delay_seconds = 0
+    service._fetch_timeout_seconds = 30.0
+    recovered = asyncio.run(service.advance_next_batch("execution-1"))
+    assert recovered.error_count == 0
+    if already_added:
+        assert recovered.verified_count == 1
+        assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+    else:
+        assert recovered.downloading_count == 1
+        assert fake_qb.calls == ["add", "select", "start"]
     assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
 
 

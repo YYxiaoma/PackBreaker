@@ -661,11 +661,19 @@ const fulfillJson = (route, body, status = 200) =>
 
     assert.match(await failedRow.textContent(), /无匹配 1/);
     assert.match(await failedRow.textContent(), /异常 1/);
-    const bulkRetryRequest = page.waitForRequest((request) =>
-      request.url().includes('/api/v1/unpack/executions/execution-failed/actions'),
+    const bulkRetryResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/v1/unpack/executions/execution-failed/actions') &&
+        response.request().method() === 'POST' &&
+        response.status() === 200,
     );
     await failedRow.getByRole('button', { name: '重新匹配', exact: true }).click();
-    await bulkRetryRequest;
+    const completedBulkRetry = await bulkRetryResponse;
+    // The request event fires before the async mock route handler runs. Wait
+    // for its successful response before examining captured request data.
+    assert.deepEqual(completedBulkRetry.request().postDataJSON(), {
+      action: 'retry_failed_matches',
+    });
     assert.deepEqual(bulkRetryBody, { action: 'retry_failed_matches' });
     await manualRow.getByRole('button', { name: '更多操作' }).click();
     await page.getByRole('menuitem', { name: '编辑', exact: true }).click();
