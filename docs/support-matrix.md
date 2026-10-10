@@ -41,13 +41,13 @@
 
 | 站点 | Registry 状态 | 已有真实证据 / 必须补齐 |
 | --- | --- | --- |
-| PTerClub | `PENDING_REAL_VALIDATION` | 认证/连接曾成功，但搜索偶发超时；取种与独立内容证据待补 |
-| Audiences | `PENDING_REAL_VALIDATION` | 搜索返回真实候选，当前影片无大小相关资源 |
-| SpringSunday | `PENDING_REAL_VALIDATION` | 已获取真实 HTTP 200 HTML 页面、解析 16 条候选；官方连接/搜索间歇失败 |
-| HDDolby | `PENDING_REAL_VALIDATION` | 搜索有结果，仍缺合适目标影片与独立 Piece |
-| U2 | `PENDING_REAL_VALIDATION` | 修复八列 NexusPHP 搜索解析后，真实动画搜索 19/19 条容量、做种及下载数字段均可解析，详情站点与种子 ID 一致；间歇 `ConnectError` 仍需观察，合法取种与独立 Piece Hash 验收仍未完成 |
-| 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 两条候选存在歧义，不得自动任选一条 |
-| CarPT | `PENDING_REAL_VALIDATION` | 唯一候选及详情 ID 一致，独立取种/内容验证待补 |
+| PTerClub | `PENDING_REAL_VALIDATION` | 2026-10-10 真实搜索 23 条，当前影片有 1 条可行候选；历史超时仍需关注，未完成取种及独立内容校验 |
+| Audiences | `PENDING_REAL_VALIDATION` | 历史搜索有结果，但当前影片无大小合适资源；2026-10-10 单次搜索报 `SITE_UNAVAILABLE`，未自动重试 |
+| SpringSunday | `PENDING_REAL_VALIDATION` | 2026-10-10 真实解析 16 条搜索结果，当前影片无可行候选；历史官方连接超时仍需独立排查 |
+| HDDolby | `PENDING_REAL_VALIDATION` | 历史搜索曾返回结果；2026-10-10 单次搜索报 `SITE_UNAVAILABLE`，合适目标与独立 Piece 验收仍缺失 |
+| U2 | `PENDING_REAL_VALIDATION` | 既有 19/19 动画搜索及详情身份已验证；2026-10-10 另一个动画查询返回 50 条，大小、做种、下载数均 50/50 可解析，但有下一页；间歇连接错误、合法取种及独立 Piece 仍待验收 |
+| 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 2026-10-10 搜索返回 5 条，当前影片 2 条可行候选仍有歧义，不得自动任选其一 |
+| CarPT | `PENDING_REAL_VALIDATION` | 2026-10-10 搜索返回 7 条，当前影片 1 条可行，历史详情 ID 一致；独立取种和内容验证待补 |
 
 七站的加密配置和只读连接测试**不授权启用正式任务**。即使有人手动将数据库记录设为启用，也不得解密凭据进入生产适配链；只有逐站通过认证、同源保护、契约、错误分类及受控真实验证后才能修改 Registry 的正式支持范围。
 
