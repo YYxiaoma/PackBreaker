@@ -45,7 +45,7 @@
 | Audiences | `PENDING_REAL_VALIDATION` | 搜索返回真实候选，当前影片无大小相关资源 |
 | SpringSunday | `PENDING_REAL_VALIDATION` | 已获取真实 HTTP 200 HTML 页面、解析 16 条候选；官方连接/搜索间歇失败 |
 | HDDolby | `PENDING_REAL_VALIDATION` | 搜索有结果，仍缺合适目标影片与独立 Piece |
-| U2 | `PENDING_REAL_VALIDATION` | 曾连接成功，搜索 ConnectError；需以真实合适动画资源验收 |
+| U2 | `PENDING_REAL_VALIDATION` | 修复八列 NexusPHP 搜索解析后，真实动画搜索 19/19 条容量、做种及下载数字段均可解析，详情站点与种子 ID 一致；间歇 `ConnectError` 仍需观察，合法取种与独立 Piece Hash 验收仍未完成 |
 | 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 两条候选存在歧义，不得自动任选一条 |
 | CarPT | `PENDING_REAL_VALIDATION` | 唯一候选及详情 ID 一致，独立取种/内容验证待补 |
 
