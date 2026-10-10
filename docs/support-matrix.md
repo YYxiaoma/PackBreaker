@@ -3,7 +3,7 @@
 本页区分**正式发布、代码可用、真实只读探测、独立内容/辅种全链路验收**。一个站点可配置、连接成功或有客户端既有种子，都不等于正式完成该站的端到端业务验收。
 
 - **最新正式 Release：v1.1.1**。源码提交 `b779e3270f2a3b3d8c380e22ac36f06ce55f8252`；不可变 GHCR index 为 `sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9`。
-- **研发候选：v1.1.2**。阶段性双注册表候选 `candidate-v1.1.2-24f0213b07a1` 已通过 AMD64、原生 ARM64、升级回滚和镜像摘要检查（[Actions #37948200449](https://github.com/YYxiaoma/PackBreaker/actions/runs/37948200449)）；不是已正式发布的 v1.1.2，也不能代替尚缺的 PT 真实验收。后续改动必须重新构建最终候选。
+- **最新已交付 v1.1.2 候选（非正式 Release）**：源码 `e784c194a4af19f21b6fbce4ec4215f6b99fa444`，标签 `candidate-v1.1.2-e784c194a4af`；GHCR `ghcr.io/yyxiaoma/packbreaker` 与 Docker Hub `docker.io/yyxiaoma01/packbreaker` 共用不可变多架构摘要 `sha256:b6289c9ebf311afe9a1ce9f49eb1eefb854d4885b7177b3d4065416a7cfcdc6c`。两仓库 AMD64 与原生 ARM64 运行验证均已成功（[交付 Actions #38025511243](https://github.com/YYxiaoma/PackBreaker/actions/runs/38025511243)）；正式发布和真实业务 E2E 尚未完成。`24f0213` 仅是历史中间候选，不可当作当前候选。
 - **v1.1.2 收官门槛**：[Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。用户已明确取消 Synology NAS 现场验收要求；不对 NAS 生产环境进行任何未经授权的操作。
 
 ## 1. 平台与下载器
@@ -11,7 +11,7 @@
 | 能力 | 支持情况 | 真实证据边界 |
 | --- | --- | --- |
 | Linux `amd64` | 正式支持 | v1.1.1 不可变发行镜像；候选相邻升级、回滚与 updater CI 通过 |
-| Linux `arm64` / aarch64 | 正式支持 | v1.1.1 原生双架构发行；v1.1.2 阶段性候选原生 ARM64 运行通过 |
+| Linux `arm64` / aarch64 | 正式支持 | v1.1.1 原生双架构发行；最新 v1.1.2 双仓库候选已通过原生 ARM64 对等运行验证 |
 | ARMv7、其他 Linux 架构 | 未承诺 | 缺少相应的发行镜像与验收 |
 | Windows/macOS 原生部署 | 不属于正式生产部署范围 | 可用于研发 |
 | qBittorrent 5.2.3 | 已实现协议接入 | 隔离真实客户端 ADD/RECHECK/START、幂等及失败回滚已通过；未来 WebAPI 能力必须重新判定 |
@@ -31,7 +31,7 @@
 | UBits | Cookie | 代码可用；目标影片有可行候选、偶发连接超时；最新聚合快照仍有部分 Tracker 失败，不能宣称全部恢复 |
 | HDFans | Cookie | 代码可用；既有 Transmission 种子 7,321 个 Piece 全可用，**新候选独立 Piece Hash** 仍未验证 |
 | BTSCHOOL | Cookie | 代码可用；两条大小相关候选和详情身份已确认；最新只读快照以成功记录为主，仍有失败与超时 |
-| PTTime | Cookie | 代码可用；搜索 6 条、唯一候选 1 条，真实详情身份与标题关联一致，但详情未提供独立容量；Torrent / Piece 尚未完成 |
+| PTTime | Cookie | 代码可用；既有搜索 6 条、唯一候选 1 条及真实详情身份关联一致。2026-10-10 另一次只读关键词搜索返回 `CANDIDATE_FOUND`（仅表明存在容量、做种数条件的候选，并未绑定来源媒体）；仍缺新候选 Torrent / 独立 Piece 验证 |
 | Rousi Pro | API Key 搜索 + 独立下载 Cookie | 双凭据必须分别保护；代码已修复只读搜索临时故障及冷却处理，但 Tracker 只读快照中 3 条状态仍未成功，根因未确认 |
 | 聆音Club | Cookie | 代码可用；目标影片有可行候选，完整正式任务仍需核对 |
 
@@ -67,6 +67,8 @@
 
 这份快照与 2026-10-09 的单任务读数采用不同统计范围，**不得将两者相加，也不得推断所有种子都失败或所有 Tracker 都恢复**；错误根因尚待现场进一步诊断。无 Tracker URL、passkey 或种子身份输出。不存在任何真实站点取种、下载器写操作或 NAS 变更。
 
-v1.1.2 的 PR #11–#14 分别完成匹配错误/超时重试分类、站点限流安全等待、M-Team HTTP-date 解析、Rousi Pro / NexusPHP 只读故障恢复和浏览器异步竞态修复。最新合并主线 `40fe44c684963f5f10a9ab17bea5d29d9252b513` 已通过 [CI #38021394087](https://github.com/YYxiaoma/PackBreaker/actions/runs/38021394087) 和 [Candidate Docker E2E #38021394108](https://github.com/YYxiaoma/PackBreaker/actions/runs/38021394108)。这是**代码/隔离环境证明**，不提升任何站点的真实 E2E 或正式发行状态。
+v1.1.2 的 PR #11–#17 已合并匹配受限重试、HTTP 429 冷却、只读站点临时故障处理、浏览器 E2E 竞态及辅助文件 ADD/SELECT/START/STOP/REMOVE 未知写入的 journal 对账保护。最新候选源码 `e784c194a4af19f21b6fbce4ec4215f6b99fa444` 的 [main CI](https://github.com/YYxiaoma/PackBreaker/actions/runs/38024853128)、[候选 CI](https://github.com/YYxiaoma/PackBreaker/actions/runs/38024984603) 和两侧 Docker E2E 全部成功。这是**代码/隔离环境证明**，不提升任何站点的真实 E2E 或正式发行状态。
+
+2026-10-10 后续独立工作区检查发现：历史 `site-acceptance.secret` (0600) 不包含新增七站配置，且现有独立工作树没有可直接访问的那套 18 站加密审核配置。对 Audiences、HDDolby、SpringSunday 的本次尝试均在网络发出前被 `CONFIG_BLOCKED`，**不可**将其混写为新的 `SITE_UNAVAILABLE` 现场复测。逐站真实复查需恢复此前已授权审核环境中的加密配置入口，不能绕过凭据/站点启用门禁。
 
 当前所需现场补验、失败分类与退出条件维护于 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5) 和 [v1.1.1 的真实只读记录](./v1.1.1-development.md)。历史 v1.0.0～v1.0.5 发行记录与旧的测试范围可通过 Git 历史和 `docs/v1.0.*-release.md` 查阅，不再视为本页“当前版本”说明。
