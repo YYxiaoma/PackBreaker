@@ -295,9 +295,7 @@ async def test_rousi_readonly_connect_error_retryable(operation: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ("search", "test_connection"))
 @pytest.mark.parametrize("date_header", (False, True))
-async def test_rousi_readonly_429_preserves_retry_after(
-    operation: str, date_header: bool
-) -> None:
+async def test_rousi_readonly_429_preserves_retry_after(operation: str, date_header: bool) -> None:
     from datetime import UTC, datetime, timedelta
     from email.utils import format_datetime
 
@@ -359,8 +357,9 @@ async def test_rousi_rate_limit_does_not_burst_and_torrent_not_replayed() -> Non
         SiteReliabilityPolicy(max_attempts=3, retry_deadline_seconds=5.0)
     )
     search_adapter = registry.wrap(
-        config_id="rousi-search", config_version=1,
-        adapter=RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler))
+        config_id="rousi-search",
+        config_version=1,
+        adapter=RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler)),
     )
     with pytest.raises(SiteAdapterError) as limited:
         await search_adapter.search(SearchQuery(("synthetic",), SearchMediaType.MOVIE))
@@ -369,10 +368,11 @@ async def test_rousi_rate_limit_does_not_burst_and_torrent_not_replayed() -> Non
     assert len(calls) == 1
 
     download_adapter = registry.wrap(
-        config_id="rousi-download", config_version=1,
+        config_id="rousi-download",
+        config_version=1,
         adapter=RousiProCandidateAdapter(
             _KEY, download_cookie=_COOKIE, transport=httpx2.MockTransport(handler)
-        )
+        ),
     )
     with pytest.raises(SiteAdapterError) as unavailable:
         await download_adapter.fetch_torrent("123")
