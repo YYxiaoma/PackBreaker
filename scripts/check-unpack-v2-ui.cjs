@@ -685,7 +685,14 @@ const fulfillJson = (route, body, status = 200) =>
     );
     await manualRow.getByRole('button', { name: '更多操作' }).click();
     await page.getByRole('menuitem', { name: '删除', exact: true }).click();
+    const deleteResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/v1/unpack/definitions/definition-manual') &&
+        response.request().method() === 'DELETE' &&
+        response.status() === 204,
+    );
     await page.getByRole('button', { name: '确认删除', exact: true }).click();
+    await deleteResponse;
     assert.equal(deletedDefinitionVersion, '1');
 
     await page.getByRole('button', { name: '新增任务', exact: true }).click();

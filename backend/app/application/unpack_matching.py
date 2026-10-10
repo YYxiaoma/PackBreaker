@@ -346,7 +346,13 @@ class UnpackMatchCoordinator:
                                         exc.retryable,
                                     )
                                 )
-                                continue
+                                # Alternate title keywords cannot fix a
+                                # transport error, access denial or a failed
+                                # site request. Retry a transient failure only
+                                # in a *later* worker pass with the configured
+                                # backoff, rather than multiplying requests
+                                # within this single search attempt.
+                                break
                             if page.site_id != binding.site_id:
                                 _search_diagnostics.warning(
                                     "影片站点搜索身份校验失败",
@@ -631,8 +637,19 @@ class UnpackMatchCoordinator:
             elif failures:
                 item.selected_candidate_id = None
                 item.match_origin = None
-                is_timeout = any(failure.retryable for failure in failures)
-                if self._schedule_automatic_retry(session, execution, item, now):
+                # Only transient failures may consume automatic retries.
+                # A permanent auth/permission/configuration error must stay
+                # actionable rather than repeatedly re-requesting the site.
+                retryable_failure = any(failure.retryable for failure in failures)
+                # Retryability is not synonymous with timeout: HTTP 503 and
+                # network unavailability must retain the real site error code
+                # after the bounded retry budget is exhausted.
+                is_timeout = any(
+                    failure.code in {"UNPACK_MATCH_TIMEOUT", "SITE_TIMEOUT"} for failure in failures
+                )
+                if retryable_failure and self._schedule_automatic_retry(
+                    session, execution, item, now
+                ):
                     item.last_error_code = None
                     item.last_error_message = None
                 elif is_timeout:

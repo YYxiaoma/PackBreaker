@@ -1,53 +1,41 @@
-# PackBreaker v1.0.5 已知限制
+# PackBreaker 已知限制（更新于 2026-10-09）
 
-本页记录当前实现中有意保留的边界和尚未取得的发布证据。它们不是绕过安全门的理由；相反，PackBreaker 在这些条件下应保持人工确认、只读、阻断或显式手工运维。
+**正式版本 v1.1.1，v1.1.2 处于遗留问题收官研发阶段。** 阶段性候选镜像、自动化回归和既有下载器做种状态均不能自动关闭真实站点验收。v1.1.2 不要求 Synology NAS 现场验收，不得因此擅自操作生产环境。完整清单与事实更新见 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。
 
-## 1. 自动匹配与真实样本
+## 1. 尚未完成的站点与内容校验
 
-- 自动候选批准继续关闭。当前真实标定只有高置信正确样本，没有足够的高置信内容错误负样本，因此 `recommended_threshold=null`；不能从现有数据估计可接受误报率。
-- 99% repair 代码链已完成，但真实环境截至 2026-09-14 仍没有自然产生的 `CLIENT_CHECK_REQUIRED/RETRY` 可用于 field E2E。不会通过破坏真实媒体或伪造 RETRY 来制造验收样本。
-- 新真实故障继续归档，但 RF-001～RF-007 已满足“7 个失败样例”数量要求，不再为了数量主动制造失败。
+- PTTime：搜索有六条结果，其中一条大小相符、详情身份匹配；详情页仍不能提供独立的可靠容量证据。尚未取得当前**新候选**的 `.torrent` 元信息及独立 Piece Hash。
+- HDFans：既有 Transmission 任务报告 7,321 个 Piece 均可用，但只是客户端对**旧种子**的校验，不能冒充当前新候选的独立验证。
+- HDHome、UBits、KeepFrds、BTSCHOOL、PTTime、聆音Club 还需逐站完成正式 PackBreaker 任务全链路验收。Tracker 现有种子在做种不代表新任务的操作流水或受控恢复已经通过。
+- 七新增站点 PTerClub、Audiences、SpringSunday、HDDolby、U2、不可躺、CarPT 全部保持 `PENDING_REAL_VALIDATION`，不能打开正式辅种；详见 [支持矩阵](./support-matrix.md)。
+- 如果真实站点内容获取被执行环境拦截，不能换工具、改变请求形态或通过浏览器绕过。需要保留阻断并用符合站点权限的合法验证路径继续。
 
-## 2. 发布与容器证据
+## 2. 站点网络、Tracker 与错误处理
 
-- 最新正式 v1.0.5 镜像支持 `linux/amd64` 和 `linux/arm64`（aarch64）；ARMv7 和其他平台不在正式支持范围内。
-- 当前开发 Runner 无 Docker daemon；GitHub Actions 持续承担容器、备份/恢复和 updater 的真实 Docker 门禁。Release workflow run `35429394091` 已为 `v0.1.9` 提供真实 Docker 构建、`v0.1.8 → v0.1.9 → v0.1.8` 升级/回滚与 updater helper E2E 证据，并继续覆盖既有 Compose labels 与 docker.sock 保留要求。
-- 当前最新正式 Release 为 [v1.0.5](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.0.5)，正式不可变镜像为 `ghcr.io/yyxiaoma/packbreaker@sha256:a617829574ef972f2118fb04bc6e08e973a94a44476f9ba8f32a82303b250a7c`。
-- v1.0.5 正式 Release run `36856714824` 已在 GitHub Actions Docker Runner 完成 v1.0.4 → v1.0.5 相邻升级/回滚、正式 Web updater、失败自动回滚、AMD64、隔离 QEMU ARM64 与原生 ARM64 的同一不可变 digest 验证。
-- v1.0.5 updater E2E 的独立 `/downloads`、`/downloads2` bind mount 保留断言已经在真实 Docker Runner 的候选与正式发布门中通过；这不保证任意跨 mount Hardlink 一定可用，仍以真实路径诊断为准。
-- [正式恢复发布 run `35507181886`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35507181886) 已用原已推送镜像在独立 AMD64、QEMU ARM64 与原生 ARM64 Runner 完成运行验证，AMD64 v0.1.9→v1.0.0→v0.1.9 正式相邻升级/回滚通过，Release 资产上传回读和 `stable/latest` 与原不可变摘要一致。后续版本的 `release-baseline.json` 已推进到 v1.0.0 双架构镜像。
-- **历史失败记录（已恢复）**：2026-09-20 的首次 [Release run `35504683200`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35504683200) 在 QEMU ARM64 运行检查处失败，原生 ARM64 摘要运行及 GitHub Release 资产发布当时被跳过。后续恢复单独完成全部门禁，没有事后更改该失败记录，亦未覆盖已推送的版本镜像。首次失败根因仍无完整原始错误日志，不能断言已确诊；详见 [发布流程与恢复记录](./release-process.md)。
-- [独立诊断 run `35506113046`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506113046) 已在原生 ARM64 与 QEMU 上使用相同正式 index digest 通过完整启动/备份门禁，首次 QEMU 失败未稳定复现，仍无权推断具体根因。独立诊断只是恢复发布的前置证据，不应与正式发布资产成功混淆。
-- [首次恢复 run `35506579423`](https://github.com/YYxiaoma/PackBreaker/actions/runs/35506579423) 的同一 AMD64 Runner 在完成 AMD64 摘要运行及正式相邻升级回滚后，ARM64 QEMU 脚本仍失败；独立原生 ARM64 通过，发布资产继续被阻断。后续将 QEMU 与 AMD64 拆分到不同 Runner 后重新复验，不得根据独立诊断单次成功跳过 QEMU 门禁。
+- PTerClub、SpringSunday、U2、HDFans 存在间歇性连接、搜索失败或 `SITE_UNAVAILABLE` 记录；域名可以解析不证明站点稳定，不能将超时误判为 Cookie 永久失效。
+- 2026-10-09 真实 Transmission 只读 RPC 复查：UBits 的最近一次 announce 已报告成功；BTSCHOOL 有一条成功、一条超时；Rousi Pro 一条仍未报告成功（未标记超时）。这些是**客户端状态**，不说明 Tracker 根因，不输出 passkey、原始 announce URL 或凭证。
+- 自动匹配对错误/超时具备受限重试及人工介入流程，但在网络维护、下载器短暂离线或辅助文件已补齐情况下的真实受控恢复仍需单独核对。
+- 站点限流、身份验证、JS Challenge 和验证码不能靠自动浏览器或伪造来源跳过。具有一次性语义的 torrent 下载 token 不允许盲目重试。
 
-## 3. 升级与 Docker 权限
+## 3. 媒体、下载器和恢复安全
 
-- 独立 `docker run --name packbreaker` 支持“单常驻容器”一键升级：主容器挂载 docker.sock，点击版本弹窗的升级按钮后临时创建 `AutoRemove` helper 接管停机、容器替换、健康检查与失败回滚；升级窗口内会短暂存在第二个 helper 容器，结束后自动删除。若不愿向主容器授予 docker.sock，仍可额外常驻独立 `packbreaker-updater` 作为兼容的最小权限方案。
-- 自动升级只支持能够安全重建的单容器部署：必须存在唯一可写 `/config` 挂载，当前镜像必须来自官方 GHCR；Compose 管理容器在显式挂载 docker.sock 时可使用 Web 一键升级，并保留 Compose labels，但 updater 不修改宿主机 `compose.yaml`，因此升级后需同步 YAML 的 image digest。`AutoRemove`、`container:<id>` network/PID/IPC namespace、多网络、显式静态 IP/MAC 等配置仍会阻断自动升级；Swarm/Kubernetes 拓扑仍需宿主机管理员按 runbook 手工升级。
-- `/var/run/docker.sock` 等价于 Docker 主机级管理权限；单容器易用模式把该权限授予主 PackBreaker，因此只应在受信宿主机启用。服务端升级入口仍限制到官方 Release 不可变 digest 和目标 `packbreaker` 容器，但这不能把 Docker socket 本身变成低权限接口。
-- 自动回滚依赖旧镜像仍可启动且 `/config` 可写；若 Docker daemon、卷、旧镜像或离线恢复本身不可用，helper 会进入 `manual_recovery_required`，不会继续覆盖现场。
-- `stable` 是可移动发现通道，不能作为生产安装、升级或回滚的唯一身份；运维记录必须保存完整 image digest。
+- 源影片默认只读，不截断、不覆盖、不删除。仅在经过明确授权的挂载根内可操作目标文件；跨设备硬链接、符号链接越界、路径穿越一律失败关闭。
+- qBittorrent / Transmission 的 ADD/VERIFY/START/REMOVE 必须有 journal 及操作前后身份、路径、哈希与 ownership 证据。已存在外部同 hash 种子不能推定归属；丢失响应或凭证不能靠重发写操作“碰运气”。
+- `FULL_VERIFIED` 和对应的 qBittorrent API capability 才允许相应 skip-checking 路径；Transmission 不因独立 Piece 校验而跳过客户端下载器 verify。未来 WebAPI 版本行为变化须重新验收。
+- 自动修复隔离和受控清理要求受支持的文件系统 xattr；不支持时转为人工对账或安全阻断，不允许删除身份不明的文件。
+- 单容器 Docker Web 在线升级需要具有足够权限的 `docker.sock`，并仅支持可安全重建的容器拓扑。备份与旧镜像可用性不满足时必须进入 `manual_recovery_required`，不能保证任何 NAS 环境都能自动回滚。
 
-## 4. 下载器与站点版本范围
+## 4. 发布与验收的界线
 
-- 已真实验证的下载器基线是 qBittorrent 5.2.3 / WebAPI 2.15.1 与 Transmission 4.1.3。未来版本必须重新做能力和真实链路验收。
-- qBittorrent WebAPI 2.16.0 已移除 `skip_checking`；当前 2.15.1 的 FULL_VERIFIED skip-check 优化不能直接外推到 2.16+。
-- HHClub 当前只接受 `https://hhanclub.net`。旧域名、镜像域名或未验证 origin 不自动信任。
+- 已通过 v1.1.1 正式 AMD64/ARM64 发布身份，以及 v1.1.2 阶段性候选的两注册表摘要与原生 ARM64 运行检查。**v1.1.2 尚非正式 Release。**
+- v1.1.2 正式发布需要完成真实站点 / 内容 / 下载器受控验收、修复确认、适配状态及文档对账，再对**最终源码 SHA**重做 CI、相邻升级/回滚、不可变双架构候选验证。任何未关闭的外部阻断需明确记录和获批准的范围决策。
+- **Synology NAS 现场验收不在 v1.1.2 发布门槛中**；此决定不授予 NAS 生产读写、升级、回滚权限。
+- `latest`、`stable` 属于可变发布发现渠道，不可代替不可变 digest；只有用户正式发布授权后才推进。完整来源： [收官 Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)、[v1.1.2 研发记录](./v1.1.2-development.md)。
 
-- 2026-09-18 的 v0.1.6 现场只读验收中，HDTime 主站经 Cloudflare 返回 HTTP 500；现有 Cookie 与浏览器仿真均得到 SITE_UNAVAILABLE 而非鉴权失败。站点恢复前保留已有适配器支持声明，但不把本轮现场状态记为通过，也不自动改用镜像域名。
-- v1.0.5 已按产品要求解除当前 11 个内置站点的历史未验证运行时门禁，但新增站点的真实现场证据深度仍不完全一致；开放任务链不等于忽略真实站点错误。
-- CookieCloud 已通过协议单测、合成本机真实 HTTP、API 与浏览器 UI 验收，但尚未提供专用真实外部服务配置；最终只读验收需要权限为 `0600` 的 `runtime/cookiecloud-acceptance.secret`，且不会把真实凭据提交到仓库。
-- 下载器来源不再强制挂载到 `/data`，但必须落在该下载器显式配置的路径映射根内；容器根 `/`、未映射绝对路径、路径穿越和符号链接逃逸仍被拒绝。任意挂载也不保证跨 mount Hardlink 可用，仍以真实 `st_dev` 与 hardlink probe 为准。
+## 5. 持续保留的产品与运维限制
 
-## 5. 运维功能边界
-
-- operation journal retention 只提供逐条安全 purge，不提供批量 purge；每条都必须重新证明终态、保留期和引用关系。
-- repair inode isolation / 自动 cleanup 依赖目标文件系统支持 Linux `user.*` xattr。若 NAS/网络文件系统未提供该能力，PackBreaker 会在 isolation 阶段阻断或在 cleanup 阶段转入人工对账，不会退回到仅依赖 inode 的自动删除。
-- 数据库在线恢复没有 Web 按钮。恢复要求停止活动 PackBreaker 实例并使用维护 CLI，以避免运行进程持有旧连接时替换数据库。
-- 一致性数据库备份有意不包含 `secret.key`。只恢复数据库而没有对应主密钥时，已加密凭证不可解密。
-- 安全诊断 ZIP 默认不包含运行日志；日志查询/导出是独立、受限并再次脱敏的接口。
-- 下载完成 Webhook 的 HMAC/防重放仍是计划契约，当前没有开放真实接口；API Token/Bearer 自动化访问也已移除，因此当前管理 API 仅支持管理员会话。
-
-## 6. 安全默认值
-
-当版本、路径、ownership、当前 torrent 状态、piece 内容、operation journal 或恢复证据无法被严格证明时，PackBreaker 的预期行为是失败关闭或要求人工处理，而不是猜测成功。任何后续“易用性优化”都不能把这些限制变成隐式放宽。
+- **自动批准阈值**：已有高置信正确样本不足以估计误报率；在取得足够的高置信错误负样本并完成标定之前，`recommended_threshold=null`，不得把片名、大小、评分或采样 Hash 当成自动批准的完整内容证据。
+- **99% repair 现场样本**：修复、inode 隔离和操作流水代码已有自动化证据，但仍缺自然产生的 `CLIENT_CHECK_REQUIRED/RETRY` 真实现场样本；不得破坏源媒体或制造错误来凑齐验收。
+- **备份密钥与恢复入口**：SQLite 数据库一致性备份有意不包含 `secret.key`；脱离对应密钥无法解密已保存凭证。数据库离线恢复须停止活动实例并使用维护 CLI，当前不提供直接替换在线数据库的 Web 按钮。
+- **运维 API 范围**：管理员会话是当前 Web 管理 API 的认证边界；通用 Bearer/API Token 自动化访问、下载完成 Webhook 的 HMAC/防重放接口仍未正式开放。operation journal 仅支持满足终态、保留期和引用检查的逐条安全 purge，不支持跳过这些检查的批量清理。
+- **日志与诊断**：安全诊断 ZIP 默认不包含运行日志；需要独立使用具有权限和脱敏保护的日志查询/导出入口。遇到无法证明的文件归属、Piece、路径或客户端状态时保持阻断并留下可审计记录。
