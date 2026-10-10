@@ -518,6 +518,63 @@ def test_retryable_site_failure_becomes_match_timeout() -> None:
         assert item.last_error_code == "UNPACK_MATCH_TIMEOUT"
 
 
+def test_nonretryable_site_failure_does_not_consume_automatic_retry_budget() -> None:
+    factory = _factory(threshold=10_000, retry_enabled=True, max_retries=3)
+    adapter = _FakeSiteAdapter(
+        error=SiteAdapterError("SITE_AUTH_FAILED", "synthetic private reason", retryable=False)
+    )
+    coordinator = UnpackMatchCoordinator(factory, _FakeSiteProvider(adapter))
+
+    report = asyncio.run(coordinator.match_next_batch("execution-1"))
+    assert report.processed_count == 1
+    assert report.execution_status is UnpackExecutionStatus.FAILED
+    assert report.error_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCH_ERROR.value
+        assert item.last_error_code == "SITE_AUTH_FAILED"
+        assert item.retry_count == 0
+        assert item.auxiliary_state is not None
+        assert item.auxiliary_state["search_failures"][0]["retryable"] is False
+    # A terminal credential error must not trigger new query variations or worker loops.
+    assert len(adapter.queries) == 1
+    assert asyncio.run(coordinator.match_next_batch("execution-1")).processed_count == 0
+
+
+def test_retryable_site_unavailable_exhaustion_is_match_error_not_timeout() -> None:
+    from datetime import timedelta
+
+    factory = _factory(threshold=10_000, retry_enabled=True, max_retries=1)
+    adapter = _FakeSiteAdapter(
+        error=SiteAdapterError("SITE_UNAVAILABLE", "temporary outage", retryable=True)
+    )
+    coordinator = UnpackMatchCoordinator(factory, _FakeSiteProvider(adapter))
+    first = asyncio.run(coordinator.match_next_batch("execution-1"))
+    assert first.execution_status is UnpackExecutionStatus.MATCHING
+    assert len(adapter.queries) == 1  # no keyword fanout after transient failure
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.retry_count == 1
+        state = dict(item.auxiliary_state or {})
+        state["auto_retry_not_before"] = (utc_now() - timedelta(seconds=5)).isoformat()
+        item.auxiliary_state = state
+        session.commit()
+
+    final = asyncio.run(coordinator.match_next_batch("execution-1"))
+    assert final.processed_count == 1
+    assert final.execution_status is UnpackExecutionStatus.FAILED
+    assert final.error_count == 1
+    assert final.timeout_count == 0
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCH_ERROR.value
+        assert item.last_error_code == "SITE_UNAVAILABLE"
+        assert item.retry_count == 1
+
+
 def test_match_timeout_automatically_retries_with_backoff_then_needs_manual_action() -> None:
     from datetime import timedelta
 
