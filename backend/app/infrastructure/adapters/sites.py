@@ -39,9 +39,7 @@ from backend.app.infrastructure.adapters.nexusphp import (
 )
 from backend.app.infrastructure.adapters.rousi_pro import RousiProCandidateAdapter
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError as SiteAdapterError
-from backend.app.infrastructure.adapters.site_retry_after import (
-    retry_after_seconds as _retry_after_seconds,
-)
+from backend.app.infrastructure.adapters.site_retry_after import retry_after_seconds
 
 _MTEAM_SITE_ID = "mteam"
 _MTEAM_DEFAULT_BASE_URL = "https://kp.m-team.cc"
@@ -681,3 +679,8 @@ def _optional_aware_datetime(value: object) -> datetime | None:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
     return parsed
+
+
+def _retry_after_seconds(response: httpx2.Response) -> float | None:
+    """Compatibility entry for M-Team and older adapter contract tests."""
+    return retry_after_seconds(response)
