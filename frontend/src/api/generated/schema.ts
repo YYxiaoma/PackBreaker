@@ -2310,11 +2310,8 @@ export interface components {
       /** Name */
       name: string;
       proxy?: components['schemas']['SiteProxyCreateInput'];
-      /**
-       * Request Timeout Seconds
-       * @default 15
-       */
-      request_timeout_seconds: number;
+      /** Request Timeout Seconds */
+      request_timeout_seconds?: number | null;
       /**
        * Search Interval Seconds
        * @default 0
@@ -2522,11 +2519,8 @@ export interface components {
       /** Download Cookie */
       download_cookie?: string | null;
       proxy?: components['schemas']['SiteProxyCreateInput'];
-      /**
-       * Request Timeout Seconds
-       * @default 15
-       */
-      request_timeout_seconds: number;
+      /** Request Timeout Seconds */
+      request_timeout_seconds?: number | null;
       /**
        * Search Interval Seconds
        * @default 0

@@ -2783,11 +2783,17 @@
             "$ref": "#/components/schemas/SiteProxyCreateInput"
           },
           "request_timeout_seconds": {
-            "default": 15,
-            "maximum": 120.0,
-            "minimum": 1.0,
-            "title": "Request Timeout Seconds",
-            "type": "integer"
+            "anyOf": [
+              {
+                "maximum": 120.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Timeout Seconds"
           },
           "search_interval_seconds": {
             "default": 0,
@@ -3395,11 +3401,17 @@
             "$ref": "#/components/schemas/SiteProxyCreateInput"
           },
           "request_timeout_seconds": {
-            "default": 15,
-            "maximum": 120.0,
-            "minimum": 1.0,
-            "title": "Request Timeout Seconds",
-            "type": "integer"
+            "anyOf": [
+              {
+                "maximum": 120.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Timeout Seconds"
           },
           "search_interval_seconds": {
             "default": 0,
