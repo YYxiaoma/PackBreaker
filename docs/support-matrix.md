@@ -1,5 +1,14 @@
 # PackBreaker 支持矩阵（更新于 2026-10-11）
 
+
+### 2026-10-11 最新对账（优先于下文保留的历史阶段快照）
+
+最新正式版仍为 v1.1.1；主线已合并 PR #28 至 6aa8ec6，上一候选 3bb0d849 的镜像已通过双架构验收，但需要为新主线重新构建。CarPT、HDFans、PTTime 三份原始私种已在 Runner 对指定真实三文件媒体完成完整 Piece 16473/16473（各站独立校验），并非 PackBreaker 下载器正式 E2E。七新增站均继续禁用；Transmission 路径映射未验证，权限与目标 ownership 仍阻断真实任务。
+
+完整证据与 SHA/digest 请参阅 [当前收官门禁](./v1.1.2-gate-snapshot-20261011.md) 和 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。下文的旧 SHA 记录属于历史阶段快照，不得作为当前发行身份。
+
+
+
 本页区分**正式发布、代码可用、真实只读探测、独立内容/辅种全链路验收**。一个站点可配置、连接成功或有客户端既有种子，都不等于正式完成该站的端到端业务验收。
 
 - **最新正式 Release：v1.1.1**。源码提交 `b779e3270f2a3b3d8c380e22ac36f06ce55f8252`；不可变 GHCR index 为 `sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9`。

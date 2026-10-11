@@ -1,5 +1,14 @@
 # PackBreaker 已知限制（更新于 2026-10-11）
 
+
+### 2026-10-11 最新对账（优先于下文保留的历史阶段快照）
+
+最新正式版仍为 v1.1.1；当前 main=6aa8ec6、已交付候选=3bb0d849。三站真实源文件 Piece 校验已通过 CarPT 1831/1831、HDFans/PTTime 各 7321/7321，合计 16473/16473；与正式辅种 E2E 不等价。root 审计可读，但 1026:100 降权探针因权限被拒；3 个媒体文件各有 3 个硬链接，严禁擅自递归 chmod/chown。下载器路径映射 UNTESTED、目标与 ownership 未验，七新增站仍 PENDING_REAL_VALIDATION。
+
+完整证据与 SHA/digest 请参阅 [当前收官门禁](./v1.1.2-gate-snapshot-20261011.md) 和 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。下文的旧 SHA 记录属于历史阶段快照，不得作为当前发行身份。
+
+
+
 **最新正式版本为 v1.1.1；v1.1.2 精确源码 `5364c8de` 的同摘要双架构候选已通过 CI、Docker E2E、原生 ARM64 与双注册表交付，但不是正式 Release。** 七新增站、六旧站真实任务、Tracker 根因及恢复仍待验收；详见 [当前收官门禁](./v1.1.2-gate-snapshot-20261011.md) 和 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。Synology NAS 现场验收不属本版门槛，不得擅自操作生产环境。
 
 ## 1. 尚未完成的站点与内容校验
