@@ -46,7 +46,12 @@ def _complete_fields(counts: dict[str, int]) -> bool:
 def _safe_failure_kind(exc: Exception) -> str:
     """Classify transport failures without rendering the remote URL or exception text."""
 
-    if getattr(exc, "code", None) != "SITE_UNAVAILABLE":
+    # The NexusPHP adapter now emits SITE_TIMEOUT explicitly; the diagnostic
+    # must preserve that label without printing the private transport cause.
+    code = getattr(exc, "code", None)
+    if code == "SITE_TIMEOUT":
+        return "TIMEOUT"
+    if code != "SITE_UNAVAILABLE":
         return "OTHER"
     cause = exc.__cause__
     if isinstance(cause, httpx2.TimeoutException):

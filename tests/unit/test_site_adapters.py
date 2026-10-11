@@ -131,6 +131,47 @@ async def test_candidate_nexus_factory_uses_only_reviewed_origin_and_cookie(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", [SiteKind.SPRING_SUNDAY, SiteKind.HDDOLBY])
+@pytest.mark.parametrize(
+    ("transport_error", "expected_code"),
+    [
+        (httpx2.ReadTimeout, "SITE_TIMEOUT"),
+        (httpx2.ConnectError, "SITE_UNAVAILABLE"),
+    ],
+)
+async def test_candidate_nexus_readonly_search_preserves_timeout_vs_network_failure(
+    kind: SiteKind,
+    transport_error: type[httpx2.RequestError],
+    expected_code: str,
+) -> None:
+    # An isolated transport exception: never contact an actual tracker/site
+    # or include a credential, remote body or private torrent URL in errors.
+    calls = 0
+    cookie = "synthetic-nexus-credential-canary"
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.host == httpx2.URL(site_profile(kind).base_url).host
+        assert request.url.path == "/torrents.php"
+        raise transport_error("synthetic remote failure", request=request)
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=kind,
+        base_url=site_profile(kind).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential=cookie,
+    )
+    with pytest.raises(SiteAdapterError) as failure:
+        await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.MOVIE))
+    assert calls == 1
+    assert failure.value.code == expected_code
+    assert failure.value.retryable is True
+    assert cookie not in str(failure.value)
+    assert "synthetic remote failure" not in str(failure.value)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", _CANDIDATE_NEXUS_KINDS)
 async def test_candidate_nexus_site_specific_search_columns_are_not_misclassified(
     kind: SiteKind,

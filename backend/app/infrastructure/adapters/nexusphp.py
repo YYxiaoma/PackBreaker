@@ -577,9 +577,13 @@ class NexusPhpWebAdapter:
                     chunks.append(chunk)
         except SiteAdapterError:
             raise
-        except (httpx2.TimeoutException, httpx2.NetworkError) as exc:
+        except httpx2.TimeoutException as exc:
+            # Preserve the distinction required by the match-timeout state
+            # machine; a slow Tracker response is not a network outage.
+            raise SiteAdapterError("SITE_TIMEOUT", "NexusPHP 站点请求超时", retryable=True) from exc
+        except httpx2.NetworkError as exc:
             raise SiteAdapterError(
-                "SITE_UNAVAILABLE", "NexusPHP 连接失败或超时", retryable=True
+                "SITE_UNAVAILABLE", "NexusPHP 网络连接失败", retryable=True
             ) from exc
         except httpx2.HTTPError as exc:
             raise SiteAdapterError(
