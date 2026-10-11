@@ -86,6 +86,9 @@ _CANDIDATE_NEXUS_COLUMNS: dict[SiteKind, tuple[int, int, int, int]] = {
     # date at -7 and size at -6. The generic -6/-5 mapping lost both fields.
     # Seeders/leechers remain at -4/-3; do not affect other NexusPHP sites.
     SiteKind.AUDIENCES: (7, 6, 4, 3),
+    # 2026-10-11 live HDDolby ten-cell search: 9/9 sizes occupy -6 and
+    # dates occupy -7; seeders / leechers remain -4 / -3. Keep site-scoped.
+    SiteKind.HDDOLBY: (7, 6, 4, 3),
 }
 
 

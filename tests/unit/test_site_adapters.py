@@ -145,6 +145,9 @@ async def test_candidate_nexus_site_specific_search_columns_are_not_misclassifie
         # Audiences' observed ten-cell search rows put date/size at -7/-6,
         # while seeders/leechers remain at -4/-3. Entirely synthetic fixture.
         SiteKind.AUDIENCES: (10, 7, 6, 4, 3),
+        # 2026-10-11 HDDolby: 9/9 real ten-cell rows have size/date at -6/-7;
+        # use only synthetic data so no torrent details or URLs are retained.
+        SiteKind.HDDOLBY: (10, 7, 6, 4, 3),
     }
     count, date_offset, size_offset, seeders_offset, leechers_offset = columns.get(
         kind, (9, 6, 5, 4, 3)
