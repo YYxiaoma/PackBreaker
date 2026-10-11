@@ -651,10 +651,26 @@ const fulfillJson = (route, body, status = 200) =>
     await executionDialog.locator('.execution-item-filters .el-select').click();
     await page.getByRole('option', { name: '无匹配', exact: true }).click();
     assert.equal(observedExecutionFilters.at(-1)?.status, 'NO_MATCH');
+    const expectedQuery = (response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === '/api/v1/unpack/executions/execution-review/items' &&
+        url.searchParams.get('item_status') === 'NO_MATCH' &&
+        url.searchParams.get('q') === '九品芝麻官' &&
+        response.request().method() === 'GET' &&
+        response.status() === 200
+      );
+    };
+    const searchResponse = page.waitForResponse(expectedQuery);
     await executionDialog.getByPlaceholder('搜索影片名或来源路径').fill('九品芝麻官');
     await executionDialog.getByPlaceholder('搜索影片名或来源路径').press('Enter');
+    await searchResponse;
     assert.equal(observedExecutionFilters.at(-1)?.q, '九品芝麻官');
+    const filterCountBeforeRefresh = observedExecutionFilters.length;
+    const refreshResponse = page.waitForResponse(expectedQuery);
     await executionDialog.locator('.execution-item-filters').getByRole('button', { name: '刷新' }).click();
+    await refreshResponse;
+    assert.equal(observedExecutionFilters.length, filterCountBeforeRefresh + 1, '刷新必须重新发出过滤后的查询');
     assert.equal(observedExecutionFilters.at(-1)?.status, 'NO_MATCH');
     assert.equal(observedExecutionFilters.at(-1)?.q, '九品芝麻官');
     await executionDialog.locator('.el-dialog__headerbtn').click();
