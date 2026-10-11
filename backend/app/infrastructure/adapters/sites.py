@@ -82,6 +82,10 @@ _CANDIDATE_NEXUS_COLUMNS: dict[SiteKind, tuple[int, int, int, int]] = {
     # seeders / leechers / downloaded. The default size offset silently
     # discarded all 19 actual sizes in a 2026-10-09 read-only probe.
     SiteKind.U2: (5, 4, 3, 2),
+    # 2026-10-10 live Audiences ten-column search: all 16 torrent rows put
+    # date at -7 and size at -6. The generic -6/-5 mapping lost both fields.
+    # Seeders/leechers remain at -4/-3; do not affect other NexusPHP sites.
+    SiteKind.AUDIENCES: (7, 6, 4, 3),
 }
 
 
