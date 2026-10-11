@@ -192,6 +192,9 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         display_name="HDDolby",
         base_url="https://www.hddolby.com",
         credential_kind=SiteCredentialKind.COOKIE,
+        # Confirmed with one real read-only search on 2026-10-11:
+        # HDDolby succeeds at a 45-second budget but can exceed 15 seconds.
+        request_timeout_seconds=45,
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
