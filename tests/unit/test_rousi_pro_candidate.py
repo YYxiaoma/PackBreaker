@@ -221,6 +221,11 @@ async def test_rousi_pro_cookie_download_fails_closed_without_secrets(
     with pytest.raises(SiteAdapterError) as exc:
         await adapter.fetch_torrent("123")
     assert exc.value.code == error_code
+    # Download 5xx retains its existing error metadata; unlike public
+    # read-only GETs, the site reliability wrapper must never replay a
+    # torrent download (a one-time token might already have been consumed).
+    if status in (401, 403, 429):
+        assert exc.value.retryable is False
     assert _KEY not in str(exc.value)
     assert _COOKIE not in str(exc.value)
     assert "outside.invalid" not in str(exc.value)
@@ -242,13 +247,13 @@ async def test_rousi_pro_cookie_download_fails_closed_without_secrets(
     ),
 )
 @pytest.mark.parametrize("operation", ("search", "test_connection"))
-async def test_rousi_readonly_http_error_retryability(
+async def test_rousi_readonly_transient_http_errors_have_correct_retry_class(
     operation: str, status: int, expected_code: str, retryable: bool
 ) -> None:
-    calls: list[httpx2.Request] = []
+    requests: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
-        calls.append(request)
+        requests.append(request)
         if operation == "search":
             assert request.url.path == "/api/v1/torrents"
             assert request.headers.get("api-token") is None
@@ -256,7 +261,7 @@ async def test_rousi_readonly_http_error_retryability(
             assert request.url.path == "/api/points/attendance/stats"
             assert request.headers.get("api-token") == _KEY
         assert request.headers.get("cookie") is None
-        return httpx2.Response(status, content=b"synthetic-secret-body")
+        return httpx2.Response(status, content=b"private-tracker-content")
 
     adapter = RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler))
     with pytest.raises(SiteAdapterError) as failure:
@@ -266,19 +271,19 @@ async def test_rousi_readonly_http_error_retryability(
             await adapter.test_connection()
     assert failure.value.code == expected_code
     assert failure.value.retryable is retryable
-    assert "synthetic-secret-body" not in str(failure.value)
+    assert "private-tracker-content" not in str(failure.value)
     assert _KEY not in str(failure.value)
-    assert len(calls) == 1
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ("search", "test_connection"))
-async def test_rousi_readonly_connect_error_retryable(operation: str) -> None:
+async def test_rousi_readonly_network_failure_is_bounded_retryable(operation: str) -> None:
     calls: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         calls.append(request)
-        raise httpx2.ConnectError("synthetic external private connection detail")
+        raise httpx2.ConnectError("synthetic external secret not for logs")
 
     adapter = RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler))
     with pytest.raises(SiteAdapterError) as failure:
@@ -288,14 +293,17 @@ async def test_rousi_readonly_connect_error_retryable(operation: str) -> None:
             await adapter.test_connection()
     assert failure.value.code == "SITE_UNAVAILABLE"
     assert failure.value.retryable is True
-    assert "synthetic external private" not in str(failure.value)
+    assert _KEY not in str(failure.value)
+    assert "synthetic external secret" not in str(failure.value)
     assert len(calls) == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ("search", "test_connection"))
 @pytest.mark.parametrize("date_header", (False, True))
-async def test_rousi_readonly_429_preserves_retry_after(operation: str, date_header: bool) -> None:
+async def test_rousi_readonly_429_preserves_server_retry_after(
+    operation: str, date_header: bool
+) -> None:
     from datetime import UTC, datetime, timedelta
     from email.utils import format_datetime
 
@@ -307,6 +315,7 @@ async def test_rousi_readonly_429_preserves_retry_after(operation: str, date_hea
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         assert request.headers.get("cookie") is None
+        assert request.url.path in {"/api/v1/torrents", "/api/points/attendance/stats"}
         return httpx2.Response(429, headers={"Retry-After": header})
 
     adapter = RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler))
@@ -322,7 +331,7 @@ async def test_rousi_readonly_429_preserves_retry_after(operation: str, date_hea
 
 
 @pytest.mark.asyncio
-async def test_rousi_readonly_429_invalid_retry_after_fails_closed() -> None:
+async def test_rousi_readonly_invalid_cooldown_fails_closed() -> None:
     from math import isfinite
 
     def handler(_request: httpx2.Request) -> httpx2.Response:
@@ -331,12 +340,13 @@ async def test_rousi_readonly_429_invalid_retry_after_fails_closed() -> None:
     adapter = RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler))
     with pytest.raises(SiteAdapterError) as failure:
         await adapter.search(SearchQuery(("synthetic",), SearchMediaType.MOVIE))
+    assert failure.value.retryable is True
     assert failure.value.retry_after_seconds is not None
     assert not isfinite(failure.value.retry_after_seconds)
 
 
 @pytest.mark.asyncio
-async def test_rousi_rate_limit_does_not_burst_and_torrent_not_replayed() -> None:
+async def test_rousi_site_reliability_honors_readonly_429_without_request_burst() -> None:
     from backend.app.infrastructure.site_reliability import (
         SiteReliabilityPolicy,
         SiteReliabilityRegistry,
@@ -346,39 +356,49 @@ async def test_rousi_rate_limit_does_not_burst_and_torrent_not_replayed() -> Non
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         calls.append(request)
-        if request.url.path == "/api/v1/torrents":
-            assert request.headers.get("api-token") is None
-            return httpx2.Response(429, headers={"Retry-After": "120"})
-        assert request.url.path == "/api/v1/torrents/123/download"
-        assert request.headers.get("cookie") == _COOKIE
-        return httpx2.Response(503, content=b"synthetic-private-error")
+        assert request.url.path == "/api/v1/torrents"
+        assert request.headers.get("api-token") is None
+        return httpx2.Response(429, headers={"Retry-After": "120"})
 
-    registry = SiteReliabilityRegistry(
+    raw = RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler))
+    adapter = SiteReliabilityRegistry(
         SiteReliabilityPolicy(max_attempts=3, retry_deadline_seconds=5.0)
-    )
-    search_adapter = registry.wrap(
-        config_id="rousi-search",
-        config_version=1,
-        adapter=RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler)),
-    )
-    with pytest.raises(SiteAdapterError) as limited:
-        await search_adapter.search(SearchQuery(("synthetic",), SearchMediaType.MOVIE))
-    assert limited.value.code == "SITE_RATE_LIMITED"
-    assert limited.value.retry_after_seconds == 120
+    ).wrap(config_id="rousi-pro", config_version=1, adapter=raw)
+    with pytest.raises(SiteAdapterError) as failure:
+        await adapter.search(SearchQuery(("synthetic",), SearchMediaType.MOVIE))
+    assert failure.value.code == "SITE_RATE_LIMITED"
+    assert failure.value.retryable is True
+    assert failure.value.retry_after_seconds == 120
     assert len(calls) == 1
 
-    download_adapter = registry.wrap(
-        config_id="rousi-download",
-        config_version=1,
-        adapter=RousiProCandidateAdapter(
-            _KEY, download_cookie=_COOKIE, transport=httpx2.MockTransport(handler)
-        ),
+
+@pytest.mark.asyncio
+async def test_rousi_torrent_download_503_not_replayed_by_site_reliability() -> None:
+    from backend.app.infrastructure.site_reliability import (
+        SiteReliabilityPolicy,
+        SiteReliabilityRegistry,
     )
-    with pytest.raises(SiteAdapterError) as unavailable:
-        await download_adapter.fetch_torrent("123")
-    assert unavailable.value.code == "SITE_UNAVAILABLE"
-    assert len(calls) == 2
-    assert "synthetic-private-error" not in str(unavailable.value)
+
+    calls: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request)
+        assert request.url.path == "/api/v1/torrents/123/download"
+        assert request.headers.get("api-token") is None
+        assert request.headers.get("cookie") == _COOKIE
+        return httpx2.Response(503, content=b"synthetic-private-content")
+
+    raw = RousiProCandidateAdapter(
+        _KEY, download_cookie=_COOKIE, transport=httpx2.MockTransport(handler)
+    )
+    adapter = SiteReliabilityRegistry(
+        SiteReliabilityPolicy(max_attempts=3, retry_deadline_seconds=5.0)
+    ).wrap(config_id="rousi-pro", config_version=1, adapter=raw)
+    with pytest.raises(SiteAdapterError) as failure:
+        await adapter.fetch_torrent("123")
+    assert failure.value.code == "SITE_UNAVAILABLE"
+    assert len(calls) == 1
+    assert "synthetic-private-content" not in str(failure.value)
 
 
 @pytest.mark.asyncio
