@@ -1,10 +1,11 @@
-# PackBreaker 支持矩阵（更新于 2026-10-10）
+# PackBreaker 支持矩阵（更新于 2026-10-11）
 
 本页区分**正式发布、代码可用、真实只读探测、独立内容/辅种全链路验收**。一个站点可配置、连接成功或有客户端既有种子，都不等于正式完成该站的端到端业务验收。
 
 - **最新正式 Release：v1.1.1**。源码提交 `b779e3270f2a3b3d8c380e22ac36f06ce55f8252`；不可变 GHCR index 为 `sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9`。
 - **最近一次已交付 v1.1.2 候选（非正式 Release）**：源码 `e784c194a4af19f21b6fbce4ec4215f6b99fa444`，标签 `candidate-v1.1.2-e784c194a4af`；GHCR / Docker Hub 的不可变多架构摘要均为 `sha256:b6289c9ebf311afe9a1ce9f49eb1eefb854d4885b7177b3d4065416a7cfcdc6c`（[Actions #38025511243](https://github.com/YYxiaoma/PackBreaker/actions/runs/38025511243)），两仓库原生 ARM64/AMD64 验证成功。该候选早于后续代码，不能当作最新整合产物。
-- **当前本地整合基线**：`candidate/v1.1.2-rc1@99134bf`，已同时包含原 RC1 的匹配/Rousi 修复、主线 PR #17–#20，以及本地与 PR #21 等效的离线源影片引用/FIFO 安全修复；尚未推送远端或重新交付精确 SHA 候选。GitHub PR #21 仍是 Draft，不能称远端已经合并。- **v1.1.2 收官门槛**：[Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。用户已明确取消 Synology NAS 现场验收要求；不对 NAS 生产环境进行任何未经授权的操作。
+- **当前合并后研发源码**：`main@4165edaa019443aba8e5dd03632cfe0bd0e367b2`，PR #22 已包含 Rousi/匹配恢复和 PR #21 等价离线安全补丁；PR #21 作为重复草稿关闭。该主线的 [Candidate Docker E2E](https://github.com/YYxiaoma/PackBreaker/actions/runs/38109131714) 已成功，[CI](https://github.com/YYxiaoma/PackBreaker/actions/runs/38109131711) 须以最终状态为准。**尚无该最新版双注册表不可变候选镜像，不能混用旧 digest。**
+- **v1.1.2 收官门槛**：[Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。无需 Synology NAS 现场验收，未经授权不操作生产 NAS。
 
 ## 1. 平台与下载器
 
@@ -61,7 +62,8 @@
 | Rousi Pro | 3 | 0 | 3 | 0 |
 | UBits | 460 | 379 | 81 | 64 |
 
-这份快照与 2026-10-09 的单任务读数采用不同统计范围，不得相加、外推故障根因或泄露 Tracker URL、passkey 和真实种子身份。RC1 已整合 PR #11–#21 对应的匹配可靠性、只读故障、未知写结果对账与离线安全检查代码；本地关键专项测试与静态门禁已通过，**远端 PR #21、最终镜像与真实业务 E2E 仍未关闭**。
+这份快照与 2026-10-09 的单任务读数采用不同统计范围，不得相加、外推故障根因或泄露 Tracker URL、passkey 和真实种子身份。RC1 已整合 PR #11–#21 对应的匹配可靠性、只读故障、未知写结果对账与离线安全检查代码；本地关键专项测试与静态门禁已通过，**最终候选镜像与真实业务 E2E 仍未关闭；PR #21 已由 PR #22 覆盖并关闭**。
 
 用户提供的 CarPT、HDFans、PTTime 三份私种与一组真实源媒体在隔离审计中完成全 Piece 内容核对，分别为 **1,831/1,831、7,321/7,321、7,321/7,321**。通过跨环境 Piece-SHA1 序列承诺值比较；原始私种未进入 WebCodex Runner，所以不能记作当前 Runner 工具读取演练、正式任务、客户端 verify 或 ownership journal 验收。[审计证据](https://github.com/YYxiaoma/PackBreaker/issues/5#issuecomment-6095145394)。HDFans 已有外部同 hash 客户端任务，必须维持只读。
+
 当前所需现场补验、失败分类与退出条件维护于 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5) 和 [v1.1.1 的真实只读记录](./v1.1.1-development.md)。历史 v1.0.0～v1.0.5 发行记录与旧的测试范围可通过 Git 历史和 `docs/v1.0.*-release.md` 查阅，不再视为本页“当前版本”说明。
