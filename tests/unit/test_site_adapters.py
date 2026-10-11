@@ -980,3 +980,62 @@ def _mteam_row() -> dict[str, object]:
         "douban": "https://movie.douban.com/subject/1295644/",
         "status": {"seeders": "8", "leechers": "2"},
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "search_timeout", "expected_details_timeout"),
+    [
+        (SiteKind.PTERCLUB, 15.0, 90.0),
+        (SiteKind.HDDOLBY, 45.0, 90.0),
+        (SiteKind.AUDIENCES, 15.0, 15.0),
+        (SiteKind.HDHOME, 15.0, 15.0),
+        # Explicit higher persisted timeout must never be reduced.
+        (SiteKind.PTERCLUB, 120.0, 120.0),
+    ],
+)
+async def test_candidate_details_peak_hour_timeout_is_isolated_from_search_and_auth(
+    kind: SiteKind,
+    search_timeout: float,
+    expected_details_timeout: float,
+) -> None:
+    # Synthetic HTTP fixture; no actual site, cookie or one-time torrent token
+    # is accessed. Keep the two slow sites' detail timeouts separate from
+    # search/auth and do not change unrelated site behavior.
+    origin = site_profile(kind).base_url
+    host = httpx2.URL(origin).host
+    observed: dict[str, float] = {}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.host == host
+        assert request.method == "GET"
+        assert request.url.path in {"/index.php", "/torrents.php", "/details.php"}
+        assert request.headers.get("cookie") == "synthetic-cookie-no-torrent-secret"
+        timeout = request.extensions.get("timeout")
+        assert isinstance(timeout, dict)
+        read_timeout = timeout.get("read")
+        assert isinstance(read_timeout, (int, float))
+        observed[request.url.path] = float(read_timeout)
+        if request.url.path == "/index.php":
+            return httpx2.Response(200, text='<a href="usercp.php">Account</a>')
+        if request.url.path == "/torrents.php":
+            return httpx2.Response(200, text="<html><title>Results</title></html>")
+        return httpx2.Response(200, text="<html><h1>Synthetic Details 1994</h1></html>")
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=kind,
+        base_url=origin,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie-no-torrent-secret",
+        timeout_seconds=search_timeout,
+    )
+    await adapter.test_connection()
+    await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.MOVIE))
+    details = await adapter.fetch_details("42")
+
+    assert details.candidate.torrent_id == "42"
+    assert observed == {
+        "/index.php": search_timeout,
+        "/torrents.php": search_timeout,
+        "/details.php": expected_details_timeout,
+    }
