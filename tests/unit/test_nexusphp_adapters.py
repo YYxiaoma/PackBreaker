@@ -1399,7 +1399,7 @@ async def test_hhclub_card_layout_search_and_download_use_exact_script_names() -
 
 
 @pytest.mark.asyncio
-async def test_hhclub_torrent_timeout_maps_to_retryable_site_unavailable() -> None:
+async def test_hhclub_torrent_timeout_maps_to_retryable_site_timeout() -> None:
     def handler(_request: httpx2.Request) -> httpx2.Response:
         raise httpx2.ReadTimeout("synthetic timeout")
 
@@ -1407,7 +1407,7 @@ async def test_hhclub_torrent_timeout_maps_to_retryable_site_unavailable() -> No
     with pytest.raises(SiteAdapterError) as failure:
         await adapter.fetch_torrent("456")
 
-    assert failure.value.code == "SITE_UNAVAILABLE"
+    assert failure.value.code == "SITE_TIMEOUT"
     assert failure.value.retryable is True
     assert "synthetic-secret" not in str(failure.value)
 

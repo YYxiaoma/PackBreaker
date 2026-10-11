@@ -649,7 +649,7 @@ def test_stop_reconcile_rejects_unrelated_or_missing_reason(
     assert exc.value.code == "UNPACK_RETRY_EXTERNAL_RECONCILE_REQUIRED"
 
 
-@pytest.mark.parametrize("error_code", ["SITE_UNAVAILABLE", "SITE_RATE_LIMITED"])
+@pytest.mark.parametrize("error_code", ["SITE_UNAVAILABLE", "SITE_RATE_LIMITED", "SITE_TIMEOUT"])
 def test_retry_after_transient_site_outage_preserves_auxiliary_journal(
     error_code: str,
 ) -> None:

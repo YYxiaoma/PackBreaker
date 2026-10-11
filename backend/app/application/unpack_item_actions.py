@@ -508,6 +508,7 @@ def _queue_failed_item(session: Session, item: UnpackExecutionItem, now: datetim
         "DOWNLOADER_UNAVAILABLE",
         "DOWNLOADER_CONNECTION_FAILED",
         "SITE_UNAVAILABLE",
+        "SITE_TIMEOUT",
         "SITE_RATE_LIMITED",
     } and len(operations) == len(_AUXILIARY_STARTED_OPERATIONS)
     stop_reconciliation_resume = (
