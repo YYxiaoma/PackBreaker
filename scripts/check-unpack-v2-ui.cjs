@@ -696,12 +696,31 @@ const fulfillJson = (route, body, status = 200) =>
     const editDialog = page.locator('.el-dialog').filter({ hasText: '编辑数据拆包任务' }).last();
     await editDialog.waitFor({ state: 'visible' });
     await editDialog.locator('.el-form-item').filter({ hasText: '任务名称' }).locator('input').fill('人工编辑 E2E');
+    const manualEditResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/v1/unpack/definitions/definition-manual') &&
+        response.request().method() === 'PUT' &&
+        response.status() === 200,
+    );
     await editDialog.getByRole('button', { name: '保存', exact: true }).click();
+    await manualEditResponse;
     assert.equal(updatedDefinitionBody?.name, '人工编辑 E2E');
     await monitorRow.getByRole('button', { name: '更多操作' }).click();
     await page.getByRole('menuitem', { name: '编辑', exact: true }).click();
     await editDialog.waitFor({ state: 'visible' });
+    const monitorEditResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/v1/unpack/definitions/definition-monitor') &&
+        response.request().method() === 'PUT' &&
+        response.status() === 200,
+    );
     await editDialog.getByRole('button', { name: '保存', exact: true }).click();
+    const monitorUpdate = await monitorEditResponse;
+    assert.equal(
+      monitorUpdate.request().postDataJSON()?.timezone,
+      'Asia/Shanghai',
+      '监控任务更新 PUT 必须带上编辑前的原始时区',
+    );
     assert.equal(
       updatedMonitorBody?.timezone,
       'Asia/Shanghai',
