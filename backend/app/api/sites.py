@@ -18,6 +18,7 @@ from backend.app.domain.site_config import (
     SiteKind,
     SiteProbeStatus,
     SiteSupportStatus,
+    site_profile,
     site_profiles,
 )
 from backend.app.infrastructure.site_reliability import SiteReliabilityHealth
@@ -94,7 +95,8 @@ class SiteCreateRequest(BaseModel):
     type: SiteKind
     credential: SiteCredentialInput | None = None
     download_cookie: SecretStr | None = Field(default=None, min_length=1, max_length=8192)
-    request_timeout_seconds: int = Field(default=15, ge=1, le=120)
+    # Missing/null means use the trusted profile default for this site kind.
+    request_timeout_seconds: int | None = Field(default=None, ge=1, le=120)
     search_interval_seconds: int = Field(default=0, ge=0, le=3600)
     user_agent: str | None = Field(default=None, max_length=512)
     browser_emulation_enabled: bool = False
@@ -123,7 +125,8 @@ class SiteTemporaryProbeRequest(BaseModel):
     type: SiteKind
     credential: SiteCredentialInput
     download_cookie: SecretStr | None = Field(default=None, min_length=1, max_length=8192)
-    request_timeout_seconds: int = Field(default=15, ge=1, le=120)
+    # Missing/null means use the trusted profile default for this site kind.
+    request_timeout_seconds: int | None = Field(default=None, ge=1, le=120)
     search_interval_seconds: int = Field(default=0, ge=0, le=3600)
     user_agent: str | None = Field(default=None, max_length=512)
     browser_emulation_enabled: bool = False
@@ -347,7 +350,11 @@ async def probe_site(
             if payload.download_cookie is not None
             else None
         ),
-        request_timeout_seconds=payload.request_timeout_seconds,
+        request_timeout_seconds=(
+            payload.request_timeout_seconds
+            if payload.request_timeout_seconds is not None
+            else site_profile(payload.type).request_timeout_seconds
+        ),
         search_interval_seconds=payload.search_interval_seconds,
         user_agent=payload.user_agent,
         browser_emulation_enabled=payload.browser_emulation_enabled,
@@ -377,7 +384,11 @@ async def create_site(
             if payload.download_cookie is not None
             else None
         ),
-        request_timeout_seconds=payload.request_timeout_seconds,
+        request_timeout_seconds=(
+            payload.request_timeout_seconds
+            if payload.request_timeout_seconds is not None
+            else site_profile(payload.type).request_timeout_seconds
+        ),
         search_interval_seconds=payload.search_interval_seconds,
         user_agent=payload.user_agent,
         browser_emulation_enabled=payload.browser_emulation_enabled,

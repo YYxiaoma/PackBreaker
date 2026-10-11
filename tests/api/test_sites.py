@@ -127,6 +127,91 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
         client.__exit__(None, None, None)
 
 
+@pytest.mark.parametrize(
+    ("kind", "explicit_timeout", "expected_timeout"),
+    [
+        (SiteKind.HDDOLBY, None, 45),
+        (SiteKind.HDDOLBY, "NULL", 45),
+        (SiteKind.HDDOLBY, 22, 22),
+        (SiteKind.SPRING_SUNDAY, None, 15),
+        (SiteKind.MTEAM, None, 15),
+    ],
+)
+def test_site_create_and_unsaved_probe_use_profile_timeout_if_omitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: SiteKind,
+    explicit_timeout: int | str | None,
+    expected_timeout: int,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        profile = site_profile(kind)
+        request_body: dict[str, object] = {
+            "type": kind.value,
+            "credential": {
+                "kind": profile.credential_kind.value,
+                "value": "synthetic-profile-timeout-credential",
+            },
+        }
+        if explicit_timeout == "NULL":
+            request_body["request_timeout_seconds"] = None
+        elif explicit_timeout is not None:
+            request_body["request_timeout_seconds"] = explicit_timeout
+
+        created = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={"name": f"Profile timeout {kind.value}", **request_body},
+        )
+        assert created.status_code == 201
+        assert created.json()["request_timeout_seconds"] == expected_timeout
+        assert created.json()["enabled"] is False
+
+        observed: list[dict[str, object]] = []
+
+        async def stub_probe(**kwargs: object) -> dict[str, object]:
+            observed.append(kwargs)
+            return {"status": "ok", "capabilities": {}}
+
+        monkeypatch.setattr(app.state.site_service, "probe", stub_probe)
+        probed = client.post("/api/v1/sites/probe", headers=_csrf(client), json=request_body)
+        assert probed.status_code == 200
+        assert observed[0]["request_timeout_seconds"] == expected_timeout
+        assert "synthetic-profile-timeout-credential" not in probed.text
+        with app.state.runtime.session_factory() as session:
+            assert session.query(Site).count() == 1
+            assert session.query(SecretRecord).count() == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("timeout", [0, 121])
+def test_site_create_and_unsaved_probe_reject_invalid_timeout_without_persisting(
+    tmp_path: Path,
+    timeout: int,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    credential = "synthetic-invalid-timeout-canary"
+    payload = {
+        "name": "Invalid timeout HDDolby",
+        "type": "HDDOLBY",
+        "credential": {"kind": "COOKIE", "value": credential},
+        "request_timeout_seconds": timeout,
+    }
+    try:
+        for endpoint in ("/api/v1/sites", "/api/v1/sites/probe"):
+            response = client.post(endpoint, headers=_csrf(client), json=payload)
+            assert response.status_code == 422
+            assert credential not in response.text
+
+        with app.state.runtime.session_factory() as session:
+            assert session.query(Site).count() == 0
+            assert session.query(SecretRecord).count() == 0
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_supported_site_profiles_can_enable_without_connection_probe(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
