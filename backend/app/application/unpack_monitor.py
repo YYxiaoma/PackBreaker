@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
+from backend.app.application.unpack_site_readiness import require_ready_unpack_sites
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.task_definition import next_cron_run
 from backend.app.domain.unpack import (
@@ -105,6 +106,7 @@ class UnpackMonitorService:
                 raise self._conflict("监控任务当前未到执行时间或已不再启用")
             if definition.version != snapshot["definition_version"]:
                 raise self._conflict("监控任务配置在触发准备期间已变化，请等待下一轮调度")
+            require_ready_unpack_sites(session, definition.site_ids)
 
             cron_expression = definition.cron_expression
             timezone = definition.timezone
@@ -207,6 +209,7 @@ class UnpackMonitorService:
                 or definition.next_run_at > now
             ):
                 raise self._conflict("监控任务当前未到执行时间或已不再启用")
+            require_ready_unpack_sites(session, definition.site_ids)
             return {
                 "definition_version": definition.version,
                 "source_kind": definition.source_kind,

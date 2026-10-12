@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -792,5 +793,86 @@ def test_unpack_auto_matched_item_can_enter_manual_review_api(tmp_path: Path) ->
             assert item is not None and execution is not None
             assert item.match_origin == "MANUAL"
             assert execution.status == "CONTENT_VERIFYING"
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize(
+    ("site_kind", "enabled"),
+    [
+        ("AUDIENCES", False),
+        ("AUDIENCES", True),  # corrupted/imported DB flag must not bypass Registry
+        ("MTEAM", False),
+    ],
+)
+def test_unpack_run_rejects_pending_or_disabled_configured_site_before_execution(
+    tmp_path: Path,
+    site_kind: str,
+    enabled: bool,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        downloader_id = _create_ready_downloader(app)
+        site_id = new_uuid()
+        media = app.state.settings.data_dir / "sources"
+        target = app.state.settings.data_dir / "isolated-output"
+        media.mkdir()
+        target.mkdir()
+        (media / "synthetic.movie.mkv").write_bytes(b"abcd")
+        with app.state.runtime.session_factory() as session:
+            session.add(
+                Site(
+                    id=site_id,
+                    name="isolated pending site",
+                    type=site_kind,
+                    base_url="https://synthetic.example",
+                    credential_kind="COOKIE" if site_kind != "MTEAM" else "API_KEY",
+                    capabilities={},
+                    connection_status="OK",
+                    enabled=enabled,
+                    version=1,
+                )
+            )
+            session.commit()
+        create = client.post(
+            "/api/v1/unpack/definitions",
+            headers=_csrf(client),
+            json={
+                "name": "未验收站点任务应拒绝执行",
+                "trigger_kind": "MANUAL",
+                "source_kind": "DIRECTORY",
+                "execution_scope_kind": "ALL_MATCHING_MEDIA",
+                "source_config": {"directory_path": media.as_posix()},
+                "file_filter": {"extensions": [".mkv"]},
+                "site_ids": [site_id],
+                "output_config": {
+                    "output_directory": target.as_posix(),
+                    "storage_mode": "COPY",
+                    "conflict_policy": "VERIFY_REUSE_OR_STOP",
+                    "target_downloader_id": downloader_id,
+                },
+            },
+        )
+        assert create.status_code == 201
+        definition_id = create.json()["id"]
+        response = client.post(
+            f"/api/v1/unpack/definitions/{definition_id}/actions",
+            headers=_csrf(client),
+            json={"action": "run"},
+        )
+        assert response.status_code == 409
+        assert response.json()["code"] == "UNPACK_SITE_NOT_READY"
+        with app.state.runtime.session_factory() as session:
+            assert (
+                session.scalar(
+                    select(func.count(UnpackExecution.id)).where(
+                        UnpackExecution.definition_id == definition_id
+                    )
+                )
+                == 0
+            )
+            definition = session.get(UnpackDefinition, definition_id)
+            assert definition is not None
+            assert definition.status == "PENDING_EXECUTION"
     finally:
         client.__exit__(None, None, None)
