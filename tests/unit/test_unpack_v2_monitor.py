@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -312,3 +313,37 @@ def test_monitor_overlap_is_skipped_and_rescheduled(tmp_path: Path) -> None:
             select(UnpackExecution).where(UnpackExecution.definition_id == created.id)
         ).all()
         assert len(executions) == 1
+
+
+@pytest.mark.parametrize(
+    ("site_type", "site_enabled"),
+    [
+        ("AUDIENCES", True),
+        ("MTEAM", False),
+    ],
+)
+def test_monitor_trigger_does_not_snapshot_pending_or_disabled_site(
+    tmp_path: Path,
+    site_type: str,
+    site_enabled: bool,
+) -> None:
+    from backend.app.application.errors import ApplicationError
+
+    fake = _FakeDownloaderService((), _FakeBinding({}))
+    definitions, monitor, _discovery, factory, _root, output = _services(tmp_path, fake)
+    created = definitions.create(_monitor_request(output))
+    definitions.run(created.id)
+    now = _make_due(factory, created.id)
+    with factory() as session:
+        site = session.get(Site, "site-1")
+        assert site is not None
+        site.type = site_type
+        site.enabled = site_enabled
+        session.commit()
+    with pytest.raises(ApplicationError) as exc:
+        asyncio.run(monitor.trigger_due_definition(created.id, now=now))
+    assert exc.value.code == "UNPACK_SITE_NOT_READY"
+    with factory() as session:
+        assert not session.scalars(select(UnpackExecution)).all()
+        definition = session.get(UnpackDefinition, created.id)
+        assert definition is not None and definition.last_triggered_at is None

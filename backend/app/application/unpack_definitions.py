@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
+from backend.app.application.unpack_site_readiness import require_ready_unpack_sites
 from backend.app.application.unpack_source_scans import (
     UnpackSourceScanService,
     normalize_unpack_file_filter,
@@ -315,6 +316,7 @@ class UnpackDefinitionService:
             }:
                 raise self._conflict("当前任务状态不能执行")
 
+            require_ready_unpack_sites(session, definition.site_ids)
             trigger_kind = UnpackTriggerKind(definition.trigger_kind)
             if trigger_kind is UnpackTriggerKind.MONITOR:
                 cron_expression = definition.cron_expression
