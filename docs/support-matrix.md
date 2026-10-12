@@ -1,10 +1,11 @@
-# PackBreaker 支持矩阵（更新于 2026-10-10）
+# PackBreaker 支持矩阵（更新于 2026-10-12）
 
 本页区分**正式发布、代码可用、真实只读探测、独立内容/辅种全链路验收**。一个站点可配置、连接成功或有客户端既有种子，都不等于正式完成该站的端到端业务验收。
 
 - **最新正式 Release：v1.1.1**。源码提交 `b779e3270f2a3b3d8c380e22ac36f06ce55f8252`；不可变 GHCR index 为 `sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9`。
 - **最近一次已交付 v1.1.2 候选（非正式 Release）**：源码 `e784c194a4af19f21b6fbce4ec4215f6b99fa444`，标签 `candidate-v1.1.2-e784c194a4af`；GHCR / Docker Hub 的不可变多架构摘要均为 `sha256:b6289c9ebf311afe9a1ce9f49eb1eefb854d4885b7177b3d4065416a7cfcdc6c`（[Actions #38025511243](https://github.com/YYxiaoma/PackBreaker/actions/runs/38025511243)），两仓库原生 ARM64/AMD64 验证成功。该候选早于后续代码，不能当作最新整合产物。
-- **当前本地整合基线**：`candidate/v1.1.2-rc1@99134bf`，已同时包含原 RC1 的匹配/Rousi 修复、主线 PR #17–#20，以及本地与 PR #21 等效的离线源影片引用/FIFO 安全修复；尚未推送远端或重新交付精确 SHA 候选。GitHub PR #21 仍是 Draft，不能称远端已经合并。- **v1.1.2 收官门槛**：[Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。用户已明确取消 Synology NAS 现场验收要求；不对 NAS 生产环境进行任何未经授权的操作。
+- **2026-10-12 候选提交前审计基线**：`candidate/v1.1.2-rc1@fe6315d`，其上有 **12 个待提交的本地修改文件**，包含辅助文件只读超时、HDDolby 详情超时、最终辅种 journal / checkpoint 多 worker 安全修复以及隔离测试。工作树不是不可变源码 SHA，**不能用历史候选镜像代表这些未提交修复**；尚未对该最终源码重新交付镜像或正式发布。
+- **v1.1.2 收官门槛**：[Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。用户取消 Synology NAS 现场验收要求，但仍不授权 NAS 生产写入；七新增站全部真实验收和正式发布需独立通过。
 
 ## 1. 平台与下载器
 
@@ -26,12 +27,14 @@
 | M-TEAM | API Key | 代码可用，既有搜索/认证证据，具体目标任务仍须独立校验 |
 | HDTime | Cookie | 代码可用，NexusPHP 搜索/连接真实样本已验证 |
 | HHClub | Cookie | 代码可用，固定主站及 NexusPHP 真实连接证据 |
-| KeepFrds | Cookie | 代码可用；最新只读单页有一个严格候选且详情身份匹配，完整 PackBreaker 任务 E2E 未验收 || HDHome | Cookie | 代码可用；目标影片有可行候选，但 PackBreaker 全链路未单独关闭 |
+| KeepFrds | Cookie | 代码可用；最新只读单页有一个严格候选且详情身份匹配，完整 PackBreaker 任务 E2E 未验收 |
+| HDHome | Cookie | 代码可用；目标影片有可行候选，但 PackBreaker 全链路未单独关闭 |
 | UBits | Cookie | 代码可用；间歇连接失败待复核。Transmission Tracker 状态条目 460 个，其中 379 最近成功、81 失败（64 超时）；不是独立任务数 |
 | HDFans | Cookie | 隔离审计中用户新候选完整 Piece **7,321/7,321** 通过；已有同 hash Transmission 做种任务无 PackBreaker ownership journal，禁止重复添加或认领；正式任务链未完成 |
 | BTSCHOOL | Cookie | 两个严格候选存在歧义；Tracker 状态条目 708 个，其中 705 最近成功、3 失败（2 超时） |
 | PTTime | Cookie | 搜索及详情身份已验证；用户新候选隔离全 Piece **7,321/7,321** 通过，但源私种未导入 Runner 的正式任务链，下载器验证未完成 |
-| Rousi Pro | API Key 搜索 + 独立下载 Cookie | 双凭据必须分别保护；临时只读故障分类和冷却逻辑已有代码修复，Tracker 最近 3 条状态均失败，根因仍待定位 || 聆音Club | Cookie | 代码可用；目标影片有可行候选，完整正式任务仍需核对 |
+| Rousi Pro | API Key 搜索 + 独立下载 Cookie | 双凭据必须分别保护；临时只读故障分类和冷却逻辑已有代码修复，Tracker 最近 3 条状态均失败，根因仍待定位 |
+| 聆音Club | Cookie | 代码可用；目标影片有可行候选，完整正式任务仍需核对 |
 
 以上站点“代码可启用”的含义是 Adapter 和任务入口已实现，**不是**每站都在独立正式 PackBreaker 任务中完成了真实取种、媒体校验、文件操作、下载器做种和恢复测试。
 
@@ -39,12 +42,18 @@
 
 | 站点 | Registry 状态 | 已有真实证据 / 必须补齐 |
 | --- | --- | --- |
-| PTerClub | `PENDING_REAL_VALIDATION` | 2026-10-10 真实搜索 23 条、1 条可行候选；详情阶段 `SITE_UNAVAILABLE`；仍缺合法取种与独立内容校验 |
-| Audiences | `PENDING_REAL_VALIDATION` | 十列搜索数值映射已修复，真实单页日期/容量/做种/下载数 **16/16** 可解析；当前参考影片无严格候选，仍缺合法取种和完整 Piece || SpringSunday | `PENDING_REAL_VALIDATION` | 2026-10-10 真实解析 16 条搜索结果，当前影片无可行候选；历史官方连接超时仍需独立排查 |
-| HDDolby | `PENDING_REAL_VALIDATION` | 历史搜索曾返回结果；2026-10-10 单次搜索报 `SITE_UNAVAILABLE`，合适目标与独立 Piece 验收仍缺失 |
-| U2 | `PENDING_REAL_VALIDATION` | 既有 19/19 动画搜索及详情身份已验证；2026-10-10 另一个动画查询返回 50 条，大小、做种、下载数均 50/50 可解析，但有下一页；间歇连接错误、合法取种及独立 Piece 仍待验收 |
-| 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 2026-10-10 搜索返回 5 条，当前影片 2 条可行候选仍有歧义，不得自动任选其一 |
-| CarPT | `PENDING_REAL_VALIDATION` | 已有唯一严格候选和详情身份证据；用户提供的新候选在隔离审计中完整 Piece **1,831/1,831** 通过；正式站点支持和 PackBreaker 任务链仍未验收 |
+| PTerClub | `PENDING_REAL_VALIDATION` | 10-10 搜索返回 23 条、详情一度 `SITE_UNAVAILABLE`；后续受控 90 秒重试取得详情身份匹配证据。10-12 使用用户种子在隔离 TR 中实际 ADD/VERIFY/START 并安全清理成功；仍缺正式 PackBreaker 任务链 E2E |
+| Audiences | `PENDING_REAL_VALIDATION` | 搜索字段映射 16/16 可解析，已有搜索和详情身份匹配历史证据；参考影片此前无严格候选；新提交种子与现有 TR 中外部相同 hash 冲突，不允许接管；仍缺可独立验收的正式任务 E2E |
+| SpringSunday | `PENDING_REAL_VALIDATION` | 10-10 搜索解析 16 条，参考影片无可行候选；后续存在搜索及详情身份通过的阶段证据；历史连接超时仍需记录；已提交种子对应 20.7 GB 其他内容，授权目录没有匹配媒体，真实 E2E 阻断 |
+| HDDolby | `PENDING_REAL_VALIDATION` | 10-10 曾 `SITE_UNAVAILABLE`；**10-12 受控只读搜索 9 条（容量 9/9）及详情身份匹配成功**，详情专属 90 秒超时已修复，但单次只读成功不能证明稳定性；10-12 使用用户种子在隔离 TR 中 ADD/VERIFY/START 并安全清理成功，正式 PackBreaker 任务链仍缺 |
+| U2 | `PENDING_REAL_VALIDATION` | 动画搜索及详情身份有阶段性通过证据；另一次单页 50/50 字段解析成功但存在下一页，不可等同完整搜索；间歇连接错误仍待复核；已提交种子为约 13.7 GB、25 文件动画资源，授权目录无对应媒体，真实 E2E 阻断 |
+| 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 已有只读搜索与详情身份通过的阶段证据；10-10 参考影片搜索 5 条、2 条可行候选存在歧义，禁止自动任选；新提交种子已在 TR 中有外部同 hash 任务，不允许认领；仍缺独立正式 E2E |
+| CarPT | `PENDING_REAL_VALIDATION` | 只读搜索唯一严格候选与详情身份匹配；用户提交的离线私种独立 Piece **1,831/1,831** 通过，但**不等同由站点获取的原种或 PackBreaker 真实辅种 E2E**，10-12 用户种子已通过隔离 TR 的真实 ADD/VERIFY/START、归属确认及清理；仍待正式 PackBreaker 站点 fetch/计划/操作流水完整 E2E |
+
+**证据分层（截至 2026-10-12）**：七站均有至少一次真实只读搜索与详情身份解析成功（不同时间的累计证据，非同一批次），因此此栏是 **7/7 只读身份阶段**，不是 7/7 真实业务验收。合法站点原种获取、各站独立 Piece Hash、原媒体与冻结执行计划的对应关系、操作流水和下载器客户端 E2E 均未全部完成；CarPT 的用户提供离线校验不能挪用为其他六站的通过证据。全部继续 `PENDING_REAL_VALIDATION`，发布门禁保持关闭。
+
+**10 月 12 日新增的客户端实测证据**：CarPT、PTerClub、HDDolby **3 站**已在独立 Btrfs CoW 副本和临时路径上完成真实 Transmission 添加、验证、启动及清理；Audiences、不可躺与已有外部任务 hash 冲突，U2、SpringSunday 无对应媒体。客户端层验收不包含完整正式 PackBreaker 任务链，因此七站 Registry 仍全部 `PENDING_REAL_VALIDATION`；本轮只清理唯一归属的自建验收种子与文件。
+
 七站的加密配置和只读连接测试**不授权启用正式任务**。即使有人手动将数据库记录设为启用，也不得解密凭据进入生产适配链；只有逐站通过认证、同源保护、契约、错误分类及受控真实验证后才能修改 Registry 的正式支持范围。
 
 ## 4. 真实验收证据与发布边界

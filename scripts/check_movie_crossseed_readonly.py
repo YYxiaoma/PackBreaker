@@ -179,7 +179,7 @@ async def check_movie_once(
             base_url=profile.base_url,
             credential_kind=profile.credential_kind,
             credential=entry["cookie"],
-            timeout_seconds=15,
+            timeout_seconds=profile.request_timeout_seconds,
             user_agent="Mozilla/5.0",
         )
         page = await adapter.search(SearchQuery(keywords, SearchMediaType.MOVIE, page_size=20))

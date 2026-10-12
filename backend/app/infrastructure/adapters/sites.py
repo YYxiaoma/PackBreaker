@@ -169,6 +169,10 @@ class SiteAdapterFactory:
                     leechers_cell_from_end=leechers_offset,
                     min_request_interval_seconds=2.0,
                     require_valid_torrent_metainfo=True,
+                    # HDDolby may take longer to render a details page during
+                    # busy periods. Keep search, auth and torrent fetch capped
+                    # by their existing per-request timeout.
+                    detail_timeout_seconds=90.0 if kind is SiteKind.HDDOLBY else None,
                 ),
                 base_url=origin,
                 transport=self._transport,

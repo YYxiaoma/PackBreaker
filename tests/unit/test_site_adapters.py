@@ -131,6 +131,110 @@ async def test_candidate_nexus_factory_uses_only_reviewed_origin_and_cookie(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "expected_detail_timeout"),
+    (
+        (SiteKind.HDDOLBY, 90.0),
+        (SiteKind.KEEPFRDS, None),
+    ),
+)
+async def test_nexus_detail_read_timeout_is_site_scoped_and_search_unchanged(
+    kind: SiteKind,
+    expected_detail_timeout: float | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No network or private site fixture. In particular, this never calls
+    # fetch_torrent or follows a download link.
+    adapter = SiteAdapterFactory().create(
+        kind=kind,
+        base_url=site_profile(kind).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+        timeout_seconds=45,
+    )
+    observed: list[tuple[str, float | None]] = []
+
+    async def mocked_html_bytes(
+        _adapter: object,
+        url: str,
+        *,
+        limit: int,
+        accept: str = "application/x-bittorrent",
+        timeout_seconds: float | None = None,
+    ) -> bytes:
+        assert accept == "text/html"
+        assert limit > 0
+        path = url.split("?", 1)[0].rsplit("/", 1)[-1]
+        observed.append((path, timeout_seconds))
+        if path == "index.php":
+            return b'<a href="usercp.php">Profile</a>'
+        if path == "torrents.php":
+            return b"<table></table>"
+        assert path == "details.php"
+        return b"<html><body><h1>Synthetic.Movie.2026</h1></body></html>"
+
+    monkeypatch.setattr(type(adapter), "_get_bytes", mocked_html_bytes)
+    await adapter.test_connection()
+    await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.MOVIE))
+    details = await adapter.fetch_details("123")
+
+    assert details.candidate.torrent_id == "123"
+    assert observed == [
+        ("index.php", None),
+        ("torrents.php", None),
+        ("details.php", expected_detail_timeout),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hddolby_http_client_details_timeout_is_90s_without_extending_torrent_fetch() -> None:
+    # Transport is entirely in-memory; no site, tracker or downloader calls.
+    calls: list[tuple[str, float]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.method == "GET"
+        assert request.url.host == "www.hddolby.com"
+        assert request.headers.get("cookie") == "synthetic-cookie"
+        timeout = request.extensions.get("timeout")
+        assert isinstance(timeout, dict)
+        read_timeout = timeout.get("read")
+        assert isinstance(read_timeout, (float, int))
+        calls.append((request.url.path, float(read_timeout)))
+        if request.url.path == "/index.php":
+            return httpx2.Response(200, text='<a href="usercp.php">Profile</a>')
+        if request.url.path == "/torrents.php":
+            return httpx2.Response(200, text="<table></table>")
+        assert request.url.path == "/details.php"
+        assert request.url.params["id"] == "123"
+        # There is deliberately no link to a torrent download endpoint.
+        return httpx2.Response(200, text="<h1>Synthetic.Movie.2026</h1>")
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=SiteKind.HDDOLBY,
+        base_url=site_profile(SiteKind.HDDOLBY).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+        timeout_seconds=45,
+    )
+    await adapter.test_connection()
+    await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.MOVIE))
+    detail = await adapter.fetch_details("123")
+    assert detail.candidate.torrent_id == "123"
+
+    # A separate fetch_torrent call must not inherit the extended details
+    # timeout. Fail before any torrent GET because the HTML has no download link.
+    with pytest.raises(SiteAdapterError) as failed_download:
+        await adapter.fetch_torrent("123")
+    assert failed_download.value.code == "SITE_INVALID_RESPONSE"
+    assert calls == [
+        ("/index.php", 45.0),
+        ("/torrents.php", 45.0),
+        ("/details.php", 90.0),
+        ("/details.php", 45.0),
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", _CANDIDATE_NEXUS_KINDS)
 async def test_candidate_nexus_site_specific_search_columns_are_not_misclassified(
     kind: SiteKind,

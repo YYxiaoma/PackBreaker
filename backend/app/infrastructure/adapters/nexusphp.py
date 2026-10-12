@@ -54,6 +54,7 @@ class NexusPhpProfile:
     leechers_cell_from_end: int = 3
     min_request_interval_seconds: float = 2.0
     require_valid_torrent_metainfo: bool = False
+    detail_timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if not self.site_id.strip():
@@ -84,6 +85,8 @@ class NexusPhpProfile:
                 raise ValueError("NexusPHP profile 列偏移必须为正数")
         if self.min_request_interval_seconds < 0:
             raise ValueError("NexusPHP profile 请求间隔不能为负数")
+        if self.detail_timeout_seconds is not None and not 1 <= self.detail_timeout_seconds <= 120:
+            raise ValueError("NexusPHP 详情请求超时必须在 1～120 秒之间")
 
 
 HDTIME_PROFILE = NexusPhpProfile(
@@ -469,7 +472,11 @@ class NexusPhpWebAdapter:
     async def fetch_details(self, torrent_id: str) -> TorrentDetails:
         normalized_id = _validate_torrent_id(torrent_id)
         parser = _parse_html(
-            await self._get_html(self._profile.details_path, params={"id": normalized_id})
+            await self._get_html(
+                self._profile.details_path,
+                params={"id": normalized_id},
+                timeout_seconds=self._profile.detail_timeout_seconds,
+            )
         )
         self._reject_login_page(parser)
         for candidate in _parse_search_rows(parser, self._profile):
@@ -516,11 +523,19 @@ class NexusPhpWebAdapter:
                 ) from None
         return TorrentPayload(self._profile.site_id, normalized_id, content)
 
-    async def _get_html(self, path: str, *, params: dict[str, str] | None = None) -> str:
+    async def _get_html(
+        self,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
         url = f"{self._base_url}{path}"
         if params:
             url = f"{url}?{urlencode(params)}"
-        raw = await self._get_bytes(url, limit=self._max_html_bytes, accept="text/html")
+        raw = await self._get_bytes(
+            url, limit=self._max_html_bytes, accept="text/html", timeout_seconds=timeout_seconds
+        )
         try:
             return raw.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -534,7 +549,12 @@ class NexusPhpWebAdapter:
             raise SiteAdapterError("SITE_INVALID_RESPONSE", "NexusPHP HTML 不是有效 UTF-8") from exc
 
     async def _get_bytes(
-        self, url: str, *, limit: int, accept: str = "application/x-bittorrent"
+        self,
+        url: str,
+        *,
+        limit: int,
+        accept: str = "application/x-bittorrent",
+        timeout_seconds: float | None = None,
     ) -> bytes:
         self._assert_same_origin(url)
         chunks: list[bytes] = []
@@ -555,7 +575,7 @@ class NexusPhpWebAdapter:
             async with (
                 httpx2.AsyncClient(
                     headers=headers,
-                    timeout=self._timeout_seconds,
+                    timeout=self._timeout_seconds if timeout_seconds is None else timeout_seconds,
                     follow_redirects=False,
                     transport=self._transport,
                     proxy=self._proxy_url,

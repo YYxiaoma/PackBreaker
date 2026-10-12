@@ -139,6 +139,48 @@ class FakeFactory:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("site", "kind", "expected_timeout"),
+    (
+        ("keepfrds", SiteKind.KEEPFRDS, 15),
+        ("hddolby", SiteKind.HDDOLBY, 45),
+    ),
+)
+async def test_readonly_probe_uses_site_profile_timeout(
+    tmp_path: Path, site: str, kind: SiteKind, expected_timeout: int
+) -> None:
+    source, root = _source(tmp_path)
+    label, _ = probe._COOKIE_SITES[site]
+    config = {
+        label: {
+            "url": site_profile(kind).base_url,
+            "auth_type": "cookie",
+            "cookie": "synthetic-confidential-cookie",
+        }
+    }
+
+    class CapturingFactory:
+        observed_timeout: int | None = None
+
+        def create(self, **kwargs: object) -> FakeAdapter:
+            self.observed_timeout = cast(int, kwargs["timeout_seconds"])
+            return FakeAdapter(missing=True)
+
+    factory = CapturingFactory()
+    result = await probe.check_movie_once(
+        site,
+        config=config,
+        source_path=source,
+        data_root=root,
+        query_text="Movie 2024",
+        search_only=True,
+        factory=cast(SiteAdapterFactory, factory),
+    )
+    assert result["status"] == "NO_SIZE_RELEVANT_CANDIDATE"
+    assert factory.observed_timeout == expected_timeout
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("duplicate", "missing", "search_only", "expected"),
     (
         (False, False, True, "UNIQUE_CANDIDATE"),

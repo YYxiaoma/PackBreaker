@@ -71,7 +71,7 @@ class UnpackSeedingReport:
     execution_status: UnpackExecutionStatus
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _Prepared:
     execution_id: str
     item_id: str
@@ -87,6 +87,22 @@ class _Prepared:
     torrent_content: bytes | None
     expected_hashes: tuple[str, ...]
     ownership_tag: str
+
+
+class _CompetingWorkerOwnsIntent(Exception):
+    """Another worker won the operation intent; preserve shared task state."""
+
+
+class _StaleSeedingCheckpoint(ApplicationError):
+    """An older worker must never regress a committed item checkpoint."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            code="UNPACK_SEED_STALE_CHECKPOINT",
+            status=409,
+            title="最终辅种任务状态已变化",
+            detail="另一个 worker 已更新影片项状态，过期操作不得覆盖新的 checkpoint",
+        )
 
 
 class UnpackSeedingService:
@@ -165,12 +181,17 @@ class UnpackSeedingService:
     ) -> UnpackSeedingReport:
         if limit < 1 or limit > 100:
             raise self._invalid("最终辅种批次必须位于 1 到 100 之间")
-        item_ids = self._list_item_ids(execution_id, limit=limit)
+        item_rows = self._list_item_ids(execution_id, limit=limit)
         processed = 0
-        for item_id in item_ids:
+        for item_id, initial_version in item_rows:
+            prepared: _Prepared | None = None
             try:
                 prepared = await self._prepare(item_id)
                 await self._advance(prepared)
+            except (_CompetingWorkerOwnsIntent, _StaleSeedingCheckpoint):
+                # Another worker may have advanced the item or its operation
+                # journal. Do not overwrite newer checkpoints with an error.
+                pass
             except (
                 ApplicationError,
                 DownloaderAdapterError,
@@ -179,11 +200,18 @@ class UnpackSeedingService:
                 ValueError,
             ) as exc:
                 code, message = _safe_error(exc)
-                self._mark_error(item_id, code=code, message=message)
+                self._mark_error(
+                    item_id,
+                    code=code,
+                    message=message,
+                    expected_version=(
+                        prepared.item_version if prepared is not None else initial_version
+                    ),
+                )
             processed += 1
         return self._report(execution_id, processed_count=processed)
 
-    def _list_item_ids(self, execution_id: str, *, limit: int) -> tuple[str, ...]:
+    def _list_item_ids(self, execution_id: str, *, limit: int) -> tuple[tuple[str, int], ...]:
         with self._session_factory() as session:
             execution = session.get(UnpackExecution, execution_id)
             if execution is None:
@@ -202,7 +230,7 @@ class UnpackSeedingService:
                 .order_by(UnpackExecutionItem.id)
                 .limit(limit * 4)
             ).all()
-            ids: list[str] = []
+            ids: list[tuple[str, int]] = []
             for item in rows:
                 stage = dict(item.execution_state or {}).get("stage")
                 if stage not in {
@@ -213,7 +241,7 @@ class UnpackSeedingService:
                     "STARTING",
                 }:
                     continue
-                ids.append(item.id)
+                ids.append((item.id, item.version))
                 if len(ids) == limit:
                     break
             return tuple(ids)
@@ -426,6 +454,10 @@ class UnpackSeedingService:
             stage = "CLIENT_VERIFIED"
 
         if stage in {"CLIENT_VERIFIED", "STARTING"}:
+            # _prepare() validates ADD on resume, but the journal can change
+            # during the current batch after VERIFY. Recheck the complete
+            # persisted ADD ownership proof at the last gate before START.
+            self._require_applied_add(prepared)
             if prepared.plan.client_check_required:
                 self._require_applied_verify(prepared)
             state = await self._ensure_started(prepared)
@@ -433,37 +465,127 @@ class UnpackSeedingService:
                 return
             self._mark_completed(prepared, state)
 
-    def _require_applied_add(self, prepared: _Prepared) -> None:
-        operation_type = (
-            _QB_ADD if isinstance(prepared.binding, QbittorrentWriteBinding) else _TR_ADD
-        )
-        journal = self._load_by_key(_operation_key(prepared, operation_type))
+    def _require_applied_add(self, prepared: _Prepared, *, session: Session | None = None) -> None:
+        is_qb = isinstance(prepared.binding, QbittorrentWriteBinding)
+        operation_type = _QB_ADD if is_qb else _TR_ADD
+        journal = self._load_by_key(_operation_key(prepared, operation_type), session=session)
+        if journal is None:
+            raise self._reconcile_required("最终辅种 ADD 前置证据")
+        intent = journal.intent if isinstance(journal.intent, dict) else {}
+        before = journal.before_snapshot if isinstance(journal.before_snapshot, dict) else {}
+        after = journal.after_snapshot if isinstance(journal.after_snapshot, dict) else {}
+        torrent_digest = intent.get("torrent_payload_digest")
+        raw_hashes = intent.get("expected_hashes")
         if (
-            journal is None
-            or journal.item_id != prepared.item_id
+            journal.item_id != prepared.item_id
             or journal.operation_type != operation_type
             or journal.status != OperationStatus.APPLIED.value
-            or journal.intent.get("plan_digest") != prepared.plan.plan_digest
-            or journal.intent.get("ownership_tag") != prepared.ownership_tag
+            or journal.last_error_code is not None
+            or journal.target
+            != {
+                "downloader_id": prepared.plan.target_downloader_id,
+                "remote_save_path": prepared.plan.target_remote_save_path,
+            }
+            or intent.get("schema_version") != _SCHEMA_VERSION
+            or intent.get("plan_digest") != prepared.plan.plan_digest
+            or intent.get("ownership_tag") != prepared.ownership_tag
+            or intent.get("skip_checking")
+            is not (is_qb and not prepared.plan.client_check_required)
+            or raw_hashes != list(prepared.expected_hashes)
+            or not isinstance(torrent_digest, str)
+            or len(torrent_digest) != 64
+            or any(char not in "0123456789abcdef" for char in torrent_digest)
+            or before.get("torrent_absent") is not True
+            or before.get("checked_hashes") != list(prepared.expected_hashes)
+            or after.get("torrent_hash") not in prepared.expected_hashes
+            or after.get("save_path") != prepared.plan.target_remote_save_path
+            or after.get("ownership_tag") != prepared.ownership_tag
         ):
             raise self._reconcile_required("最终辅种 ADD 前置证据")
 
-    def _require_applied_verify(self, prepared: _Prepared) -> None:
+    def _require_applied_verify(
+        self, prepared: _Prepared, *, session: Session | None = None
+    ) -> None:
         operation_type = (
             _QB_VERIFY if isinstance(prepared.binding, QbittorrentWriteBinding) else _TR_VERIFY
         )
-        journal = self._load_by_key(_operation_key(prepared, operation_type))
+        journal = self._load_by_key(_operation_key(prepared, operation_type), session=session)
+        if journal is None:
+            raise self._reconcile_required("客户端 VERIFY 前置证据")
+        verified_hash = journal.target.get("torrent_hash")
+        expected_intent = {
+            "schema_version": _SCHEMA_VERSION,
+            "plan_digest": prepared.plan.plan_digest,
+            "ownership_tag": prepared.ownership_tag,
+            "remote_save_path": prepared.plan.target_remote_save_path,
+        }
+        after = journal.after_snapshot if isinstance(journal.after_snapshot, dict) else {}
         if (
-            journal is None
-            or journal.item_id != prepared.item_id
+            journal.item_id != prepared.item_id
             or journal.operation_type != operation_type
             or journal.status != OperationStatus.APPLIED.value
-            or journal.intent.get("plan_digest") != prepared.plan.plan_digest
-            or not isinstance(journal.after_snapshot, dict)
-            or journal.after_snapshot.get("verification_complete") is not True
-            or journal.after_snapshot.get("request_accepted") is not True
+            or not isinstance(verified_hash, str)
+            or verified_hash not in prepared.expected_hashes
+            or journal.target
+            != {
+                "downloader_id": prepared.plan.target_downloader_id,
+                "torrent_hash": verified_hash,
+            }
+            or journal.intent != expected_intent
+            or after.get("torrent_hash") != verified_hash
+            or after.get("save_path") != prepared.plan.target_remote_save_path
+            or after.get("ownership_tag") != prepared.ownership_tag
+            or after.get("verification_complete") is not True
+            or after.get("request_accepted") is not True
         ):
             raise self._reconcile_required("客户端 VERIFY 前置证据")
+
+    def _require_applied_start(
+        self,
+        prepared: _Prepared,
+        state: QbittorrentTorrentState | TransmissionTorrentState,
+        *,
+        session: Session,
+    ) -> None:
+        operation_type = (
+            _QB_START if isinstance(prepared.binding, QbittorrentWriteBinding) else _TR_START
+        )
+        journal = self._load_by_key(_operation_key(prepared, operation_type), session=session)
+        if journal is None:
+            raise self._reconcile_required("完成最终辅种前的 START 证据")
+        hash_value = _torrent_hash(state)
+        intent = {
+            "schema_version": _SCHEMA_VERSION,
+            "plan_digest": prepared.plan.plan_digest,
+            "ownership_tag": prepared.ownership_tag,
+            "remote_save_path": prepared.plan.target_remote_save_path,
+        }
+        target = {
+            "downloader_id": prepared.plan.target_downloader_id,
+            "torrent_hash": hash_value,
+        }
+        before = journal.before_snapshot if isinstance(journal.before_snapshot, dict) else {}
+        after = journal.after_snapshot if isinstance(journal.after_snapshot, dict) else {}
+        if (
+            journal.item_id != prepared.item_id
+            or journal.operation_type != operation_type
+            or journal.status != OperationStatus.APPLIED.value
+            or journal.last_error_code is not None
+            or journal.target != target
+            or journal.intent != intent
+            or hash_value not in prepared.expected_hashes
+            or before.get("torrent_hash") != hash_value
+            or before.get("save_path") != prepared.plan.target_remote_save_path
+            or before.get("ownership_tag") != prepared.ownership_tag
+            or before.get("verification_complete") is not True
+            or before.get("seeding") is not False
+            or after.get("torrent_hash") != hash_value
+            or after.get("save_path") != prepared.plan.target_remote_save_path
+            or after.get("ownership_tag") != prepared.ownership_tag
+            or after.get("seeding") is not True
+            or after.get("request_accepted") is not True
+        ):
+            raise self._reconcile_required("完成最终辅种前的 START 证据")
 
     async def _ensure_added(
         self,
@@ -497,7 +619,7 @@ class UnpackSeedingService:
                     title="目标下载器已存在同一 torrent",
                     detail="add intent 建立前已存在同 hash 任务，PackBreaker 不会认领外部 torrent",
                 )
-            journal, _ = self._record_intent(
+            journal, created = self._record_intent(
                 prepared.item_id,
                 operation_type,
                 key=key,
@@ -508,6 +630,10 @@ class UnpackSeedingService:
                     "checked_hashes": list(prepared.expected_hashes),
                 },
             )
+            if not created:
+                # A concurrent worker committed this intent first. Its
+                # journal does not authorize this worker to dispatch ADD.
+                raise _CompetingWorkerOwnsIntent
         else:
             self._assert_same_journal(journal, operation_type, target, intent)
             if journal.status == OperationStatus.RECONCILE_REQUIRED.value:
@@ -522,6 +648,10 @@ class UnpackSeedingService:
             if journal.status == OperationStatus.APPLIED.value:
                 self._mark_reconcile(journal.id, "UNPACK_SEED_APPLIED_TORRENT_MISSING")
                 raise self._reconcile_required("已确认 torrent add")
+            # An INTENT_RECORDED journal may represent a crashed/unknown ADD.
+            # Absence in a subsequent poll cannot prove the RPC was never sent.
+            self._mark_reconcile(journal.id, "UNPACK_SEED_ADD_RESULT_UNKNOWN")
+            raise self._reconcile_required("未确认的 torrent add intent")
 
         try:
             if is_qb:
@@ -541,6 +671,10 @@ class UnpackSeedingService:
                     or qb_result.pending_count
                     or qb_result.success_count != 1
                 ):
+                    # The client did not acknowledge exactly one new torrent.
+                    # A pending/failed/ambiguous batch must not be retried
+                    # merely because the subsequent read sees no torrent yet.
+                    self._mark_reconcile(journal.id, "UNPACK_SEED_ADD_NOT_CONFIRMED")
                     raise ApplicationError(
                         code="UNPACK_SEED_ADD_NOT_CONFIRMED",
                         status=409,
@@ -565,22 +699,48 @@ class UnpackSeedingService:
                 if transmission_result.torrent_hash not in prepared.expected_hashes:
                     self._mark_reconcile(journal.id, "UNPACK_SEED_ADD_HASH_MISMATCH")
                     raise self._conflict("Transmission 返回的 torrent hash 与冻结计划不一致")
+                if transmission_result.duplicate:
+                    # torrent-duplicate is NOT proof that this operation
+                    # created the torrent. A concurrent user/client may have
+                    # added it after our initial read-only absence check.
+                    self._mark_reconcile(journal.id, "UNPACK_SEED_ADD_DUPLICATE")
+                    raise ApplicationError(
+                        code="UNPACK_SEED_TORRENT_ALREADY_EXISTS",
+                        status=409,
+                        title="目标下载器已存在同一 torrent",
+                        detail="Transmission ADD 返回重复种子，禁止认领或继续操作外部任务",
+                    )
+        except TimeoutError as exc:
+            # Native RPC timeout is an uncertain external write, not a safe
+            # transient read. Never automatically dispatch ADD a second time.
+            self._mark_reconcile(journal.id, "UNPACK_SEED_ADD_RESULT_UNKNOWN")
+            raise DownloaderAdapterError(
+                "DOWNLOADER_UNAVAILABLE", "最终辅种 ADD 响应超时，必须先对账"
+            ) from exc
         except DownloaderAdapterError:
-            observed = await self._states(prepared)
-            if observed:
-                state = self._require_owned_state(prepared, observed)
-                self._assert_add_state_safe(journal.id, state)
-                self._mark_applied(journal.id, _state_snapshot(state, prepared.ownership_tag))
-                return state
+            try:
+                observed = await self._states(prepared)
+                if observed:
+                    state = self._require_owned_state(prepared, observed)
+                    self._assert_add_state_safe(journal.id, state)
+                    self._mark_applied(journal.id, _state_snapshot(state, prepared.ownership_tag))
+                    return state
+            except (DownloaderAdapterError, TimeoutError, ApplicationError):
+                self._mark_reconcile(journal.id, "UNPACK_SEED_ADD_RESULT_UNKNOWN")
+                raise
             self._mark_reconcile(journal.id, "UNPACK_SEED_ADD_RESULT_UNKNOWN")
             raise
 
-        observed = await self._states(prepared)
-        if not observed:
-            self._mark_reconcile(journal.id, "UNPACK_SEED_ADD_NOT_VISIBLE")
-            raise self._conflict("下载器 add 返回成功但 torrent 尚不可见")
-        state = self._require_owned_state(prepared, observed)
-        self._assert_add_state_safe(journal.id, state)
+        try:
+            observed = await self._states(prepared)
+            if not observed:
+                self._mark_reconcile(journal.id, "UNPACK_SEED_ADD_NOT_VISIBLE")
+                raise self._conflict("下载器 add 返回成功但 torrent 尚不可见")
+            state = self._require_owned_state(prepared, observed)
+            self._assert_add_state_safe(journal.id, state)
+        except (DownloaderAdapterError, TimeoutError, ApplicationError):
+            self._mark_reconcile(journal.id, "UNPACK_SEED_ADD_RESULT_UNKNOWN")
+            raise
         self._mark_applied(journal.id, _state_snapshot(state, prepared.ownership_tag))
         return state
 
@@ -621,7 +781,7 @@ class UnpackSeedingService:
         if journal is None:
             if _checking(state):
                 return state
-            journal, _ = self._record_intent(
+            journal, created = self._record_intent(
                 prepared.item_id,
                 operation_type,
                 key=key,
@@ -629,6 +789,9 @@ class UnpackSeedingService:
                 intent=intent,
                 before_snapshot=_state_snapshot(state, prepared.ownership_tag),
             )
+            if not created:
+                # No second VERIFY/RECHECK when another worker owns intent.
+                raise _CompetingWorkerOwnsIntent
         else:
             self._assert_same_journal(journal, operation_type, target, intent)
             if journal.status == OperationStatus.RECONCILE_REQUIRED.value:
@@ -681,21 +844,34 @@ class UnpackSeedingService:
             else:
                 transmission_binding = cast(TransmissionWriteBinding, prepared.binding)
                 await transmission_binding.adapter.verify_torrent(_torrent_hash(state))
+        except TimeoutError as exc:
+            self._mark_reconcile(journal.id, "UNPACK_SEED_VERIFY_RESULT_UNKNOWN")
+            raise DownloaderAdapterError(
+                "DOWNLOADER_UNAVAILABLE", "最终辅种 VERIFY 响应超时，必须先对账"
+            ) from exc
         except DownloaderAdapterError:
-            current = self._require_owned_state(prepared, await self._states(prepared))
-            if _checking(current):
-                self._update_after_snapshot(
-                    journal.id,
-                    {
-                        **_state_snapshot(current, prepared.ownership_tag),
-                        "request_accepted": True,
-                    },
-                )
-                return current
+            try:
+                current = self._require_owned_state(prepared, await self._states(prepared))
+                if _checking(current):
+                    self._update_after_snapshot(
+                        journal.id,
+                        {
+                            **_state_snapshot(current, prepared.ownership_tag),
+                            "request_accepted": True,
+                        },
+                    )
+                    return current
+            except (DownloaderAdapterError, TimeoutError, ApplicationError):
+                self._mark_reconcile(journal.id, "UNPACK_SEED_VERIFY_RESULT_UNKNOWN")
+                raise
             self._mark_reconcile(journal.id, "UNPACK_SEED_VERIFY_RESULT_UNKNOWN")
             raise
 
-        current = self._require_owned_state(prepared, await self._states(prepared))
+        try:
+            current = self._require_owned_state(prepared, await self._states(prepared))
+        except (DownloaderAdapterError, TimeoutError, ApplicationError):
+            self._mark_reconcile(journal.id, "UNPACK_SEED_VERIFY_RESULT_UNKNOWN")
+            raise
         self._update_after_snapshot(
             journal.id,
             {
@@ -792,7 +968,7 @@ class UnpackSeedingService:
         }
         journal = self._load_by_key(key)
         if journal is None:
-            journal, _ = self._record_intent(
+            journal, created = self._record_intent(
                 prepared.item_id,
                 operation_type,
                 key=key,
@@ -800,6 +976,9 @@ class UnpackSeedingService:
                 intent=intent,
                 before_snapshot=_state_snapshot(state, prepared.ownership_tag),
             )
+            if not created:
+                # Concurrent workers cannot both dispatch a START RPC.
+                raise _CompetingWorkerOwnsIntent
         else:
             self._assert_same_journal(journal, operation_type, target, intent)
             if journal.status == OperationStatus.RECONCILE_REQUIRED.value:
@@ -827,6 +1006,10 @@ class UnpackSeedingService:
                     return state
                 self._mark_reconcile(journal.id, "UNPACK_SEED_START_STATE_CHANGED")
                 raise self._reconcile_required("torrent start")
+            # A persisted intent with no acknowledgement may already have
+            # reached the downloader. Never replay a START after restart.
+            self._mark_reconcile(journal.id, "UNPACK_SEED_START_RESULT_UNKNOWN")
+            raise self._reconcile_required("未确认的 torrent start intent")
 
         self._set_stage(
             prepared,
@@ -841,21 +1024,34 @@ class UnpackSeedingService:
             else:
                 transmission_binding = cast(TransmissionWriteBinding, prepared.binding)
                 await transmission_binding.adapter.start_torrent(_torrent_hash(state))
+        except TimeoutError as exc:
+            self._mark_reconcile(journal.id, "UNPACK_SEED_START_RESULT_UNKNOWN")
+            raise DownloaderAdapterError(
+                "DOWNLOADER_UNAVAILABLE", "最终辅种 START 响应超时，必须先对账"
+            ) from exc
         except DownloaderAdapterError:
-            current = self._require_owned_state(prepared, await self._states(prepared))
-            if _seeding(current):
-                self._mark_applied(
-                    journal.id,
-                    {
-                        **_state_snapshot(current, prepared.ownership_tag),
-                        "request_accepted": True,
-                    },
-                )
-                return current
+            try:
+                current = self._require_owned_state(prepared, await self._states(prepared))
+                if _seeding(current):
+                    self._mark_applied(
+                        journal.id,
+                        {
+                            **_state_snapshot(current, prepared.ownership_tag),
+                            "request_accepted": True,
+                        },
+                    )
+                    return current
+            except (DownloaderAdapterError, TimeoutError, ApplicationError):
+                self._mark_reconcile(journal.id, "UNPACK_SEED_START_RESULT_UNKNOWN")
+                raise
             self._mark_reconcile(journal.id, "UNPACK_SEED_START_RESULT_UNKNOWN")
             raise
 
-        current = self._require_owned_state(prepared, await self._states(prepared))
+        try:
+            current = self._require_owned_state(prepared, await self._states(prepared))
+        except (DownloaderAdapterError, TimeoutError, ApplicationError):
+            self._mark_reconcile(journal.id, "UNPACK_SEED_START_RESULT_UNKNOWN")
+            raise
         if _seeding(current):
             self._mark_applied(
                 journal.id,
@@ -941,6 +1137,32 @@ class UnpackSeedingService:
                 or item.candidate_generation != prepared.generation
             ):
                 raise self._conflict("写入最终辅种 checkpoint 时 item 已变化")
+            checkpoint = dict(item.execution_state or {})
+            predecessors = {
+                "CLIENT_VERIFYING": {"FILES_MATERIALIZED": {UnpackItemStatus.EXECUTING.value}},
+                "CLIENT_VERIFIED": {
+                    "FILES_MATERIALIZED": {UnpackItemStatus.EXECUTING.value},
+                    "TORRENT_ADDED": {
+                        UnpackItemStatus.EXECUTING.value,
+                        UnpackItemStatus.CLIENT_VERIFYING.value,
+                    },
+                    "CLIENT_VERIFYING": {UnpackItemStatus.CLIENT_VERIFYING.value},
+                },
+                "STARTING": {"CLIENT_VERIFIED": {UnpackItemStatus.EXECUTING.value}},
+            }
+            current_stage = checkpoint.get("stage")
+            allowed = (
+                predecessors.get(stage, {}).get(current_stage, set())
+                if isinstance(current_stage, str)
+                else set()
+            )
+            if (
+                item.status not in allowed
+                or checkpoint.get("plan_digest") != prepared.plan.plan_digest
+                or checkpoint.get("torrent_hash", torrent_hash) != torrent_hash
+                or checkpoint.get("ownership_tag", prepared.ownership_tag) != prepared.ownership_tag
+            ):
+                raise _StaleSeedingCheckpoint()
             item.status = status.value
             item.execution_state = {
                 "stage": stage,
@@ -951,6 +1173,9 @@ class UnpackSeedingService:
             item.updated_at = utc_now()
             item.version += 1
             session.commit()
+            # The current worker advanced the item legitimately. Track its
+            # new revision so a later real error can still be recorded.
+            prepared.item_version = item.version
 
     def _mark_completed(
         self,
@@ -969,6 +1194,22 @@ class UnpackSeedingService:
                 or item.candidate_generation != prepared.generation
             ):
                 raise self._conflict("完成最终辅种时 item 已变化")
+            checkpoint = dict(item.execution_state or {})
+            if (
+                item.status != UnpackItemStatus.EXECUTING.value
+                or checkpoint.get("stage") not in {"CLIENT_VERIFIED", "STARTING"}
+                or checkpoint.get("plan_digest") != prepared.plan.plan_digest
+                or checkpoint.get("torrent_hash") != _torrent_hash(state)
+                or checkpoint.get("ownership_tag") != prepared.ownership_tag
+            ):
+                raise _StaleSeedingCheckpoint()
+            # Lock the evidence chain and final item checkpoint in the same
+            # transaction: a concurrent reconcile/tamper cannot commit
+            # between our proof checks and COMPLETED state write.
+            self._require_applied_add(prepared, session=session)
+            if prepared.plan.client_check_required:
+                self._require_applied_verify(prepared, session=session)
+            self._require_applied_start(prepared, state, session=session)
             now = utc_now()
             item.status = UnpackItemStatus.COMPLETED.value
             item.execution_state = {
@@ -986,14 +1227,21 @@ class UnpackSeedingService:
             _refresh_execution_state(session, execution)
             session.commit()
 
-    def _mark_error(self, item_id: str, *, code: str, message: str) -> None:
+    def _mark_error(self, item_id: str, *, code: str, message: str, expected_version: int) -> None:
         with self._session_factory() as session:
             begin_immediate_write(session)
             item = session.get(UnpackExecutionItem, item_id)
-            if item is None or item.status not in {
-                UnpackItemStatus.EXECUTING.value,
-                UnpackItemStatus.CLIENT_VERIFYING.value,
-            }:
+            if (
+                item is None
+                or item.status
+                not in {
+                    UnpackItemStatus.EXECUTING.value,
+                    UnpackItemStatus.CLIENT_VERIFYING.value,
+                }
+                or item.version != expected_version
+            ):
+                # An unrelated worker may have advanced this item while we
+                # awaited the failing external read/RPC. Its newer state wins.
                 return
             execution = session.get(UnpackExecution, item.execution_id)
             if execution is None:
@@ -1041,15 +1289,18 @@ class UnpackSeedingService:
                 execution_status=UnpackExecutionStatus(execution.status),
             )
 
-    def _load_by_key(self, key: str) -> UnpackExternalOperationJournal | None:
-        with self._session_factory() as session:
-            row = session.scalar(
-                select(UnpackExternalOperationJournal).where(
-                    UnpackExternalOperationJournal.idempotency_key == key
-                )
-            )
+    def _load_by_key(
+        self, key: str, *, session: Session | None = None
+    ) -> UnpackExternalOperationJournal | None:
+        statement = select(UnpackExternalOperationJournal).where(
+            UnpackExternalOperationJournal.idempotency_key == key
+        )
+        if session is not None:
+            return session.scalar(statement)
+        with self._session_factory() as standalone:
+            row = standalone.scalar(statement)
             if row is not None:
-                session.expunge(row)
+                standalone.expunge(row)
             return row
 
     def _record_intent(
@@ -1113,10 +1364,12 @@ class UnpackSeedingService:
                 raise self._conflict("最终辅种 journal 不存在")
             if row.status == OperationStatus.APPLIED.value:
                 return
-            if row.status not in {
-                OperationStatus.INTENT_RECORDED.value,
-                OperationStatus.RECONCILE_REQUIRED.value,
-            }:
+            if row.status == OperationStatus.RECONCILE_REQUIRED.value:
+                # An older worker's positive observation must never undo
+                # reconciliation requested by another worker or by an
+                # unknown external result. Only explicit audit may resolve it.
+                raise self._reconcile_required("已锁定对账的最终辅种 journal")
+            if row.status != OperationStatus.INTENT_RECORDED.value:
                 raise self._conflict("最终辅种 journal 当前状态不能确认成功")
             row.status = OperationStatus.APPLIED.value
             row.after_snapshot = after_snapshot
