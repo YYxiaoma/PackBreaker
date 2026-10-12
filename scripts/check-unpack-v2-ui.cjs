@@ -651,19 +651,7 @@ const fulfillJson = (route, body, status = 200) =>
     await executionDialog.locator('.execution-item-filters .el-select').click();
     await page.getByRole('option', { name: '无匹配', exact: true }).click();
     assert.equal(observedExecutionFilters.at(-1)?.status, 'NO_MATCH');
-    const searchResponse = page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return (
-        url.pathname === '/api/v1/unpack/executions/execution-review/items' &&
-        response.request().method() === 'GET' &&
-        response.status() === 200
-      );
-    });    await executionDialog.getByPlaceholder('搜索影片名或来源路径').fill('九品芝麻官');
-    await executionDialog.getByPlaceholder('搜索影片名或来源路径').press('Enter');
-    await searchResponse;
-    assert.equal(observedExecutionFilters.at(-1)?.q, '九品芝麻官');
-    const filterCountBeforeRefresh = observedExecutionFilters.length;
-    const refreshResponse = page.waitForResponse((response) => {
+    const expectedQuery = (response) => {
       const url = new URL(response.url());
       return (
         url.pathname === '/api/v1/unpack/executions/execution-review/items' &&
@@ -672,7 +660,14 @@ const fulfillJson = (route, body, status = 200) =>
         response.request().method() === 'GET' &&
         response.status() === 200
       );
-    });
+    };
+    const searchResponse = page.waitForResponse(expectedQuery);
+    await executionDialog.getByPlaceholder('搜索影片名或来源路径').fill('九品芝麻官');
+    await executionDialog.getByPlaceholder('搜索影片名或来源路径').press('Enter');
+    await searchResponse;
+    assert.equal(observedExecutionFilters.at(-1)?.q, '九品芝麻官');
+    const filterCountBeforeRefresh = observedExecutionFilters.length;
+    const refreshResponse = page.waitForResponse(expectedQuery);
     await executionDialog.locator('.execution-item-filters').getByRole('button', { name: '刷新' }).click();
     await refreshResponse;
     assert.equal(observedExecutionFilters.length, filterCountBeforeRefresh + 1, '刷新必须重新发出过滤后的查询');
@@ -701,12 +696,31 @@ const fulfillJson = (route, body, status = 200) =>
     const editDialog = page.locator('.el-dialog').filter({ hasText: '编辑数据拆包任务' }).last();
     await editDialog.waitFor({ state: 'visible' });
     await editDialog.locator('.el-form-item').filter({ hasText: '任务名称' }).locator('input').fill('人工编辑 E2E');
+    const manualEditResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/v1/unpack/definitions/definition-manual') &&
+        response.request().method() === 'PUT' &&
+        response.status() === 200,
+    );
     await editDialog.getByRole('button', { name: '保存', exact: true }).click();
+    await manualEditResponse;
     assert.equal(updatedDefinitionBody?.name, '人工编辑 E2E');
     await monitorRow.getByRole('button', { name: '更多操作' }).click();
     await page.getByRole('menuitem', { name: '编辑', exact: true }).click();
     await editDialog.waitFor({ state: 'visible' });
+    const monitorEditResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/v1/unpack/definitions/definition-monitor') &&
+        response.request().method() === 'PUT' &&
+        response.status() === 200,
+    );
     await editDialog.getByRole('button', { name: '保存', exact: true }).click();
+    const monitorUpdate = await monitorEditResponse;
+    assert.equal(
+      monitorUpdate.request().postDataJSON()?.timezone,
+      'Asia/Shanghai',
+      '监控任务更新 PUT 必须带上编辑前的原始时区',
+    );
     assert.equal(
       updatedMonitorBody?.timezone,
       'Asia/Shanghai',

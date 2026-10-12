@@ -42,18 +42,13 @@
 
 | 站点 | Registry 状态 | 已有真实证据 / 必须补齐 |
 | --- | --- | --- |
-| PTerClub | `PENDING_REAL_VALIDATION` | 10-10 搜索返回 23 条、详情一度 `SITE_UNAVAILABLE`；后续受控 90 秒重试取得详情身份匹配证据。10-12 使用用户种子在隔离 TR 中实际 ADD/VERIFY/START 并安全清理成功；仍缺正式 PackBreaker 任务链 E2E |
-| Audiences | `PENDING_REAL_VALIDATION` | 搜索字段映射 16/16 可解析，已有搜索和详情身份匹配历史证据；参考影片此前无严格候选；新提交种子与现有 TR 中外部相同 hash 冲突，不允许接管；仍缺可独立验收的正式任务 E2E |
-| SpringSunday | `PENDING_REAL_VALIDATION` | 10-10 搜索解析 16 条，参考影片无可行候选；后续存在搜索及详情身份通过的阶段证据；历史连接超时仍需记录；已提交种子对应 20.7 GB 其他内容，授权目录没有匹配媒体，真实 E2E 阻断 |
-| HDDolby | `PENDING_REAL_VALIDATION` | 10-10 曾 `SITE_UNAVAILABLE`；**10-12 受控只读搜索 9 条（容量 9/9）及详情身份匹配成功**，详情专属 90 秒超时已修复，但单次只读成功不能证明稳定性；10-12 使用用户种子在隔离 TR 中 ADD/VERIFY/START 并安全清理成功，正式 PackBreaker 任务链仍缺 |
-| U2 | `PENDING_REAL_VALIDATION` | 动画搜索及详情身份有阶段性通过证据；另一次单页 50/50 字段解析成功但存在下一页，不可等同完整搜索；间歇连接错误仍待复核；已提交种子为约 13.7 GB、25 文件动画资源，授权目录无对应媒体，真实 E2E 阻断 |
-| 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 已有只读搜索与详情身份通过的阶段证据；10-10 参考影片搜索 5 条、2 条可行候选存在歧义，禁止自动任选；新提交种子已在 TR 中有外部同 hash 任务，不允许认领；仍缺独立正式 E2E |
-| CarPT | `PENDING_REAL_VALIDATION` | 只读搜索唯一严格候选与详情身份匹配；用户提交的离线私种独立 Piece **1,831/1,831** 通过，但**不等同由站点获取的原种或 PackBreaker 真实辅种 E2E**，10-12 用户种子已通过隔离 TR 的真实 ADD/VERIFY/START、归属确认及清理；仍待正式 PackBreaker 站点 fetch/计划/操作流水完整 E2E |
-
-**证据分层（截至 2026-10-12）**：七站均有至少一次真实只读搜索与详情身份解析成功（不同时间的累计证据，非同一批次），因此此栏是 **7/7 只读身份阶段**，不是 7/7 真实业务验收。合法站点原种获取、各站独立 Piece Hash、原媒体与冻结执行计划的对应关系、操作流水和下载器客户端 E2E 均未全部完成；CarPT 的用户提供离线校验不能挪用为其他六站的通过证据。全部继续 `PENDING_REAL_VALIDATION`，发布门禁保持关闭。
-
-**10 月 12 日新增的客户端实测证据**：CarPT、PTerClub、HDDolby **3 站**已在独立 Btrfs CoW 副本和临时路径上完成真实 Transmission 添加、验证、启动及清理；Audiences、不可躺与已有外部任务 hash 冲突，U2、SpringSunday 无对应媒体。客户端层验收不包含完整正式 PackBreaker 任务链，因此七站 Registry 仍全部 `PENDING_REAL_VALIDATION`；本轮只清理唯一归属的自建验收种子与文件。
-
+| PTerClub | `PENDING_REAL_VALIDATION` | 2026-10-11 已有认证成功、真实搜索 27 条及四字段 27/27 可解析；仍缺合法取种、独立 Piece 和正式任务 |
+| Audiences | `PENDING_REAL_VALIDATION` | 十列搜索数值映射已修复，真实单页日期/容量/做种/下载数 **16/16** 可解析；当前参考影片无严格候选，仍缺合法取种和完整 Piece |
+| SpringSunday | `PENDING_REAL_VALIDATION` | 既有真实页面可解析 16 条；2026-10-11 认证成功但搜索超过 18 秒预算；取种及 Piece 仍缺 |
+| HDDolby | `PENDING_REAL_VALIDATION` | 2026-10-11 45 秒只读搜索 9 条，日期/大小/做种/下载四字段均 9/9；已保存超时值变更后连接状态 `UNTESTED`，取种、Piece 与任务仍缺 |
+| U2 | `PENDING_REAL_VALIDATION` | 既有 19/19 动画搜索及详情身份已验证；2026-10-10 另一个动画查询返回 50 条，大小、做种、下载数均 50/50 可解析，但有下一页；间歇连接错误、合法取种及独立 Piece 仍待验收 |
+| 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 2026-10-10 搜索返回 5 条，当前影片 2 条可行候选仍有歧义，不得自动任选其一 |
+| CarPT | `PENDING_REAL_VALIDATION` | 已有唯一严格候选和详情身份证据；用户提供的新候选在隔离审计中完整 Piece **1,831/1,831** 通过；正式站点支持和 PackBreaker 任务链仍未验收 |
 七站的加密配置和只读连接测试**不授权启用正式任务**。即使有人手动将数据库记录设为启用，也不得解密凭据进入生产适配链；只有逐站通过认证、同源保护、契约、错误分类及受控真实验证后才能修改 Registry 的正式支持范围。
 
 ## 4. 真实验收证据与发布边界
@@ -70,7 +65,11 @@
 | Rousi Pro | 3 | 0 | 3 | 0 |
 | UBits | 460 | 379 | 81 | 64 |
 
-这份快照与 2026-10-09 的单任务读数采用不同统计范围，不得相加、外推故障根因或泄露 Tracker URL、passkey 和真实种子身份。RC1 已整合 PR #11–#21 对应的匹配可靠性、只读故障、未知写结果对账与离线安全检查代码；本地关键专项测试与静态门禁已通过，**远端 PR #21、最终镜像与真实业务 E2E 仍未关闭**。
+这份快照与 2026-10-09 的单任务读数采用不同统计范围，不得相加、外推故障根因或泄露 Tracker URL、passkey 和真实种子身份。当前代码已包含匹配可靠性、只读故障、未知写入对账及离线安全修复；`67ff480e` 候选镜像及 CI 已交付通过，但**真实任务 E2E 仍未关闭**。PR #21 已由 PR #22 等效覆盖并关闭。
+
+用户提供的 CarPT、HDFans、PTTime 三份私种与一组真实源媒体在隔离审计中完成全 Piece 内容核对，分别为 **1,831/1,831、7,321/7,321、7,321/7,321**。通过跨环境 Piece-SHA1 序列承诺值比较；原始私种未进入 WebCodex Runner，所以不能记作当前 Runner 工具读取演练、正式任务、客户端 verify 或 ownership journal 验收。[审计证据](https://github.com/YYxiaoma/PackBreaker/issues/5#issuecomment-6095145394)。HDFans 已有外部同 hash 客户端任务，必须维持只读。
 
 用户提供的 CarPT、HDFans、PTTime 三份私种与一组真实源媒体在隔离审计中完成全 Piece 内容核对，分别为 **1,831/1,831、7,321/7,321、7,321/7,321**。通过跨环境 Piece-SHA1 序列承诺值比较；原始私种未进入 WebCodex Runner，所以不能记作当前 Runner 工具读取演练、正式任务、客户端 verify 或 ownership journal 验收。[审计证据](https://github.com/YYxiaoma/PackBreaker/issues/5#issuecomment-6095145394)。HDFans 已有外部同 hash 客户端任务，必须维持只读。
 当前所需现场补验、失败分类与退出条件维护于 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5) 和 [v1.1.1 的真实只读记录](./v1.1.1-development.md)。历史 v1.0.0～v1.0.5 发行记录与旧的测试范围可通过 Git 历史和 `docs/v1.0.*-release.md` 查阅，不再视为本页“当前版本”说明。
+
+> **2026-10-11 续验**：PTerClub 搜索字段 27/27、HDDolby 45 秒只读搜索四字段 9/9，SpringSunday 认证成功但搜索超时；Tracker 后续只读快照和开放事项请查阅 [最新收官快照](./v1.1.2-gate-snapshot-20261011.md)。上表保留 2026-10-10 历史快照，不能当作实时状态。

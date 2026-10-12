@@ -135,7 +135,7 @@ async def test_candidate_nexus_factory_uses_only_reviewed_origin_and_cookie(
     ("kind", "expected_detail_timeout"),
     (
         (SiteKind.HDDOLBY, 90.0),
-        (SiteKind.KEEPFRDS, None),
+        (SiteKind.KEEPFRDS, 45.0),
     ),
 )
 async def test_nexus_detail_read_timeout_is_site_scoped_and_search_unchanged(
@@ -232,6 +232,47 @@ async def test_hddolby_http_client_details_timeout_is_90s_without_extending_torr
         ("/details.php", 90.0),
         ("/details.php", 45.0),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", [SiteKind.SPRING_SUNDAY, SiteKind.HDDOLBY])
+@pytest.mark.parametrize(
+    ("transport_error", "expected_code"),
+    [
+        (httpx2.ReadTimeout, "SITE_TIMEOUT"),
+        (httpx2.ConnectError, "SITE_UNAVAILABLE"),
+    ],
+)
+async def test_candidate_nexus_readonly_search_preserves_timeout_vs_network_failure(
+    kind: SiteKind,
+    transport_error: type[httpx2.RequestError],
+    expected_code: str,
+) -> None:
+    # An isolated transport exception: never contact an actual tracker/site
+    # or include a credential, remote body or private torrent URL in errors.
+    calls = 0
+    cookie = "synthetic-nexus-credential-canary"
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.host == httpx2.URL(site_profile(kind).base_url).host
+        assert request.url.path == "/torrents.php"
+        raise transport_error("synthetic remote failure", request=request)
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=kind,
+        base_url=site_profile(kind).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential=cookie,
+    )
+    with pytest.raises(SiteAdapterError) as failure:
+        await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.MOVIE))
+    assert calls == 1
+    assert failure.value.code == expected_code
+    assert failure.value.retryable is True
+    assert cookie not in str(failure.value)
+    assert "synthetic remote failure" not in str(failure.value)
 
 
 @pytest.mark.asyncio
@@ -1043,3 +1084,109 @@ def _mteam_row() -> dict[str, object]:
         "douban": "https://movie.douban.com/subject/1295644/",
         "status": {"seeders": "8", "leechers": "2"},
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "search_timeout", "expected_details_timeout"),
+    [
+        (SiteKind.PTERCLUB, 15.0, 90.0),
+        (SiteKind.HDDOLBY, 45.0, 90.0),
+        (SiteKind.AUDIENCES, 15.0, 15.0),
+        (SiteKind.HDHOME, 15.0, 15.0),
+        # Explicit higher persisted timeout must never be reduced.
+        (SiteKind.PTERCLUB, 120.0, 120.0),
+    ],
+)
+async def test_candidate_details_peak_hour_timeout_is_isolated_from_search_and_auth(
+    kind: SiteKind,
+    search_timeout: float,
+    expected_details_timeout: float,
+) -> None:
+    # Synthetic HTTP fixture; no actual site, cookie or one-time torrent token
+    # is accessed. Keep the two slow sites' detail timeouts separate from
+    # search/auth and do not change unrelated site behavior.
+    origin = site_profile(kind).base_url
+    host = httpx2.URL(origin).host
+    observed: dict[str, float] = {}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.host == host
+        assert request.method == "GET"
+        assert request.url.path in {"/index.php", "/torrents.php", "/details.php"}
+        assert request.headers.get("cookie") == "synthetic-cookie-no-torrent-secret"
+        timeout = request.extensions.get("timeout")
+        assert isinstance(timeout, dict)
+        read_timeout = timeout.get("read")
+        assert isinstance(read_timeout, (int, float))
+        observed[request.url.path] = float(read_timeout)
+        if request.url.path == "/index.php":
+            return httpx2.Response(200, text='<a href="usercp.php">Account</a>')
+        if request.url.path == "/torrents.php":
+            return httpx2.Response(200, text="<html><title>Results</title></html>")
+        return httpx2.Response(200, text="<html><h1>Synthetic Details 1994</h1></html>")
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=kind,
+        base_url=origin,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie-no-torrent-secret",
+        timeout_seconds=search_timeout,
+    )
+    await adapter.test_connection()
+    await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.MOVIE))
+    details = await adapter.fetch_details("42")
+
+    assert details.candidate.torrent_id == "42"
+    assert observed == {
+        "/index.php": search_timeout,
+        "/torrents.php": search_timeout,
+        "/details.php": expected_details_timeout,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("timestamp_tag", "timestamp_title", "expected_iso"),
+    [
+        ("time", "2026-10-11 20:42:31", "2026-10-11T12:42:31+00:00"),
+        ("span", "2026-10-11 20:42:31", "2026-10-11T12:42:31+00:00"),
+        ("time", "not-a-date", None),
+    ],
+)
+async def test_u2_search_uses_absolute_date_title_in_current_torrent_cell(
+    timestamp_tag: str,
+    timestamp_title: str,
+    expected_iso: str | None,
+) -> None:
+    # U2's real search returns <time title="absolute date"> relative text.
+    # The new parser must not fabricate a date for malformed title values.
+    html = f"""
+        <html><table><tr>
+        <td><a href="details.php?id=123">Synthetic U2 Anime</a></td>
+        <td>category</td><td>comments</td>
+        <td><{timestamp_tag} title="{timestamp_title}">relative</{timestamp_tag}></td>
+        <td>4.00 GiB</td><td>8</td><td>2</td><td>12</td>
+        </tr></table></html>
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.method == "GET"
+        assert request.url.host == "u2.dmhy.org"
+        assert request.url.path == "/torrents.php"
+        return httpx2.Response(200, text=html)
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=SiteKind.U2,
+        base_url=site_profile(SiteKind.U2).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-u2-cookie",
+        timeout_seconds=15,
+    )
+    page = await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.UNKNOWN))
+    assert len(page.items) == 1
+    item = page.items[0]
+    assert item.total_size == 4 * 1024**3
+    assert item.seeders == 8
+    assert item.leechers == 2
+    assert (item.published_at.isoformat() if item.published_at else None) == expected_iso

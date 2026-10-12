@@ -321,7 +321,7 @@ async def test_hdfans_real_adapter_synthetic_failure_never_retries_or_leaks(
     )
     assert result["status"] == "FAILED_NO_RETRY"
     assert result["stage"] == "SEARCH_PAGE_1"
-    assert result["error_code"] == "SITE_UNAVAILABLE"
+    assert result["error_code"] == ("SITE_TIMEOUT" if failure == "timeout" else "SITE_UNAVAILABLE")
     assert result["failure_kind"] == expected
     assert requests == ["/torrents.php"]
     summary = json.dumps(result)

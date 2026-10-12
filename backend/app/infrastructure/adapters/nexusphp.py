@@ -173,7 +173,11 @@ class _NexusHtmlParser(HTMLParser):
             row.cell_text_parts.append([])
             row.cell_titles.append([])
             row.active_cell = len(row.cells) - 1
-        elif tag == "span" and self._row_stack:
+        elif tag in {"span", "time"} and self._row_stack:
+            # NexusPHP derivatives may place the absolute publish timestamp
+            # on a <time title="..."> element, with relative text inside.
+            # Like span titles, retain this metadata ONLY in the active row
+            # cell; the date parser still validates its strict format.
             title = attributes.get("title")
             row = self._row_stack[-1]
             if title and row.active_cell is not None:
@@ -249,6 +253,7 @@ class NexusPhpWebAdapter:
         base_url: str | None = None,
         transport: httpx2.AsyncBaseTransport | None = None,
         timeout_seconds: float = 10.0,
+        details_timeout_seconds: float | None = None,
         user_agent: str | None = None,
         browser_emulation_enabled: bool = False,
         proxy_url: str | None = None,
@@ -264,6 +269,9 @@ class NexusPhpWebAdapter:
         self._base_url, self._origin = _normalize_origin(base_url or profile.default_base_url)
         self._transport = transport
         self._timeout_seconds = timeout_seconds
+        if details_timeout_seconds is not None and not 0 < details_timeout_seconds <= 120:
+            raise ValueError("NexusPHP 详情专用超时必须在 0～120 秒范围内")
+        self._details_timeout_seconds = details_timeout_seconds or timeout_seconds
         self._user_agent = user_agent.strip() if user_agent else None
         self._browser_emulation_enabled = browser_emulation_enabled
         self._proxy_url = proxy_url
@@ -475,7 +483,7 @@ class NexusPhpWebAdapter:
             await self._get_html(
                 self._profile.details_path,
                 params={"id": normalized_id},
-                timeout_seconds=self._profile.detail_timeout_seconds,
+                timeout_seconds=self._details_timeout_seconds,
             )
         )
         self._reject_login_page(parser)
@@ -534,7 +542,10 @@ class NexusPhpWebAdapter:
         if params:
             url = f"{url}?{urlencode(params)}"
         raw = await self._get_bytes(
-            url, limit=self._max_html_bytes, accept="text/html", timeout_seconds=timeout_seconds
+            url,
+            limit=self._max_html_bytes,
+            accept="text/html",
+            timeout_seconds=timeout_seconds,
         )
         try:
             return raw.decode("utf-8")
@@ -575,7 +586,9 @@ class NexusPhpWebAdapter:
             async with (
                 httpx2.AsyncClient(
                     headers=headers,
-                    timeout=self._timeout_seconds if timeout_seconds is None else timeout_seconds,
+                    timeout=timeout_seconds
+                    if timeout_seconds is not None
+                    else self._timeout_seconds,
                     follow_redirects=False,
                     transport=self._transport,
                     proxy=self._proxy_url,
@@ -597,9 +610,13 @@ class NexusPhpWebAdapter:
                     chunks.append(chunk)
         except SiteAdapterError:
             raise
-        except (httpx2.TimeoutException, httpx2.NetworkError) as exc:
+        except httpx2.TimeoutException as exc:
+            # Preserve the distinction required by the match-timeout state
+            # machine; a slow Tracker response is not a network outage.
+            raise SiteAdapterError("SITE_TIMEOUT", "NexusPHP 站点请求超时", retryable=True) from exc
+        except httpx2.NetworkError as exc:
             raise SiteAdapterError(
-                "SITE_UNAVAILABLE", "NexusPHP 连接失败或超时", retryable=True
+                "SITE_UNAVAILABLE", "NexusPHP 网络连接失败", retryable=True
             ) from exc
         except httpx2.HTTPError as exc:
             raise SiteAdapterError(

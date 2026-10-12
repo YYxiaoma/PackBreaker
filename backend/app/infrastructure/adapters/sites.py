@@ -70,6 +70,14 @@ _CANDIDATE_NEXUS_KINDS = frozenset(
     }
 )
 
+# Peak-hour slow detail pages should not raise the search or connection timeout.
+# Only these PENDING sites use this vetted details budget; other methods keep the
+# persisted timeout and no site activation or download permission is changed.
+_CANDIDATE_DETAIL_TIMEOUT_SECONDS: dict[SiteKind, float] = {
+    SiteKind.PTERCLUB: 90.0,
+    SiteKind.HDDOLBY: 90.0,
+}
+
 # Positions are counted from the rightmost torrent-table cell. These sites
 # have layouts that differ from the NexusPHP baseline (extra or fewer columns).
 # Never apply their offsets to other profiles.
@@ -177,6 +185,10 @@ class SiteAdapterFactory:
                 base_url=origin,
                 transport=self._transport,
                 timeout_seconds=timeout_seconds,
+                details_timeout_seconds=max(
+                    timeout_seconds,
+                    _CANDIDATE_DETAIL_TIMEOUT_SECONDS.get(kind, timeout_seconds),
+                ),
                 user_agent=user_agent,
                 browser_emulation_enabled=browser_emulation_enabled,
                 proxy_url=proxy_url,
