@@ -935,3 +935,222 @@ def test_manual_match_with_stale_candidate_becomes_match_error(tmp_path: Path) -
         assert item is not None
         assert item.status == UnpackItemStatus.MATCH_ERROR.value
         assert item.last_error_code == "UNPACK_VERIFY_CANDIDATE_STALE"
+
+
+@pytest.mark.parametrize("change_verified_sibling", [False, True])
+def test_multifile_verified_content_plan_and_copy_materialization_bridge(
+    tmp_path: Path, change_verified_sibling: bool
+) -> None:
+    """Production verifier -> planner -> filesystem gateway on one isolated movie pack.
+
+    Exact media siblings are found by the content stage, then only their
+    persisted source snapshots and frozen metainfo may authorize materialize.
+    No client writes, trackers, PT credentials or production paths are used.
+    """
+    from backend.app.application.downloaders import QbittorrentWriteBinding
+    from backend.app.application.unpack_execution_plans import UnpackExecutionPlanService
+    from backend.app.application.unpack_materialization import UnpackMaterializationService
+    from backend.app.domain.downloader import PathMappingRule
+    from backend.app.domain.unpack_execution_plan import unpack_execution_plan_from_payload
+    from backend.app.infrastructure.adapters.downloaders import QbittorrentWriteAdapter
+
+    movie_data = {
+        "movie.mkv": b"abcdefgh",
+        "part-two.mkv": b"ijklmnop",
+        "part-three.mkv": b"qrstuvwx",
+    }
+    original = _v1_multi(tuple(movie_data.items()))
+    verifier, factory, source = _service(
+        tmp_path, source_content=movie_data["movie.mkv"], torrent=original
+    )
+    data_root = source.parent
+    output = data_root / "isolated-seeding"
+    output.mkdir()
+    for name in ("part-two.mkv", "part-three.mkv"):
+        (data_root / name).write_bytes(movie_data[name])
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert execution is not None and item is not None
+        # Drive the real matcher: no hand-injected selected candidate is
+        # allowed to authorize later operations in this integration case.
+        session.execute(delete(UnpackMatchCandidate))
+        item.status = UnpackItemStatus.MATCH_PENDING.value
+        item.selected_candidate_id = None
+        item.match_origin = None
+        item.candidate_generation = 0
+        execution.status = UnpackExecutionStatus.MATCHING.value
+        execution.config_snapshot = {
+            "site_ids": ["site-config-1"],
+            "matching": {"auto_match_threshold_bps": 0},
+            "output_config": {
+                "output_directory": output.as_posix(),
+                "storage_mode": "COPY",
+                "conflict_policy": "VERIFY_REUSE_OR_STOP",
+                "target_downloader_id": "fake-qb",
+            },
+        }
+        session.commit()
+
+    class _SearchAndFetchAdapter(_FakeSiteAdapter):
+        async def capabilities(self) -> SiteSearchCapabilities:
+            return SiteSearchCapabilities()
+
+        async def search(self, _query: SearchQuery) -> SearchPage:
+            return SearchPage(
+                "fake-site",
+                1,
+                (
+                    normalize_candidate_meta(
+                        site_id="fake-site",
+                        torrent_id="torrent-1",
+                        display_name="Movie",
+                        total_size=len(movie_data["movie.mkv"]),
+                        seeders=10,
+                    ),
+                ),
+                False,
+            )
+
+    provider = _FakeSiteProvider(original)
+    provider._adapter = _SearchAndFetchAdapter(original)
+    matched = asyncio.run(UnpackMatchCoordinator(factory, provider).match_next_batch("execution-1"))
+    assert matched.matched_auto_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCHED_AUTO.value
+        assert item.selected_candidate_id is not None
+        candidate = session.get(UnpackMatchCandidate, item.selected_candidate_id)
+        assert candidate is not None
+        assert candidate.generation == item.candidate_generation == 1
+        assert candidate.evidence["hard_conflicts"] == []
+        assert candidate.raw_ref["site_config_version"] == 7
+
+    verifier = UnpackContentVerificationService(
+        factory, provider, path_scope=AuthorizedPathScope.legacy_only(legacy_data_root=data_root)
+    )
+    verified = asyncio.run(verifier.verify_next_batch("execution-1"))
+    assert verified.content_verified_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None and item.selected_candidate_id is not None
+        candidate = session.get(UnpackMatchCandidate, item.selected_candidate_id)
+        assert candidate is not None
+        mappings = candidate.evidence["content_verification"]["mappings"]
+        assert len(mappings) == 3
+        assert {Path(x["source_path"]).name for x in mappings} == set(movie_data)
+
+    if change_verified_sibling:
+        # A source in the same torrent changed *after* a full Piece proof.
+        # Planning must not freeze stale evidence or create output.
+        (data_root / "part-two.mkv").write_bytes(b"tampered!")
+    binding = QbittorrentWriteBinding(
+        downloader_id="fake-qb",
+        downloader_version=3,
+        binding_digest="b" * 64,
+        path_mappings=(PathMappingRule("/downloads", data_root.as_posix()),),
+        capabilities={"supports_skip_checking": False, "api_version": "2.15.1"},
+        adapter=cast(QbittorrentWriteAdapter, object()),
+        data_root=data_root,
+    )
+
+    class _BindingProvider:
+        def write_binding(self, downloader_id: str) -> QbittorrentWriteBinding:
+            assert downloader_id == "fake-qb"
+            return binding
+
+    scope = AuthorizedPathScope.legacy_only(legacy_data_root=data_root)
+    planner = UnpackExecutionPlanService(
+        factory,
+        provider,
+        _BindingProvider(),
+        path_scope=scope,
+    )
+    planned = asyncio.run(planner.plan_next_batch("execution-1"))
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        if change_verified_sibling:
+            # The planner persists a BLOCKED, non-executable plan rather
+            # than dropping it. It must never authorize materialization.
+            assert planned.ready_count == 0
+            assert planned.blocked_count == 1
+            assert item.status == UnpackItemStatus.PLAN_PENDING.value
+            plan = unpack_execution_plan_from_payload(item.execution_plan)
+            assert not plan.ready and plan.blocked_reasons
+            assert item.last_error_code == "UNPACK_EXECUTION_PLAN_BLOCKED"
+        else:
+            assert planned.ready_count == 1
+            assert item.status == UnpackItemStatus.PLAN_PENDING.value
+            plan = unpack_execution_plan_from_payload(item.execution_plan)
+            assert plan.ready and plan.client_check_required
+        if not change_verified_sibling:
+            assert len(plan.actions) == 3
+            assert plan.target_remote_save_path == "/downloads/isolated-seeding"
+
+    materializer = UnpackMaterializationService(
+        factory,
+        data_root=data_root,
+        path_scope=scope,
+    )
+    result = materializer.materialize_next_batch("execution-1")
+    if change_verified_sibling:
+        assert result.error_count == 1
+        assert not list(output.iterdir())
+        with factory() as session:
+            item = session.get(UnpackExecutionItem, "item-1")
+            assert item is not None
+            assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+            assert not session.scalars(select(UnpackExternalOperationJournal)).all()
+        return
+    assert result.materialized_count == 1
+    assert result.error_count == 0
+    for name, expected in movie_data.items():
+        target = output / "Pack" / name
+        origin = data_root / name
+        assert target.read_bytes() == expected
+        assert target.stat().st_ino != origin.stat().st_ino
+        assert origin.read_bytes() == expected
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.execution_state is not None
+        assert item.execution_state["stage"] == "FILES_MATERIALIZED"
+        journals = session.scalars(select(UnpackExternalOperationJournal)).all()
+        assert len(journals) == 4
+        assert all(row.status == "APPLIED" for row in journals)
+    again = materializer.materialize_next_batch("execution-1")
+    assert again.processed_count == 0
+    assert again.materialized_count == 1
+    with factory() as session:
+        assert len(session.scalars(select(UnpackExternalOperationJournal)).all()) == 4
+
+    # Final stage: consume the *same* database item and freshly frozen plan
+    # with the real seeding service and a journal-aware synthetic QB adapter.
+    # Its three calls must follow materialization, never before the source
+    # snapshot and all target filesystem journals have been proven.
+    from dataclasses import replace
+
+    from backend.app.application.unpack_seeding import UnpackSeedingService
+    from tests.unit.test_unpack_v2_seeding import _FakeQb
+
+    client = _FakeQb(factory, original)
+    binding = replace(binding, adapter=cast(QbittorrentWriteAdapter, client))
+    seeding = UnpackSeedingService(factory, provider, _BindingProvider())
+    for _ in range(7):
+        seeding_result = asyncio.run(seeding.advance_next_batch("execution-1"))
+        if seeding_result.completed_count == 1:
+            break
+    else:
+        pytest.fail("Full stage bridge did not complete final seeding")
+    assert client.calls == ["add", "verify", "start"]
+    assert client.state is not None and client.state.seeding
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None and item.status == UnpackItemStatus.COMPLETED.value
+        records = session.scalars(select(UnpackExternalOperationJournal)).all()
+        assert len(records) == 7
+        assert all(row.status == "APPLIED" for row in records)
+    assert asyncio.run(seeding.advance_next_batch("execution-1")).processed_count == 0
+    assert client.calls == ["add", "verify", "start"]
