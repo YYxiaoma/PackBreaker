@@ -2,6 +2,15 @@
 
 本页区分**正式发布、代码可用、真实只读探测、独立内容/辅种全链路验收**。一个站点可配置、连接成功或有客户端既有种子，都不等于正式完成该站的端到端业务验收。
 
+### 2026-10-12 本轮新增实测（最新证据，优先于下方历史快照）
+
+- **U2：用户批准的受限真实性验收通过**，在缺少匹配动画媒体的前提下，真实 Cookie 认证、用户资料只读 GET、两页分页搜索各 50 条（共 100 条，每页大小/做种/下载数/发布时间均 50/50）、首条详情的站点与种子身份匹配，以及用户提交的 private v1 / 25 文件 / 3,272 Piece 种子元信息解析均成功；合成 NexusPHP/候选分页契约回归成功。用户本轮明确豁免 U2 的媒体 Piece 和客户端下载器 E2E，故标记为**受限范围验收通过（带豁免）**，绝不能声称这两项已实测或将 Registry 自动改为正式支持。
+- **Audiences、不可躺：独立原媒体全 Piece 通过**，分别 **7,321/7,321** 和 **1,831/1,831**，源快照未变化。Transmission 中已有两份同 hash 的现存任务，均在完整做种且有历史做种时间。用户希望删除后重加，但客户端公开 RPC 不能无损恢复原任务添加时间/做种历史及其他内部统计；本轮为保护原始做种未删除、停止、重检或认领它们。仍缺来自 PackBreaker 正式冻结计划及 journal 的受控任务链，而非内容一致性。
+- **SpringSunday：已根据用户指示确认真实媒体所在目录**。提供的绝对路径重复一层 `downloads2`；对应的实际授权挂载目录存在，单个媒体文件为 **66,033,395,661 bytes**，但当前 `[SSD]` 私种对应单个文件 **20,719,045,435 bytes**，大小与内容不匹配，且授权目录未找到同大小源文件。Transmission 只读查询发现多条与 **66,033,395,661 bytes** 媒体一致的既有完整做种任务；不能拿这些任务替代对 20.7 GB SpringSunday 种子的实际 Piece 校验。需要媒体对应的正确 SpringSunday 种子，或当前种子对应的正确媒体。
+- **候选代码证据**：GitHub [Draft PR #32](https://github.com/YYxiaoma/PackBreaker/pull/32) 源码树与整合后的本地 SHA 完全一致；[CI #38215842378](https://github.com/YYxiaoma/PackBreaker/actions/runs/38215842378) 共 **arm64、quality、browser-e2e、container、updater-e2e 五个 Job 全部成功**。本地合并后端 **1,762 passed、4 skipped**，前端 65 passed，生产构建及静态门禁通过。此处不是完整七站 PackBreaker 真实业务 E2E、不是双仓库最终候选镜像交付，也不是正式 Release。
+- **发布门禁**：七新增站的代码 Registry 仍保持 `PENDING_REAL_VALIDATION`。U2 经用户同意的例外验收要在候选/正式支持决策中单独标注。其余站点仍需完成从站点合法取种、冻结计划、独立媒体落位、operation journal 到客户端恢复的完整业务链；不得把本次只读 Piece 或直接客户端测试与该业务 E2E 混同。
+
+
 - **最新正式 Release：v1.1.1**。源码提交 `b779e3270f2a3b3d8c380e22ac36f06ce55f8252`；不可变 GHCR index 为 `sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9`。
 - **最近一次已交付 v1.1.2 候选（非正式 Release）**：源码 `e784c194a4af19f21b6fbce4ec4215f6b99fa444`，标签 `candidate-v1.1.2-e784c194a4af`；GHCR / Docker Hub 的不可变多架构摘要均为 `sha256:b6289c9ebf311afe9a1ce9f49eb1eefb854d4885b7177b3d4065416a7cfcdc6c`（[Actions #38025511243](https://github.com/YYxiaoma/PackBreaker/actions/runs/38025511243)），两仓库原生 ARM64/AMD64 验证成功。该候选早于后续代码，不能当作最新整合产物。
 - **2026-10-12 候选提交前审计基线**：`candidate/v1.1.2-rc1@fe6315d`，其上有 **12 个待提交的本地修改文件**，包含辅助文件只读超时、HDDolby 详情超时、最终辅种 journal / checkpoint 多 worker 安全修复以及隔离测试。工作树不是不可变源码 SHA，**不能用历史候选镜像代表这些未提交修复**；尚未对该最终源码重新交付镜像或正式发布。
