@@ -482,6 +482,84 @@ def _fixture(
     return service, factory, fake, torrent
 
 
+def test_qb_resume_data_checking_during_add_is_not_active_downloading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, factory, fake, _ = _fixture(tmp_path, kind="qb", force_client_check=True)
+    fake = cast(_FakeQb, fake)
+    original_states = fake.get_torrents
+
+    async def resume_data_probe(hashes: tuple[str, ...]) -> tuple[QbittorrentTorrentState, ...]:
+        states = await original_states(hashes)
+        if states and fake.calls == ["add"]:
+            return (replace(states[0], state="checkingResumeData"),)
+        return states
+
+    monkeypatch.setattr(fake, "get_torrents", resume_data_probe)
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert report.client_verifying_count == 1
+    assert report.error_count == 0
+    assert fake.calls == ["add"]
+    with factory() as session:
+        row = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_EXEC_QBITTORRENT_ADD"
+            )
+        )
+        assert row is not None and row.status == OperationStatus.APPLIED.value
+
+
+@pytest.mark.parametrize("delayed_reads", (2, 4))
+def test_qb_recheck_must_not_fail_before_async_verification_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delayed_reads: int
+) -> None:
+    # A real qB 5.2.3 / WebAPI 2.15.1 accepts /recheck, yet the next
+    # /torrents/info can still return stoppedDL at 0% before checkingDL.
+    # Only a later checking -> stoppedUP transition proves completion.
+    service, factory, fake, _ = _fixture(tmp_path, kind="qb", force_client_check=True)
+    fake = cast(_FakeQb, fake)
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.client_verifying_count == 1
+    remaining = {"reads": delayed_reads, "checking_seen": False}
+    original_states = fake.get_torrents
+
+    async def delayed_recheck(torrent_hash: str) -> None:
+        fake._assert_intent("UNPACK_EXEC_QBITTORRENT_RECHECK")
+        assert fake.state is not None and torrent_hash == fake.state.torrent_hash
+        fake.calls.append("verify")
+
+    async def delayed_state(torrent_hashes: tuple[str, ...]) -> tuple[QbittorrentTorrentState, ...]:
+        states = await original_states(torrent_hashes)
+        if fake.calls.count("verify") and fake.state is not None:
+            if remaining["reads"] > 0:
+                remaining["reads"] -= 1
+                return states
+            if not remaining["checking_seen"]:
+                remaining["checking_seen"] = True
+                fake.state = replace(fake.state, state="checkingDL", progress=0.0)
+                return (fake.state,)
+            if fake.state.state == "checkingDL":
+                fake.state = replace(fake.state, state="stoppedUP", progress=1.0)
+                return (fake.state,)
+        return states
+
+    monkeypatch.setattr(fake, "recheck_torrent", delayed_recheck)
+    monkeypatch.setattr(fake, "get_torrents", delayed_state)
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+    assert second.error_count == 0
+    for _ in range(6):
+        result = asyncio.run(service.advance_next_batch("execution-1"))
+        if result.completed_count == 1:
+            break
+    else:
+        pytest.fail("qB delayed RECHECK did not finish")
+    assert fake.calls == ["add", "verify", "start"]
+    with factory() as session:
+        operations = session.scalars(select(UnpackExternalOperationJournal)).all()
+        assert len(operations) == 3
+        assert all(row.status == OperationStatus.APPLIED.value for row in operations)
+
+
 @pytest.mark.parametrize(
     ("current_status", "current_stage"),
     (
