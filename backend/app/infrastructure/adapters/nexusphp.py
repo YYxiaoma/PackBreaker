@@ -170,7 +170,11 @@ class _NexusHtmlParser(HTMLParser):
             row.cell_text_parts.append([])
             row.cell_titles.append([])
             row.active_cell = len(row.cells) - 1
-        elif tag == "span" and self._row_stack:
+        elif tag in {"span", "time"} and self._row_stack:
+            # NexusPHP derivatives may place the absolute publish timestamp
+            # on a <time title="..."> element, with relative text inside.
+            # Like span titles, retain this metadata ONLY in the active row
+            # cell; the date parser still validates its strict format.
             title = attributes.get("title")
             row = self._row_stack[-1]
             if title and row.active_cell is not None:

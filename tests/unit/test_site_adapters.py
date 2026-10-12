@@ -1039,3 +1039,50 @@ async def test_candidate_details_peak_hour_timeout_is_isolated_from_search_and_a
         "/torrents.php": search_timeout,
         "/details.php": expected_details_timeout,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("timestamp_tag", "timestamp_title", "expected_iso"),
+    [
+        ("time", "2026-10-11 20:42:31", "2026-10-11T12:42:31+00:00"),
+        ("span", "2026-10-11 20:42:31", "2026-10-11T12:42:31+00:00"),
+        ("time", "not-a-date", None),
+    ],
+)
+async def test_u2_search_uses_absolute_date_title_in_current_torrent_cell(
+    timestamp_tag: str,
+    timestamp_title: str,
+    expected_iso: str | None,
+) -> None:
+    # U2's real search returns <time title="absolute date"> relative text.
+    # The new parser must not fabricate a date for malformed title values.
+    html = f"""
+        <html><table><tr>
+        <td><a href="details.php?id=123">Synthetic U2 Anime</a></td>
+        <td>category</td><td>comments</td>
+        <td><{timestamp_tag} title="{timestamp_title}">relative</{timestamp_tag}></td>
+        <td>4.00 GiB</td><td>8</td><td>2</td><td>12</td>
+        </tr></table></html>
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.method == "GET"
+        assert request.url.host == "u2.dmhy.org"
+        assert request.url.path == "/torrents.php"
+        return httpx2.Response(200, text=html)
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=SiteKind.U2,
+        base_url=site_profile(SiteKind.U2).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-u2-cookie",
+        timeout_seconds=15,
+    )
+    page = await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.UNKNOWN))
+    assert len(page.items) == 1
+    item = page.items[0]
+    assert item.total_size == 4 * 1024**3
+    assert item.seeders == 8
+    assert item.leechers == 2
+    assert (item.published_at.isoformat() if item.published_at else None) == expected_iso
