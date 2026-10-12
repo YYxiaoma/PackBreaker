@@ -1,22 +1,12 @@
-# PackBreaker 已知限制（更新于 2026-10-11）
+# PackBreaker 已知限制（更新于 2026-10-12）
 
-
-### 2026-10-11 最新对账（优先于下文保留的历史阶段快照）
-
-最新正式版仍为 v1.1.1；当前 main=6aa8ec6、已交付候选=3bb0d849。三站真实源文件 Piece 校验已通过 CarPT 1831/1831、HDFans/PTTime 各 7321/7321，合计 16473/16473；与正式辅种 E2E 不等价。root 审计可读，但 1026:100 降权探针因权限被拒；3 个媒体文件各有 3 个硬链接，严禁擅自递归 chmod/chown。下载器路径映射 UNTESTED、目标与 ownership 未验，七新增站仍 PENDING_REAL_VALIDATION。
-
-完整证据与 SHA/digest 请参阅 [当前收官门禁](./v1.1.2-gate-snapshot-20261011.md) 和 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。下文的旧 SHA 记录属于历史阶段快照，不得作为当前发行身份。
-
-
-
-**最新正式版本为 v1.1.1；v1.1.2 精确源码 `5364c8de` 的同摘要双架构候选已通过 CI、Docker E2E、原生 ARM64 与双注册表交付，但不是正式 Release。** 七新增站、六旧站真实任务、Tracker 根因及恢复仍待验收；详见 [当前收官门禁](./v1.1.2-gate-snapshot-20261011.md) 和 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。Synology NAS 现场验收不属本版门槛，不得擅自操作生产环境。
-
+**最新正式版本仍为 v1.1.1；2026-10-12 的候选提交前审计基线为 `candidate/v1.1.2-rc1@fe6315d` 加 12 个待提交修改文件，这个基线本身不是最终不可变源码 SHA，也没有与其对应的最终镜像。** 此前源码 `e784c19` 的 GHCR / Docker Hub 同摘要双架构候选已通过隔离升级/回滚（[Actions #38025511243](https://github.com/YYxiaoma/PackBreaker/actions/runs/38025511243)），不能代表后续合并代码、真实辅种成功或正式 Release。v1.1.2 不要求 Synology NAS 现场验收，不得擅自操作生产环境。完整清单见 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。
 ## 1. 尚未完成的站点与内容校验
 
 - PTTime：搜索和详情身份已有只读证据；用户提供的新候选在隔离审计中完成 **7,321/7,321** Piece 校验，但原始私种未进入 WebCodex Runner，尚未通过 PackBreaker 正式任务计划、ownership journal 与下载器 verify 全链路。
 - HDFans：用户提供的新候选在隔离审计中完成 **7,321/7,321** Piece 校验；Transmission 中已存在同 InfoHash 做种任务，但没有 PackBreaker ownership journal。禁止认领、重复添加、重新校验或重启该用户任务。独立 Piece 证据不代表 PackBreaker 任务 E2E。
 - HDHome、UBits、KeepFrds、BTSCHOOL、PTTime、聆音Club 还需逐站完成正式 PackBreaker 任务全链路验收。Tracker 现有种子在做种不代表新任务的操作流水或受控恢复已经通过。
-- 七新增站点 PTerClub、Audiences、SpringSunday、HDDolby、U2、不可躺、CarPT 全部保持 `PENDING_REAL_VALIDATION`，不能打开正式辅种。CarPT 新候选的隔离全 Piece 校验已通过 1,831/1,831，但仍缺正式支持审批、执行计划、目标/ownership 审核及 PackBreaker 客户端校验；详见 [支持矩阵](./support-matrix.md)。
+- 七新增站点 PTerClub、Audiences、SpringSunday、HDDolby、U2、不可躺、CarPT **7/7 均有不同时间积累的只读搜索及详情身份成功证据（截至 2026-10-12）**，但全部保持 `PENDING_REAL_VALIDATION`，不能打开正式辅种。CarPT 用户提供离线种子独立 Piece 验证 1,831/1,831；本轮进一步在隔离的真实 Transmission 中完成 **CarPT、PTerClub、HDDolby** 三站添加、客户端 VERIFY、START 和安全清理，但并非正式 PackBreaker 站点/冻结计划/journal 全链路 E2E。Audiences、不可躺存在外部同 hash 任务不可接管，U2、SpringSunday 缺少与新种子匹配的源媒体。各站真实正式任务链和注册状态仍待独立验收；详见 [支持矩阵](./support-matrix.md)。
 - 如果真实站点内容获取被执行环境拦截，不能换工具、改变请求形态或通过浏览器绕过。需要保留阻断并用符合站点权限的合法验证路径继续。
 
 - HDDolby 新增站点/临时 Probe API 省略超时时采用 Profile 45 秒默认值的修复已随 PR #26 进入最新候选镜像，**尚未正式发布**。历史已保存的 HDDolby 15 秒配置不自动升级覆盖，必须由用户受控修改。

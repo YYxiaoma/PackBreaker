@@ -726,6 +726,89 @@ def test_auxiliary_poll_recovers_after_transient_downloader_unavailable(
     assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
 
 
+def test_auxiliary_poll_native_timeout_preserves_state_and_recovers_without_readd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raw read-only RPC timeout must not crash the auxiliary worker."""
+    service, factory, fake_qb, data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    assert fake_qb.calls == ["add", "select", "start"]
+
+    original_get = fake_qb.get_torrents
+    read_calls = 0
+
+    async def one_timeout(
+        hashes: tuple[str, ...],
+    ) -> tuple[QbittorrentTorrentState, ...]:
+        nonlocal read_calls
+        read_calls += 1
+        if read_calls == 1:
+            raise TimeoutError("synthetic read-only RPC timeout")
+        return await original_get(hashes)
+
+    monkeypatch.setattr(fake_qb, "get_torrents", one_timeout)
+    pending = asyncio.run(service.advance_next_batch("execution-1"))
+    assert pending.downloading_count == 1
+    assert pending.error_count == 0
+    assert fake_qb.calls == ["add", "select", "start"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
+        assert item.auxiliary_state is not None
+        assert item.auxiliary_state["state"] == "DOWNLOADING"
+
+    recovered = asyncio.run(service.advance_next_batch("execution-1"))
+    assert recovered.verified_count == 1
+    assert recovered.error_count == 0
+    assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+    assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
+
+
+def test_auxiliary_preadd_native_readonly_timeout_never_sends_add_until_recovered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, factory, fake_qb, data_root = _fixture(tmp_path)
+    original_get = fake_qb.get_torrents
+    probes = 0
+
+    async def one_timeout(
+        hashes: tuple[str, ...],
+    ) -> tuple[QbittorrentTorrentState, ...]:
+        nonlocal probes
+        probes += 1
+        if probes == 1:
+            raise TimeoutError("synthetic pre-add read-only RPC timeout")
+        return await original_get(hashes)
+
+    monkeypatch.setattr(fake_qb, "get_torrents", one_timeout)
+    pending = asyncio.run(service.advance_next_batch("execution-1"))
+    assert pending.downloading_count == 1
+    assert pending.error_count == 0
+    assert fake_qb.calls == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_ADD"
+            )
+        )
+        assert item is not None and journal is not None
+        assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
+        assert item.auxiliary_state is not None
+        assert item.auxiliary_state["state"] == "PREPARING"
+        assert journal.status == OperationStatus.INTENT_RECORDED.value
+
+    resumed = asyncio.run(service.advance_next_batch("execution-1"))
+    assert resumed.downloading_count == 1
+    assert resumed.error_count == 0
+    assert fake_qb.calls == ["add", "select", "start"]
+    verified = asyncio.run(service.advance_next_batch("execution-1"))
+    assert verified.verified_count == 1
+    assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+    assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
+
+
 def test_auxiliary_poll_survives_temporary_site_download_500_without_readding(
     tmp_path: Path,
 ) -> None:

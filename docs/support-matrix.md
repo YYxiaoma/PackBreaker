@@ -1,20 +1,11 @@
-# PackBreaker 支持矩阵（更新于 2026-10-11）
-
-
-### 2026-10-11 最新对账（优先于下文保留的历史阶段快照）
-
-最新正式版仍为 v1.1.1；主线已合并 PR #28 至 6aa8ec6，上一候选 3bb0d849 的镜像已通过双架构验收，但需要为新主线重新构建。CarPT、HDFans、PTTime 三份原始私种已在 Runner 对指定真实三文件媒体完成完整 Piece 16473/16473（各站独立校验），并非 PackBreaker 下载器正式 E2E。七新增站均继续禁用；Transmission 路径映射未验证，权限与目标 ownership 仍阻断真实任务。
-
-完整证据与 SHA/digest 请参阅 [当前收官门禁](./v1.1.2-gate-snapshot-20261011.md) 和 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。下文的旧 SHA 记录属于历史阶段快照，不得作为当前发行身份。
-
-
+# PackBreaker 支持矩阵（更新于 2026-10-12）
 
 本页区分**正式发布、代码可用、真实只读探测、独立内容/辅种全链路验收**。一个站点可配置、连接成功或有客户端既有种子，都不等于正式完成该站的端到端业务验收。
 
 - **最新正式 Release：v1.1.1**。源码提交 `b779e3270f2a3b3d8c380e22ac36f06ce55f8252`；不可变 GHCR index 为 `sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9`。
-- **最近一次已交付 v1.1.2 候选（非正式 Release）**：源码 `67ff480e3c9b30142e0d8209a03e3cd02062f361`，标签 `candidate-v1.1.2-67ff480e3c9b`；双注册表同一索引 `sha256:53b2ddde7cbfe7a5cbe46488233fcdf0de928f2a82e1e553c2d9b2dcaad4da18`，[Actions #38118736029](https://github.com/YYxiaoma/PackBreaker/actions/runs/38118736029) 原生 ARM64 与双架构交付成功。
-- **当前研发源码**：GitHub `main` 与 `candidate/v1.1.2` 均为 `67ff480e`；PR #22–#25 已合并，PR #21 被等效修复覆盖后关闭。当前完整业务门禁见 [2026-10-11 收官快照](./v1.1.2-gate-snapshot-20261011.md)，候选交付不解除七新增站的正式启用阻断。
-- **v1.1.2 收官门槛**：[Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。无需 Synology NAS 现场验收，未经授权不操作生产 NAS。
+- **最近一次已交付 v1.1.2 候选（非正式 Release）**：源码 `e784c194a4af19f21b6fbce4ec4215f6b99fa444`，标签 `candidate-v1.1.2-e784c194a4af`；GHCR / Docker Hub 的不可变多架构摘要均为 `sha256:b6289c9ebf311afe9a1ce9f49eb1eefb854d4885b7177b3d4065416a7cfcdc6c`（[Actions #38025511243](https://github.com/YYxiaoma/PackBreaker/actions/runs/38025511243)），两仓库原生 ARM64/AMD64 验证成功。该候选早于后续代码，不能当作最新整合产物。
+- **2026-10-12 候选提交前审计基线**：`candidate/v1.1.2-rc1@fe6315d`，其上有 **12 个待提交的本地修改文件**，包含辅助文件只读超时、HDDolby 详情超时、最终辅种 journal / checkpoint 多 worker 安全修复以及隔离测试。工作树不是不可变源码 SHA，**不能用历史候选镜像代表这些未提交修复**；尚未对该最终源码重新交付镜像或正式发布。
+- **v1.1.2 收官门槛**：[Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。用户取消 Synology NAS 现场验收要求，但仍不授权 NAS 生产写入；七新增站全部真实验收和正式发布需独立通过。
 
 ## 1. 平台与下载器
 
@@ -78,6 +69,7 @@
 
 用户提供的 CarPT、HDFans、PTTime 三份私种与一组真实源媒体在隔离审计中完成全 Piece 内容核对，分别为 **1,831/1,831、7,321/7,321、7,321/7,321**。通过跨环境 Piece-SHA1 序列承诺值比较；原始私种未进入 WebCodex Runner，所以不能记作当前 Runner 工具读取演练、正式任务、客户端 verify 或 ownership journal 验收。[审计证据](https://github.com/YYxiaoma/PackBreaker/issues/5#issuecomment-6095145394)。HDFans 已有外部同 hash 客户端任务，必须维持只读。
 
+用户提供的 CarPT、HDFans、PTTime 三份私种与一组真实源媒体在隔离审计中完成全 Piece 内容核对，分别为 **1,831/1,831、7,321/7,321、7,321/7,321**。通过跨环境 Piece-SHA1 序列承诺值比较；原始私种未进入 WebCodex Runner，所以不能记作当前 Runner 工具读取演练、正式任务、客户端 verify 或 ownership journal 验收。[审计证据](https://github.com/YYxiaoma/PackBreaker/issues/5#issuecomment-6095145394)。HDFans 已有外部同 hash 客户端任务，必须维持只读。
 当前所需现场补验、失败分类与退出条件维护于 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5) 和 [v1.1.1 的真实只读记录](./v1.1.1-development.md)。历史 v1.0.0～v1.0.5 发行记录与旧的测试范围可通过 Git 历史和 `docs/v1.0.*-release.md` 查阅，不再视为本页“当前版本”说明。
 
 > **2026-10-11 续验**：PTerClub 搜索字段 27/27、HDDolby 45 秒只读搜索四字段 9/9，SpringSunday 认证成功但搜索超时；Tracker 后续只读快照和开放事项请查阅 [最新收官快照](./v1.1.2-gate-snapshot-20261011.md)。上表保留 2026-10-10 历史快照，不能当作实时状态。

@@ -1241,7 +1241,13 @@ class UnpackAuxiliaryStagingService:
 async def _owned_torrent_state(
     prepared: _Prepared,
 ) -> QbittorrentTorrentState | TransmissionTorrentState | None:
-    states = await prepared.binding.adapter.get_torrents((prepared.torrent_hash,))
+    try:
+        states = await prepared.binding.adapter.get_torrents((prepared.torrent_hash,))
+    except TimeoutError as exc:
+        # Only this read-only status probe is safe to retry on the next pass.
+        # Unknown results of ADD/START/STOP/REMOVE still require journal
+        # reconciliation at their respective write boundaries.
+        raise DownloaderAdapterError("DOWNLOADER_UNAVAILABLE", "读取辅助种子状态超时") from exc
     if not states:
         return None
     if len(states) != 1:

@@ -54,6 +54,7 @@ class NexusPhpProfile:
     leechers_cell_from_end: int = 3
     min_request_interval_seconds: float = 2.0
     require_valid_torrent_metainfo: bool = False
+    detail_timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if not self.site_id.strip():
@@ -84,6 +85,8 @@ class NexusPhpProfile:
                 raise ValueError("NexusPHP profile 列偏移必须为正数")
         if self.min_request_interval_seconds < 0:
             raise ValueError("NexusPHP profile 请求间隔不能为负数")
+        if self.detail_timeout_seconds is not None and not 1 <= self.detail_timeout_seconds <= 120:
+            raise ValueError("NexusPHP 详情请求超时必须在 1～120 秒之间")
 
 
 HDTIME_PROFILE = NexusPhpProfile(
