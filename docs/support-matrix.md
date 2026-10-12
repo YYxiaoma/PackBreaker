@@ -6,7 +6,7 @@
 
 - **U2：用户批准的受限真实性验收通过**，在缺少匹配动画媒体的前提下，真实 Cookie 认证、用户资料只读 GET、两页分页搜索各 50 条（共 100 条，每页大小/做种/下载数/发布时间均 50/50）、首条详情的站点与种子身份匹配，以及用户提交的 private v1 / 25 文件 / 3,272 Piece 种子元信息解析均成功；合成 NexusPHP/候选分页契约回归成功。用户本轮明确豁免 U2 的媒体 Piece 和客户端下载器 E2E，故标记为**受限范围验收通过（带豁免）**，绝不能声称这两项已实测或将 Registry 自动改为正式支持。
 - **Audiences、不可躺：独立原媒体全 Piece 通过**，分别 **7,321/7,321** 和 **1,831/1,831**，源快照未变化。Transmission 中已有两份同 hash 的现存任务，均在完整做种且有历史做种时间。用户希望删除后重加，但客户端公开 RPC 不能无损恢复原任务添加时间/做种历史及其他内部统计；本轮为保护原始做种未删除、停止、重检或认领它们。仍缺来自 PackBreaker 正式冻结计划及 journal 的受控任务链，而非内容一致性。
-- **SpringSunday：已根据用户指示确认真实媒体所在目录**。提供的绝对路径重复一层 `downloads2`；对应的实际授权挂载目录存在，单个媒体文件为 **66,033,395,661 bytes**，但当前 `[SSD]` 私种对应单个文件 **20,719,045,435 bytes**，大小与内容不匹配，且授权目录未找到同大小源文件。Transmission 只读查询发现多条与 **66,033,395,661 bytes** 媒体一致的既有完整做种任务；不能拿这些任务替代对 20.7 GB SpringSunday 种子的实际 Piece 校验。需要媒体对应的正确 SpringSunday 种子，或当前种子对应的正确媒体。
+- **SpringSunday：新的合法 66 GB 原种及真实内容全 Piece 已通过**。用户最初给的路径多一层 `downloads2`；原 `[SSD]` 文件对应 20,719,045,435 字节版本，不能硬套在现有 66,033,395,661 字节影片上。依据真实站点页面唯一同容量候选、同站详情身份（详情未列出容量）、一次合法 `fetch_torrent` 取得的原始 private torrent，**精确文件大小和文件名均匹配**；独立读取该 66 GB 原媒体完成 **3,936/3,936 Piece FULL_VERIFIED**，零失配，源快照不变。TR 已有完全相同 InfoHash 的 SpringSunday 做种任务，`have_valid == size_when_done`、`have_unchecked=0`、100% 正在做种。保护既有任务，没有重新添加/停止/删除；仍缺正式 PackBreaker 新任务计划与 journal 全链路。
 - **候选代码证据**：GitHub [Draft PR #32](https://github.com/YYxiaoma/PackBreaker/pull/32) 源码树与整合后的本地 SHA 完全一致；[CI #38215842378](https://github.com/YYxiaoma/PackBreaker/actions/runs/38215842378) 共 **arm64、quality、browser-e2e、container、updater-e2e 五个 Job 全部成功**。本地合并后端 **1,762 passed、4 skipped**，前端 65 passed，生产构建及静态门禁通过。此处不是完整七站 PackBreaker 真实业务 E2E、不是双仓库最终候选镜像交付，也不是正式 Release。
 - **发布门禁**：七新增站的代码 Registry 仍保持 `PENDING_REAL_VALIDATION`。U2 经用户同意的例外验收要在候选/正式支持决策中单独标注。其余站点仍需完成从站点合法取种、冻结计划、独立媒体落位、operation journal 到客户端恢复的完整业务链；不得把本次只读 Piece 或直接客户端测试与该业务 E2E 混同。
 
@@ -53,7 +53,7 @@
 | --- | --- | --- |
 | PTerClub | `PENDING_REAL_VALIDATION` | 2026-10-11 已有认证成功、真实搜索 27 条及四字段 27/27 可解析；仍缺合法取种、独立 Piece 和正式任务 |
 | Audiences | `PENDING_REAL_VALIDATION` | 十列搜索数值映射已修复，真实单页日期/容量/做种/下载数 **16/16** 可解析；当前参考影片无严格候选，仍缺合法取种和完整 Piece |
-| SpringSunday | `PENDING_REAL_VALIDATION` | 既有真实页面可解析 16 条；2026-10-11 认证成功但搜索超过 18 秒预算；取种及 Piece 仍缺 |
+| SpringSunday | `PENDING_REAL_VALIDATION` | 2026-10-12 从真实站点严格匹配取得 66 GB 合法原种，并对指定电影媒体完成 **3,936/3,936 Piece FULL_VERIFIED**；TR 同 hash 既有任务 100% 正在做种，未修改。仍缺 PackBreaker 正式业务流水 E2E |
 | HDDolby | `PENDING_REAL_VALIDATION` | 2026-10-11 45 秒只读搜索 9 条，日期/大小/做种/下载四字段均 9/9；已保存超时值变更后连接状态 `UNTESTED`，取种、Piece 与任务仍缺 |
 | U2 | `PENDING_REAL_VALIDATION` | 既有 19/19 动画搜索及详情身份已验证；2026-10-10 另一个动画查询返回 50 条，大小、做种、下载数均 50/50 可解析，但有下一页；间歇连接错误、合法取种及独立 Piece 仍待验收 |
 | 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 2026-10-10 搜索返回 5 条，当前影片 2 条可行候选仍有歧义，不得自动任选其一 |
