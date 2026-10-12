@@ -467,18 +467,38 @@ class UnpackAuxiliaryStagingService:
         )
         kind = _lstat_kind(prepared.staging_path)
         if journal.status == OperationStatus.APPLIED.value:
-            if kind != "directory":
-                raise self._conflict("已确认的 staging 目录当前不再是安全目录")
+            # The identity of the originally created directory, not only the
+            # pathname, is the ownership proof for subsequent staging writes.
+            observed = _staging_directory_identity(prepared.staging_path)
+            confirmed = journal.after_snapshot
+            if (
+                kind != "directory"
+                or observed is None
+                or not isinstance(confirmed, dict)
+                or confirmed.get("device") != observed.get("device")
+                or confirmed.get("inode") != observed.get("inode")
+                or confirmed.get("path") != prepared.staging_path.as_posix()
+            ):
+                self._mark_reconcile(journal.id, "UNPACK_AUX_STAGING_IDENTITY_CHANGED")
+                raise self._conflict("staging 目录与已确认的创建快照不同，禁止继续操作")
             return
+        if journal.status == OperationStatus.RECONCILE_REQUIRED.value:
+            raise self._conflict("staging 目录创建结果尚未对账，禁止重复操作")
+        if not created and kind is not None:
+            # An INTENT without APPLIED does not prove who created the path,
+            # even when it is presently a directory. Never adopt it.
+            self._mark_reconcile(journal.id, "UNPACK_AUX_STAGING_CREATION_UNCONFIRMED")
+            raise self._conflict("staging 目录存在，但原创建操作未确认，禁止接管")
         if created and kind is not None:
             self._mark_reconcile(journal.id, "UNPACK_AUX_STAGING_PREEXISTED")
             raise self._conflict("staging 目标在 intent 前已存在，拒绝接管")
         if kind is None:
             prepared.staging_path.mkdir(parents=True, exist_ok=False)
-        if _lstat_kind(prepared.staging_path) != "directory":
+        observed = _staging_directory_identity(prepared.staging_path)
+        if observed is None:
             self._mark_reconcile(journal.id, "UNPACK_AUX_STAGING_INVALID")
             raise self._conflict("staging 创建后不是安全目录")
-        self._mark_applied(journal.id, {"path": prepared.staging_path.as_posix()})
+        self._mark_applied(journal.id, observed)
 
     async def _ensure_torrent_added(self, prepared: _Prepared) -> None:
         target = {
@@ -1360,6 +1380,24 @@ def _safe_torrent_path(root: Path, torrent_path: str) -> Path:
             detail="辅助文件路径不能逃逸 staging",
         )
     return candidate
+
+
+def _staging_directory_identity(path: Path) -> dict[str, str | int] | None:
+    """Non-following snapshot for the exact directory whose creation we own."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ApplicationError(
+            code="UNPACK_AUX_STAGING_STAT_FAILED",
+            status=409,
+            title="无法检查 staging 状态",
+            detail="读取 staging 目录身份失败",
+        ) from exc
+    if not stat.S_ISDIR(info.st_mode):
+        return None
+    return {"path": path.as_posix(), "device": info.st_dev, "inode": info.st_ino}
 
 
 def _lstat_kind(path: Path) -> str | None:

@@ -1123,3 +1123,114 @@ def test_applied_add_with_missing_external_torrent_requires_reconcile_without_re
         )
         assert add_journal is not None
         assert add_journal.status == OperationStatus.RECONCILE_REQUIRED.value
+
+
+def test_auxiliary_applied_staging_directory_swapped_in_place_requires_reconcile(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    assert fake_qb.calls == ["add", "select", "start"]
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_STAGING_DIR"
+            )
+        )
+        assert journal is not None
+        path = Path(journal.target["path"])
+        original_stat = path.lstat()
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.auxiliary_state = {**dict(item.auxiliary_state or {}), "state": "PREPARING"}
+        session.commit()
+    original = path.with_name(path.name + "-original-preserved")
+    path.rename(original)
+    path.mkdir()
+    assert path.stat().st_ino != original_stat.st_ino
+
+    result = asyncio.run(service.advance_next_batch("execution-1"))
+    assert result.error_count == 1
+    assert fake_qb.calls == ["add", "select", "start"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCH_ERROR.value
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_STAGING_DIR"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+        assert journal.last_error_code == "UNPACK_AUX_STAGING_IDENTITY_CHANGED"
+
+
+def test_auxiliary_existing_staging_directory_with_unconfirmed_intent_stops(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_STAGING_DIR"
+            )
+        )
+        assert journal is not None
+        # Crash after mkdir before APPLIED: cannot prove creator of the
+        # directory merely from the pre-write INTENT journal.
+        journal.status = OperationStatus.INTENT_RECORDED.value
+        journal.after_snapshot = None
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.auxiliary_state = {**dict(item.auxiliary_state or {}), "state": "PREPARING"}
+        session.commit()
+
+    result = asyncio.run(service.advance_next_batch("execution-1"))
+    assert result.error_count == 1
+    assert fake_qb.calls == ["add", "select", "start"]
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_STAGING_DIR"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+        assert journal.last_error_code == "UNPACK_AUX_STAGING_CREATION_UNCONFIRMED"
+
+
+def test_auxiliary_legacy_applied_directory_without_inode_cannot_be_adopted(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_STAGING_DIR"
+            )
+        )
+        assert journal is not None
+        assert isinstance(journal.after_snapshot, dict)
+        # A legacy record only attests a pathname and cannot establish
+        # directory ownership after restarts or external replacement.
+        journal.after_snapshot = {"path": journal.target["path"]}
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.auxiliary_state = {**dict(item.auxiliary_state or {}), "state": "PREPARING"}
+        session.commit()
+
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert report.error_count == 1
+    assert fake_qb.calls == ["add", "select", "start"]
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_STAGING_DIR"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+        assert journal.last_error_code == "UNPACK_AUX_STAGING_IDENTITY_CHANGED"
