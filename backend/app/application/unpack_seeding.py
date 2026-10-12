@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -806,7 +807,19 @@ class UnpackSeedingService:
                 and journal.after_snapshot.get("request_accepted") is True
             )
             if request_accepted:
+                previous = (
+                    journal.after_snapshot if isinstance(journal.after_snapshot, dict) else {}
+                )
                 if _checking(state):
+                    self._update_after_snapshot(
+                        journal.id,
+                        {
+                            **_state_snapshot(state, prepared.ownership_tag),
+                            "request_accepted": True,
+                            "checking_observed": True,
+                            "recheck_accepted_at": previous.get("recheck_accepted_at"),
+                        },
+                    )
                     return state
                 if _verification_complete(state):
                     self._mark_applied(
@@ -819,6 +832,24 @@ class UnpackSeedingService:
                     )
                     return state
                 if _verification_incomplete(state):
+                    if previous.get("checking_observed") is not True:
+                        # qB 5.2.x acknowledges RECHECK before transitioning
+                        # from stoppedDL to checkingDL. A stopped 0% read is
+                        # not proof that RECHECK finished or even began.
+                        accepted_at = previous.get("recheck_accepted_at")
+                        if isinstance(accepted_at, str):
+                            try:
+                                parsed = datetime.fromisoformat(accepted_at)
+                            except ValueError:
+                                parsed = None
+                            if (
+                                parsed is not None
+                                and parsed.tzinfo is not None
+                                and datetime.now(UTC) - parsed <= timedelta(seconds=120)
+                            ):
+                                return state
+                        self._mark_reconcile(journal.id, "UNPACK_SEED_RECHECK_PHASE_UNOBSERVED")
+                        raise self._reconcile_required("未观察到的客户端校验阶段")
                     self._mark_applied(
                         journal.id,
                         {
@@ -872,11 +903,22 @@ class UnpackSeedingService:
         except (DownloaderAdapterError, TimeoutError, ApplicationError):
             self._mark_reconcile(journal.id, "UNPACK_SEED_VERIFY_RESULT_UNKNOWN")
             raise
+        if is_qb and _verification_incomplete(current):
+            # A successful WebAPI recheck POST can precede the first
+            # checkingDL/checkingUP observation. Wait for the transition
+            # without ever dispatching a second recheck request.
+            for _ in range(16):
+                await asyncio.sleep(0.5)
+                current = self._require_owned_state(prepared, await self._states(prepared))
+                if not _verification_incomplete(current):
+                    break
         self._update_after_snapshot(
             journal.id,
             {
                 **_state_snapshot(current, prepared.ownership_tag),
                 "request_accepted": True,
+                "checking_observed": _checking(current),
+                "recheck_accepted_at": utc_now().isoformat(),
             },
         )
         if _verification_complete(current):
@@ -888,7 +930,7 @@ class UnpackSeedingService:
                     "verification_complete": True,
                 },
             )
-        elif _verification_incomplete(current) and not _checking(current):
+        elif _verification_incomplete(current) and not _checking(current) and not is_qb:
             self._mark_applied(
                 journal.id,
                 {
@@ -903,6 +945,8 @@ class UnpackSeedingService:
                 title="客户端下载器校验未通过",
                 detail="客户端下载器完成校验后仍报告数据不完整，禁止启动做种",
             )
+        # qB has not yet shown a completed RECHECK phase. Keep the
+        # persisted accepted intent pending, never silently mark failure.
         return current
 
     async def _ensure_started(

@@ -52,11 +52,11 @@
 | 站点 | Registry 状态 | 已有真实证据 / 必须补齐 |
 | --- | --- | --- |
 | PTerClub | `PENDING_REAL_VALIDATION` | 2026-10-11 已有认证成功、真实搜索 27 条及四字段 27/27 可解析；仍缺合法取种、独立 Piece 和正式任务 |
-| Audiences | `PENDING_REAL_VALIDATION` | 十列搜索数值映射已修复，真实单页日期/容量/做种/下载数 **16/16** 可解析；当前参考影片无严格候选，仍缺合法取种和完整 Piece |
+| Audiences | `PENDING_REAL_VALIDATION` | 已通过真实认证搜索/详情与独立 Piece 7,321/7,321；2026-10-12 在隔离 SQLite 冻结计划和真实 QB 5.2.3 中完成 ADD/RECHECK/START 三条 journal 全部 APPLIED、做种及安全清理，正式新站任务 UI 全链路仍待验收 |
 | SpringSunday | `PENDING_REAL_VALIDATION` | 2026-10-12 从真实站点严格匹配取得 66 GB 合法原种，并对指定电影媒体完成 **3,936/3,936 Piece FULL_VERIFIED**；TR 同 hash 既有任务 100% 正在做种，未修改。仍缺 PackBreaker 正式业务流水 E2E |
 | HDDolby | `PENDING_REAL_VALIDATION` | 2026-10-11 45 秒只读搜索 9 条，日期/大小/做种/下载四字段均 9/9；已保存超时值变更后连接状态 `UNTESTED`，取种、Piece 与任务仍缺 |
 | U2 | `PENDING_REAL_VALIDATION` | 既有 19/19 动画搜索及详情身份已验证；2026-10-10 另一个动画查询返回 50 条，大小、做种、下载数均 50/50 可解析，但有下一页；间歇连接错误、合法取种及独立 Piece 仍待验收 |
-| 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 2026-10-10 搜索返回 5 条，当前影片 2 条可行候选仍有歧义，不得自动任选其一 |
+| 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 用户提供的原种对应 Piece 1,831/1,831；2026-10-12 在隔离 SQLite 冻结计划及真实 QB 5.2.3 中完成 ADD/RECHECK/START 三条 journal 全部 APPLIED、做种及安全清理，候选歧义与正式新站 UI 任务链仍待验收 |
 | CarPT | `PENDING_REAL_VALIDATION` | 已有唯一严格候选和详情身份证据；用户提供的新候选在隔离审计中完整 Piece **1,831/1,831** 通过；正式站点支持和 PackBreaker 任务链仍未验收 |
 七站的加密配置和只读连接测试**不授权启用正式任务**。即使有人手动将数据库记录设为启用，也不得解密凭据进入生产适配链；只有逐站通过认证、同源保护、契约、错误分类及受控真实验证后才能修改 Registry 的正式支持范围。
 
