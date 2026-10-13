@@ -1146,12 +1146,17 @@ def test_multifile_verified_content_plan_and_copy_materialization_bridge(
     )
     result = materializer.materialize_next_batch("execution-1")
     if change_verified_sibling:
-        assert result.error_count == 1
+        # A frozen blocked plan is retained for explicit remediation; it must
+        # neither enter materialization nor become an artificial execution error.
+        assert result.processed_count == 0
+        assert result.error_count == 0
         assert not list(output.iterdir())
         with factory() as session:
             item = session.get(UnpackExecutionItem, "item-1")
             assert item is not None
-            assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+            assert item.status == UnpackItemStatus.PLAN_PENDING.value
+            assert item.last_error_code == "UNPACK_EXECUTION_PLAN_BLOCKED"
+            assert item.execution_plan_digest == plan.plan_digest
             assert not session.scalars(select(UnpackExternalOperationJournal)).all()
         return
     assert result.materialized_count == 1

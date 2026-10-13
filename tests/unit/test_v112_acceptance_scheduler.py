@@ -60,6 +60,9 @@ def test_scoped_acceptance_is_excluded_from_all_external_write_schedulers(
             scoped_execution.config_snapshot = {"acceptance_mode": READ_ONLY_ACCEPTANCE_MARKER}
             # An unmarked job with identical item state must remain schedulable.
             ordinary_execution.config_snapshot = {}
+            if item_status == "PLAN_PENDING":
+                # An ordinary ready plan is required for file scheduling.
+                ordinary.execution_plan = {"ready": True, "blocked_reasons": []}
             if stage:
                 scoped.execution_state = {"stage": stage}
                 ordinary.execution_state = {"stage": stage}

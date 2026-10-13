@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
@@ -99,11 +99,24 @@ class UnpackMaterializationService:
                         select(UnpackExecutionItem.id)
                         .where(UnpackExecutionItem.execution_id == UnpackExecution.id)
                         .where(
-                            UnpackExecutionItem.status.in_(
-                                (
-                                    UnpackItemStatus.PLAN_PENDING.value,
-                                    UnpackItemStatus.EXECUTING.value,
-                                )
+                            or_(
+                                and_(
+                                    UnpackExecutionItem.status
+                                    == UnpackItemStatus.PLAN_PENDING.value,
+                                    # Cached ready alone is insufficient: require
+                                    # the canonical frozen blocker list to be empty.
+                                    UnpackExecutionItem.execution_plan["ready"]
+                                    .as_boolean()
+                                    .is_(True),
+                                    func.json_array_length(
+                                        func.json_extract(
+                                            UnpackExecutionItem.execution_plan,
+                                            "$.blocked_reasons",
+                                        )
+                                    )
+                                    == 0,
+                                ),
+                                UnpackExecutionItem.status == UnpackItemStatus.EXECUTING.value,
                             )
                         )
                         .exists()
@@ -137,6 +150,13 @@ class UnpackMaterializationService:
                 self._materialize_actions(item_id, plan, expected_version=version)
                 self._mark_materialized(item_id, plan, expected_version=version)
             except (ApplicationError, DomainViolation, ValueError) as exc:
+                if (
+                    isinstance(exc, ApplicationError)
+                    and exc.code == "UNPACK_EXECUTION_PLAN_BLOCKED"
+                ):
+                    # A frozen, unsafe plan is not an execution failure. Keep its
+                    # original blockers and version for explicit remediation.
+                    continue
                 code, message = _safe_error(exc)
                 self._mark_error(
                     item_id,
@@ -160,11 +180,19 @@ class UnpackMaterializationService:
                 select(UnpackExecutionItem)
                 .where(UnpackExecutionItem.execution_id == execution_id)
                 .where(
-                    UnpackExecutionItem.status.in_(
-                        (
-                            UnpackItemStatus.PLAN_PENDING.value,
-                            UnpackItemStatus.EXECUTING.value,
-                        )
+                    or_(
+                        and_(
+                            UnpackExecutionItem.status == UnpackItemStatus.PLAN_PENDING.value,
+                            UnpackExecutionItem.execution_plan["ready"].as_boolean().is_(True),
+                            func.json_array_length(
+                                func.json_extract(
+                                    UnpackExecutionItem.execution_plan,
+                                    "$.blocked_reasons",
+                                )
+                            )
+                            == 0,
+                        ),
+                        UnpackExecutionItem.status == UnpackItemStatus.EXECUTING.value,
                     )
                 )
                 .order_by(UnpackExecutionItem.id)

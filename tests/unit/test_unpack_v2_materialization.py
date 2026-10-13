@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.errors import ApplicationError
 from backend.app.application.unpack_existing_reuse import verify_existing_reuse
 from backend.app.application.unpack_materialization import UnpackMaterializationService
+from backend.app.domain.execution_plan import ExecutionPlanBlockReason
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_definition import TaskConflictPolicy, TaskStorageMode
 from backend.app.domain.unpack import UnpackExecutionStatus, UnpackItemStatus
@@ -164,6 +165,45 @@ def _fixture(
         path_scope=scope,
     )
     return service, factory, source, output
+
+
+@pytest.mark.parametrize("misleading_ready_flag", (False, True))
+def test_blocked_frozen_plan_is_not_scheduled_or_failed_by_manual_materialize(
+    tmp_path: Path, misleading_ready_flag: bool
+) -> None:
+    service, factory, source, output = _fixture(tmp_path, TaskStorageMode.COPY)
+    original_source = source.read_bytes()
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        original_plan = unpack_execution_plan_from_payload(item.execution_plan)
+        blocked_plan = replace(
+            original_plan,
+            blocked_reasons=(ExecutionPlanBlockReason.TARGET_PARENT_UNSAFE,),
+            plan_digest="",
+        )
+        payload = unpack_execution_plan_to_payload(blocked_plan)
+        if misleading_ready_flag:
+            # Inconsistent cached ready flags never override real blockers.
+            payload["ready"] = True
+        item.execution_plan = payload
+        item.execution_plan_digest = blocked_plan.plan_digest
+        item.last_error_code = "UNPACK_EXECUTION_PLAN_BLOCKED"
+        item.last_error_message = "TARGET_PARENT_UNSAFE"
+        session.commit()
+
+    assert "execution-1" not in service.list_materializable_execution_ids()
+    report = service.materialize_next_batch("execution-1")
+    assert report.error_count == 0
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.PLAN_PENDING.value
+        assert item.last_error_code == "UNPACK_EXECUTION_PLAN_BLOCKED"
+        assert item.execution_plan_digest == blocked_plan.plan_digest
+        assert session.scalars(select(UnpackExternalOperationJournal)).all() == []
+    assert source.read_bytes() == original_source
+    assert not (output / "Pack").exists()
 
 
 def _freeze_reuse_plan(
