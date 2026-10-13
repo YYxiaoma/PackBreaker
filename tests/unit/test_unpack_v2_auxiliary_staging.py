@@ -9,7 +9,9 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.app.application import unpack_auxiliary as auxiliary_module
 from backend.app.application.downloaders import QbittorrentWriteBinding
+from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.unpack_auxiliary import UnpackAuxiliaryStagingService
 from backend.app.domain.downloader import PathMappingRule
@@ -318,12 +320,13 @@ def _fixture(
                 trigger="MANUAL",
                 status=UnpackExecutionStatus.CONTENT_VERIFYING.value,
                 config_snapshot={
+                    "site_ids": ["site-config-1"],
                     "output_config": {
                         "output_directory": output.as_posix(),
                         "storage_mode": "HARDLINK",
                         "conflict_policy": "VERIFY_REUSE_OR_STOP",
                         "target_downloader_id": "downloader-target",
-                    }
+                    },
                 },
                 discovery_complete=True,
                 total_count=1,
@@ -426,6 +429,165 @@ def _fixture(
         path_scope=AuthorizedPathScope.legacy_only(legacy_data_root=data_root),
     )
     return service, factory, fake_qb, data_root
+
+
+@pytest.mark.parametrize("tamper", ("unselected_site", "reference_site", "reference_torrent"))
+def test_auxiliary_candidate_identity_must_match_frozen_execution_before_staging(
+    tmp_path: Path, tamper: str
+) -> None:
+    """A modified candidate must never fetch or write into auxiliary staging."""
+    service, factory, fake_qb, data_root = _fixture(tmp_path)
+    with factory() as session:
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert candidate is not None
+        if tamper == "unselected_site":
+            candidate.site_id = "site-not-scanned"
+        else:
+            raw_ref = dict(candidate.raw_ref)
+            if tamper == "reference_site":
+                raw_ref["site_config_id"] = "site-not-scanned"
+            else:
+                raw_ref["torrent_id"] = "torrent-not-selected"
+            candidate.raw_ref = raw_ref
+        session.commit()
+
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert report.error_count == 1
+    assert fake_qb.calls == []
+    assert not (data_root / ".packbreaker-staging").exists()
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCH_ERROR.value
+        assert session.scalar(select(UnpackExternalOperationJournal.id)) is None
+
+
+@pytest.mark.parametrize(
+    ("phase", "invalidation"),
+    (
+        ("PENDING_FETCH", "status"),
+        ("DOWNLOADING", "status"),
+        ("DOWNLOADING", "version"),
+        ("DOWNLOADING", "candidate"),
+    ),
+)
+def test_auxiliary_paused_site_fetch_cannot_write_after_item_is_invalidated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    invalidation: str,
+) -> None:
+    """A worker paused on a tracker read must not write for a changed item."""
+    service, factory, fake_qb, data_root = _fixture(tmp_path)
+    if phase == "DOWNLOADING":
+        asyncio.run(service.advance_next_batch("execution-1"))
+        assert fake_qb.calls == ["add", "select", "start"]
+    old_calls = list(fake_qb.calls)
+    with factory() as session:
+        old_journal_count = len(session.scalars(select(UnpackExternalOperationJournal.id)).all())
+
+    site = cast(_SiteProvider, service._site_provider)._site
+    original_fetch = site.fetch_torrent
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused_fetch(torrent_id: str) -> TorrentPayload:
+        entered.set()
+        await release.wait()
+        return await original_fetch(torrent_id)
+
+    monkeypatch.setattr(site, "fetch_torrent", paused_fetch)
+
+    async def interleave() -> None:
+        worker = asyncio.create_task(service.advance_next_batch("execution-1"))
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        with factory() as session:
+            item = session.get(UnpackExecutionItem, "item-1")
+            assert item is not None
+            if invalidation == "status":
+                item.status = UnpackItemStatus.REVIEW_REQUIRED.value
+            elif invalidation == "version":
+                item.version += 1
+            else:
+                item.selected_candidate_id = "candidate-changed"
+            session.commit()
+        release.set()
+        await worker
+
+    asyncio.run(interleave())
+    assert fake_qb.calls == old_calls
+    if phase == "PENDING_FETCH":
+        assert not (data_root / ".packbreaker-staging").exists()
+    with factory() as session:
+        assert (
+            len(session.scalars(select(UnpackExternalOperationJournal.id)).all())
+            == old_journal_count
+        )
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        if invalidation == "status":
+            assert item.status == UnpackItemStatus.REVIEW_REQUIRED.value
+        elif invalidation == "candidate":
+            assert item.selected_candidate_id == "candidate-changed"
+
+
+@pytest.mark.parametrize("invalidation", ("status", "candidate"))
+def test_auxiliary_cancel_during_prewrite_downloader_probe_never_stops_old_torrent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalidation: str,
+) -> None:
+    """A status read before STOP must not authorize a now-invalidated item."""
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    assert fake_qb.calls == ["add", "select", "start"]
+    with factory() as session:
+        original_journal_count = len(
+            session.scalars(select(UnpackExternalOperationJournal.id)).all()
+        )
+
+    original_get = fake_qb.get_torrents
+    count = 0
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused_get(hashes: tuple[str, ...]) -> tuple[QbittorrentTorrentState, ...]:
+        nonlocal count
+        count += 1
+        if count == 2:  # STOP's safe read, after the initial poll read.
+            entered.set()
+            await release.wait()
+        return await original_get(hashes)
+
+    monkeypatch.setattr(fake_qb, "get_torrents", paused_get)
+
+    async def interleave() -> None:
+        worker = asyncio.create_task(service.advance_next_batch("execution-1"))
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        with factory() as session:
+            item = session.get(UnpackExecutionItem, "item-1")
+            assert item is not None
+            if invalidation == "status":
+                item.status = UnpackItemStatus.REVIEW_REQUIRED.value
+            else:
+                item.selected_candidate_id = "candidate-changed"
+            session.commit()
+        release.set()
+        await worker
+
+    asyncio.run(interleave())
+    assert fake_qb.calls == ["add", "select", "start"]
+    with factory() as session:
+        journals = session.scalars(select(UnpackExternalOperationJournal)).all()
+        assert len(journals) == original_journal_count
+        assert all(row.operation_type != "UNPACK_AUX_TORRENT_STOP" for row in journals)
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        if invalidation == "status":
+            assert item.status == UnpackItemStatus.REVIEW_REQUIRED.value
+        else:
+            assert item.selected_candidate_id == "candidate-changed"
 
 
 def test_auxiliary_staging_unmapped_path_fails_before_any_external_write(
@@ -793,11 +955,13 @@ def test_auxiliary_preadd_native_readonly_timeout_never_sends_add_until_recovere
                 UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_ADD"
             )
         )
-        assert item is not None and journal is not None
+        assert item is not None
         assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
         assert item.auxiliary_state is not None
         assert item.auxiliary_state["state"] == "PREPARING"
-        assert journal.status == OperationStatus.INTENT_RECORDED.value
+        # A read-only preflight timeout must not reserve an ADD intent;
+        # no write was dispatched, so the next pass may safely start.
+        assert journal is None
 
     resumed = asyncio.run(service.advance_next_batch("execution-1"))
     assert resumed.downloading_count == 1
@@ -886,6 +1050,275 @@ def test_auxiliary_fetch_deadline_preserves_state_and_retries_on_next_worker_pas
         assert recovered.downloading_count == 1
         assert fake_qb.calls == ["add", "select", "start"]
     assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
+
+
+@pytest.mark.parametrize(
+    ("operation", "journal_type", "failure_code"),
+    (
+        ("select", "UNPACK_AUX_FILE_SELECTION", "UNPACK_AUX_FILE_SELECTION_RECONCILE_REQUIRED"),
+        ("start", "UNPACK_AUX_TORRENT_START", "UNPACK_AUX_START_RECONCILE_REQUIRED"),
+        ("stop", "UNPACK_AUX_TORRENT_STOP", "UNPACK_AUX_STOP_RECONCILE_REQUIRED"),
+        ("remove", "UNPACK_AUX_TORRENT_REMOVE", "UNPACK_AUX_REMOVE_RECONCILE_REQUIRED"),
+    ),
+)
+def test_auxiliary_crash_after_external_intent_never_replays_rpc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    journal_type: str,
+    failure_code: str,
+) -> None:
+    """An interrupted external RPC must not dispatch a second write on resume."""
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    methods = {
+        "select": "set_file_selection",
+        "start": "start_torrent",
+        "stop": "stop_torrent",
+        "remove": "remove_torrent_keep_files",
+    }
+    if operation in {"stop", "remove"}:
+        asyncio.run(service.advance_next_batch("execution-1"))
+        assert fake_qb.calls == ["add", "select", "start"]
+    method = methods[operation]
+    original = getattr(fake_qb, method)
+
+    async def interrupted(*_args: object, **_kwargs: object) -> None:
+        fake_qb._assert_intent(journal_type)
+        fake_qb.calls.append(f"{operation}-interrupted")
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(fake_qb, method, interrupted)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(service.advance_next_batch("execution-1"))
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == journal_type
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.INTENT_RECORDED.value
+
+    monkeypatch.setattr(fake_qb, method, original)
+    resumed = asyncio.run(service.advance_next_batch("execution-1"))
+    assert resumed.error_count == 1
+    assert fake_qb.calls.count(f"{operation}-interrupted") == 1
+    assert fake_qb.calls.count(operation) == 0
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == journal_type
+            )
+        )
+        assert item is not None and journal is not None
+        assert item.last_error_code == failure_code
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+
+
+@pytest.mark.parametrize(
+    ("operation", "preflight_read", "journal_type"),
+    (
+        ("select", 3, "UNPACK_AUX_FILE_SELECTION"),
+        ("start", 4, "UNPACK_AUX_TORRENT_START"),
+        ("stop", 2, "UNPACK_AUX_TORRENT_STOP"),
+        ("remove", 4, "UNPACK_AUX_TORRENT_REMOVE"),
+    ),
+)
+def test_auxiliary_readonly_preflight_timeout_does_not_reserve_write_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    preflight_read: int,
+    journal_type: str,
+) -> None:
+    """Read-only outages can be retried without poisoning an external write journal."""
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    if operation in {"stop", "remove"}:
+        asyncio.run(service.advance_next_batch("execution-1"))
+        assert fake_qb.calls == ["add", "select", "start"]
+    original_get = fake_qb.get_torrents
+    counter = 0
+
+    async def unavailable_once(
+        torrent_hashes: tuple[str, ...],
+    ) -> tuple[QbittorrentTorrentState, ...]:
+        nonlocal counter
+        counter += 1
+        if counter == preflight_read:
+            raise TimeoutError("synthetic pre-write read-only status timeout")
+        return await original_get(torrent_hashes)
+
+    monkeypatch.setattr(fake_qb, "get_torrents", unavailable_once)
+    pending = asyncio.run(service.advance_next_batch("execution-1"))
+    assert pending.error_count == 0
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == journal_type
+            )
+        )
+        assert journal is None
+
+    resumed = asyncio.run(service.advance_next_batch("execution-1"))
+    assert resumed.error_count == 0
+    if operation in {"select", "start"}:
+        assert resumed.downloading_count == 1
+        assert fake_qb.calls == ["add", "select", "start"]
+    else:
+        assert resumed.verified_count == 1
+        assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+
+
+def test_auxiliary_stale_verification_cannot_persist_to_newer_item(tmp_path: Path) -> None:
+    """A previous worker cannot persist content proof after its item version changed."""
+    service, factory, _fake_qb, _data_root = _fixture(tmp_path)
+    stale_context = service._load_context("item-1")
+    asyncio.run(service.advance_next_batch("execution-1"))
+    with factory() as session, pytest.raises(ApplicationError) as exc:
+        auxiliary_module._current_records(session, stale_context)
+    assert exc.value.code == "UNPACK_AUXILIARY_CONFLICT"
+
+
+def test_auxiliary_stale_error_cannot_fail_newer_checkpoint(tmp_path: Path) -> None:
+    """An in-flight worker error must not cancel another worker's progress."""
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        stale_version = item.version
+
+    result = asyncio.run(service.advance_next_batch("execution-1"))
+    assert result.error_count == 0
+    assert fake_qb.calls == ["add", "select", "start"]
+    service._mark_error(
+        "item-1",
+        code="UNPACK_AUX_STALE_WORKER_ERROR",
+        message="迟到的工作器失败",
+        expected_version=stale_version,
+    )
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
+        assert item.auxiliary_state is not None
+        assert item.auxiliary_state["state"] == "DOWNLOADING"
+        assert item.last_error_code == "UNPACK_AUXILIARY_FILES_REQUIRED"
+
+
+def test_auxiliary_stale_worker_cannot_rewind_downloading_checkpoint(tmp_path: Path) -> None:
+    """A late PREPARING checkpoint must not overwrite a worker's DOWNLOADING."""
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        stale_state = {**dict(item.auxiliary_state or {}), "state": "PREPARING"}
+        stale_version = item.version
+
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.error_count == 0
+    assert fake_qb.calls == ["add", "select", "start"]
+
+    assert (
+        service._set_auxiliary_state("item-1", stale_state, expected_version=stale_version) is None
+    )
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.auxiliary_state is not None
+        assert item.auxiliary_state["state"] == "DOWNLOADING"
+        assert item.version > stale_version
+
+
+@pytest.mark.parametrize(
+    ("operation_type", "late_error_code"),
+    (
+        ("UNPACK_AUX_STAGING_DIR", "UNPACK_AUX_STAGING_INVALID"),
+        ("UNPACK_AUX_TORRENT_ADD", "UNPACK_AUX_ADD_RESULT_UNKNOWN"),
+        ("UNPACK_AUX_FILE_SELECTION", "UNPACK_AUX_FILE_SELECTION_RESULT_UNKNOWN"),
+        ("UNPACK_AUX_TORRENT_START", "UNPACK_AUX_START_RESULT_UNKNOWN"),
+    ),
+)
+def test_auxiliary_late_reconcile_cannot_demote_applied_journal(
+    tmp_path: Path, operation_type: str, late_error_code: str
+) -> None:
+    """Late failure from another worker must not overwrite proof of success."""
+    service, factory, fake_qb, _data_root = _fixture(tmp_path)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    assert fake_qb.calls == ["add", "select", "start"]
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == operation_type
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.APPLIED.value
+        journal_id = journal.id
+        original_snapshot = journal.after_snapshot
+
+    # Worker B already confirmed APPLIED; worker A now reports a stale failure.
+    service._mark_reconcile(journal_id, late_error_code)
+    with factory() as session:
+        journal = session.get(UnpackExternalOperationJournal, journal_id)
+        assert journal is not None
+        assert journal.status == OperationStatus.APPLIED.value
+        assert journal.after_snapshot == original_snapshot
+        assert journal.last_error_code is None
+
+    # Re-entering should still reuse all four applied intents, without writes.
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.auxiliary_state = {**dict(item.auxiliary_state or {}), "state": "PREPARING"}
+        session.commit()
+    resumed = asyncio.run(service.advance_next_batch("execution-1"))
+    assert resumed.error_count == 0
+    assert fake_qb.calls == ["add", "select", "start"]
+
+
+def test_auxiliary_crash_after_add_intent_cannot_blindly_resend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted RPC leaves INTENT; no observed torrent means reconcile."""
+    service, factory, fake_qb, data_root = _fixture(tmp_path)
+    original_add = fake_qb.add_torrent
+
+    async def interrupted_add(_request: QbittorrentAddRequest) -> QbittorrentAddResult:
+        fake_qb._assert_intent("UNPACK_AUX_TORRENT_ADD")
+        fake_qb.calls.append("uncertain-add")
+        # Simulate process cancellation after RPC dispatch but before receipt.
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(fake_qb, "add_torrent", interrupted_add)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(service.advance_next_batch("execution-1"))
+
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_ADD"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.INTENT_RECORDED.value
+    assert fake_qb.state is None
+    assert fake_qb.calls == ["uncertain-add"]
+    monkeypatch.setattr(fake_qb, "add_torrent", original_add)
+
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert report.error_count == 1
+    assert fake_qb.calls == ["uncertain-add"]
+    assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_ADD"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+        assert journal.last_error_code == "UNPACK_AUX_ADD_INTENT_UNCONFIRMED"
 
 
 def test_auxiliary_unknown_add_timeout_requires_reconciliation(

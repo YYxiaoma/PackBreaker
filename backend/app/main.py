@@ -309,6 +309,7 @@ def create_app(
             resolved_runtime.session_factory,
             site_service,
             downloader_service,
+            path_scope=path_scope,
             fetch_timeout_seconds=resolved_settings.unpack_content_fetch_timeout_seconds,
         )
         app.state.unpack_seeding_service = unpack_seeding_service

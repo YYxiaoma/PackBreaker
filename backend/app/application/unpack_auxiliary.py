@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, cast
 
@@ -76,6 +76,19 @@ _AUX_STOP_OPERATION = "UNPACK_AUX_TORRENT_STOP"
 _AUX_REMOVE_OPERATION = "UNPACK_AUX_TORRENT_REMOVE"
 _AUX_SCHEMA_VERSION = "packbreaker-unpack-aux-v1"
 
+# APPLIED is durable proof that an external write was observed. A late
+# failure from a competing worker must not erase it. Only a new, explicit
+# external-state contradiction may reopen an APPLIED journal for reconciliation.
+_APPLIED_DRIFT_RECONCILE_CODES = frozenset(
+    {
+        "UNPACK_AUX_STAGING_IDENTITY_CHANGED",
+        "UNPACK_AUX_APPLIED_TORRENT_MISSING",
+        "UNPACK_AUX_START_STATE_DRIFTED",
+        "UNPACK_AUX_STOP_STATE_DRIFTED",
+        "UNPACK_AUX_REMOVED_TORRENT_REAPPEARED",
+    }
+)
+
 
 class UnpackAuxiliarySiteProvider(Protocol):
     def enabled_adapters(self) -> tuple[EnabledSiteAdapter, ...]: ...
@@ -103,6 +116,7 @@ class UnpackAuxiliaryReport:
 class _Context:
     execution_id: str
     item_id: str
+    item_version: int
     candidate_id: str
     generation: int
     source_snapshot: dict[str, Any]
@@ -207,22 +221,37 @@ class UnpackAuxiliaryStagingService:
             )
 
     async def _advance_item(self, item_id: str) -> None:
+        checkpoint_version: int | None = None
+        context: _Context | None = None
         try:
             context = self._load_context(item_id)
+            checkpoint_version = context.item_version
             prepared = await self._prepare(context)
             state = str(context.auxiliary_state.get("state") or "PENDING_FETCH")
             if state in {"PENDING_FETCH", "PREPARING"}:
-                self._set_auxiliary_state(
+                assert checkpoint_version is not None
+                next_version = self._set_auxiliary_state(
                     context.item_id,
                     {
                         **context.auxiliary_state,
                         "state": "PREPARING",
                     },
+                    expected_version=checkpoint_version,
+                )
+                if next_version is None:
+                    return  # Another worker advanced this item; never rewind it.
+                checkpoint_version = next_version
+                # PREPARING is now the worker's latest claim. All later
+                # external-operation intents must fence against this version.
+                prepared = replace(
+                    prepared,
+                    context=replace(prepared.context, item_version=next_version),
                 )
                 await self._ensure_staging_ready(prepared)
                 self._set_auxiliary_state(
                     context.item_id,
                     _downloading_state(prepared),
+                    expected_version=checkpoint_version,
                 )
                 return
             if state == "DOWNLOADING":
@@ -238,17 +267,35 @@ class UnpackAuxiliaryStagingService:
                 # outages; a later worker pass must verify ownership again.
                 return
             code, message = _safe_error(exc)
-            self._mark_error(item_id, code=code, message=message)
+            self._mark_error(
+                item_id,
+                code=code,
+                message=message,
+                expected_version=checkpoint_version,
+                expected_candidate_id=(context.candidate_id if context is not None else None),
+            )
         except SiteAdapterError as exc:
             if exc.retryable or exc.code in {"SITE_UNAVAILABLE", "SITE_RATE_LIMITED"}:
                 # The original selected candidate and external journal must
                 # survive transient tracker outages during staging polling.
                 return
             code, message = _safe_error(exc)
-            self._mark_error(item_id, code=code, message=message)
+            self._mark_error(
+                item_id,
+                code=code,
+                message=message,
+                expected_version=checkpoint_version,
+                expected_candidate_id=(context.candidate_id if context is not None else None),
+            )
         except (ApplicationError, DomainViolation) as exc:
             code, message = _safe_error(exc)
-            self._mark_error(item_id, code=code, message=message)
+            self._mark_error(
+                item_id,
+                code=code,
+                message=message,
+                expected_version=checkpoint_version,
+                expected_candidate_id=(context.candidate_id if context is not None else None),
+            )
 
     def _load_context(self, item_id: str) -> _Context:
         with self._session_factory() as session:
@@ -269,12 +316,22 @@ class UnpackAuxiliaryStagingService:
                 or candidate.generation != item.candidate_generation
             ):
                 raise self._conflict("辅助文件补齐候选已过期")
+            frozen_site_ids = execution.config_snapshot.get("site_ids")
+            if (
+                not isinstance(frozen_site_ids, list)
+                or any(not isinstance(site_id, str) for site_id in frozen_site_ids)
+                or candidate.site_id not in frozen_site_ids
+            ):
+                raise self._conflict("辅助文件候选站点不属于本次执行冻结的扫描范围")
+
             raw_ref = dict(candidate.raw_ref)
             site_config_version = raw_ref.get("site_config_version")
             adapter_site_id = raw_ref.get("adapter_site_id")
             torrent_id = raw_ref.get("torrent_id")
             if (
-                not isinstance(site_config_version, int)
+                raw_ref.get("site_config_id") != candidate.site_id
+                or torrent_id != candidate.candidate_key
+                or not isinstance(site_config_version, int)
                 or isinstance(site_config_version, bool)
                 or site_config_version < 1
                 or not isinstance(adapter_site_id, str)
@@ -315,6 +372,7 @@ class UnpackAuxiliaryStagingService:
             return _Context(
                 execution_id=execution.id,
                 item_id=item.id,
+                item_version=item.version,
                 candidate_id=candidate.id,
                 generation=item.candidate_generation,
                 source_snapshot=source_snapshot,
@@ -514,14 +572,18 @@ class UnpackAuxiliaryStagingService:
             "ownership_tag": prepared.ownership_tag,
             "operation_token": _operation_token(prepared, _AUX_ADD_OPERATION),
         }
-        journal, _created = self._record_intent(
+        # The ownership probe is a safe read, not an external write. Perform
+        # it before reserving ADD intent so a read-only outage cannot leave
+        # an ambiguous intent that would later prevent a legitimate retry.
+        # The journal remains durable before any actual ADD dispatch.
+        state = await _owned_torrent_state(prepared)
+        journal, created = self._record_intent(
             prepared.context.item_id,
             _AUX_ADD_OPERATION,
             prepared,
             target=target,
             intent=intent,
         )
-        state = await _owned_torrent_state(prepared)
         if journal.status == OperationStatus.APPLIED.value:
             if state is None:
                 self._mark_reconcile(journal.id, "UNPACK_AUX_APPLIED_TORRENT_MISSING")
@@ -541,6 +603,17 @@ class UnpackAuxiliaryStagingService:
                 status=409,
                 title="辅助下载任务添加结果需要对账",
                 detail="上次添加结果未知且当前未发现可证明归属的 torrent，禁止盲目重发",
+            )
+        if not created:
+            # A prior worker may have dispatched ADD before crashing. If the
+            # torrent is not presently visible, re-sending can claim or alter
+            # a different external task. Require an explicit reconciliation.
+            self._mark_reconcile(journal.id, "UNPACK_AUX_ADD_INTENT_UNCONFIRMED")
+            raise ApplicationError(
+                code="UNPACK_AUX_ADD_RECONCILE_REQUIRED",
+                status=409,
+                title="辅助下载任务添加结果需要对账",
+                detail="原 ADD 意图未确认且当前未发现归属 torrent，禁止重复添加",
             )
         try:
             if isinstance(prepared.binding, QbittorrentWriteBinding):
@@ -611,7 +684,10 @@ class UnpackAuxiliaryStagingService:
             "binding_digest": prepared.binding.binding_digest,
             "operation_token": _operation_token(prepared, _AUX_SELECT_OPERATION),
         }
-        journal, _created = self._record_intent(
+        # A read-only ownership outage must not create an ambiguous write
+        # intent; reserve selection only after a successful preflight.
+        await _require_owned_torrent_state(prepared)
+        journal, created = self._record_intent(
             prepared.context.item_id,
             _AUX_SELECT_OPERATION,
             prepared,
@@ -627,7 +703,16 @@ class UnpackAuxiliaryStagingService:
                 title="辅助文件选择结果需要对账",
                 detail="文件选择请求曾出现未知结果，禁止自动重复发送",
             )
-        await _require_owned_torrent_state(prepared)
+        if not created:
+            # File selection cannot be inferred from torrent existence alone.
+            # A previous interrupted RPC might have been applied remotely.
+            self._mark_reconcile(journal.id, "UNPACK_AUX_FILE_SELECTION_INTENT_UNCONFIRMED")
+            raise ApplicationError(
+                code="UNPACK_AUX_FILE_SELECTION_RECONCILE_REQUIRED",
+                status=409,
+                title="辅助文件选择结果需要对账",
+                detail="文件选择意图已存在但没有可证明的结果，禁止重复发送",
+            )
         selector = cast(DownloaderFileSelectionAdapter, prepared.binding.adapter)
         try:
             await selector.set_file_selection(
@@ -660,14 +745,14 @@ class UnpackAuxiliaryStagingService:
             "binding_digest": prepared.binding.binding_digest,
             "operation_token": _operation_token(prepared, _AUX_START_OPERATION),
         }
-        journal, _created = self._record_intent(
+        state = await _require_owned_torrent_state(prepared)
+        journal, created = self._record_intent(
             prepared.context.item_id,
             _AUX_START_OPERATION,
             prepared,
             target=target,
             intent=intent,
         )
-        state = await _require_owned_torrent_state(prepared)
         if journal.status == OperationStatus.APPLIED.value:
             if state.stopped:
                 self._mark_reconcile(journal.id, "UNPACK_AUX_START_STATE_DRIFTED")
@@ -682,6 +767,14 @@ class UnpackAuxiliaryStagingService:
                 status=409,
                 title="辅助种子启动结果需要对账",
                 detail="启动请求曾出现未知结果，禁止自动重复发送",
+            )
+        if not created:
+            self._mark_reconcile(journal.id, "UNPACK_AUX_START_INTENT_UNCONFIRMED")
+            raise ApplicationError(
+                code="UNPACK_AUX_START_RECONCILE_REQUIRED",
+                status=409,
+                title="辅助种子启动结果需要对账",
+                detail="原启动意图已存在但仍是停止状态，禁止重复启动",
             )
         try:
             await prepared.binding.adapter.start_torrent(prepared.torrent_hash)
@@ -786,14 +879,14 @@ class UnpackAuxiliaryStagingService:
             "binding_digest": prepared.binding.binding_digest,
             "operation_token": _operation_token(prepared, _AUX_STOP_OPERATION),
         }
-        journal, _created = self._record_intent(
+        state = await _require_owned_torrent_state(prepared)
+        journal, created = self._record_intent(
             prepared.context.item_id,
             _AUX_STOP_OPERATION,
             prepared,
             target=target,
             intent=intent,
         )
-        state = await _require_owned_torrent_state(prepared)
         if journal.status == OperationStatus.APPLIED.value and state.stopped:
             return
         if journal.status == OperationStatus.APPLIED.value and not state.stopped:
@@ -813,6 +906,14 @@ class UnpackAuxiliaryStagingService:
                 status=409,
                 title="临时种子暂停结果未确认",
                 detail="临时种子仍在运行且上次暂停结果未知，禁止自动重复暂停",
+            )
+        if not created:
+            self._mark_reconcile(journal.id, "UNPACK_AUX_STOP_INTENT_UNCONFIRMED")
+            raise ApplicationError(
+                code="UNPACK_AUX_STOP_RECONCILE_REQUIRED",
+                status=409,
+                title="临时种子暂停结果未确认",
+                detail="原暂停意图已存在但仍在运行，禁止重复暂停",
             )
         try:
             await prepared.binding.adapter.stop_torrent(prepared.torrent_hash)
@@ -878,14 +979,14 @@ class UnpackAuxiliaryStagingService:
             "delete_local_data": False,
             "operation_token": _operation_token(prepared, _AUX_REMOVE_OPERATION),
         }
-        journal, _created = self._record_intent(
+        state = await _owned_torrent_state(prepared)
+        journal, created = self._record_intent(
             prepared.context.item_id,
             _AUX_REMOVE_OPERATION,
             prepared,
             target=target,
             intent=intent,
         )
-        state = await _owned_torrent_state(prepared)
         if journal.status == OperationStatus.APPLIED.value and state is not None:
             self._mark_reconcile(journal.id, "UNPACK_AUX_REMOVED_TORRENT_REAPPEARED")
             raise ApplicationError(
@@ -903,6 +1004,14 @@ class UnpackAuxiliaryStagingService:
                 status=409,
                 title="临时种子移除结果未确认",
                 detail="远端仍存在临时种子且上次移除结果未知，禁止自动再次移除",
+            )
+        if not created:
+            self._mark_reconcile(journal.id, "UNPACK_AUX_REMOVE_INTENT_UNCONFIRMED")
+            raise ApplicationError(
+                code="UNPACK_AUX_REMOVE_RECONCILE_REQUIRED",
+                status=409,
+                title="临时种子移除结果未确认",
+                detail="原移除意图已存在且远端种子仍可见，禁止重复移除",
             )
         try:
             await prepared.binding.adapter.remove_torrent_keep_files(prepared.torrent_hash)
@@ -1083,18 +1192,26 @@ class UnpackAuxiliaryStagingService:
             _refresh_execution_state(session, execution)
             session.commit()
 
-    def _set_auxiliary_state(self, item_id: str, state: dict[str, Any]) -> None:
+    def _set_auxiliary_state(
+        self, item_id: str, state: dict[str, Any], *, expected_version: int
+    ) -> int | None:
         with self._session_factory() as session:
             begin_immediate_write(session)
             item = session.get(UnpackExecutionItem, item_id)
             if item is None:
                 raise self._item_not_found()
-            if item.status != UnpackItemStatus.AUXILIARY_FETCHING.value:
-                raise self._conflict("影片项已离开辅助文件补齐阶段")
+            if (
+                item.status != UnpackItemStatus.AUXILIARY_FETCHING.value
+                or item.version != expected_version
+            ):
+                # The state from an older worker must never rewind progress.
+                return None
             item.auxiliary_state = state
             item.updated_at = utc_now()
             item.version += 1
+            next_version = item.version
             session.commit()
+            return next_version
 
     def _record_intent(
         self,
@@ -1109,6 +1226,10 @@ class UnpackAuxiliaryStagingService:
         key = _journal_key(prepared, operation_type)
         with self._session_factory() as session:
             begin_immediate_write(session)
+            # The source item may have been canceled or matched to another
+            # candidate while an earlier read-only site/downloader RPC was
+            # awaiting. Fence every external write at its durable intent.
+            _current_records(session, prepared.context)
             existing = session.scalar(
                 select(UnpackExternalOperationJournal).where(
                     UnpackExternalOperationJournal.idempotency_key == key
@@ -1169,19 +1290,41 @@ class UnpackAuxiliaryStagingService:
                 return
             if row.status == OperationStatus.RECONCILE_REQUIRED.value:
                 return
+            if (
+                row.status == OperationStatus.APPLIED.value
+                and code not in _APPLIED_DRIFT_RECONCILE_CODES
+            ):
+                # Another worker already confirmed the write while an older
+                # worker was still waiting for a failed response/probe.
+                return
             row.status = OperationStatus.RECONCILE_REQUIRED.value
             row.last_error_code = code
             row.updated_at = utc_now()
             session.commit()
 
-    def _mark_error(self, item_id: str, *, code: str, message: str) -> None:
+    def _mark_error(
+        self,
+        item_id: str,
+        *,
+        code: str,
+        message: str,
+        expected_version: int | None = None,
+        expected_candidate_id: str | None = None,
+    ) -> None:
         with self._session_factory() as session:
             begin_immediate_write(session)
             item = session.get(UnpackExecutionItem, item_id)
-            if item is None or item.status not in {
-                UnpackItemStatus.AUXILIARY_FETCHING.value,
-                UnpackItemStatus.CONTENT_VERIFYING.value,
-            }:
+            if (
+                item is None
+                or item.status != UnpackItemStatus.AUXILIARY_FETCHING.value
+                or (expected_version is not None and item.version != expected_version)
+                or (
+                    expected_candidate_id is not None
+                    and item.selected_candidate_id != expected_candidate_id
+                )
+            ):
+                # Do not let a stale worker mark a newer checkpoint as failed,
+                # or change an item that already left auxiliary fetching.
                 return
             execution = session.get(UnpackExecution, item.execution_id)
             if execution is None:
@@ -1497,6 +1640,7 @@ def _current_records(
         )
     if (
         item.status != UnpackItemStatus.AUXILIARY_FETCHING.value
+        or item.version != context.item_version
         or item.candidate_generation != context.generation
         or item.selected_candidate_id != context.candidate_id
         or candidate.item_id != item.id

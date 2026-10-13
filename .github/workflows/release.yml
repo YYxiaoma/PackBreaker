@@ -174,6 +174,9 @@ jobs:
           corepack pnpm --dir frontend install --frozen-lockfile
       - name: Validate release tag
         run: uv run python scripts/release_manifest.py --tag "$GITHUB_REF_NAME" --validate-tag-only
+      - name: Require seven full real E2E receipts for v1.1.2
+        if: github.ref_name == 'v1.1.2'
+        run: uv run python scripts/validate_v112_site_release_gate.py --require-ready
       - name: Refuse an existing GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

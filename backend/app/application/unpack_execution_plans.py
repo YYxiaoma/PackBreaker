@@ -141,30 +141,44 @@ class UnpackExecutionPlanService:
             raise self._invalid("执行计划批次必须位于 1 到 100 之间")
         item_ids = self._list_item_ids(execution_id, limit=limit)
         processed = 0
-        for item_id in item_ids:
+        for item_id, initial_version, initial_candidate_id, initial_generation in item_ids:
+            context: _PlanContext | None = None
             try:
                 context = self._load_context(item_id)
                 plan = await self._build_plan(context)
                 self._persist_plan(context, plan)
             except (ApplicationError, SiteAdapterError, DomainViolation, ValueError) as exc:
                 code, message = _safe_error(exc)
-                self._mark_error(item_id, code=code, message=message)
+                self._mark_error(
+                    item_id,
+                    code=code,
+                    message=message,
+                    expected_version=(context.item_version if context else initial_version),
+                    expected_candidate_id=(
+                        context.candidate_id if context else initial_candidate_id
+                    ),
+                    expected_generation=(context.generation if context else initial_generation),
+                )
             processed += 1
         return self._report(execution_id, processed_count=processed)
 
-    def _list_item_ids(self, execution_id: str, *, limit: int) -> tuple[str, ...]:
+    def _list_item_ids(
+        self, execution_id: str, *, limit: int
+    ) -> tuple[tuple[str, int, str | None, int], ...]:
         with self._session_factory() as session:
             execution = session.get(UnpackExecution, execution_id)
             if execution is None:
                 raise self._not_found()
+            items = session.scalars(
+                select(UnpackExecutionItem)
+                .where(UnpackExecutionItem.execution_id == execution_id)
+                .where(UnpackExecutionItem.status == UnpackItemStatus.CONTENT_VERIFIED.value)
+                .order_by(UnpackExecutionItem.id)
+                .limit(limit)
+            ).all()
             return tuple(
-                session.scalars(
-                    select(UnpackExecutionItem.id)
-                    .where(UnpackExecutionItem.execution_id == execution_id)
-                    .where(UnpackExecutionItem.status == UnpackItemStatus.CONTENT_VERIFIED.value)
-                    .order_by(UnpackExecutionItem.id)
-                    .limit(limit)
-                ).all()
+                (item.id, item.version, item.selected_candidate_id, item.candidate_generation)
+                for item in items
             )
 
     def _load_context(self, item_id: str) -> _PlanContext:
@@ -224,12 +238,22 @@ class UnpackExecutionPlanService:
                     detail="当前 v2 执行只允许 VERIFY_REUSE_OR_STOP",
                 )
 
+            frozen_site_ids = execution.config_snapshot.get("site_ids")
+            if (
+                not isinstance(frozen_site_ids, list)
+                or any(not isinstance(site_id, str) for site_id in frozen_site_ids)
+                or candidate.site_id not in frozen_site_ids
+            ):
+                raise self._conflict("候选站点不属于本次执行冻结的扫描范围")
+
             raw_ref = dict(candidate.raw_ref)
             version = raw_ref.get("site_config_version")
             adapter_site_id = raw_ref.get("adapter_site_id")
             torrent_id = raw_ref.get("torrent_id")
             if (
-                isinstance(version, bool)
+                raw_ref.get("site_config_id") != candidate.site_id
+                or torrent_id != candidate.candidate_key
+                or isinstance(version, bool)
                 or not isinstance(version, int)
                 or version < 1
                 or not isinstance(adapter_site_id, str)
@@ -629,11 +653,28 @@ class UnpackExecutionPlanService:
             execution.version += 1
             session.commit()
 
-    def _mark_error(self, item_id: str, *, code: str, message: str) -> None:
+    def _mark_error(
+        self,
+        item_id: str,
+        *,
+        code: str,
+        message: str,
+        expected_version: int,
+        expected_candidate_id: str | None,
+        expected_generation: int,
+    ) -> None:
         with self._session_factory() as session:
             begin_immediate_write(session)
             item = session.get(UnpackExecutionItem, item_id)
-            if item is None or item.status != UnpackItemStatus.CONTENT_VERIFIED.value:
+            if (
+                item is None
+                or item.status != UnpackItemStatus.CONTENT_VERIFIED.value
+                or item.version != expected_version
+                or item.selected_candidate_id != expected_candidate_id
+                or item.candidate_generation != expected_generation
+            ):
+                # Another worker may have reselected or advanced this item
+                # while site metadata was being fetched. Do not fail it.
                 return
             execution = session.get(UnpackExecution, item.execution_id)
             if execution is None:

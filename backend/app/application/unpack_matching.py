@@ -252,21 +252,26 @@ class UnpackMatchCoordinator:
 
     async def _match_claimed(self, claimed: _ClaimedItem) -> None:
         try:
-            bindings, missing_site_ids = self._selected_bindings(claimed.site_config_ids)
-            candidates, failures = await self._search_sites(
-                claimed.unit, bindings, item_id=claimed.item_id, generation=claimed.generation
-            )
-            failures = (
-                *failures,
-                *(
-                    _SearchFailure(
-                        site_id,
-                        "UNPACK_MATCH_SITE_UNAVAILABLE",
-                        False,
-                    )
-                    for site_id in missing_site_ids
-                ),
-            )
+            if claimed.site_config_ids:
+                bindings, missing_site_ids = self._selected_bindings(claimed.site_config_ids)
+            else:
+                # Do not load/decrypt any unrelated enabled site for an empty
+                # or tampered historical execution snapshot.
+                bindings, missing_site_ids = (), ()
+            if not claimed.site_config_ids or missing_site_ids:
+                # A saved execution cannot silently run against fewer sites
+                # after one is disabled, removed, or fails Registry checks.
+                # An empty historical snapshot is not evidence of no matches.
+                # In both cases, no enabled site may receive a query.
+                candidates: tuple[_FoundCandidate, ...] = ()
+                failures = tuple(
+                    _SearchFailure(site_id, "UNPACK_MATCH_SITE_UNAVAILABLE", False)
+                    for site_id in (missing_site_ids or ("",))
+                )
+            else:
+                candidates, failures = await self._search_sites(
+                    claimed.unit, bindings, item_id=claimed.item_id, generation=claimed.generation
+                )
         except Exception as exc:
             self._finalize_unexpected_error(claimed, exc)
             return

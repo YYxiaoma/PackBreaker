@@ -769,6 +769,56 @@ def test_selected_site_not_enabled_becomes_match_error() -> None:
         assert item.last_error_code == "UNPACK_MATCH_SITE_UNAVAILABLE"
 
 
+def test_missing_selected_site_blocks_all_other_site_searches() -> None:
+    """An already-running task must not silently shrink its configured scan sites."""
+    factory = _factory(threshold=0)
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        execution.config_snapshot = {
+            **execution.config_snapshot,
+            "site_ids": ["site-config-1", "site-config-disabled"],
+        }
+        session.commit()
+
+    adapter = _FakeSiteAdapter((_candidate("Movie.2024.1080p.WEB-DL.x265"),))
+    coordinator = UnpackMatchCoordinator(factory, _FakeSiteProvider(adapter))
+    report = asyncio.run(coordinator.match_next_batch("execution-1"))
+
+    assert report.processed_count == 1
+    assert report.error_count == 1
+    assert not adapter.queries  # missing scan site must block every outbound request
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCH_ERROR.value
+        assert item.last_error_code == "UNPACK_MATCH_SITE_UNAVAILABLE"
+        assert session.scalar(select(UnpackMatchCandidate)) is None
+
+
+def test_empty_scan_sites_snapshot_is_error_not_no_match() -> None:
+    """A malformed historical execution cannot report successful site scanning."""
+    factory = _factory(threshold=0)
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        execution.config_snapshot = {**execution.config_snapshot, "site_ids": []}
+        session.commit()
+
+    adapter = _FakeSiteAdapter((_candidate("Movie.2024.1080p.WEB-DL.x265"),))
+    report = asyncio.run(
+        UnpackMatchCoordinator(factory, _FakeSiteProvider(adapter)).match_next_batch("execution-1")
+    )
+
+    assert report.error_count == 1
+    assert not adapter.queries
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCH_ERROR.value
+        assert item.last_error_code == "UNPACK_MATCH_SITE_UNAVAILABLE"
+
+
 def test_custom_media_suffix_is_not_rejected_by_legacy_task_unit_extensions() -> None:
     factory = _factory(
         threshold=0,

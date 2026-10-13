@@ -203,6 +203,18 @@ class SafeFilesystemGateway:
         finally:
             os.close(parent_fd)
 
+    def inspect_symlink_snapshot(self, *, relative_path: str) -> FilesystemSnapshot:
+        """Read a symlink inode without following it or its parent path links."""
+        _, parts = self._normalize_path(relative_path)
+        parent_fd = _open_directory_chain(self._data_root, parts[:-1])
+        try:
+            snapshot = _stat_at(parent_fd, parts[-1])
+            if snapshot is None or snapshot.file_type != "symlink":
+                raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "目标文件不是预期软链接")
+            return snapshot
+        finally:
+            os.close(parent_fd)
+
     def movie_quick_fingerprint(
         self,
         *,

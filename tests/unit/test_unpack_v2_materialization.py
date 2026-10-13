@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.app.application.errors import ApplicationError
 from backend.app.application.unpack_existing_reuse import verify_existing_reuse
 from backend.app.application.unpack_materialization import UnpackMaterializationService
 from backend.app.domain.operation import OperationStatus
@@ -263,6 +264,124 @@ def test_reuse_fails_closed_when_frozen_target_changes(
         assert journals[0].status == OperationStatus.RECONCILE_REQUIRED.value
 
 
+@pytest.mark.parametrize("mutation", ("version", "candidate", "generation"))
+def test_materialization_preflight_invalidated_item_cannot_create_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """After a filesystem preflight, a replaced item may not reserve a write."""
+    service, factory, source, output = _fixture(tmp_path, TaskStorageMode.HARDLINK)
+    inspect = service._filesystem.inspect_directory_creation
+    intercepted = False
+
+    def invalidate_during_read(
+        *, target_root_relative_path: str, directory_relative_path: str
+    ) -> object:
+        nonlocal intercepted
+        result = inspect(
+            target_root_relative_path=target_root_relative_path,
+            directory_relative_path=directory_relative_path,
+        )
+        if not intercepted:
+            intercepted = True
+            with factory() as session:
+                item = session.get(UnpackExecutionItem, "item-1")
+                assert item is not None
+                assert item.status == UnpackItemStatus.EXECUTING.value
+                if mutation == "version":
+                    item.version += 1
+                elif mutation == "candidate":
+                    item.selected_candidate_id = "new-candidate"
+                else:
+                    item.candidate_generation += 1
+                session.commit()
+        return result
+
+    monkeypatch.setattr(service._filesystem, "inspect_directory_creation", invalidate_during_read)
+    service.materialize_next_batch("execution-1")
+
+    assert intercepted
+    assert not (output / "Pack").exists()
+    assert source.read_bytes() == b"synthetic-content"
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTING.value
+        assert session.scalar(select(UnpackExternalOperationJournal.id)) is None
+        if mutation == "version":
+            assert item.version == 7  # Reservation advanced 5 -> 6; newer worker made 7.
+        elif mutation == "candidate":
+            assert item.selected_candidate_id == "new-candidate"
+        else:
+            assert item.candidate_generation == 2
+
+
+def test_materialization_worker_does_not_rewind_final_seeding_stage(tmp_path: Path) -> None:
+    """Materialization must not treat a final-seeding STARTING item as its own."""
+    service, factory, _source, output = _fixture(tmp_path, TaskStorageMode.HARDLINK)
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.status = UnpackItemStatus.EXECUTING.value
+        item.execution_state = {
+            "stage": "STARTING",
+            "plan_digest": item.execution_plan_digest,
+        }
+        item.version = 7
+        session.commit()
+    report = service.materialize_next_batch("execution-1")
+    assert report.processed_count == 0
+    assert not (output / "Pack").exists()
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTING.value
+        assert item.execution_state is not None
+        assert item.execution_state["stage"] == "STARTING"
+        assert session.scalar(select(UnpackExternalOperationJournal.id)) is None
+
+
+def test_materialization_reconciliation_is_sticky_against_late_success(tmp_path: Path) -> None:
+    service, factory, _source, _output = _fixture(tmp_path, TaskStorageMode.HARDLINK)
+    assert service.materialize_next_batch("execution-1").materialized_count == 1
+    with factory() as session:
+        row = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_EXEC_MATERIALIZE_HARDLINK"
+            )
+        )
+        assert row is not None
+        journal_id = row.id
+    service._mark_reconcile(journal_id, "UNPACK_EXEC_APPLIED_TARGET_CHANGED")
+    with pytest.raises(ApplicationError):
+        service._mark_applied(journal_id, {"file_type": "regular"})
+    with factory() as session:
+        row = session.get(UnpackExternalOperationJournal, journal_id)
+        assert row is not None
+        assert row.status == OperationStatus.RECONCILE_REQUIRED.value
+        assert row.last_error_code == "UNPACK_EXEC_APPLIED_TARGET_CHANGED"
+
+
+def test_materialization_late_write_error_cannot_demote_applied_evidence(tmp_path: Path) -> None:
+    service, factory, _source, _output = _fixture(tmp_path, TaskStorageMode.HARDLINK)
+    assert service.materialize_next_batch("execution-1").materialized_count == 1
+    with factory() as session:
+        row = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_EXEC_MATERIALIZE_HARDLINK"
+            )
+        )
+        assert row is not None
+        journal_id = row.id
+        proof = row.after_snapshot
+    service._mark_reconcile(journal_id, "UNPACK_EXEC_MATERIALIZE_RESULT_UNKNOWN")
+    with factory() as session:
+        row = session.get(UnpackExternalOperationJournal, journal_id)
+        assert row is not None
+        assert row.status == OperationStatus.APPLIED.value
+        assert row.after_snapshot == proof
+        assert row.last_error_code is None
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_kind"),
     [
@@ -309,6 +428,65 @@ def test_materialization_commits_journal_backed_file(
         ).all()
         assert len(journals) == 2
         assert all(row.status == OperationStatus.APPLIED.value for row in journals)
+
+
+@pytest.mark.parametrize(
+    ("operation_type", "tamper"),
+    (
+        ("UNPACK_EXEC_CREATE_DIRECTORY", "missing"),
+        ("UNPACK_EXEC_CREATE_DIRECTORY", "reconcile"),
+        ("UNPACK_EXEC_MATERIALIZE_HARDLINK", "missing"),
+        ("UNPACK_EXEC_MATERIALIZE_HARDLINK", "reconcile"),
+        ("UNPACK_EXEC_MATERIALIZE_HARDLINK", "target"),
+        ("UNPACK_EXEC_MATERIALIZE_HARDLINK", "after"),
+        ("UNPACK_EXEC_MATERIALIZE_HARDLINK", "wrong_file_type"),
+        ("UNPACK_EXEC_MATERIALIZE_HARDLINK", "wrong_storage_mode"),
+    ),
+)
+def test_materialized_checkpoint_requires_atomic_applied_file_journals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_type: str,
+    tamper: str,
+) -> None:
+    """A competing worker must not steal a valid FILES_MATERIALIZED checkpoint."""
+    service, factory, _source, _output = _fixture(tmp_path, TaskStorageMode.HARDLINK)
+    original_complete = service._mark_materialized
+
+    def tamper_just_before_completion(
+        item_id: str, plan: UnpackExecutionPlan, *, expected_version: int
+    ) -> None:
+        with factory() as session:
+            row = session.scalar(
+                select(UnpackExternalOperationJournal).where(
+                    UnpackExternalOperationJournal.operation_type == operation_type
+                )
+            )
+            assert row is not None and row.status == OperationStatus.APPLIED.value
+            if tamper == "missing":
+                session.delete(row)
+            elif tamper == "reconcile":
+                row.status = OperationStatus.RECONCILE_REQUIRED.value
+            elif tamper == "target":
+                row.target = {**row.target, "path": "/unrelated"}
+            elif tamper == "wrong_file_type":
+                row.after_snapshot = {**(row.after_snapshot or {}), "file_type": "directory"}
+            elif tamper == "wrong_storage_mode":
+                row.intent = {**row.intent, "storage_mode": "COPY"}
+            else:
+                row.after_snapshot = None
+            session.commit()
+        original_complete(item_id, plan, expected_version=expected_version)
+
+    monkeypatch.setattr(service, "_mark_materialized", tamper_just_before_completion)
+    report = service.materialize_next_batch("execution-1")
+    assert report.materialized_count == 0
+    assert report.error_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status != UnpackItemStatus.COMPLETED.value
+        assert (item.execution_state or {}).get("stage") != "FILES_MATERIALIZED"
 
 
 def test_materialization_restart_reuses_applied_hardlink_without_second_write(

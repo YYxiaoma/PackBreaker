@@ -3,6 +3,7 @@ import hashlib
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,6 +11,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.app.application import unpack_materialization as materialization_module
 from backend.app.application.downloaders import (
     QbittorrentWriteBinding,
     TransmissionWriteBinding,
@@ -29,6 +31,7 @@ from backend.app.domain.unpack_execution_plan import (
     UnpackExecutionAction,
     UnpackExecutionActionKind,
     UnpackExecutionPlan,
+    unpack_execution_plan_from_payload,
     unpack_execution_plan_to_payload,
 )
 from backend.app.domain.verification import VerificationLevel
@@ -44,6 +47,7 @@ from backend.app.infrastructure.adapters.downloaders import (
     TransmissionWriteAdapter,
 )
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.base import Base
 from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
@@ -374,7 +378,7 @@ def _fixture(
                 definition_id="definition-1",
                 trigger="MANUAL",
                 status=UnpackExecutionStatus.EXECUTING.value,
-                config_snapshot={},
+                config_snapshot={"site_ids": ["site-config-1"]},
                 discovery_complete=True,
                 total_count=1,
                 matched_auto_count=1,
@@ -439,6 +443,39 @@ def _fixture(
                 created_at=now,
             )
         )
+        # The real materialization stage commits an APPLIED journal before
+        # FILES_MATERIALIZED. Seed that proof here rather than bypassing the
+        # downstream filesystem journal gate in synthetic seeding tests.
+        key = materialization_module._materialize_key(
+            "item-1", plan.plan_digest, "UNPACK_EXEC_MATERIALIZE_HARDLINK", "Movie.mkv"
+        )
+        session.add(
+            UnpackExternalOperationJournal(
+                id="materialized-proof-1",
+                item_id="item-1",
+                idempotency_key=key,
+                operation_type="UNPACK_EXEC_MATERIALIZE_HARDLINK",
+                target={"path": target.as_posix(), "torrent_path": "Movie.mkv"},
+                intent={
+                    "schema_version": "packbreaker-unpack-materialize-v1",
+                    "plan_digest": plan.plan_digest,
+                    "storage_mode": "HARDLINK",
+                    "source_path": source.as_posix(),
+                    "source_snapshot": materialization_module._file_snapshot_payload(snapshot),
+                    "operation_token": key,
+                },
+                before_snapshot={"exists": False},
+                after_snapshot={
+                    "device": target.stat().st_dev,
+                    "inode": target.stat().st_ino,
+                    "size": target.stat().st_size,
+                    "file_type": "regular",
+                },
+                status=OperationStatus.APPLIED.value,
+                created_at=now,
+                updated_at=now,
+            )
+        )
         session.commit()
 
     site = _FakeSite(torrent)
@@ -478,8 +515,308 @@ def _fixture(
         factory,
         _SiteProvider(site),
         _DownloaderProvider(binding),
+        path_scope=AuthorizedPathScope.legacy_only(legacy_data_root=data_root),
     )
     return service, factory, fake, torrent
+
+
+def test_final_seeding_site_wait_must_recheck_materialization_before_add(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """File evidence may be invalidated after _prepare before downloader ADD."""
+    service, factory, fake, _ = _fixture(tmp_path, kind="qb")
+    site = cast(_SiteProvider, service._site_provider)._site
+    fetch = site.fetch_torrent
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused_fetch(torrent_id: str) -> TorrentPayload:
+        entered.set()
+        await release.wait()
+        return await fetch(torrent_id)
+
+    monkeypatch.setattr(site, "fetch_torrent", paused_fetch)
+
+    async def interleave() -> None:
+        worker = asyncio.create_task(service.advance_next_batch("execution-1"))
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        with factory() as session:
+            proof = session.get(UnpackExternalOperationJournal, "materialized-proof-1")
+            assert proof is not None
+            proof.status = OperationStatus.RECONCILE_REQUIRED.value
+            session.commit()
+        release.set()
+        await worker
+
+    asyncio.run(interleave())
+    assert fake.calls == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert item.last_error_code == "UNPACK_EXEC_MATERIALIZATION_PROOF_MISSING"
+        assert not session.scalars(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.id != "materialized-proof-1"
+            )
+        ).all()
+
+
+@pytest.mark.parametrize("kind", ("qb", "transmission"))
+def test_seeding_site_fetch_wait_rechecks_unchanged_file_journal_but_replaced_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """Client ADD must be fenced even if a target is replaced during tracker await."""
+    service, factory, fake, _ = _fixture(tmp_path, kind=kind)
+    site = cast(_SiteProvider, service._site_provider)._site
+    original_fetch = site.fetch_torrent
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused_fetch(torrent_id: str) -> TorrentPayload:
+        entered.set()
+        await release.wait()
+        return await original_fetch(torrent_id)
+
+    monkeypatch.setattr(site, "fetch_torrent", paused_fetch)
+
+    async def interleave() -> None:
+        worker = asyncio.create_task(service.advance_next_batch("execution-1"))
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        with factory() as session:
+            proof = session.get(UnpackExternalOperationJournal, "materialized-proof-1")
+            assert proof is not None
+            target = Path(proof.target["path"])
+        target.unlink()
+        target.write_bytes(b"abcdefgh")
+        release.set()
+        await worker
+
+    asyncio.run(interleave())
+    assert fake.calls == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.last_error_code == "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT"
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert (
+            session.scalar(
+                select(UnpackExternalOperationJournal.id).where(
+                    UnpackExternalOperationJournal.id != "materialized-proof-1"
+                )
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize("kind", ("qb", "transmission"))
+@pytest.mark.parametrize("mutation", ("remove", "replace", "symlink", "mutate_source"))
+def test_seeding_rechecks_materialized_inode_before_downloader_writes(
+    tmp_path: Path, kind: str, mutation: str
+) -> None:
+    """An APPLIED journal cannot prove targets still exist with the same identity."""
+    service, factory, fake, _torrent_bytes = _fixture(tmp_path, kind=kind)
+    with factory() as session:
+        journal = session.get(UnpackExternalOperationJournal, "materialized-proof-1")
+        assert journal is not None
+        target = Path(journal.target["path"])
+        source = Path(journal.intent["source_path"])
+    if mutation == "remove":
+        target.unlink()
+    elif mutation == "replace":
+        target.unlink()
+        target.write_bytes(b"abcdefgh")  # Same bytes and length, different inode.
+    elif mutation == "symlink":
+        target.unlink()
+        target.symlink_to(source)
+    else:
+        source.write_bytes(b"12345678")  # Same inode and length, different mtime/content.
+
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert report.error_count == 1
+    assert fake.calls == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert item.last_error_code == "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT"
+        assert (
+            session.scalar(
+                select(UnpackExternalOperationJournal.id).where(
+                    UnpackExternalOperationJournal.id != "materialized-proof-1"
+                )
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize("tamper", ("missing", "reconcile", "target", "after"))
+def test_final_seeding_cannot_add_without_current_materialization_proof(
+    tmp_path: Path, tamper: str
+) -> None:
+    """Downstream ADD must not trust FILES_MATERIALIZED without file proof."""
+    service, factory, fake, _ = _fixture(tmp_path, kind="qb")
+    with factory() as session:
+        row = session.get(UnpackExternalOperationJournal, "materialized-proof-1")
+        assert row is not None
+        if tamper == "missing":
+            session.delete(row)
+        elif tamper == "reconcile":
+            row.status = OperationStatus.RECONCILE_REQUIRED.value
+        elif tamper == "target":
+            row.target = {**row.target, "path": "/forged/target"}
+        else:
+            row.after_snapshot = None
+        session.commit()
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert report.error_count == 1
+    assert fake.calls == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert item.last_error_code == "UNPACK_EXEC_MATERIALIZATION_PROOF_MISSING"
+
+
+def test_seeding_old_candidate_tracker_error_cannot_fail_new_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An invalidated candidate must not inherit a late tracker failure."""
+    service, factory, fake, _ = _fixture(tmp_path, kind="qb")
+    site = cast(_SiteProvider, service._site_provider)._site
+    original_fetch = site.fetch_torrent
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused_failed_fetch(torrent_id: str) -> TorrentPayload:
+        entered.set()
+        await release.wait()
+        site.fail_fetch = True
+        return await original_fetch(torrent_id)
+
+    monkeypatch.setattr(site, "fetch_torrent", paused_failed_fetch)
+
+    async def interleave() -> None:
+        worker = asyncio.create_task(service.advance_next_batch("execution-1"))
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        with factory() as session:
+            item = session.get(UnpackExecutionItem, "item-1")
+            assert item is not None
+            item.selected_candidate_id = "new-candidate"
+            session.commit()
+        release.set()
+        await worker
+
+    asyncio.run(interleave())
+    assert fake.calls == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.selected_candidate_id == "new-candidate"
+        assert item.status == UnpackItemStatus.EXECUTING.value
+        assert item.last_error_code is None
+        assert (
+            session.scalar(
+                select(UnpackExternalOperationJournal.id).where(
+                    UnpackExternalOperationJournal.id != "materialized-proof-1"
+                )
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize("mutation", ("status", "version", "candidate"))
+def test_seeding_site_fetch_resume_must_recheck_item_before_add(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """An item invalidated during a tracker read cannot dispatch downloader writes."""
+    service, factory, fake, _ = _fixture(tmp_path, kind="qb")
+    site = cast(_SiteProvider, service._site_provider)._site
+    original_fetch = site.fetch_torrent
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused_fetch(torrent_id: str) -> TorrentPayload:
+        entered.set()
+        await release.wait()
+        return await original_fetch(torrent_id)
+
+    monkeypatch.setattr(site, "fetch_torrent", paused_fetch)
+
+    async def interleave() -> None:
+        worker = asyncio.create_task(service.advance_next_batch("execution-1"))
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        with factory() as session:
+            item = session.get(UnpackExecutionItem, "item-1")
+            assert item is not None
+            if mutation == "status":
+                item.status = UnpackItemStatus.REVIEW_REQUIRED.value
+            elif mutation == "version":
+                item.version += 1
+            else:
+                item.selected_candidate_id = "another-candidate"
+            session.commit()
+        release.set()
+        await worker
+
+    asyncio.run(interleave())
+    assert fake.calls == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert (
+            session.scalar(
+                select(UnpackExternalOperationJournal.id).where(
+                    UnpackExternalOperationJournal.id != "materialized-proof-1"
+                )
+            )
+            is None
+        )
+        if mutation == "status":
+            assert item.status == UnpackItemStatus.REVIEW_REQUIRED.value
+        elif mutation == "version":
+            assert item.status == UnpackItemStatus.EXECUTING.value
+            assert item.version == 9
+        else:
+            assert item.selected_candidate_id == "another-candidate"
+            assert item.status == UnpackItemStatus.EXECUTING.value
+
+
+@pytest.mark.parametrize("tamper", ("unselected_site", "reference_site", "reference_torrent"))
+def test_seeding_rejects_tampered_candidate_identity_without_downloader_write(
+    tmp_path: Path, tamper: str
+) -> None:
+    service, factory, fake, _ = _fixture(tmp_path, kind="qb")
+    with factory() as session:
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert candidate is not None
+        if tamper == "unselected_site":
+            candidate.site_id = "site-not-in-execution"
+        else:
+            raw_ref = dict(candidate.raw_ref)
+            if tamper == "reference_site":
+                raw_ref["site_config_id"] = "another-site"
+            else:
+                raw_ref["torrent_id"] = "another-torrent"
+            candidate.raw_ref = raw_ref
+        session.commit()
+
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert report.error_count == 1
+    assert fake.calls == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert (
+            session.scalar(
+                select(UnpackExternalOperationJournal).where(
+                    UnpackExternalOperationJournal.id != "materialized-proof-1"
+                )
+            )
+            is None
+        )
 
 
 def test_qb_resume_data_checking_during_add_is_not_active_downloading(
@@ -507,6 +844,317 @@ def test_qb_resume_data_checking_during_add_is_not_active_downloading(
             )
         )
         assert row is not None and row.status == OperationStatus.APPLIED.value
+
+
+@pytest.mark.parametrize("kind", ("qb", "transmission"))
+def test_readonly_live_reconciliation_never_writes_and_checks_ownership(
+    tmp_path: Path, kind: str
+) -> None:
+    service, factory, client, _ = _fixture(tmp_path, kind=kind)
+    no_proof = asyncio.run(service.inspect_client_readonly("item-1"))
+    assert no_proof.status == "NO_ADD_EVIDENCE"
+    assert client.calls == []
+
+    asyncio.run(service.advance_next_batch("execution-1"))
+    calls_before = list(client.calls)
+    matched = asyncio.run(service.inspect_client_readonly("item-1"))
+    assert matched.status == "MATCHED"
+    assert matched.ownership_verified is True
+    assert matched.save_path_matches is True
+    assert matched.downloader_id == "downloader-target"
+    assert matched.torrent_hash is not None
+    assert matched.client_kind == kind
+    assert client.calls == calls_before
+
+    original_state = client.state
+    assert original_state is not None
+    if kind == "qb":
+        client.state = replace(
+            cast(QbittorrentTorrentState, original_state), tags=("unrelated-tag",)
+        )
+    else:
+        client.state = replace(
+            cast(TransmissionTorrentState, original_state), labels=("unrelated-tag",)
+        )
+    mismatch = asyncio.run(service.inspect_client_readonly("item-1"))
+    assert mismatch.status == "OWNERSHIP_MISMATCH"
+    assert mismatch.ownership_verified is False
+    assert client.calls == calls_before
+    if kind == "qb":
+        client.state = replace(
+            cast(QbittorrentTorrentState, original_state), save_path="/unrelated/save/path"
+        )
+    else:
+        client.state = replace(
+            cast(TransmissionTorrentState, original_state), download_dir="/unrelated/save/path"
+        )
+    path_mismatch = asyncio.run(service.inspect_client_readonly("item-1"))
+    assert path_mismatch.status == "OWNERSHIP_MISMATCH"
+    assert path_mismatch.save_path_matches is False
+    assert client.calls == calls_before
+
+    client.state = None
+    missing = asyncio.run(service.inspect_client_readonly("item-1"))
+    assert missing.status == "MISSING"
+    assert missing.ownership_verified is False
+    assert client.calls == calls_before
+
+    with factory() as session:
+        assert (
+            session.scalar(
+                select(UnpackExternalOperationJournal).where(
+                    UnpackExternalOperationJournal.status
+                    == OperationStatus.RECONCILE_REQUIRED.value
+                )
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize("kind", ("qb", "transmission"))
+@pytest.mark.parametrize("other_status", ("APPLIED", "RECONCILE_REQUIRED"))
+def test_readonly_live_two_add_journals_are_ambiguous_not_absent(
+    tmp_path: Path, kind: str, other_status: str
+) -> None:
+    """Dual client ADD evidence is a conflict; choosing either would be unsafe."""
+    service, factory, client, _ = _fixture(tmp_path, kind=kind)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    calls_before = list(client.calls)
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None and item.execution_plan is not None
+        plan = unpack_execution_plan_from_payload(item.execution_plan)
+        other_kind = (
+            "UNPACK_EXEC_TRANSMISSION_ADD" if kind == "qb" else "UNPACK_EXEC_QBITTORRENT_ADD"
+        )
+        other_key = hashlib.sha256(
+            (
+                "packbreaker-unpack-seeding-v1:item-1:"
+                f"{plan.plan_digest}:downloader-target:{other_kind}"
+            ).encode()
+        ).hexdigest()
+        session.add(
+            UnpackExternalOperationJournal(
+                id="duplicate-client-add-proof",
+                item_id="item-1",
+                idempotency_key=other_key,
+                operation_type=other_kind,
+                target={"downloader_id": "downloader-target"},
+                intent={"collision": "synthetic"},
+                status=other_status,
+                created_at=utc_now(),
+                updated_at=utc_now(),
+            )
+        )
+        session.commit()
+    result = asyncio.run(service.inspect_client_readonly("item-1"))
+    assert result.status == "UNKNOWN"
+    assert result.error_code == "ADD_PROOF_AMBIGUOUS"
+    assert result.ownership_verified is False
+    assert client.calls == calls_before
+
+
+@pytest.mark.parametrize("kind", ("qb", "transmission"))
+@pytest.mark.parametrize("journal_status", ("RECONCILE_REQUIRED", "INTENT_RECORDED"))
+def test_readonly_live_unresolved_add_is_distinct_from_never_added(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, journal_status: str
+) -> None:
+    service, factory, client, _ = _fixture(tmp_path, kind=kind)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    before = list(client.calls)
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type.like("%_ADD")
+            )
+        )
+        assert journal is not None
+        journal.status = journal_status
+        session.commit()
+
+    async def forbidden_read(_hashes: tuple[str, ...]) -> Any:
+        raise AssertionError("an unresolved ADD must not be adopted by a live lookup")
+
+    monkeypatch.setattr(client, "get_torrents", forbidden_read)
+    view = asyncio.run(service.inspect_client_readonly("item-1"))
+    assert view.status == "UNRESOLVED_ADD"
+    assert view.error_code == (
+        "ADD_RECONCILE_REQUIRED"
+        if journal_status == "RECONCILE_REQUIRED"
+        else "ADD_RESULT_UNCONFIRMED"
+    )
+    assert view.ownership_verified is False
+    assert client.calls == before
+
+
+@pytest.mark.parametrize("kind", ("qb", "transmission"))
+def test_readonly_live_reconciliation_timeout_is_unknown_not_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    service, _factory, client, _ = _fixture(tmp_path, kind=kind)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    calls_before = list(client.calls)
+
+    async def slow_or_failed_read(hashes: tuple[str, ...]) -> Any:
+        raise TimeoutError("contains-sensitive-client-detail")
+
+    monkeypatch.setattr(client, "get_torrents", slow_or_failed_read)
+    state = asyncio.run(service.inspect_client_readonly("item-1"))
+    assert state.status == "UNKNOWN"
+    assert state.error_code == "DOWNLOADER_READ_UNAVAILABLE"
+    assert "sensitive" not in str(state)
+    assert client.calls == calls_before
+
+
+@pytest.mark.parametrize("kind", ("qb", "transmission"))
+@pytest.mark.parametrize("mutation", ("item_version", "journal_reconciled"))
+def test_readonly_live_reconciliation_detects_changes_during_rpc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    mutation: str,
+) -> None:
+    """A stale read must not affirm a changed item or revoked ADD journal."""
+    service, factory, client, _ = _fixture(tmp_path, kind=kind)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    original_read = client.get_torrents
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused_read(hashes: tuple[str, ...]) -> Any:
+        entered.set()
+        await release.wait()
+        return await original_read(hashes)
+
+    monkeypatch.setattr(client, "get_torrents", paused_read)
+
+    async def interleave() -> Any:
+        worker = asyncio.create_task(service.inspect_client_readonly("item-1"))
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        with factory() as session:
+            if mutation == "item_version":
+                item = session.get(UnpackExecutionItem, "item-1")
+                assert item is not None
+                item.version += 1
+            else:
+                op = session.scalar(
+                    select(UnpackExternalOperationJournal).where(
+                        UnpackExternalOperationJournal.operation_type.like("%_ADD")
+                    )
+                )
+                assert op is not None
+                op.status = OperationStatus.RECONCILE_REQUIRED.value
+            session.commit()
+        release.set()
+        return await worker
+
+    result = asyncio.run(interleave())
+    assert result.status == "UNKNOWN"
+    assert result.ownership_verified is False
+    assert result.error_code == (
+        "ITEM_CHANGED" if mutation == "item_version" else "JOURNAL_CHANGED"
+    )
+
+
+def test_qb_preexisting_complete_torrent_does_not_prove_recheck_ever_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An accepted recheck with no observed change must not authorize START."""
+    service, factory, fake, _ = _fixture(tmp_path, kind="qb", force_client_check=True)
+    qb = cast(_FakeQb, fake)
+    initial = asyncio.run(service.advance_next_batch("execution-1"))
+    assert initial.client_verifying_count == 1
+    assert qb.state is not None
+    # The torrent appears 100% *before* RECHECK and remains 100%; a qB POST
+    # acknowledgement alone cannot prove that verification actually ran.
+    qb.state = replace(qb.state, state="stoppedUP", progress=1.0)
+
+    async def accepted_but_never_started(hash_value: str) -> None:
+        qb._assert_intent("UNPACK_EXEC_QBITTORRENT_RECHECK")
+        assert qb.state is not None and hash_value == qb.state.torrent_hash
+        qb.calls.append("verify")
+
+    monkeypatch.setattr(qb, "recheck_torrent", accepted_but_never_started)
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+    assert second.completed_count == 0
+    assert second.error_count == 0
+    assert qb.calls == ["add", "verify"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.CLIENT_VERIFYING.value
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_EXEC_QBITTORRENT_RECHECK"
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.INTENT_RECORDED.value
+        assert journal.after_snapshot is not None
+        assert journal.after_snapshot.get("checking_observed") is False
+    resumed = asyncio.run(service.advance_next_batch("execution-1"))
+    assert resumed.completed_count == 0
+    assert resumed.error_count == 0
+    assert qb.calls == ["add", "verify"]
+    # Genuine later checking -> stoppedUP is sufficient, and must not replay
+    # the earlier acknowledged RECHECK RPC.
+    assert qb.state is not None
+    qb.state = replace(qb.state, state="checkingUP", progress=1.0)
+    checking = asyncio.run(service.advance_next_batch("execution-1"))
+    assert checking.error_count == 0
+    assert checking.completed_count == 0
+    qb.state = replace(qb.state, state="stoppedUP", progress=1.0)
+    final = asyncio.run(service.advance_next_batch("execution-1"))
+    assert final.completed_count == 1
+    assert qb.calls == ["add", "verify", "start"]
+
+
+def test_qb_preexisting_complete_recheck_without_observed_phase_expires_safely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A permanently unobserved verification must reconcile, never START."""
+    service, factory, fake, _ = _fixture(tmp_path, kind="qb", force_client_check=True)
+    qb = cast(_FakeQb, fake)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    assert qb.state is not None
+    qb.state = replace(qb.state, state="stoppedUP", progress=1.0)
+
+    async def silent_recheck(hash_value: str) -> None:
+        qb._assert_intent("UNPACK_EXEC_QBITTORRENT_RECHECK")
+        assert qb.state is not None and hash_value == qb.state.torrent_hash
+        qb.calls.append("verify")
+
+    monkeypatch.setattr(qb, "recheck_torrent", silent_recheck)
+    accepted = asyncio.run(service.advance_next_batch("execution-1"))
+    assert accepted.error_count == 0
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_EXEC_QBITTORRENT_RECHECK"
+            )
+        )
+        assert journal is not None and journal.after_snapshot is not None
+        journal.after_snapshot = {
+            **journal.after_snapshot,
+            "recheck_accepted_at": (datetime.now(UTC) - timedelta(seconds=121)).isoformat(),
+        }
+        session.commit()
+
+    expired = asyncio.run(service.advance_next_batch("execution-1"))
+    assert expired.error_count == 1
+    assert expired.completed_count == 0
+    assert qb.calls == ["add", "verify"]
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == "UNPACK_EXEC_QBITTORRENT_RECHECK"
+            )
+        )
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert journal is not None and item is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+        assert journal.last_error_code == "UNPACK_SEED_RECHECK_PHASE_UNOBSERVED"
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
 
 
 @pytest.mark.parametrize("delayed_reads", (2, 4))
@@ -555,7 +1203,11 @@ def test_qb_recheck_must_not_fail_before_async_verification_starts(
         pytest.fail("qB delayed RECHECK did not finish")
     assert fake.calls == ["add", "verify", "start"]
     with factory() as session:
-        operations = session.scalars(select(UnpackExternalOperationJournal)).all()
+        operations = session.scalars(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.id != "materialized-proof-1"
+            )
+        ).all()
         assert len(operations) == 3
         assert all(row.status == OperationStatus.APPLIED.value for row in operations)
 
@@ -667,6 +1319,76 @@ def test_stale_completion_cannot_override_terminal_or_unverified_checkpoint(
             if current_status == UnpackItemStatus.EXECUTION_ERROR
             else None
         )
+
+
+@pytest.mark.parametrize("kind", ("qb", "transmission"))
+@pytest.mark.parametrize(
+    "tamper",
+    ("journal_reconcile", "journal_missing", "target_remove", "target_replace", "source_mutate"),
+)
+def test_final_completion_rechecks_materialization_proof_after_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    tamper: str,
+) -> None:
+    """A lost file or revoked proof after START must not produce COMPLETED."""
+    service, factory, fake, _ = _fixture(tmp_path, kind=kind)
+    original_complete = service._mark_completed
+    intercepted = 0
+
+    def mutate_before_completion(prepared: Any, state: Any) -> None:
+        nonlocal intercepted
+        intercepted += 1
+        with factory() as session:
+            journal = session.get(UnpackExternalOperationJournal, "materialized-proof-1")
+            assert journal is not None
+            target = Path(journal.target["path"])
+            source = Path(journal.intent["source_path"])
+            if tamper == "journal_reconcile":
+                journal.status = OperationStatus.RECONCILE_REQUIRED.value
+                session.commit()
+            elif tamper == "journal_missing":
+                session.delete(journal)
+                session.commit()
+        if tamper == "target_remove":
+            target.unlink()
+        elif tamper == "target_replace":
+            target.unlink()
+            target.write_bytes(b"abcdefgh")
+        elif tamper == "source_mutate":
+            source.write_bytes(b"12345678")
+        original_complete(prepared, state)
+
+    monkeypatch.setattr(service, "_mark_completed", mutate_before_completion)
+    if kind == "transmission":
+        first = asyncio.run(service.advance_next_batch("execution-1"))
+        assert first.client_verifying_count == 1
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+    assert intercepted == 1
+    assert report.completed_count == 0
+    assert report.error_count == 1
+    assert fake.calls == (
+        ["add", "verify", "start"] if kind == "transmission" else ["add", "start"]
+    )
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert item.last_error_code == (
+            "UNPACK_EXEC_MATERIALIZATION_PROOF_MISSING"
+            if tamper.startswith("journal_")
+            else "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT"
+        )
+        assert (item.execution_state or {}).get("stage") != "COMPLETED"
+    # A subsequent automatic batch must neither hide the terminal error nor
+    # re-issue the already acknowledged START for a possibly damaged target.
+    calls_before_retry = list(fake.calls)
+    resumed = asyncio.run(service.advance_next_batch("execution-1"))
+    assert resumed.completed_count == 0
+    assert resumed.error_count == 1
+    assert resumed.processed_count == 0
+    assert fake.calls == calls_before_retry
 
 
 @pytest.mark.parametrize("kind", ("qb", "transmission"))
@@ -832,6 +1554,77 @@ def test_final_completion_requires_current_atomic_operation_proofs(
         assert execution.status == UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value
 
 
+@pytest.mark.parametrize("kind", ("qb", "transmission"))
+@pytest.mark.parametrize("phase", ("add", "verify", "start"))
+def test_seeding_late_rpc_failure_cannot_demote_confirmed_journal(
+    tmp_path: Path, kind: str, phase: str
+) -> None:
+    """A stale worker's unknown-result error must not erase confirmed success."""
+    service, factory, fake, _ = _fixture(tmp_path, kind=kind, force_client_check=True)
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+    assert first.client_verifying_count == 1
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+    assert second.completed_count == 1
+    assert fake.calls == ["add", "verify", "start"]
+    operation_type = {
+        "qb": {
+            "add": "UNPACK_EXEC_QBITTORRENT_ADD",
+            "verify": "UNPACK_EXEC_QBITTORRENT_RECHECK",
+            "start": "UNPACK_EXEC_QBITTORRENT_START",
+        },
+        "transmission": {
+            "add": "UNPACK_EXEC_TRANSMISSION_ADD",
+            "verify": "UNPACK_EXEC_TRANSMISSION_VERIFY",
+            "start": "UNPACK_EXEC_TRANSMISSION_START",
+        },
+    }[kind][phase]
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == operation_type
+            )
+        )
+        assert journal is not None
+        assert journal.status == OperationStatus.APPLIED.value
+        journal_id = journal.id
+        after_snapshot = journal.after_snapshot
+    # The late worker was in-flight before another worker completed the RPC.
+    service._mark_reconcile(journal_id, f"UNPACK_SEED_{phase.upper()}_RESULT_UNKNOWN")
+    with factory() as session:
+        journal = session.get(UnpackExternalOperationJournal, journal_id)
+        assert journal is not None
+        assert journal.status == OperationStatus.APPLIED.value
+        assert journal.last_error_code is None
+        assert journal.after_snapshot == after_snapshot
+
+
+@pytest.mark.parametrize("kind", ("qb", "transmission"))
+def test_seeding_new_verified_state_drift_still_requires_reconciliation(
+    tmp_path: Path, kind: str
+) -> None:
+    """Do not hide new external contradictions behind the late-error fence."""
+    service, factory, _, _ = _fixture(tmp_path, kind=kind, force_client_check=True)
+    asyncio.run(service.advance_next_batch("execution-1"))
+    assert asyncio.run(service.advance_next_batch("execution-1")).completed_count == 1
+    operation_type = (
+        "UNPACK_EXEC_QBITTORRENT_START" if kind == "qb" else "UNPACK_EXEC_TRANSMISSION_START"
+    )
+    with factory() as session:
+        journal = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.operation_type == operation_type
+            )
+        )
+        assert journal is not None
+        journal_id = journal.id
+    service._mark_reconcile(journal_id, "UNPACK_SEED_STARTED_STATE_CHANGED")
+    with factory() as session:
+        journal = session.get(UnpackExternalOperationJournal, journal_id)
+        assert journal is not None
+        assert journal.status == OperationStatus.RECONCILE_REQUIRED.value
+        assert journal.last_error_code == "UNPACK_SEED_STARTED_STATE_CHANGED"
+
+
 def test_qb_full_verified_skip_checking_adds_paused_then_starts(tmp_path: Path) -> None:
     service, factory, fake, _torrent_bytes = _fixture(tmp_path, kind="qb")
     qb = cast(_FakeQb, fake)
@@ -850,9 +1643,9 @@ def test_qb_full_verified_skip_checking_adds_paused_then_starts(tmp_path: Path) 
         assert item.execution_state["stage"] == "COMPLETED"
         assert execution.status == UnpackExecutionStatus.COMPLETED.value
         journals = session.scalars(
-            select(UnpackExternalOperationJournal).where(
-                UnpackExternalOperationJournal.item_id == "item-1"
-            )
+            select(UnpackExternalOperationJournal)
+            .where(UnpackExternalOperationJournal.item_id == "item-1")
+            .where(UnpackExternalOperationJournal.id != "materialized-proof-1")
         ).all()
         assert {row.operation_type for row in journals} == {
             "UNPACK_EXEC_QBITTORRENT_ADD",
@@ -929,7 +1722,14 @@ def test_final_seeding_site_timeout_is_recorded_without_side_effects(tmp_path: P
         assert item is not None
         assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
         assert item.last_error_code == "UNPACK_SEED_TIMEOUT"
-        assert session.scalars(select(UnpackExternalOperationJournal)).all() == []
+        assert (
+            session.scalars(
+                select(UnpackExternalOperationJournal).where(
+                    UnpackExternalOperationJournal.id != "materialized-proof-1"
+                )
+            ).all()
+            == []
+        )
 
 
 def test_transmission_resumes_after_add_when_site_goes_down(tmp_path: Path) -> None:
@@ -1015,9 +1815,9 @@ def test_transmission_requires_explicit_verify_before_start(tmp_path: Path) -> N
     assert transmission.state is not None and transmission.state.seeding
     with factory() as session:
         journals = session.scalars(
-            select(UnpackExternalOperationJournal).where(
-                UnpackExternalOperationJournal.item_id == "item-1"
-            )
+            select(UnpackExternalOperationJournal)
+            .where(UnpackExternalOperationJournal.item_id == "item-1")
+            .where(UnpackExternalOperationJournal.id != "materialized-proof-1")
         ).all()
         assert {row.operation_type for row in journals} == {
             "UNPACK_EXEC_TRANSMISSION_ADD",
@@ -1048,9 +1848,9 @@ def test_qb_client_check_plan_requires_explicit_recheck_before_start(
     assert qb.state is not None and qb.state.seeding
     with factory() as session:
         journals = session.scalars(
-            select(UnpackExternalOperationJournal).where(
-                UnpackExternalOperationJournal.item_id == "item-1"
-            )
+            select(UnpackExternalOperationJournal)
+            .where(UnpackExternalOperationJournal.item_id == "item-1")
+            .where(UnpackExternalOperationJournal.id != "materialized-proof-1")
         ).all()
         assert {row.operation_type for row in journals} == {
             "UNPACK_EXEC_QBITTORRENT_ADD",
@@ -1083,7 +1883,11 @@ def test_preexisting_unowned_same_hash_is_never_claimed(tmp_path: Path) -> None:
         assert item is not None
         assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
         assert item.last_error_code == "UNPACK_SEED_TORRENT_ALREADY_EXISTS"
-        journals = session.scalars(select(UnpackExternalOperationJournal)).all()
+        journals = session.scalars(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.id != "materialized-proof-1"
+            )
+        ).all()
         assert journals == []
 
 

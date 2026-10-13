@@ -107,6 +107,38 @@ class UnpackMatchCandidateList:
     candidates: tuple[UnpackMatchCandidateView, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class UnpackOperationDiagnosticView:
+    operation_type: str
+    status: str
+    last_error_code: str | None
+    downloader_id: str | None
+    torrent_hash: str | None
+    target_path: str | None
+    last_observed_state: str | None
+    recorded_file_type: str | None
+    recorded_device: int | None
+    recorded_inode: int | None
+    recorded_size: int | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class UnpackItemDiagnosticsView:
+    item_id: str
+    status: UnpackItemStatus
+    item_version: int
+    execution_stage: str | None
+    last_error_code: str | None
+    last_error_message: str | None
+    requires_manual_reconciliation: bool
+    reconciliation_reasons: tuple[str, ...]
+    downloader_state_live_checked: bool
+    filesystem_state_live_checked: bool
+    operations_truncated: bool
+    operations: tuple[UnpackOperationDiagnosticView, ...]
+
+
 class UnpackExecutionQueryService:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
@@ -230,6 +262,129 @@ class UnpackExecutionQueryService:
                 ),
                 next_cursor=visible[-1].id if visible and has_more else None,
                 has_more=has_more,
+            )
+
+    def item_diagnostics(self, item_id: str) -> UnpackItemDiagnosticsView:
+        """Read-only, bounded, allowlisted historical evidence for manual reconciliation.
+
+        Neither downloader RPC nor media filesystem calls occur here. Raw
+        external journal intents can contain secrets and must never be returned.
+        """
+        with self._session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            if item is None:
+                raise ApplicationError(
+                    code="UNPACK_ITEM_NOT_FOUND",
+                    status=404,
+                    title="数据拆包影片项不存在",
+                    detail="未找到指定影片项",
+                )
+            rows = session.scalars(
+                select(UnpackExternalOperationJournal)
+                .where(UnpackExternalOperationJournal.item_id == item.id)
+                .order_by(
+                    UnpackExternalOperationJournal.created_at,
+                    UnpackExternalOperationJournal.id,
+                )
+                .limit(201)
+            ).all()
+            operations_truncated = len(rows) > 200
+            records = rows[:200]
+            # A truncated list must not silently hide older journal conflicts.
+            any_reconcile = (
+                session.scalar(
+                    select(UnpackExternalOperationJournal.id)
+                    .where(UnpackExternalOperationJournal.item_id == item.id)
+                    .where(UnpackExternalOperationJournal.status == "RECONCILE_REQUIRED")
+                    .limit(1)
+                )
+                is not None
+            )
+            # A failed task with a still unacknowledged external intent must
+            # not be described as clear merely because no row was manually
+            # changed to RECONCILE_REQUIRED yet (including truncated history).
+            unconfirmed_failed_write = item.status == UnpackItemStatus.EXECUTION_ERROR.value and (
+                session.scalar(
+                    select(UnpackExternalOperationJournal.id)
+                    .where(UnpackExternalOperationJournal.item_id == item.id)
+                    .where(UnpackExternalOperationJournal.status == "INTENT_RECORDED")
+                    .limit(1)
+                )
+                is not None
+            )
+            # Different clients must not both have ADD journals for one item.
+            # Count across the full journal history (not the 200 visible rows),
+            # and report conflict even if both records claim APPLIED/success.
+            distinct_add_clients = session.scalars(
+                select(UnpackExternalOperationJournal.operation_type)
+                .where(UnpackExternalOperationJournal.item_id == item.id)
+                .where(
+                    UnpackExternalOperationJournal.operation_type.in_(
+                        ("UNPACK_EXEC_QBITTORRENT_ADD", "UNPACK_EXEC_TRANSMISSION_ADD")
+                    )
+                )
+                .distinct()
+                .limit(2)
+            ).all()
+            ambiguous_add_clients = len(distinct_add_clients) > 1
+            stage_value = (item.execution_state or {}).get("stage")
+            stage = stage_value if isinstance(stage_value, str) else None
+            external_risk = item.status == UnpackItemStatus.EXECUTION_ERROR.value and (
+                item.last_error_code
+                in {
+                    "UNPACK_EXEC_MATERIALIZATION_PROOF_MISSING",
+                    "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT",
+                }
+                and bool(rows)
+            )
+
+            reasons: list[str] = []
+            if any_reconcile:
+                reasons.append("JOURNAL_RECONCILE_REQUIRED")
+            if unconfirmed_failed_write:
+                reasons.append("EXTERNAL_WRITE_UNCONFIRMED")
+            if external_risk:
+                reasons.append("MATERIALIZATION_EVIDENCE_INVALID")
+            if ambiguous_add_clients:
+                reasons.append("MULTIPLE_DOWNLOADER_ADD_PROOFS")
+
+            def safe_string(value: object, *, length: int = 512) -> str | None:
+                return value[:length] if isinstance(value, str) else None
+
+            def safe_int(value: object) -> int | None:
+                return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+            def operation(row: UnpackExternalOperationJournal) -> UnpackOperationDiagnosticView:
+                target = row.target if isinstance(row.target, dict) else {}
+                after = row.after_snapshot if isinstance(row.after_snapshot, dict) else {}
+                return UnpackOperationDiagnosticView(
+                    operation_type=row.operation_type,
+                    status=row.status,
+                    last_error_code=row.last_error_code,
+                    downloader_id=safe_string(target.get("downloader_id"), length=128),
+                    torrent_hash=safe_string(target.get("torrent_hash"), length=80),
+                    target_path=safe_string(target.get("path")),
+                    last_observed_state=safe_string(after.get("state"), length=80),
+                    recorded_file_type=safe_string(after.get("file_type"), length=32),
+                    recorded_device=safe_int(after.get("device")),
+                    recorded_inode=safe_int(after.get("inode")),
+                    recorded_size=safe_int(after.get("size")),
+                    updated_at=row.updated_at,
+                )
+
+            return UnpackItemDiagnosticsView(
+                item_id=item.id,
+                status=UnpackItemStatus(item.status),
+                item_version=item.version,
+                execution_stage=stage,
+                last_error_code=item.last_error_code,
+                last_error_message=item.last_error_message,
+                requires_manual_reconciliation=bool(reasons),
+                reconciliation_reasons=tuple(reasons),
+                downloader_state_live_checked=False,
+                filesystem_state_live_checked=False,
+                operations_truncated=operations_truncated,
+                operations=tuple(operation(row) for row in records),
             )
 
     def list_candidates(self, item_id: str) -> UnpackMatchCandidateList:

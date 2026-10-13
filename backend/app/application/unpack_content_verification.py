@@ -221,12 +221,29 @@ class UnpackContentVerificationService:
                 )
                 return None
 
+            frozen_site_ids = execution.config_snapshot.get("site_ids")
+            if (
+                not isinstance(frozen_site_ids, list)
+                or any(not isinstance(site_id, str) for site_id in frozen_site_ids)
+                or candidate.site_id not in frozen_site_ids
+            ):
+                self._mark_claim_error(
+                    session,
+                    execution,
+                    item,
+                    code="UNPACK_VERIFY_CANDIDATE_SITE_NOT_SCANNED",
+                    message="选中候选不属于本次执行冻结的扫描站点",
+                )
+                return None
+
             raw_ref = dict(candidate.raw_ref)
             adapter_site_id = raw_ref.get("adapter_site_id")
             torrent_id = raw_ref.get("torrent_id")
             config_version = raw_ref.get("site_config_version")
             if (
-                not isinstance(adapter_site_id, str)
+                raw_ref.get("site_config_id") != candidate.site_id
+                or torrent_id != candidate.candidate_key
+                or not isinstance(adapter_site_id, str)
                 or not adapter_site_id
                 or not isinstance(torrent_id, str)
                 or not torrent_id

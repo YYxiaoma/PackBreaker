@@ -6,6 +6,8 @@ import {
   createUnpackSourceScan,
   deleteUnpackExecutionItem,
   getUnpackExecution,
+  getUnpackItemDiagnostics,
+  getUnpackItemLiveClientState,
   listUnpackExecutionItems,
   listUnpackItemCandidates,
   listUnpackSourceScanItems,
@@ -115,6 +117,35 @@ describe('unpack api', () => {
     expect(get).toHaveBeenNthCalledWith(2, '/unpack/executions/execution-1/items', {
       params: { limit: 50, item_status: 'MATCH_PENDING' },
     });
+  });
+
+  it('fetches historical operation diagnostics through GET only', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
+      data: {
+        item_id: 'item-1',
+        status: 'EXECUTION_ERROR',
+        execution_stage: 'STARTING',
+        requires_manual_reconciliation: true,
+        downloader_state_live_checked: false,
+        filesystem_state_live_checked: false,
+        operations: [],
+      },
+      headers: {},
+    });
+    const result = await getUnpackItemDiagnostics('item-1');
+    expect(get).toHaveBeenCalledExactlyOnceWith('/unpack/items/item-1/diagnostics');
+    expect(result.downloader_state_live_checked).toBe(false);
+    expect(result.requires_manual_reconciliation).toBe(true);
+  });
+
+  it('performs an explicit live status GET with no downloader write API', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
+      data: { status: 'UNKNOWN', error_code: 'DOWNLOADER_READ_UNAVAILABLE' },
+      headers: {},
+    });
+    const result = await getUnpackItemLiveClientState('item-1');
+    expect(get).toHaveBeenCalledExactlyOnceWith('/unpack/items/item-1/diagnostics/live');
+    expect(result.status).toBe('UNKNOWN');
   });
 
   it('reads candidates without submitting the default review choice', async () => {

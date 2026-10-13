@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -226,6 +226,192 @@ def _seed_item_action_fixture(
         )
         session.commit()
     return item_id, candidate_id
+
+
+def test_item_diagnostics_read_only_redacts_journal_private_fields(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _ = _seed_item_action_fixture(app, item_status="EXECUTION_ERROR")
+        with app.state.runtime.session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            assert item is not None
+            item.last_error_code = "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT"
+            item.last_error_message = "文件身份不同，下载器可能已启动"
+            item.execution_state = {"stage": "STARTING", "private_secret": "private-do-not-expose"}
+            session.add(
+                UnpackExternalOperationJournal(
+                    id=new_uuid(),
+                    item_id=item_id,
+                    idempotency_key="a" * 64,
+                    operation_type="UNPACK_EXEC_QBITTORRENT_START",
+                    status="APPLIED",
+                    target={
+                        "downloader_id": "downloader-synthetic",
+                        "torrent_hash": "b" * 40,
+                        "api_key": "token-leak-target",
+                    },
+                    intent={"passkey": "token-leak-intent"},
+                    before_snapshot={"cookie": "token-leak-before"},
+                    after_snapshot={"state": "uploading", "cookie": "token-leak-after"},
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+        response = client.get(f"/api/v1/unpack/items/{item_id}/diagnostics")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["item_id"] == item_id
+        assert data["status"] == "EXECUTION_ERROR"
+        assert data["execution_stage"] == "STARTING"
+        assert data["requires_manual_reconciliation"] is True
+        assert data["downloader_state_live_checked"] is False
+        assert len(data["operations"]) == 1
+        proof = data["operations"][0]
+        assert proof["operation_type"] == "UNPACK_EXEC_QBITTORRENT_START"
+        assert proof["status"] == "APPLIED"
+        assert proof["downloader_id"] == "downloader-synthetic"
+        assert proof["torrent_hash"] == "b" * 40
+        assert proof["last_observed_state"] == "uploading"
+        body = response.text
+        for private in (
+            "token-leak-target",
+            "token-leak-intent",
+            "token-leak-before",
+            "token-leak-after",
+            "private-do-not-expose",
+        ):
+            assert private not in body
+        assert client.get("/api/v1/unpack/items/no-such-id/diagnostics").status_code == 404
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_failed_external_intent_is_classified_as_unconfirmed_reconciliation(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _ = _seed_item_action_fixture(app, item_status="EXECUTION_ERROR")
+        with app.state.runtime.session_factory() as session:
+            session.add(
+                UnpackExternalOperationJournal(
+                    id=new_uuid(),
+                    item_id=item_id,
+                    idempotency_key="d" * 64,
+                    operation_type="UNPACK_EXEC_QBITTORRENT_START",
+                    target={},
+                    intent={},
+                    status="INTENT_RECORDED",
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+        result = client.get(f"/api/v1/unpack/items/{item_id}/diagnostics")
+        assert result.status_code == 200
+        data = result.json()
+        assert data["requires_manual_reconciliation"] is True
+        assert "EXTERNAL_WRITE_UNCONFIRMED" in data["reconciliation_reasons"]
+        assert data["operations"][0]["status"] == "INTENT_RECORDED"
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("item_status", ("COMPLETED", "EXECUTION_ERROR"))
+def test_historical_diagnostics_flags_conflicting_client_add_proofs(
+    tmp_path: Path, item_status: str
+) -> None:
+    """Both qB and TR ADD for one item must be flagged even if both APPLIED."""
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _ = _seed_item_action_fixture(app, item_status=item_status)
+        with app.state.runtime.session_factory() as session:
+            for index, operation_type in enumerate(
+                ("UNPACK_EXEC_QBITTORRENT_ADD", "UNPACK_EXEC_TRANSMISSION_ADD")
+            ):
+                session.add(
+                    UnpackExternalOperationJournal(
+                        id=new_uuid(),
+                        item_id=item_id,
+                        idempotency_key=f"{index + 1:064x}",
+                        operation_type=operation_type,
+                        target={},
+                        intent={},
+                        status="APPLIED",
+                        created_at=datetime.now(UTC),
+                        updated_at=datetime.now(UTC),
+                    )
+                )
+            session.commit()
+        response = client.get(f"/api/v1/unpack/items/{item_id}/diagnostics")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["requires_manual_reconciliation"] is True
+        assert "MULTIPLE_DOWNLOADER_ADD_PROOFS" in data["reconciliation_reasons"]
+        assert len(data["operations"]) == 2
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_item_diagnostics_truncated_history_still_detects_reconciliation(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _ = _seed_item_action_fixture(app, item_status="MATCH_ERROR")
+        now = datetime.now(UTC)
+        with app.state.runtime.session_factory() as session:
+            for index in range(201):
+                session.add(
+                    UnpackExternalOperationJournal(
+                        id=new_uuid(),
+                        item_id=item_id,
+                        idempotency_key=f"{index:064x}",
+                        operation_type="UNPACK_EXEC_QBITTORRENT_ADD",
+                        target={},
+                        intent={"api_key": "never-echo-this-secret"},
+                        status=("RECONCILE_REQUIRED" if index == 200 else "APPLIED"),
+                        created_at=now + timedelta(microseconds=index),
+                        updated_at=now + timedelta(microseconds=index),
+                    )
+                )
+            session.commit()
+        response = client.get(f"/api/v1/unpack/items/{item_id}/diagnostics")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["operations_truncated"] is True
+        assert len(data["operations"]) == 200
+        assert data["requires_manual_reconciliation"] is True
+        assert all(row["status"] == "APPLIED" for row in data["operations"])
+        assert "JOURNAL_RECONCILE_REQUIRED" in data["reconciliation_reasons"]
+        assert "never-echo-this-secret" not in response.text
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_live_downloader_diagnostics_explicit_get_does_not_write(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _ = _seed_item_action_fixture(app, item_status="EXECUTION_ERROR")
+        response = client.get(f"/api/v1/unpack/items/{item_id}/diagnostics/live")
+        assert response.status_code == 200
+        assert response.json()["status"] == "NO_ADD_EVIDENCE"
+        assert response.json()["ownership_verified"] is False
+        assert client.get("/api/v1/unpack/items/nonexistent/diagnostics/live").status_code == 404
+        with app.state.runtime.session_factory() as session:
+            assert session.scalar(select(UnpackExternalOperationJournal.id)) is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_item_diagnostics_read_requires_login(tmp_path: Path) -> None:
+    settings = AppSettings(
+        config_dir=(tmp_path / "config").resolve(), data_dir=(tmp_path / "data").resolve()
+    )
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    app = create_app(settings=settings)
+    with TestClient(app, base_url="https://testserver") as client:
+        response = client.get("/api/v1/unpack/items/private-item/diagnostics")
+        assert response.status_code in (401, 403)
 
 
 def test_manual_selected_media_api_flow_saves_pending_then_runs(tmp_path: Path) -> None:

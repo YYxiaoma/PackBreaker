@@ -205,6 +205,26 @@ class UnpackItemActionService:
             if item.version != expected_item_version:
                 raise self._version_conflict(item.version)
             current = UnpackItemStatus(item.status)
+            if current is UnpackItemStatus.EXECUTION_ERROR and item.last_error_code in {
+                "UNPACK_EXEC_MATERIALIZATION_PROOF_MISSING",
+                "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT",
+            }:
+                has_external_operations = session.scalar(
+                    select(UnpackExternalOperationJournal.id)
+                    .where(UnpackExternalOperationJournal.item_id == item.id)
+                    .limit(1)
+                )
+                if has_external_operations is not None:
+                    raise ApplicationError(
+                        code="UNPACK_RETRY_EXTERNAL_RECONCILE_REQUIRED",
+                        status=409,
+                        title="外部操作可能已经完成，必须先对账",
+                        detail=(
+                            "物化文件或流水证据已失效，下载器可能已经启动做种。"
+                            "请人工核对下载器任务、目标媒体文件与操作记录；"
+                            "禁止通过普通重试重新匹配或重发下载器操作。"
+                        ),
+                    )
             if current not in {
                 UnpackItemStatus.NO_MATCH,
                 UnpackItemStatus.MATCH_TIMEOUT,

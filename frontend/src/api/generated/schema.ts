@@ -1181,6 +1181,43 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/unpack/items/{item_id}/diagnostics': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Unpack Item Diagnostics */
+    get: operations['get_unpack_item_diagnostics_api_v1_unpack_items__item_id__diagnostics_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/unpack/items/{item_id}/diagnostics/live': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Unpack Item Downloader State
+     * @description One explicitly requested GET-only client probe; no automatic reconciliation.
+     */
+    get: operations['read_unpack_item_downloader_state_api_v1_unpack_items__item_id__diagnostics_live_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/unpack/items/{item_id}/review': {
     parameters: {
       query?: never;
@@ -2971,6 +3008,32 @@ export interface components {
       /** Retry Count */
       retry_count: number;
     };
+    /** UnpackItemDiagnosticsResponse */
+    UnpackItemDiagnosticsResponse: {
+      /** Downloader State Live Checked */
+      downloader_state_live_checked: boolean;
+      /** Execution Stage */
+      execution_stage: string | null;
+      /** Filesystem State Live Checked */
+      filesystem_state_live_checked: boolean;
+      /** Item Id */
+      item_id: string;
+      /** Item Version */
+      item_version: number;
+      /** Last Error Code */
+      last_error_code: string | null;
+      /** Last Error Message */
+      last_error_message: string | null;
+      /** Operations */
+      operations: components['schemas']['UnpackOperationDiagnosticResponse'][];
+      /** Operations Truncated */
+      operations_truncated: boolean;
+      /** Reconciliation Reasons */
+      reconciliation_reasons: string[];
+      /** Requires Manual Reconciliation */
+      requires_manual_reconciliation: boolean;
+      status: components['schemas']['UnpackItemStatus'];
+    };
     /**
      * UnpackItemStatus
      * @enum {string}
@@ -2996,6 +3059,42 @@ export interface components {
       | 'COMPLETED'
       | 'EXECUTION_ERROR'
       | 'CANCELLED';
+    /** UnpackLiveClientReadResponse */
+    UnpackLiveClientReadResponse: {
+      /** Client Kind */
+      client_kind?: string | null;
+      /** Current State */
+      current_state?: string | null;
+      /** Downloader Id */
+      downloader_id?: string | null;
+      /** Error Code */
+      error_code?: string | null;
+      /**
+       * Ownership Verified
+       * @default false
+       */
+      ownership_verified: boolean;
+      /** Progress */
+      progress?: number | null;
+      /**
+       * Save Path Matches
+       * @default false
+       */
+      save_path_matches: boolean;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status:
+        | 'NO_ADD_EVIDENCE'
+        | 'UNRESOLVED_ADD'
+        | 'MATCHED'
+        | 'MISSING'
+        | 'OWNERSHIP_MISMATCH'
+        | 'UNKNOWN';
+      /** Torrent Hash */
+      torrent_hash?: string | null;
+    };
     /** UnpackMatchCandidateListResponse */
     UnpackMatchCandidateListResponse: {
       /** Candidates */
@@ -3050,6 +3149,36 @@ export interface components {
       verification_level: string | null;
       /** Verification Status */
       verification_status: string;
+    };
+    /** UnpackOperationDiagnosticResponse */
+    UnpackOperationDiagnosticResponse: {
+      /** Downloader Id */
+      downloader_id: string | null;
+      /** Last Error Code */
+      last_error_code: string | null;
+      /** Last Observed State */
+      last_observed_state: string | null;
+      /** Operation Type */
+      operation_type: string;
+      /** Recorded Device */
+      recorded_device: number | null;
+      /** Recorded File Type */
+      recorded_file_type: string | null;
+      /** Recorded Inode */
+      recorded_inode: number | null;
+      /** Recorded Size */
+      recorded_size: number | null;
+      /** Status */
+      status: string;
+      /** Target Path */
+      target_path: string | null;
+      /** Torrent Hash */
+      torrent_hash: string | null;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
     };
     /** UnpackRetryFailedMatchesRequest */
     UnpackRetryFailedMatchesRequest: {
@@ -6239,6 +6368,72 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['UnpackMatchCandidateListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_unpack_item_diagnostics_api_v1_unpack_items__item_id__diagnostics_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        item_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackItemDiagnosticsResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  read_unpack_item_downloader_state_api_v1_unpack_items__item_id__diagnostics_live_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        item_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackLiveClientReadResponse'];
         };
       };
       /** @description Validation Error */

@@ -332,6 +332,63 @@ def test_review_rejects_hard_conflict_and_idempotency_conflict() -> None:
     assert conflict.value.code == "UNPACK_REVIEW_IDEMPOTENCY_CONFLICT"
 
 
+@pytest.mark.parametrize(
+    "error_code",
+    (
+        "UNPACK_EXEC_MATERIALIZATION_PROOF_MISSING",
+        "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT",
+    ),
+)
+def test_retry_match_post_start_failure_requires_manual_reconciliation(
+    error_code: str,
+) -> None:
+    """A START may have succeeded; generic Retry must never clear its evidence."""
+    service, factory = _fixture(item_status=UnpackItemStatus.EXECUTION_ERROR)
+    now = utc_now()
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.status = UnpackItemStatus.EXECUTION_ERROR.value
+        item.last_error_code = error_code
+        item.execution_state = {
+            "stage": "STARTING",
+            "torrent_hash": "a" * 40,
+            "ownership_tag": "packbreaker-seed-item-1",
+        }
+        item.selected_candidate_id = "candidate-1"
+        session.add(
+            UnpackExternalOperationJournal(
+                id="confirmed-start",
+                item_id="item-1",
+                idempotency_key="b" * 64,
+                operation_type="UNPACK_EXEC_QBITTORRENT_START",
+                target={"downloader_id": "downloader-1", "torrent_hash": "a" * 40},
+                intent={"reason": "synthetic"},
+                status=OperationStatus.APPLIED.value,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+        initial_version = item.version
+
+    with pytest.raises(ApplicationError) as error:
+        service.retry_match("item-1", expected_item_version=initial_version)
+    assert error.value.status == 409
+    assert error.value.code == "UNPACK_RETRY_EXTERNAL_RECONCILE_REQUIRED"
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        journal = session.get(UnpackExternalOperationJournal, "confirmed-start")
+        assert item is not None and journal is not None
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert item.last_error_code == error_code
+        assert item.version == initial_version
+        assert item.candidate_generation == 2
+        assert item.selected_candidate_id == "candidate-1"
+        assert (item.execution_state or {}).get("stage") == "STARTING"
+        assert journal.status == OperationStatus.APPLIED.value
+
+
 def test_retry_match_reopens_execution_and_advances_generation() -> None:
     service, factory = _fixture(item_status=UnpackItemStatus.MATCH_TIMEOUT)
 
@@ -387,6 +444,63 @@ def test_bulk_retry_all_failed_matches_is_atomic_and_version_checked() -> None:
     with pytest.raises(ApplicationError) as caught:
         service.retry_failed_matches("execution-1", expected_execution_version=version)
     assert caught.value.code == "UNPACK_EXECUTION_VERSION_CONFLICT"
+
+
+def test_bulk_retry_preserves_post_start_reconciliation_item() -> None:
+    """Retry failed matches must never requeue a post-START error item."""
+    service, factory = _fixture(item_status=UnpackItemStatus.EXECUTION_ERROR)
+    now = utc_now()
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert execution is not None and item is not None
+        item.last_error_code = "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT"
+        item.execution_state = {"stage": "STARTING", "torrent_hash": "a" * 40}
+        execution.total_count = 2
+        execution.error_count = 2
+        session.add(
+            UnpackExecutionItem(
+                id="item-safe-retry",
+                execution_id="execution-1",
+                source_object_key="source-safe",
+                source_snapshot={},
+                media_identity={"title": "Retry-Eligible"},
+                status=UnpackItemStatus.MATCH_ERROR.value,
+                candidate_generation=1,
+                retry_count=0,
+                last_error_code="UNPACK_MATCH_TIMEOUT",
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            UnpackExternalOperationJournal(
+                id="post-start-write-proof",
+                item_id="item-1",
+                idempotency_key="c" * 64,
+                operation_type="UNPACK_EXEC_QBITTORRENT_START",
+                target={"torrent_hash": "a" * 40},
+                intent={},
+                status=OperationStatus.APPLIED.value,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+        expected_version = execution.version
+    count = service.retry_failed_matches("execution-1", expected_execution_version=expected_version)
+    assert count == 1
+    with factory() as session:
+        dangerous = session.get(UnpackExecutionItem, "item-1")
+        eligible = session.get(UnpackExecutionItem, "item-safe-retry")
+        assert dangerous is not None and eligible is not None
+        assert dangerous.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert dangerous.last_error_code == "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT"
+        assert dangerous.version == 3
+        assert (dangerous.execution_state or {}).get("stage") == "STARTING"
+        assert eligible.status == UnpackItemStatus.MATCH_PENDING.value
+        assert session.get(UnpackExternalOperationJournal, "post-start-write-proof") is not None
 
 
 def test_bulk_manual_retry_ignores_exhausted_auto_budget() -> None:

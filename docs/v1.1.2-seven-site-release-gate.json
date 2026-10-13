@@ -1,0 +1,53 @@
+{
+  "format_version": 1,
+  "release_tag": "v1.1.2",
+  "policy": "ALL_SEVEN_SITES_REAL_E2E_REQUIRED",
+  "publication_approval": {
+    "status": "NOT_GRANTED",
+    "evidence_ref": null
+  },
+  "sites": [
+    {
+      "site_key": "PTerClub",
+      "status": "PENDING_REAL_VALIDATION",
+      "receipt_path": null,
+      "receipt_sha256": null
+    },
+    {
+      "site_key": "Audiences",
+      "status": "PENDING_REAL_VALIDATION",
+      "receipt_path": null,
+      "receipt_sha256": null
+    },
+    {
+      "site_key": "SpringSunday",
+      "status": "PENDING_REAL_VALIDATION",
+      "receipt_path": null,
+      "receipt_sha256": null
+    },
+    {
+      "site_key": "HDDolby",
+      "status": "PENDING_REAL_VALIDATION",
+      "receipt_path": null,
+      "receipt_sha256": null
+    },
+    {
+      "site_key": "U2",
+      "status": "PENDING_REAL_VALIDATION",
+      "receipt_path": null,
+      "receipt_sha256": null
+    },
+    {
+      "site_key": "TANGPT",
+      "status": "PENDING_REAL_VALIDATION",
+      "receipt_path": null,
+      "receipt_sha256": null
+    },
+    {
+      "site_key": "CarPT",
+      "status": "PENDING_REAL_VALIDATION",
+      "receipt_path": null,
+      "receipt_sha256": null
+    }
+  ]
+}

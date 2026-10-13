@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,9 +23,11 @@ from backend.app.application.unpack_definitions import (
 from backend.app.application.unpack_executions import (
     UnpackExecutionItemView,
     UnpackExecutionView,
+    UnpackItemDiagnosticsView,
     UnpackMatchCandidateList,
     UnpackMatchCandidateView,
 )
+from backend.app.application.unpack_seeding import UnpackSeedingService
 from backend.app.application.unpack_source_scans import (
     UnpackSourceScanItemView,
     UnpackSourceScanView,
@@ -223,6 +225,50 @@ class UnpackExecutionItemListResponse(BaseModel):
     items: list[UnpackExecutionItemResponse]
     next_cursor: str | None
     has_more: bool
+
+
+class UnpackOperationDiagnosticResponse(BaseModel):
+    operation_type: str
+    status: str
+    last_error_code: str | None
+    downloader_id: str | None
+    torrent_hash: str | None
+    target_path: str | None
+    last_observed_state: str | None
+    recorded_file_type: str | None
+    recorded_device: int | None
+    recorded_inode: int | None
+    recorded_size: int | None
+    updated_at: datetime
+
+
+class UnpackItemDiagnosticsResponse(BaseModel):
+    item_id: str
+    status: UnpackItemStatus
+    item_version: int
+    execution_stage: str | None
+    last_error_code: str | None
+    last_error_message: str | None
+    requires_manual_reconciliation: bool
+    reconciliation_reasons: list[str]
+    downloader_state_live_checked: bool
+    filesystem_state_live_checked: bool
+    operations_truncated: bool
+    operations: list[UnpackOperationDiagnosticResponse]
+
+
+class UnpackLiveClientReadResponse(BaseModel):
+    status: Literal[
+        "NO_ADD_EVIDENCE", "UNRESOLVED_ADD", "MATCHED", "MISSING", "OWNERSHIP_MISMATCH", "UNKNOWN"
+    ]
+    downloader_id: str | None = None
+    client_kind: str | None = None
+    torrent_hash: str | None = None
+    current_state: str | None = None
+    progress: float | None = None
+    ownership_verified: bool = False
+    save_path_matches: bool = False
+    error_code: str | None = None
 
 
 class UnpackMatchCandidateResponse(BaseModel):
@@ -792,6 +838,52 @@ async def list_unpack_execution_items(
         items=[_execution_item_response(item) for item in page.items],
         next_cursor=page.next_cursor,
         has_more=page.has_more,
+    )
+
+
+@router.get(
+    "/unpack/items/{item_id}/diagnostics/live",
+    response_model=UnpackLiveClientReadResponse,
+)
+async def read_unpack_item_downloader_state(
+    item_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(READ_ACCESS)],
+) -> UnpackLiveClientReadResponse:
+    """One explicitly requested GET-only client probe; no automatic reconciliation."""
+    seeding = cast(UnpackSeedingService, request.app.state.unpack_seeding_service)
+    result = await seeding.inspect_client_readonly(item_id)
+    return UnpackLiveClientReadResponse.model_validate(result, from_attributes=True)
+
+
+@router.get(
+    "/unpack/items/{item_id}/diagnostics",
+    response_model=UnpackItemDiagnosticsResponse,
+)
+async def get_unpack_item_diagnostics(
+    item_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(READ_ACCESS)],
+) -> UnpackItemDiagnosticsResponse:
+    view: UnpackItemDiagnosticsView = unpack_execution_query_service(request).item_diagnostics(
+        item_id
+    )
+    return UnpackItemDiagnosticsResponse(
+        item_id=view.item_id,
+        status=view.status,
+        item_version=view.item_version,
+        execution_stage=view.execution_stage,
+        last_error_code=view.last_error_code,
+        last_error_message=view.last_error_message,
+        requires_manual_reconciliation=view.requires_manual_reconciliation,
+        reconciliation_reasons=list(view.reconciliation_reasons),
+        downloader_state_live_checked=view.downloader_state_live_checked,
+        filesystem_state_live_checked=view.filesystem_state_live_checked,
+        operations_truncated=view.operations_truncated,
+        operations=[
+            UnpackOperationDiagnosticResponse.model_validate(o, from_attributes=True)
+            for o in view.operations
+        ],
     )
 
 

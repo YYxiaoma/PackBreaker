@@ -38,6 +38,21 @@ _SYMLINK_OPERATION = "UNPACK_EXEC_MATERIALIZE_SYMLINK"
 _COPY_OPERATION = "UNPACK_EXEC_MATERIALIZE_COPY"
 _REUSE_OPERATION = "UNPACK_EXEC_REUSE_EXISTING"
 
+# Late failures from a different worker cannot undo an already proven APPLIED
+# filesystem operation. Freshly observed target/journal drift is different and
+# must still reopen manual reconciliation.
+_APPLIED_FILESYSTEM_DRIFT_CODES = frozenset(
+    {
+        "UNPACK_EXEC_REUSE_TARGET_CHANGED",
+        "UNPACK_EXEC_REUSE_JOURNAL_MISMATCH",
+        "UNPACK_EXEC_APPLIED_TARGET_CHANGED",
+        "UNPACK_EXEC_COPY_AFTER_SNAPSHOT_MISSING",
+        "UNPACK_EXEC_DIRECTORY_SNAPSHOT_MISSING",
+        "UNPACK_EXEC_DIRECTORY_CHANGED",
+        "UNPACK_EXEC_COPY_OWNERSHIP_UNPROVEN",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class UnpackMaterializationReport:
@@ -93,24 +108,34 @@ class UnpackMaterializationService:
     ) -> UnpackMaterializationReport:
         if limit < 1 or limit > 100:
             raise self._invalid("文件落位批次必须位于 1 到 100 之间")
-        item_ids = self._list_item_ids(execution_id, limit=limit)
+        item_rows = self._list_item_ids(execution_id, limit=limit)
         processed = 0
-        for item_id in item_ids:
+        for item_id, initial_version, initial_candidate_id, initial_generation in item_rows:
+            version = initial_version
             try:
-                plan = self._reserve_and_load_plan(item_id)
+                plan, version = self._reserve_and_load_plan(item_id)
                 if self._stage(item_id) == "FILES_MATERIALIZED":
                     continue
                 self._assert_plan_target_current(plan)
-                self._ensure_directories(item_id, plan)
-                self._materialize_actions(item_id, plan)
-                self._mark_materialized(item_id, plan)
+                self._ensure_directories(item_id, plan, expected_version=version)
+                self._materialize_actions(item_id, plan, expected_version=version)
+                self._mark_materialized(item_id, plan, expected_version=version)
             except (ApplicationError, DomainViolation, ValueError) as exc:
                 code, message = _safe_error(exc)
-                self._mark_error(item_id, code=code, message=message)
+                self._mark_error(
+                    item_id,
+                    code=code,
+                    message=message,
+                    expected_version=version,
+                    expected_candidate_id=initial_candidate_id,
+                    expected_generation=initial_generation,
+                )
             processed += 1
         return self._report(execution_id, processed_count=processed)
 
-    def _list_item_ids(self, execution_id: str, *, limit: int) -> tuple[str, ...]:
+    def _list_item_ids(
+        self, execution_id: str, *, limit: int
+    ) -> tuple[tuple[str, int, str | None, int], ...]:
         with self._session_factory() as session:
             execution = session.get(UnpackExecution, execution_id)
             if execution is None:
@@ -129,17 +154,24 @@ class UnpackMaterializationService:
                 .order_by(UnpackExecutionItem.id)
                 .limit(limit * 4)
             ).all()
-            ids: list[str] = []
+            ids: list[tuple[str, int, str | None, int]] = []
             for item in rows:
                 state = dict(item.execution_state or {})
-                if state.get("stage") == "FILES_MATERIALIZED":
+                if (
+                    item.status == UnpackItemStatus.EXECUTING.value
+                    and state.get("stage") != "MATERIALIZING"
+                ):
+                    # Final seeding also uses EXECUTING. It is not a file
+                    # materialization task and must never be re-claimed here.
                     continue
-                ids.append(item.id)
+                ids.append(
+                    (item.id, item.version, item.selected_candidate_id, item.candidate_generation)
+                )
                 if len(ids) == limit:
                     break
             return tuple(ids)
 
-    def _reserve_and_load_plan(self, item_id: str) -> UnpackExecutionPlan:
+    def _reserve_and_load_plan(self, item_id: str) -> tuple[UnpackExecutionPlan, int]:
         with self._session_factory() as session:
             begin_immediate_write(session)
             item = session.get(UnpackExecutionItem, item_id)
@@ -150,6 +182,11 @@ class UnpackMaterializationService:
                 UnpackItemStatus.EXECUTING.value,
             }:
                 raise self._conflict("影片项当前不允许执行文件落位")
+            if item.status == UnpackItemStatus.EXECUTING.value and dict(
+                item.execution_state or {}
+            ).get("stage") not in {"MATERIALIZING", "FILES_MATERIALIZED"}:
+                raise self._conflict("影片项已经离开文件物化阶段")
+
             if item.execution_plan is None or item.execution_plan_digest is None:
                 raise self._conflict("影片项缺少冻结执行计划")
             try:
@@ -183,7 +220,7 @@ class UnpackMaterializationService:
                 item.updated_at = utc_now()
                 item.version += 1
                 session.commit()
-            return plan
+            return plan, item.version
 
     def _stage(self, item_id: str) -> str | None:
         with self._session_factory() as session:
@@ -202,7 +239,9 @@ class UnpackMaterializationService:
         if snapshot.file_type != "directory":
             raise self._conflict("冻结输出目录已不再是安全目录")
 
-    def _ensure_directories(self, item_id: str, plan: UnpackExecutionPlan) -> None:
+    def _ensure_directories(
+        self, item_id: str, plan: UnpackExecutionPlan, *, expected_version: int
+    ) -> None:
         for relative in sorted(
             plan.create_directories,
             key=lambda value: (len(PurePosixPath(value).parts), value),
@@ -234,6 +273,8 @@ class UnpackMaterializationService:
             journal, _created = self._record_intent(
                 item_id,
                 _DIRECTORY_OPERATION,
+                plan=plan,
+                expected_version=expected_version,
                 key=_directory_key(full_path.as_posix()),
                 target=target,
                 intent=intent,
@@ -253,21 +294,25 @@ class UnpackMaterializationService:
                 raise
             self._mark_applied(journal.id, created.to_payload())
 
-    def _materialize_actions(self, item_id: str, plan: UnpackExecutionPlan) -> None:
+    def _materialize_actions(
+        self, item_id: str, plan: UnpackExecutionPlan, *, expected_version: int
+    ) -> None:
         for action in plan.actions:
             if action.kind is not UnpackExecutionActionKind.MATERIALIZE:
                 continue
-            self._materialize_one(item_id, plan, action)
+            self._materialize_one(item_id, plan, action, expected_version=expected_version)
 
     def _materialize_one(
         self,
         item_id: str,
         plan: UnpackExecutionPlan,
         action: UnpackExecutionAction,
+        *,
+        expected_version: int,
     ) -> None:
         assert action.source_path is not None and action.source_snapshot is not None
         if action.reuse_target_snapshot is not None:
-            self._reuse_existing(item_id, plan, action)
+            self._reuse_existing(item_id, plan, action, expected_version=expected_version)
             return
         operation_type = {
             TaskStorageMode.HARDLINK: _HARDLINK_OPERATION,
@@ -293,6 +338,8 @@ class UnpackMaterializationService:
         journal, created = self._record_intent(
             item_id,
             operation_type,
+            plan=plan,
+            expected_version=expected_version,
             key=key,
             target=target,
             intent=intent,
@@ -349,6 +396,8 @@ class UnpackMaterializationService:
         item_id: str,
         plan: UnpackExecutionPlan,
         action: UnpackExecutionAction,
+        *,
+        expected_version: int,
     ) -> None:
         """Audit an existing identical file without creating, replacing or deleting it."""
         assert action.source_path is not None and action.source_snapshot is not None
@@ -373,6 +422,8 @@ class UnpackMaterializationService:
         journal, _created = self._record_intent(
             item_id,
             _REUSE_OPERATION,
+            plan=plan,
+            expected_version=expected_version,
             key=key,
             target=target,
             intent=intent,
@@ -590,6 +641,8 @@ class UnpackMaterializationService:
         item_id: str,
         operation_type: str,
         *,
+        plan: UnpackExecutionPlan,
+        expected_version: int,
         key: str,
         target: dict[str, Any],
         intent: dict[str, Any],
@@ -597,6 +650,19 @@ class UnpackMaterializationService:
     ) -> tuple[UnpackExternalOperationJournal, bool]:
         with self._session_factory() as session:
             begin_immediate_write(session)
+            item = session.get(UnpackExecutionItem, item_id)
+            if (
+                item is None
+                or item.status != UnpackItemStatus.EXECUTING.value
+                or item.version != expected_version
+                or item.selected_candidate_id != plan.candidate_id
+                or item.candidate_generation != plan.candidate_generation
+                or item.execution_plan_digest != plan.plan_digest
+                or dict(item.execution_state or {}).get("stage") != "MATERIALIZING"
+            ):
+                # Never reserve a filesystem operation for a canceled or
+                # reselected item after an earlier read-only path probe.
+                raise self._conflict("文件写入前的任务版本或候选已经变化")
             existing = session.scalar(
                 select(UnpackExternalOperationJournal).where(
                     UnpackExternalOperationJournal.idempotency_key == key
@@ -637,10 +703,14 @@ class UnpackMaterializationService:
                 raise self._conflict("v2 文件操作 journal 不存在")
             if row.status == OperationStatus.APPLIED.value:
                 return
-            if row.status not in {
-                OperationStatus.INTENT_RECORDED.value,
-                OperationStatus.RECONCILE_REQUIRED.value,
-            }:
+            if row.status == OperationStatus.RECONCILE_REQUIRED.value:
+                raise ApplicationError(
+                    code="UNPACK_EXEC_MATERIALIZE_RECONCILE_REQUIRED",
+                    status=409,
+                    title="文件写入结果需要人工对账",
+                    detail="已锁定的对账 journal 不允许迟到的成功响应覆盖",
+                )
+            if row.status != OperationStatus.INTENT_RECORDED.value:
                 raise self._conflict("v2 文件操作 journal 当前状态不能确认成功")
             row.status = OperationStatus.APPLIED.value
             row.after_snapshot = after_snapshot
@@ -654,21 +724,33 @@ class UnpackMaterializationService:
             row = session.get(UnpackExternalOperationJournal, journal_id)
             if row is None or row.status == OperationStatus.RECONCILE_REQUIRED.value:
                 return
+            if (
+                row.status == OperationStatus.APPLIED.value
+                and code not in _APPLIED_FILESYSTEM_DRIFT_CODES
+            ):
+                return  # An older worker's late write error cannot erase proof.
             row.status = OperationStatus.RECONCILE_REQUIRED.value
             row.last_error_code = code
             row.updated_at = utc_now()
             session.commit()
 
-    def _mark_materialized(self, item_id: str, plan: UnpackExecutionPlan) -> None:
+    def _mark_materialized(
+        self, item_id: str, plan: UnpackExecutionPlan, *, expected_version: int
+    ) -> None:
         with self._session_factory() as session:
             begin_immediate_write(session)
             item = session.get(UnpackExecutionItem, item_id)
             if (
                 item is None
                 or item.status != UnpackItemStatus.EXECUTING.value
+                or item.version != expected_version
+                or item.selected_candidate_id != plan.candidate_id
+                or item.candidate_generation != plan.candidate_generation
                 or item.execution_plan_digest != plan.plan_digest
+                or dict(item.execution_state or {}).get("stage") != "MATERIALIZING"
             ):
                 raise self._conflict("文件落位完成时 item/plan 已变化")
+            assert_materialization_journals_applied(session, item_id, plan)
             item.execution_state = {
                 "stage": "FILES_MATERIALIZED",
                 "plan_digest": plan.plan_digest,
@@ -678,14 +760,34 @@ class UnpackMaterializationService:
             item.version += 1
             session.commit()
 
-    def _mark_error(self, item_id: str, *, code: str, message: str) -> None:
+    def _mark_error(
+        self,
+        item_id: str,
+        *,
+        code: str,
+        message: str,
+        expected_version: int,
+        expected_candidate_id: str | None,
+        expected_generation: int,
+    ) -> None:
         with self._session_factory() as session:
             begin_immediate_write(session)
             item = session.get(UnpackExecutionItem, item_id)
-            if item is None or item.status not in {
-                UnpackItemStatus.PLAN_PENDING.value,
-                UnpackItemStatus.EXECUTING.value,
-            }:
+            if (
+                item is None
+                or item.status
+                not in {
+                    UnpackItemStatus.PLAN_PENDING.value,
+                    UnpackItemStatus.EXECUTING.value,
+                }
+                or item.version != expected_version
+                or item.selected_candidate_id != expected_candidate_id
+                or item.candidate_generation != expected_generation
+                or (
+                    item.status == UnpackItemStatus.EXECUTING.value
+                    and dict(item.execution_state or {}).get("stage") != "MATERIALIZING"
+                )
+            ):
                 return
             execution = session.get(UnpackExecution, item.execution_id)
             if execution is None:
@@ -770,6 +872,229 @@ class UnpackMaterializationService:
             title="数据拆包文件落位冲突",
             detail=detail,
         )
+
+
+def assert_materialization_journals_applied(
+    session: Session, item_id: str, plan: UnpackExecutionPlan
+) -> None:
+    """Verify every frozen filesystem intent in the caller's database snapshot.
+
+    Used at the FILES_MATERIALIZED commit gate and before downstream ADD.
+    Merely seeing the item's stage flag cannot authorize seeding.
+    """
+
+    def require(condition: bool) -> None:
+        if not condition:
+            raise ApplicationError(
+                code="UNPACK_EXEC_MATERIALIZATION_PROOF_MISSING",
+                status=409,
+                title="文件落位证据不完整",
+                detail="目标目录或影片文件缺少匹配且已确认的原子操作 journal",
+            )
+
+    for relative in plan.create_directories:
+        full_path = Path(plan.output_directory).joinpath(*PurePosixPath(relative).parts)
+        row = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.idempotency_key
+                == _directory_key(full_path.as_posix())
+            )
+        )
+        if row is None:
+            require(False)
+            continue
+        before = row.intent if isinstance(row.intent, dict) else {}
+        after = row.after_snapshot if isinstance(row.after_snapshot, dict) else {}
+        require(
+            row.operation_type == _DIRECTORY_OPERATION
+            and row.status == OperationStatus.APPLIED.value
+            and row.target == {"path": full_path.as_posix()}
+            and before.get("schema_version") == _SCHEMA_VERSION
+            and before.get("directory_relative_path") == relative
+            and isinstance(before.get("parent_snapshot"), dict)
+            and after.get("file_type") == "directory"
+            and isinstance(after.get("device"), int)
+            and isinstance(after.get("inode"), int)
+        )
+
+    for action in plan.actions:
+        if action.kind is not UnpackExecutionActionKind.MATERIALIZE:
+            continue
+        require(action.source_path is not None and action.source_snapshot is not None)
+        operation_type = (
+            _REUSE_OPERATION
+            if action.reuse_target_snapshot is not None
+            else {
+                TaskStorageMode.HARDLINK: _HARDLINK_OPERATION,
+                TaskStorageMode.SYMLINK: _SYMLINK_OPERATION,
+                TaskStorageMode.COPY: _COPY_OPERATION,
+            }[plan.storage_mode]
+        )
+        key = _materialize_key(item_id, plan.plan_digest, operation_type, action.torrent_path)
+        path = Path(plan.output_directory).joinpath(*PurePosixPath(action.torrent_path).parts)
+        row = session.scalar(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.idempotency_key == key
+            )
+        )
+        if row is None:
+            require(False)
+            continue
+        intent = row.intent if isinstance(row.intent, dict) else {}
+        after = row.after_snapshot if isinstance(row.after_snapshot, dict) else {}
+        require(
+            row.item_id == item_id
+            and row.operation_type == operation_type
+            and row.status == OperationStatus.APPLIED.value
+            and row.target == {"path": path.as_posix(), "torrent_path": action.torrent_path}
+            and intent.get("schema_version") == _SCHEMA_VERSION
+            and intent.get("plan_digest") == plan.plan_digest
+            and intent.get("source_path") == action.source_path
+            and intent.get("source_snapshot") == _file_snapshot_payload(action.source_snapshot)
+            and intent.get("operation_token") == key
+            and isinstance(after.get("device"), int)
+            and isinstance(after.get("inode"), int)
+            and after.get("file_type")
+            == ("symlink" if plan.storage_mode is TaskStorageMode.SYMLINK else "regular")
+            and (plan.storage_mode is TaskStorageMode.SYMLINK or after.get("size") == action.length)
+            and (
+                (
+                    intent.get("no_file_mutation") is True
+                    and intent.get("target_snapshot")
+                    == _file_snapshot_payload(action.reuse_target_snapshot)
+                    and intent.get("proof_sha256") == action.reuse_sha256
+                )
+                if action.reuse_target_snapshot is not None
+                else intent.get("storage_mode") == plan.storage_mode.value
+            )
+        )
+
+
+def assert_materialization_targets_current(
+    filesystem: SafeFilesystemGateway,
+    session: Session,
+    item_id: str,
+    plan: UnpackExecutionPlan,
+) -> None:
+    """Read-only revalidate inode and source identity immediately before client writes.
+
+    A durable APPLIED journal proves a past write, not the *current* on-disk
+    identity. This gate uses the no-follow, directory-fd based filesystem API.
+    """
+
+    def changed() -> ApplicationError:
+        return ApplicationError(
+            code="UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT",
+            status=409,
+            title="已物化文件身份已变化",
+            detail="目标文件、目录或源快照与冻结计划和已确认操作流水不再一致，禁止下载器写入",
+        )
+
+    try:
+        filesystem.assert_directory(
+            relative_path=plan.output_directory, expected_device=plan.target_device
+        )
+        for relative in plan.create_directories:
+            directory = Path(plan.output_directory).joinpath(*PurePosixPath(relative).parts)
+            journal = session.scalar(
+                select(UnpackExternalOperationJournal).where(
+                    UnpackExternalOperationJournal.idempotency_key
+                    == _directory_key(directory.as_posix())
+                )
+            )
+            if journal is None or not isinstance(journal.after_snapshot, dict):
+                raise changed()
+            actual = filesystem.assert_directory(relative_path=directory.as_posix())
+            if (
+                actual.device != journal.after_snapshot.get("device")
+                or actual.inode != journal.after_snapshot.get("inode")
+                or actual.file_type != "directory"
+            ):
+                raise changed()
+
+        for action in plan.actions:
+            if action.kind is not UnpackExecutionActionKind.MATERIALIZE:
+                continue
+            assert action.source_path is not None and action.source_snapshot is not None
+            operation_type = (
+                _REUSE_OPERATION
+                if action.reuse_target_snapshot is not None
+                else {
+                    TaskStorageMode.HARDLINK: _HARDLINK_OPERATION,
+                    TaskStorageMode.SYMLINK: _SYMLINK_OPERATION,
+                    TaskStorageMode.COPY: _COPY_OPERATION,
+                }[plan.storage_mode]
+            )
+            journal = session.scalar(
+                select(UnpackExternalOperationJournal).where(
+                    UnpackExternalOperationJournal.idempotency_key
+                    == _materialize_key(
+                        item_id, plan.plan_digest, operation_type, action.torrent_path
+                    )
+                )
+            )
+            if journal is None or not isinstance(journal.after_snapshot, dict):
+                raise changed()
+            after = journal.after_snapshot
+            target = Path(plan.output_directory).joinpath(*PurePosixPath(action.torrent_path).parts)
+            # Even a SYMLINK must still have its original, verified source.
+            filesystem.assert_source_matches(
+                source_relative_path=action.source_path,
+                expected_source_snapshot=action.source_snapshot,
+            )
+            if plan.storage_mode is TaskStorageMode.SYMLINK:
+                link = filesystem.inspect_symlink_target(relative_path=target.as_posix())
+                snapshot = filesystem.inspect_symlink_snapshot(relative_path=target.as_posix())
+                if (
+                    link != filesystem.resolve_path(action.source_path).as_posix()
+                    or snapshot.device != after.get("device")
+                    or snapshot.inode != after.get("inode")
+                    or snapshot.file_type != "symlink"
+                ):
+                    raise changed()
+                continue
+
+            evidence = filesystem.inspect_repair_target(
+                target_root_relative_path=plan.output_directory,
+                target_relative_path=action.torrent_path,
+                expected_length=action.length,
+                source_relative_path=action.source_path,
+                expected_source_snapshot=action.source_snapshot,
+            )
+            if (
+                not evidence.target_exists
+                or evidence.target_device != after.get("device")
+                or evidence.target_inode != after.get("inode")
+                or evidence.target_size != action.length
+            ):
+                raise changed()
+            if (
+                action.reuse_target_snapshot is None
+                and plan.storage_mode is TaskStorageMode.HARDLINK
+            ):
+                if (
+                    evidence.target_device != evidence.source_device
+                    or evidence.target_inode != evidence.source_inode
+                ):
+                    raise changed()
+            else:
+                # COPY and reused files keep their inode, size and mtime
+                # evidence; do not rehash giant media on each RPC.
+                current = filesystem.inspect_movie_file(relative_path=target.as_posix())
+                expected_mtime = (
+                    action.reuse_target_snapshot.mtime_ns
+                    if action.reuse_target_snapshot is not None
+                    else after.get("mtime_ns")
+                )
+                if (
+                    current.device != evidence.target_device
+                    or current.inode != evidence.target_inode
+                    or current.size != action.length
+                    or str(current.mtime_ns) != str(expected_mtime)
+                ):
+                    raise changed()
+    except (DomainViolation, OSError, ValueError) as exc:
+        raise changed() from exc
 
 
 def _directory_key(full_path: str) -> str:

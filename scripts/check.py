@@ -67,6 +67,9 @@ def _check_generated_contract() -> None:
 def main() -> None:
     _run([sys.executable, str(ROOT / "scripts" / "repository_scan.py")])
     _run([sys.executable, str(ROOT / "scripts" / "validate_acceptance_evidence.py")])
+    # This validates the seven-site inventory, NOT the real E2E success gate.
+    # Release-only --require-ready intentionally fails while sites are pending.
+    _run([sys.executable, str(ROOT / "scripts" / "validate_v112_site_release_gate.py")])
     _run([sys.executable, str(ROOT / "scripts" / "validate_release_baseline.py")])
     _run([_tool("ruff"), "format", "--check", "."])
     _run([_tool("ruff"), "check", "."])

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   CheckCircle2,
   Clock3,
@@ -26,6 +26,8 @@ import {
   deleteUnpackDefinition,
   createUnpackSourceScan,
   getUnpackExecution,
+  getUnpackItemDiagnostics,
+  getUnpackItemLiveClientState,
   getUnpackSourceScanSelectionSummary,
   listUnpackDefinitions,
   listUnpackExecutionItems,
@@ -43,6 +45,8 @@ import {
   type UnpackDefinitionCreate,
   type UnpackExecution,
   type UnpackExecutionItem,
+  type UnpackItemDiagnostics,
+  type UnpackLiveClientRead,
   type UnpackItemStatus,
   type UnpackMatchCandidate,
   type UnpackMatchCandidateList,
@@ -53,12 +57,15 @@ import { createClientNonce } from '../clientNonce';
 import {
   unpackDefinitionStatusLabel,
   unpackExecutionStatusLabel,
+  unpackItemExternalRiskLabel,
+  unpackReconciliationGuidance,
   unpackItemStatusLabel,
   unpackProgressPercent,
   unpackSourceKindLabel,
   unpackTriggerLabel,
   unpackVerificationLevelLabel,
 } from '../unpackPresentation';
+import { createUnpackDiagnosticsGuard } from '../unpackDiagnosticsGuard';
 import MovieDedupPanel from './MovieDedupPanel.vue';
 
 type ActiveView = 'UNPACK' | 'DEDUP';
@@ -143,6 +150,23 @@ const executionVisible = ref(false);
 const activeExecution = ref<UnpackExecution | null>(null);
 const activeDefinition = ref<UnpackDefinition | null>(null);
 const executionItems = ref<UnpackExecutionItem[]>([]);
+const diagnosticsVisible = ref(false);
+const diagnosticsLoading = ref(false);
+const diagnosticsItemName = ref('');
+const diagnostics = ref<UnpackItemDiagnostics | null>(null);
+const liveClientLoading = ref(false);
+const liveClientState = ref<UnpackLiveClientRead | null>(null);
+const diagnosticsGuard = createUnpackDiagnosticsGuard();
+// Invalidate immediately on close, including requests that finish before the
+// next Vue render. Opening another movie generates a new independent ticket.
+watch(
+  diagnosticsVisible,
+  (visible) => {
+    if (!visible) diagnosticsGuard.close();
+  },
+  { flush: 'sync' },
+);
+onBeforeUnmount(() => diagnosticsGuard.close());
 const executionLoading = ref(false);
 const itemCursor = ref<string | undefined>();
 const itemNextCursor = ref<string | null>(null);
@@ -1005,6 +1029,41 @@ async function retryItem(item: UnpackExecutionItem): Promise<void> {
   }
 }
 
+async function openItemDiagnostics(item: UnpackExecutionItem): Promise<void> {
+  const ticket = diagnosticsGuard.open(item.id);
+  diagnosticsVisible.value = true;
+  diagnosticsLoading.value = true;
+  liveClientLoading.value = false;
+  diagnosticsItemName.value = mediaTitle(item);
+  diagnostics.value = null;
+  liveClientState.value = null;
+  try {
+    const result = await getUnpackItemDiagnostics(item.id);
+    if (diagnosticsGuard.isCurrent(ticket)) diagnostics.value = result;
+  } catch (caught) {
+    if (diagnosticsGuard.isCurrent(ticket)) ElMessage.error(toApiProblem(caught).message);
+  } finally {
+    if (diagnosticsGuard.isCurrent(ticket)) diagnosticsLoading.value = false;
+  }
+}
+
+async function inspectLiveDownloader(): Promise<void> {
+  if (!diagnostics.value || liveClientLoading.value || !diagnosticsVisible.value) return;
+  const itemId = diagnostics.value.item_id;
+  const ticket = diagnosticsGuard.capture(itemId);
+  if (!ticket) return;
+  liveClientLoading.value = true;
+  liveClientState.value = null;
+  try {
+    const result = await getUnpackItemLiveClientState(itemId);
+    if (diagnosticsGuard.isCurrent(ticket)) liveClientState.value = result;
+  } catch (caught) {
+    if (diagnosticsGuard.isCurrent(ticket)) ElMessage.error(toApiProblem(caught).message);
+  } finally {
+    if (diagnosticsGuard.isCurrent(ticket)) liveClientLoading.value = false;
+  }
+}
+
 function itemCanDelete(item: UnpackExecutionItem): boolean {
   return (
     [
@@ -1721,6 +1780,148 @@ onMounted(() => {
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="diagnosticsVisible"
+      :title="'只读对账证据 · ' + diagnosticsItemName"
+      width="min(1040px, 96vw)"
+    >
+      <div v-loading="diagnosticsLoading">
+        <template v-if="diagnostics">
+          <el-alert
+            title="仅展示本系统保存的历史操作快照，未实时连接下载器，也未检查磁盘现状；请人工核对后处理。"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
+          <div class="metric-grid" style="margin: 14px 0">
+            <div>
+              <b>{{ unpackItemStatusLabel(diagnostics.status) }}</b
+              ><small>任务状态</small>
+            </div>
+            <div>
+              <b>{{ diagnostics.execution_stage || '—' }}</b
+              ><small>最后阶段</small>
+            </div>
+            <div>
+              <b>{{
+                diagnostics.requires_manual_reconciliation ? '需要人工对账' : '未标记强制对账'
+              }}</b>
+              <small>风险判定（仅历史记录）</small>
+            </div>
+          </div>
+          <el-alert
+            v-if="diagnostics.requires_manual_reconciliation"
+            title="此任务存在未解决的外部操作风险，必须人工对账；查看或查询不解除安全拦截。"
+            type="error"
+            :closable="false"
+            style="margin-bottom: 12px"
+          />
+          <el-alert
+            v-if="diagnostics.last_error_code"
+            :title="diagnostics.last_error_code"
+            :description="diagnostics.last_error_message || '暂无错误说明'"
+            type="error"
+            :closable="false"
+            style="margin-bottom: 12px"
+          />
+          <div style="margin: 12px 0">
+            <el-button :loading="liveClientLoading" @click="inspectLiveDownloader">
+              实时只读核验下载器（手动）
+            </el-button>
+            <small style="margin-left: 10px">仅执行一次查询；不修改种子、文件或流水</small>
+            <el-alert
+              v-if="liveClientState"
+              :title="
+                liveClientState.status === 'MATCHED'
+                  ? '本次查询：下载器种子归属匹配'
+                  : liveClientState.status === 'MISSING'
+                    ? '本次查询：下载器中未找到该种子'
+                    : liveClientState.status === 'OWNERSHIP_MISMATCH'
+                      ? '本次查询：种子归属冲突，需要人工检查'
+                      : liveClientState.status === 'NO_ADD_EVIDENCE'
+                        ? '没有已确认的 ADD 证据，未连接下载器'
+                        : liveClientState.status === 'UNRESOLVED_ADD'
+                          ? 'ADD 写入结果尚未确认，为安全起见未查询下载器'
+                          : '下载器当前状态未知，未获得可信结论'
+              "
+              :description="
+                liveClientState.status === 'MATCHED'
+                  ? `本次读取状态：${liveClientState.current_state || '—'}，进度 ${Math.round((liveClientState.progress || 0) * 100)}%；此结论不代表磁盘文件完整，也不解除人工对账。`
+                  : `诊断码：${liveClientState.error_code || '—'}；不能据此自动补种、清理或重试。`
+              "
+              :type="liveClientState.status === 'MATCHED' ? 'success' : 'warning'"
+              :closable="false"
+              style="margin-top: 10px"
+              show-icon
+            />
+          </div>
+          <div style="margin: 12px 0">
+            <b>人工核对建议（只读，不提供风险解除按钮）</b>
+            <ol style="padding-left: 22px; margin-top: 6px">
+              <li
+                v-for="(step, index) in unpackReconciliationGuidance(diagnostics, liveClientState)"
+                :key="index"
+                style="margin-bottom: 5px"
+              >
+                {{ step }}
+              </li>
+            </ol>
+          </div>
+          <el-table :data="diagnostics.operations" max-height="370" size="small" border>
+            <el-table-column
+              prop="operation_type"
+              label="操作类型"
+              min-width="225"
+              show-overflow-tooltip
+            />
+            <el-table-column label="流水状态" width="150">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'APPLIED' ? 'success' : 'danger'" size="small">
+                  {{ row.status }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="归属 / 目标" min-width="230" show-overflow-tooltip>
+              <template #default="{ row }">{{
+                row.downloader_id || row.target_path || '—'
+              }}</template>
+            </el-table-column>
+            <el-table-column
+              label="最后记录的状态 / 文件身份"
+              min-width="220"
+              show-overflow-tooltip
+            >
+              <template #default="{ row }">
+                {{ row.last_observed_state || row.recorded_file_type || '—' }}
+                <span v-if="row.recorded_inode !== null"> · inode {{ row.recorded_inode }}</span>
+                <span v-if="row.recorded_size !== null">
+                  · {{ formatBytes(row.recorded_size) }}</span
+                >
+              </template>
+            </el-table-column>
+            <el-table-column
+              prop="last_error_code"
+              label="流水错误码"
+              min-width="200"
+              show-overflow-tooltip
+            />
+          </el-table>
+          <el-alert
+            v-if="diagnostics.operations_truncated"
+            title="操作记录超过 200 条：仅展示前 200 条，不能凭此列表认定所有操作已完成对账。"
+            type="warning"
+            :closable="false"
+            style="margin-top: 12px"
+          />
+          <p style="margin-top: 12px; opacity: 0.8">
+            除上方手动查询返回的下载器单次状态（如有）外，其余均为历史快照；目标媒体文件当前是否完整始终未核验。
+            本页面没有重试、停止、移除或修复操作。
+          </p>
+        </template>
+      </div>
+      <template #footer><el-button @click="diagnosticsVisible = false">关闭</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="directoryPickerVisible" title="选择目录" width="min(850px, 95vw)">
       <div class="tree-picker">
         <el-tree
@@ -1867,14 +2068,28 @@ onMounted(() => {
               }}</el-tag></template
             ></el-table-column
           >
-          <el-table-column label="错误说明" min-width="210" show-overflow-tooltip
-            ><template #default="{ row }">{{
-              row.last_error_message || '—'
-            }}</template></el-table-column
-          >
-          <el-table-column label="操作" width="242" fixed="right">
+          <el-table-column label="错误说明" min-width="300" show-overflow-tooltip>
+            <template #default="{ row }">
+              <el-tooltip
+                v-if="unpackItemExternalRiskLabel(row)"
+                :content="unpackItemExternalRiskLabel(row) || ''"
+                placement="top"
+              >
+                <el-tag type="danger" size="small">需人工对账 · 禁止重试</el-tag>
+              </el-tooltip>
+              <span>{{ row.last_error_message || '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="310" fixed="right">
             <template #default="{ row }">
               <div class="task-row-actions">
+                <el-button
+                  v-if="row.has_external_operations || unpackItemExternalRiskLabel(row)"
+                  link
+                  type="primary"
+                  @click="openItemDiagnostics(row)"
+                  >对账详情</el-button
+                >
                 <el-button v-if="itemCanReview(row)" link type="primary" @click="openReview(row)"
                   >审核</el-button
                 >

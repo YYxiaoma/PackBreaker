@@ -4666,6 +4666,100 @@
         "title": "UnpackItemActionResponse",
         "type": "object"
       },
+      "UnpackItemDiagnosticsResponse": {
+        "properties": {
+          "downloader_state_live_checked": {
+            "title": "Downloader State Live Checked",
+            "type": "boolean"
+          },
+          "execution_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Stage"
+          },
+          "filesystem_state_live_checked": {
+            "title": "Filesystem State Live Checked",
+            "type": "boolean"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "item_version": {
+            "title": "Item Version",
+            "type": "integer"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "last_error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Message"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/UnpackOperationDiagnosticResponse"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "operations_truncated": {
+            "title": "Operations Truncated",
+            "type": "boolean"
+          },
+          "reconciliation_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reconciliation Reasons",
+            "type": "array"
+          },
+          "requires_manual_reconciliation": {
+            "title": "Requires Manual Reconciliation",
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/UnpackItemStatus"
+          }
+        },
+        "required": [
+          "item_id",
+          "status",
+          "item_version",
+          "execution_stage",
+          "last_error_code",
+          "last_error_message",
+          "requires_manual_reconciliation",
+          "reconciliation_reasons",
+          "downloader_state_live_checked",
+          "filesystem_state_live_checked",
+          "operations_truncated",
+          "operations"
+        ],
+        "title": "UnpackItemDiagnosticsResponse",
+        "type": "object"
+      },
       "UnpackItemStatus": {
         "enum": [
           "DISCOVERED",
@@ -4691,6 +4785,103 @@
         ],
         "title": "UnpackItemStatus",
         "type": "string"
+      },
+      "UnpackLiveClientReadResponse": {
+        "properties": {
+          "client_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Kind"
+          },
+          "current_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current State"
+          },
+          "downloader_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloader Id"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "ownership_verified": {
+            "default": false,
+            "title": "Ownership Verified",
+            "type": "boolean"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress"
+          },
+          "save_path_matches": {
+            "default": false,
+            "title": "Save Path Matches",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "NO_ADD_EVIDENCE",
+              "UNRESOLVED_ADD",
+              "MATCHED",
+              "MISSING",
+              "OWNERSHIP_MISMATCH",
+              "UNKNOWN"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "torrent_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrent Hash"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "UnpackLiveClientReadResponse",
+        "type": "object"
       },
       "UnpackMatchCandidateListResponse": {
         "properties": {
@@ -4870,6 +5061,138 @@
           "created_at"
         ],
         "title": "UnpackMatchCandidateResponse",
+        "type": "object"
+      },
+      "UnpackOperationDiagnosticResponse": {
+        "properties": {
+          "downloader_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloader Id"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "last_observed_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Observed State"
+          },
+          "operation_type": {
+            "title": "Operation Type",
+            "type": "string"
+          },
+          "recorded_device": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded Device"
+          },
+          "recorded_file_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded File Type"
+          },
+          "recorded_inode": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded Inode"
+          },
+          "recorded_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded Size"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "target_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Path"
+          },
+          "torrent_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrent Hash"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_type",
+          "status",
+          "last_error_code",
+          "downloader_id",
+          "torrent_hash",
+          "target_path",
+          "last_observed_state",
+          "recorded_file_type",
+          "recorded_device",
+          "recorded_inode",
+          "recorded_size",
+          "updated_at"
+        ],
+        "title": "UnpackOperationDiagnosticResponse",
         "type": "object"
       },
       "UnpackRetryFailedMatchesRequest": {
@@ -12301,6 +12624,123 @@
           }
         },
         "summary": "List Unpack Item Candidates",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/items/{item_id}/diagnostics": {
+      "get": {
+        "operationId": "get_unpack_item_diagnostics_api_v1_unpack_items__item_id__diagnostics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackItemDiagnosticsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Unpack Item Diagnostics",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/items/{item_id}/diagnostics/live": {
+      "get": {
+        "description": "One explicitly requested GET-only client probe; no automatic reconciliation.",
+        "operationId": "read_unpack_item_downloader_state_api_v1_unpack_items__item_id__diagnostics_live_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackLiveClientReadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Unpack Item Downloader State",
         "tags": [
           "unpack-v2"
         ]

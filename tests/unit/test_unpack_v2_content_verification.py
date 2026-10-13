@@ -177,7 +177,7 @@ def _service(
                 definition_id="definition-1",
                 trigger="MANUAL",
                 status=UnpackExecutionStatus.CONTENT_VERIFYING.value,
-                config_snapshot={},
+                config_snapshot={"site_ids": ["site-config-1"]},
                 discovery_complete=True,
                 total_count=1,
                 matched_auto_count=1,
@@ -262,7 +262,10 @@ def _add_auto_alternatives(
         execution = session.get(UnpackExecution, "execution-1")
         assert item is not None and execution is not None
         item.match_origin = "AUTO"
-        execution.config_snapshot = {"matching": {"auto_match_threshold_bps": threshold}}
+        execution.config_snapshot = {
+            **execution.config_snapshot,
+            "matching": {"auto_match_threshold_bps": threshold},
+        }
         for index in range(count):
             session.add(
                 UnpackMatchCandidate(
@@ -290,6 +293,50 @@ def _add_auto_alternatives(
                 )
             )
         session.commit()
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code"),
+    [
+        ("unselected_site", "UNPACK_VERIFY_CANDIDATE_SITE_NOT_SCANNED"),
+        ("reference_site", "UNPACK_VERIFY_CANDIDATE_REF_INVALID"),
+        ("reference_torrent", "UNPACK_VERIFY_CANDIDATE_REF_INVALID"),
+    ],
+)
+def test_selected_candidate_identity_is_frozen_before_torrent_fetch(
+    tmp_path: Path, case: str, expected_code: str
+) -> None:
+    """A selected row must not authorize a different site or torrent fetch."""
+    source = b"abcdefgh"
+    service, factory, _path = _service(
+        tmp_path, source_content=source, torrent=_v1_single("movie.mkv", source)
+    )
+    with factory() as session:
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert candidate is not None
+        if case == "unselected_site":
+            candidate.site_id = "site-config-unselected"
+        else:
+            raw_ref = dict(candidate.raw_ref)
+            if case == "reference_site":
+                raw_ref["site_config_id"] = "site-config-unselected"
+            else:
+                raw_ref["torrent_id"] = "another-torrent"
+            candidate.raw_ref = raw_ref
+        session.commit()
+
+    report = asyncio.run(service.verify_next_batch("execution-1", limit=1))
+
+    assert report.processed_count == 0
+    provider = cast(_FakeSiteProvider, service._site_provider)
+    assert provider._adapter.fetched_ids == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert item is not None and candidate is not None
+        assert item.status == UnpackItemStatus.REVIEW_REQUIRED.value
+        assert item.last_error_code == expected_code
+        assert candidate.verification_status == UnpackCandidateVerificationStatus.NOT_CHECKED.value
 
 
 def test_content_mismatch_automatically_verifies_next_safe_candidate(tmp_path: Path) -> None:
@@ -937,9 +984,12 @@ def test_manual_match_with_stale_candidate_becomes_match_error(tmp_path: Path) -
         assert item.last_error_code == "UNPACK_VERIFY_CANDIDATE_STALE"
 
 
-@pytest.mark.parametrize("change_verified_sibling", [False, True])
+@pytest.mark.parametrize(
+    ("change_verified_sibling", "late_target_drift"),
+    ((False, None), (True, None), (False, "remove"), (False, "replace"), (False, "mutate")),
+)
 def test_multifile_verified_content_plan_and_copy_materialization_bridge(
-    tmp_path: Path, change_verified_sibling: bool
+    tmp_path: Path, change_verified_sibling: bool, late_target_drift: str | None
 ) -> None:
     """Production verifier -> planner -> filesystem gateway on one isolated movie pack.
 
@@ -1137,7 +1187,28 @@ def test_multifile_verified_content_plan_and_copy_materialization_bridge(
 
     client = _FakeQb(factory, original)
     binding = replace(binding, adapter=cast(QbittorrentWriteAdapter, client))
-    seeding = UnpackSeedingService(factory, provider, _BindingProvider())
+    seeding = UnpackSeedingService(factory, provider, _BindingProvider(), path_scope=scope)
+    if late_target_drift is not None:
+        copied = output / "Pack" / "part-two.mkv"
+        if late_target_drift == "remove":
+            copied.unlink()
+        elif late_target_drift == "replace":
+            copied.unlink()
+            copied.write_bytes(movie_data["part-two.mkv"])
+        else:
+            copied.write_bytes(b"12345678")  # Same inode and length; changed content/mtime.
+        failure = asyncio.run(seeding.advance_next_batch("execution-1"))
+        assert failure.error_count == 1
+        assert client.calls == []
+        with factory() as session:
+            item = session.get(UnpackExecutionItem, "item-1")
+            assert item is not None
+            assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+            assert item.last_error_code == "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT"
+            records = session.scalars(select(UnpackExternalOperationJournal)).all()
+            assert len(records) == 4
+        return
+
     for _ in range(7):
         seeding_result = asyncio.run(seeding.advance_next_batch("execution-1"))
         if seeding_result.completed_count == 1:

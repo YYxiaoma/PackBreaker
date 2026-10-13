@@ -14,6 +14,40 @@ export type UnpackDefinition = components['schemas']['UnpackDefinitionResponse']
 export type UnpackDefinitionActionResult = components['schemas']['UnpackDefinitionActionResponse'];
 export type UnpackExecution = components['schemas']['UnpackExecutionResponse'];
 export type UnpackExecutionItem = components['schemas']['UnpackExecutionItemResponse'];
+
+/** Recorded journal evidence only; this endpoint performs no live client or disk query. */
+export interface UnpackOperationDiagnostic {
+  operation_type: string;
+  status: string;
+  last_error_code: string | null;
+  downloader_id: string | null;
+  torrent_hash: string | null;
+  target_path: string | null;
+  last_observed_state: string | null;
+  recorded_file_type: string | null;
+  recorded_device: number | null;
+  recorded_inode: number | null;
+  recorded_size: number | null;
+  updated_at: string;
+}
+
+export interface UnpackItemDiagnostics {
+  item_id: string;
+  status: UnpackItemStatus;
+  item_version: number;
+  execution_stage: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  requires_manual_reconciliation: boolean;
+  reconciliation_reasons: string[];
+  downloader_state_live_checked: boolean;
+  filesystem_state_live_checked: boolean;
+  operations_truncated: boolean;
+  operations: UnpackOperationDiagnostic[];
+}
+
+export type UnpackLiveClientRead = components['schemas']['UnpackLiveClientReadResponse'];
+
 export type UnpackExecutionStatus = components['schemas']['UnpackExecutionStatus'];
 export type UnpackItemStatus = components['schemas']['UnpackItemStatus'];
 export type UnpackMatchCandidate = components['schemas']['UnpackMatchCandidateResponse'];
@@ -274,6 +308,29 @@ export async function listUnpackExecutionItems(
         ...(options.q ? { q: options.q } : {}),
       },
     });
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+/** Explicit one-shot read-only download-client RPC; no background polling. */
+export async function getUnpackItemLiveClientState(itemId: string): Promise<UnpackLiveClientRead> {
+  try {
+    const response = await apiClient.get<UnpackLiveClientRead>(
+      `/unpack/items/${requiredId(itemId, 'itemId')}/diagnostics/live`,
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function getUnpackItemDiagnostics(itemId: string): Promise<UnpackItemDiagnostics> {
+  try {
+    const response = await apiClient.get<UnpackItemDiagnostics>(
+      `/unpack/items/${requiredId(itemId, 'itemId')}/diagnostics`,
+    );
     return response.data;
   } catch (error) {
     throw toApiProblem(error);

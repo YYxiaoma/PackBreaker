@@ -192,12 +192,13 @@ def _fixture(
                 trigger="MANUAL",
                 status=UnpackExecutionStatus.CONTENT_VERIFYING.value,
                 config_snapshot={
+                    "site_ids": ["site-config-1"],
                     "output_config": {
                         "output_directory": output.as_posix(),
                         "storage_mode": "HARDLINK",
                         "conflict_policy": "VERIFY_REUSE_OR_STOP",
                         "target_downloader_id": "downloader-target",
-                    }
+                    },
                 },
                 discovery_complete=True,
                 total_count=1,
@@ -305,6 +306,84 @@ def _fixture(
         path_scope=AuthorizedPathScope.legacy_only(legacy_data_root=data_root),
     )
     return service, factory, source, output, site
+
+
+@pytest.mark.parametrize("tamper", ("unselected_site", "reference_site", "reference_torrent"))
+def test_planner_rejects_changed_candidate_identity_before_fetch(
+    tmp_path: Path, tamper: str
+) -> None:
+    service, factory, _source, _output, site = _fixture(tmp_path)
+    with factory() as session:
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert candidate is not None
+        if tamper == "unselected_site":
+            candidate.site_id = "site-not-in-execution"
+        else:
+            raw_ref = dict(candidate.raw_ref)
+            if tamper == "reference_site":
+                raw_ref["site_config_id"] = "another-site"
+            else:
+                raw_ref["torrent_id"] = "another-torrent"
+            candidate.raw_ref = raw_ref
+        session.commit()
+
+    report = asyncio.run(service.plan_next_batch("execution-1"))
+
+    assert report.error_count == 1
+    assert site.fetch_calls == []
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+        assert item.execution_plan is None
+
+
+@pytest.mark.parametrize("mutation", ("version", "candidate", "generation"))
+def test_planner_site_fetch_stale_error_must_not_fail_newer_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """A stale planner must not fail the item after its candidate was changed."""
+    service, factory, _source, _output, site = _fixture(tmp_path)
+    original_fetch = site.fetch_torrent
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_fetch(torrent_id: str) -> TorrentPayload:
+        entered.set()
+        await release.wait()
+        return await original_fetch(torrent_id)
+
+    monkeypatch.setattr(site, "fetch_torrent", blocked_fetch)
+
+    async def interleave() -> None:
+        worker = asyncio.create_task(service.plan_next_batch("execution-1"))
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        with factory() as session:
+            item = session.get(UnpackExecutionItem, "item-1")
+            assert item is not None
+            if mutation == "version":
+                item.version += 1
+            elif mutation == "candidate":
+                item.selected_candidate_id = "new-selected-candidate"
+            else:
+                item.candidate_generation += 1
+            session.commit()
+        release.set()
+        await worker
+
+    asyncio.run(interleave())
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.CONTENT_VERIFIED.value
+        assert item.execution_plan is None
+        assert item.last_error_code is None
+        if mutation == "version":
+            assert item.version == 5
+        elif mutation == "candidate":
+            assert item.selected_candidate_id == "new-selected-candidate"
+        else:
+            assert item.candidate_generation == 2
 
 
 def test_planner_freezes_verified_mapping_and_qb_hardlink_can_skip_client_check(

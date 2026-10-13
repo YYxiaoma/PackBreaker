@@ -16,6 +16,10 @@ from backend.app.application.downloaders import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
+from backend.app.application.unpack_materialization import (
+    assert_materialization_journals_applied,
+    assert_materialization_targets_current,
+)
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.unpack import UnpackExecutionStatus, UnpackItemStatus
 from backend.app.domain.unpack_execution_plan import (
@@ -31,6 +35,7 @@ from backend.app.infrastructure.adapters.downloaders import (
     TransmissionTorrentState,
 )
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
+from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.database import begin_immediate_write
 from backend.app.infrastructure.persistence.models import (
     UnpackExecution,
@@ -40,6 +45,7 @@ from backend.app.infrastructure.persistence.models import (
     new_uuid,
     utc_now,
 )
+from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 from backend.app.infrastructure.torrent_parser import parse_torrent
 
 _SCHEMA_VERSION = "packbreaker-unpack-seeding-v1"
@@ -49,6 +55,17 @@ _QB_START = "UNPACK_EXEC_QBITTORRENT_START"
 _TR_ADD = "UNPACK_EXEC_TRANSMISSION_ADD"
 _TR_VERIFY = "UNPACK_EXEC_TRANSMISSION_VERIFY"
 _TR_START = "UNPACK_EXEC_TRANSMISSION_START"
+
+# An APPLIED journal is already backed by a confirmed external observation.
+# An older worker's late RPC failure cannot erase that proof. New externally
+# observed contradictions must still force manual reconciliation.
+_APPLIED_STATE_DRIFT_CODES = frozenset(
+    {
+        "UNPACK_SEED_APPLIED_TORRENT_MISSING",
+        "UNPACK_SEED_VERIFIED_STATE_CHANGED",
+        "UNPACK_SEED_STARTED_STATE_CHANGED",
+    }
+)
 
 
 class UnpackSeedingSiteProvider(Protocol):
@@ -70,6 +87,21 @@ class UnpackSeedingReport:
     completed_count: int
     error_count: int
     execution_status: UnpackExecutionStatus
+
+
+@dataclass(frozen=True, slots=True)
+class UnpackLiveClientReadView:
+    """Single read-only downloader observation; never automatic reconciliation."""
+
+    status: str
+    downloader_id: str | None = None
+    client_kind: str | None = None
+    torrent_hash: str | None = None
+    current_state: str | None = None
+    progress: float | None = None
+    ownership_verified: bool = False
+    save_path_matches: bool = False
+    error_code: str | None = None
 
 
 @dataclass(slots=True)
@@ -113,6 +145,7 @@ class UnpackSeedingService:
         site_provider: UnpackSeedingSiteProvider,
         downloader_provider: UnpackSeedingDownloaderProvider,
         *,
+        path_scope: AuthorizedPathScope,
         fetch_timeout_seconds: float = 30.0,
     ) -> None:
         if fetch_timeout_seconds <= 0:
@@ -120,7 +153,192 @@ class UnpackSeedingService:
         self._session_factory = session_factory
         self._site_provider = site_provider
         self._downloader_provider = downloader_provider
+        self._filesystem = SafeFilesystemGateway(path_scope.legacy_data_root, path_scope=path_scope)
         self._fetch_timeout_seconds = fetch_timeout_seconds
+
+    async def inspect_client_readonly(self, item_id: str) -> UnpackLiveClientReadView:
+        """Explicit, bounded, GET-only qB/TR status probe without journal mutation.
+
+        Trust neither the item stage nor raw journal target as authorization to
+        adopt a torrent. Only a frozen execution plan and a confirmed,
+        identity-bound ADD journal can select the client and torrent hashes.
+        """
+        with self._session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            if item is None:
+                raise self._item_not_found()
+            item_version = item.version
+            item_candidate = item.selected_candidate_id
+            if item.execution_plan is None or item.execution_plan_digest is None:
+                return UnpackLiveClientReadView(status="NO_ADD_EVIDENCE")
+            try:
+                plan = unpack_execution_plan_from_payload(item.execution_plan)
+            except ValueError:
+                return UnpackLiveClientReadView(status="UNKNOWN", error_code="PLAN_INVALID")
+            if (
+                not plan.ready
+                or plan.item_id != item.id
+                or plan.plan_digest != item.execution_plan_digest
+                or plan.candidate_id != item.selected_candidate_id
+                or plan.candidate_generation != item.candidate_generation
+            ):
+                return UnpackLiveClientReadView(status="UNKNOWN", error_code="PLAN_CHANGED")
+            qb_key = _operation_key_values(item.id, plan, _QB_ADD)
+            tr_key = _operation_key_values(item.id, plan, _TR_ADD)
+            rows = session.scalars(
+                select(UnpackExternalOperationJournal).where(
+                    UnpackExternalOperationJournal.item_id == item.id,
+                    UnpackExternalOperationJournal.idempotency_key.in_((qb_key, tr_key)),
+                )
+            ).all()
+            if not rows:
+                return UnpackLiveClientReadView(status="NO_ADD_EVIDENCE")
+            if len(rows) != 1:
+                # Both qB and TR ADD intents for the same frozen plan are a
+                # conflicting history, not the absence of external evidence.
+                # Do not select one arbitrarily or call either client.
+                return UnpackLiveClientReadView(status="UNKNOWN", error_code="ADD_PROOF_AMBIGUOUS")
+            journal = rows[0]
+            intent = journal.intent if isinstance(journal.intent, dict) else {}
+            after = journal.after_snapshot if isinstance(journal.after_snapshot, dict) else {}
+            journal_id = journal.id
+            frozen_intent = dict(intent)
+            frozen_after = dict(after)
+            frozen_target = dict(journal.target)
+            raw_hashes = intent.get("expected_hashes")
+            expected_hashes = (
+                tuple(raw_hashes)
+                if isinstance(raw_hashes, list)
+                and 1 <= len(raw_hashes) <= 2
+                and all(
+                    isinstance(value, str)
+                    and len(value) in (40, 64)
+                    and all(char in "0123456789abcdef" for char in value)
+                    for value in raw_hashes
+                )
+                else ()
+            )
+            ownership_tag = (
+                "packbreaker-unpack-"
+                + hashlib.sha256(f"{item.id}:{plan.plan_digest}".encode()).hexdigest()[:16]
+            )
+            if journal.status in {
+                OperationStatus.INTENT_RECORDED.value,
+                OperationStatus.RECONCILE_REQUIRED.value,
+            }:
+                # An external ADD may have reached the client; this is NOT
+                # equivalent to a torrent never being added. Without APPLIED
+                # proof we also must not probe/adopt by hash alone.
+                return UnpackLiveClientReadView(
+                    status="UNRESOLVED_ADD",
+                    error_code=(
+                        "ADD_RECONCILE_REQUIRED"
+                        if journal.status == OperationStatus.RECONCILE_REQUIRED.value
+                        else "ADD_RESULT_UNCONFIRMED"
+                    ),
+                )
+            if (
+                journal.status != OperationStatus.APPLIED.value
+                or journal.last_error_code is not None
+                or journal.operation_type not in (_QB_ADD, _TR_ADD)
+                or journal.idempotency_key
+                != (qb_key if journal.operation_type == _QB_ADD else tr_key)
+                or journal.target
+                != {
+                    "downloader_id": plan.target_downloader_id,
+                    "remote_save_path": plan.target_remote_save_path,
+                }
+                or intent.get("schema_version") != _SCHEMA_VERSION
+                or intent.get("plan_digest") != plan.plan_digest
+                or intent.get("ownership_tag") != ownership_tag
+                or not expected_hashes
+                or after.get("torrent_hash") not in expected_hashes
+                or after.get("save_path") != plan.target_remote_save_path
+                or after.get("ownership_tag") != ownership_tag
+            ):
+                return UnpackLiveClientReadView(status="NO_ADD_EVIDENCE")
+            downloader_id = plan.target_downloader_id
+            expected_version = plan.target_downloader_version
+            expected_binding = plan.target_downloader_binding_digest
+            save_path = plan.target_remote_save_path
+            expected_kind = "qb" if journal.operation_type == _QB_ADD else "transmission"
+        # No transaction is held across the external read; no operation intent
+        # is created and no downloader write method is accessible from here.
+        try:
+            binding = self._downloader_provider.write_binding(downloader_id)
+            if (
+                binding.downloader_version != expected_version
+                or binding.binding_digest != expected_binding
+                or (expected_kind == "qb") != isinstance(binding, QbittorrentWriteBinding)
+                or binding.remote_save_path(Path(plan.output_directory)) != save_path
+            ):
+                return UnpackLiveClientReadView(status="UNKNOWN", error_code="BINDING_CHANGED")
+            async with asyncio.timeout(12):
+                observed = await binding.adapter.get_torrents(expected_hashes)
+        except (ApplicationError, DownloaderAdapterError, TimeoutError, ValueError, OSError):
+            return UnpackLiveClientReadView(
+                status="UNKNOWN", error_code="DOWNLOADER_READ_UNAVAILABLE"
+            )
+        with self._session_factory() as session:
+            current = session.get(UnpackExecutionItem, item_id)
+            if (
+                current is None
+                or current.version != item_version
+                or current.selected_candidate_id != item_candidate
+                or current.execution_plan_digest != plan.plan_digest
+            ):
+                return UnpackLiveClientReadView(status="UNKNOWN", error_code="ITEM_CHANGED")
+            # The ADD evidence can be revoked while the remote GET is awaiting.
+            # Never label a result MATCHED when the frozen proof is stale.
+            current_journal = session.get(UnpackExternalOperationJournal, journal_id)
+            if (
+                current_journal is None
+                or current_journal.status != OperationStatus.APPLIED.value
+                or current_journal.last_error_code is not None
+                or current_journal.intent != frozen_intent
+                or current_journal.target != frozen_target
+                or current_journal.after_snapshot != frozen_after
+            ):
+                return UnpackLiveClientReadView(status="UNKNOWN", error_code="JOURNAL_CHANGED")
+        if not observed:
+            return UnpackLiveClientReadView(
+                status="MISSING", downloader_id=downloader_id, client_kind=expected_kind
+            )
+        if len(observed) != 1:
+            return UnpackLiveClientReadView(
+                status="OWNERSHIP_MISMATCH", downloader_id=downloader_id, client_kind=expected_kind
+            )
+        state = observed[0]
+        kind_matches = (
+            isinstance(state, QbittorrentTorrentState)
+            if expected_kind == "qb"
+            else isinstance(state, TransmissionTorrentState)
+        )
+        saved_matches = _save_path(state) == save_path
+        owned = ownership_tag in _ownership_values(state)
+        if not (
+            kind_matches and _torrent_hash(state) in expected_hashes and saved_matches and owned
+        ):
+            return UnpackLiveClientReadView(
+                status="OWNERSHIP_MISMATCH",
+                save_path_matches=saved_matches,
+                downloader_id=downloader_id,
+                client_kind=expected_kind,
+            )
+        return UnpackLiveClientReadView(
+            status="MATCHED",
+            torrent_hash=_torrent_hash(state),
+            current_state=(
+                state.state if isinstance(state, QbittorrentTorrentState) else str(state.status)
+            ),
+            progress=(
+                state.progress if isinstance(state, QbittorrentTorrentState) else state.percent_done
+            ),
+            ownership_verified=True,
+            save_path_matches=True,
+            downloader_id=downloader_id,
+            client_kind=expected_kind,
+        )
 
     def list_seedable_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
         if limit < 1 or limit > 500:
@@ -184,7 +402,7 @@ class UnpackSeedingService:
             raise self._invalid("最终辅种批次必须位于 1 到 100 之间")
         item_rows = self._list_item_ids(execution_id, limit=limit)
         processed = 0
-        for item_id, initial_version in item_rows:
+        for item_id, initial_version, initial_candidate_id in item_rows:
             prepared: _Prepared | None = None
             try:
                 prepared = await self._prepare(item_id)
@@ -208,11 +426,16 @@ class UnpackSeedingService:
                     expected_version=(
                         prepared.item_version if prepared is not None else initial_version
                     ),
+                    expected_candidate_id=(
+                        prepared.candidate_id if prepared is not None else initial_candidate_id
+                    ),
                 )
             processed += 1
         return self._report(execution_id, processed_count=processed)
 
-    def _list_item_ids(self, execution_id: str, *, limit: int) -> tuple[tuple[str, int], ...]:
+    def _list_item_ids(
+        self, execution_id: str, *, limit: int
+    ) -> tuple[tuple[str, int, str | None], ...]:
         with self._session_factory() as session:
             execution = session.get(UnpackExecution, execution_id)
             if execution is None:
@@ -231,7 +454,7 @@ class UnpackSeedingService:
                 .order_by(UnpackExecutionItem.id)
                 .limit(limit * 4)
             ).all()
-            ids: list[tuple[str, int]] = []
+            ids: list[tuple[str, int, str | None]] = []
             for item in rows:
                 stage = dict(item.execution_state or {}).get("stage")
                 if stage not in {
@@ -242,7 +465,7 @@ class UnpackSeedingService:
                     "STARTING",
                 }:
                     continue
-                ids.append((item.id, item.version))
+                ids.append((item.id, item.version, item.selected_candidate_id))
                 if len(ids) == limit:
                     break
             return tuple(ids)
@@ -280,6 +503,11 @@ class UnpackSeedingService:
                 or not plan.ready
             ):
                 raise self._conflict("冻结执行计划与当前影片项绑定不一致")
+            # Never authorize ADD, VERIFY, START or post-restart resume based
+            # solely on a FILES_MATERIALIZED stage flag. The filesystem
+            # operation ledger must still prove every frozen action.
+            assert_materialization_journals_applied(session, item.id, plan)
+            assert_materialization_targets_current(self._filesystem, session, item.id, plan)
             candidate = session.get(UnpackMatchCandidate, plan.candidate_id)
             if (
                 candidate is None
@@ -288,12 +516,25 @@ class UnpackSeedingService:
                 or candidate.metainfo_digest != plan.metainfo_digest
             ):
                 raise self._conflict("候选证据与冻结执行计划不一致")
+            execution = session.get(UnpackExecution, item.execution_id)
+            if execution is None:
+                raise self._not_found()
+            frozen_site_ids = execution.config_snapshot.get("site_ids")
+            if (
+                not isinstance(frozen_site_ids, list)
+                or any(not isinstance(site_id, str) for site_id in frozen_site_ids)
+                or candidate.site_id not in frozen_site_ids
+            ):
+                raise self._conflict("候选站点不属于本次执行冻结的扫描范围")
+
             raw_ref = dict(candidate.raw_ref)
             version = raw_ref.get("site_config_version")
             adapter_site_id = raw_ref.get("adapter_site_id")
             torrent_id = raw_ref.get("torrent_id")
             if (
-                isinstance(version, bool)
+                raw_ref.get("site_config_id") != candidate.site_id
+                or torrent_id != candidate.candidate_key
+                or isinstance(version, bool)
                 or not isinstance(version, int)
                 or version < 1
                 or not isinstance(adapter_site_id, str)
@@ -446,6 +687,15 @@ class UnpackSeedingService:
             state = await self._ensure_verified(prepared)
             if not _verification_complete(state):
                 return
+            operation_type = (
+                _QB_VERIFY if isinstance(prepared.binding, QbittorrentWriteBinding) else _TR_VERIFY
+            )
+            verified_journal = self._load_by_key(_operation_key(prepared, operation_type))
+            if verified_journal is None or verified_journal.status != OperationStatus.APPLIED.value:
+                # A 100% client read is not proof that this RECHECK request
+                # ever ran, especially if it was already 100% before POST.
+                return
+            self._require_applied_verify(prepared)
             self._set_stage(
                 prepared,
                 "CLIENT_VERIFIED",
@@ -621,7 +871,7 @@ class UnpackSeedingService:
                     detail="add intent 建立前已存在同 hash 任务，PackBreaker 不会认领外部 torrent",
                 )
             journal, created = self._record_intent(
-                prepared.item_id,
+                prepared,
                 operation_type,
                 key=key,
                 target=target,
@@ -783,7 +1033,7 @@ class UnpackSeedingService:
             if _checking(state):
                 return state
             journal, created = self._record_intent(
-                prepared.item_id,
+                prepared,
                 operation_type,
                 key=key,
                 target=target,
@@ -822,6 +1072,20 @@ class UnpackSeedingService:
                     )
                     return state
                 if _verification_complete(state):
+                    before = (
+                        journal.before_snapshot if isinstance(journal.before_snapshot, dict) else {}
+                    )
+                    if (
+                        is_qb
+                        and before.get("verification_complete") is True
+                        and previous.get("checking_observed") is not True
+                    ):
+                        # With 100% both before and after POST, no observable
+                        # evidence proves the client actually ran RECHECK.
+                        if _recheck_grace_active(previous):
+                            return state
+                        self._mark_reconcile(journal.id, "UNPACK_SEED_RECHECK_PHASE_UNOBSERVED")
+                        raise self._reconcile_required("未观察到的客户端校验阶段")
                     self._mark_applied(
                         journal.id,
                         {
@@ -836,18 +1100,8 @@ class UnpackSeedingService:
                         # qB 5.2.x acknowledges RECHECK before transitioning
                         # from stoppedDL to checkingDL. A stopped 0% read is
                         # not proof that RECHECK finished or even began.
-                        accepted_at = previous.get("recheck_accepted_at")
-                        if isinstance(accepted_at, str):
-                            try:
-                                parsed = datetime.fromisoformat(accepted_at)
-                            except ValueError:
-                                parsed = None
-                            if (
-                                parsed is not None
-                                and parsed.tzinfo is not None
-                                and datetime.now(UTC) - parsed <= timedelta(seconds=120)
-                            ):
-                                return state
+                        if _recheck_grace_active(previous):
+                            return state
                         self._mark_reconcile(journal.id, "UNPACK_SEED_RECHECK_PHASE_UNOBSERVED")
                         raise self._reconcile_required("未观察到的客户端校验阶段")
                     self._mark_applied(
@@ -921,7 +1175,11 @@ class UnpackSeedingService:
                 "recheck_accepted_at": utc_now().isoformat(),
             },
         )
-        if _verification_complete(current):
+        if _verification_complete(current) and not (
+            is_qb and _verification_complete(state) and not _checking(current)
+        ):
+            # For an already-complete qB torrent, POST acceptance followed
+            # immediately by the same 100% state is not verification proof.
             self._mark_applied(
                 journal.id,
                 {
@@ -1013,7 +1271,7 @@ class UnpackSeedingService:
         journal = self._load_by_key(key)
         if journal is None:
             journal, created = self._record_intent(
-                prepared.item_id,
+                prepared,
                 operation_type,
                 key=key,
                 target=target,
@@ -1152,11 +1410,14 @@ class UnpackSeedingService:
             if item is None:
                 raise self._item_not_found()
             if (
-                item.execution_plan_digest != prepared.plan.plan_digest
+                item.status
+                not in {UnpackItemStatus.EXECUTING.value, UnpackItemStatus.CLIENT_VERIFYING.value}
+                or item.version != prepared.item_version
+                or item.execution_plan_digest != prepared.plan.plan_digest
                 or item.selected_candidate_id != prepared.candidate_id
                 or item.candidate_generation != prepared.generation
             ):
-                raise self._conflict("最终辅种期间 item/plan/candidate 已变化")
+                raise _StaleSeedingCheckpoint()
             stage = dict(item.execution_state or {}).get("stage")
             if not isinstance(stage, str):
                 raise self._conflict("影片项缺少执行 checkpoint")
@@ -1176,11 +1437,12 @@ class UnpackSeedingService:
             if item is None:
                 raise self._item_not_found()
             if (
-                item.execution_plan_digest != prepared.plan.plan_digest
+                item.version != prepared.item_version
+                or item.execution_plan_digest != prepared.plan.plan_digest
                 or item.selected_candidate_id != prepared.candidate_id
                 or item.candidate_generation != prepared.generation
             ):
-                raise self._conflict("写入最终辅种 checkpoint 时 item 已变化")
+                raise _StaleSeedingCheckpoint()
             checkpoint = dict(item.execution_state or {})
             predecessors = {
                 "CLIENT_VERIFYING": {"FILES_MATERIALIZED": {UnpackItemStatus.EXECUTING.value}},
@@ -1233,11 +1495,12 @@ class UnpackSeedingService:
             if item is None or execution is None:
                 raise self._conflict("完成最终辅种时 item/execution 已不存在")
             if (
-                item.execution_plan_digest != prepared.plan.plan_digest
+                item.version != prepared.item_version
+                or item.execution_plan_digest != prepared.plan.plan_digest
                 or item.selected_candidate_id != prepared.candidate_id
                 or item.candidate_generation != prepared.generation
             ):
-                raise self._conflict("完成最终辅种时 item 已变化")
+                raise _StaleSeedingCheckpoint()
             checkpoint = dict(item.execution_state or {})
             if (
                 item.status != UnpackItemStatus.EXECUTING.value
@@ -1247,6 +1510,15 @@ class UnpackSeedingService:
                 or checkpoint.get("ownership_tag") != prepared.ownership_tag
             ):
                 raise _StaleSeedingCheckpoint()
+            # A target or its journal can change after START's last RPC,
+            # before COMPLETED is persisted. Recheck current filesystem and
+            # the frozen materialization ledger at the final commit boundary.
+            # A failed check leaves the already-started torrent for explicit
+            # reconciliation; never claim successful completion.
+            assert_materialization_journals_applied(session, prepared.item_id, prepared.plan)
+            assert_materialization_targets_current(
+                self._filesystem, session, prepared.item_id, prepared.plan
+            )
             # Lock the evidence chain and final item checkpoint in the same
             # transaction: a concurrent reconcile/tamper cannot commit
             # between our proof checks and COMPLETED state write.
@@ -1271,7 +1543,15 @@ class UnpackSeedingService:
             _refresh_execution_state(session, execution)
             session.commit()
 
-    def _mark_error(self, item_id: str, *, code: str, message: str, expected_version: int) -> None:
+    def _mark_error(
+        self,
+        item_id: str,
+        *,
+        code: str,
+        message: str,
+        expected_version: int,
+        expected_candidate_id: str | None = None,
+    ) -> None:
         with self._session_factory() as session:
             begin_immediate_write(session)
             item = session.get(UnpackExecutionItem, item_id)
@@ -1283,6 +1563,10 @@ class UnpackSeedingService:
                     UnpackItemStatus.CLIENT_VERIFYING.value,
                 }
                 or item.version != expected_version
+                or (
+                    expected_candidate_id is not None
+                    and item.selected_candidate_id != expected_candidate_id
+                )
             ):
                 # An unrelated worker may have advanced this item while we
                 # awaited the failing external read/RPC. Its newer state wins.
@@ -1349,7 +1633,7 @@ class UnpackSeedingService:
 
     def _record_intent(
         self,
-        item_id: str,
+        prepared: _Prepared,
         operation_type: str,
         *,
         key: str,
@@ -1359,6 +1643,30 @@ class UnpackSeedingService:
     ) -> tuple[UnpackExternalOperationJournal, bool]:
         with self._session_factory() as session:
             begin_immediate_write(session)
+            # A site fetch or read-only downloader probe may have awaited while
+            # another worker changed the item. Fence the pending write in the
+            # same transaction that reserves its external operation journal.
+            item = session.get(UnpackExecutionItem, prepared.item_id)
+            if (
+                item is None
+                or item.status
+                not in {
+                    UnpackItemStatus.EXECUTING.value,
+                    UnpackItemStatus.CLIENT_VERIFYING.value,
+                }
+                or item.version != prepared.item_version
+                or item.execution_plan_digest != prepared.plan.plan_digest
+                or item.selected_candidate_id != prepared.candidate_id
+                or item.candidate_generation != prepared.generation
+            ):
+                raise _StaleSeedingCheckpoint()
+            # A read-only tracker/download-client await may have allowed a
+            # different worker to revoke filesystem proof since _prepare.
+            # Revalidate in the same DB transaction as the write intent.
+            assert_materialization_journals_applied(session, prepared.item_id, prepared.plan)
+            assert_materialization_targets_current(
+                self._filesystem, session, prepared.item_id, prepared.plan
+            )
             existing = session.scalar(
                 select(UnpackExternalOperationJournal).where(
                     UnpackExternalOperationJournal.idempotency_key == key
@@ -1371,7 +1679,7 @@ class UnpackSeedingService:
             now = utc_now()
             row = UnpackExternalOperationJournal(
                 id=new_uuid(),
-                item_id=item_id,
+                item_id=prepared.item_id,
                 idempotency_key=key,
                 operation_type=operation_type,
                 target=target,
@@ -1437,6 +1745,13 @@ class UnpackSeedingService:
             row = session.get(UnpackExternalOperationJournal, journal_id)
             if row is None or row.status == OperationStatus.RECONCILE_REQUIRED.value:
                 return
+            if (
+                row.status == OperationStatus.APPLIED.value
+                and code not in _APPLIED_STATE_DRIFT_CODES
+            ):
+                # Another worker may already have proved and committed the
+                # operation while this worker was awaiting a stale response.
+                return
             row.status = OperationStatus.RECONCILE_REQUIRED.value
             row.last_error_code = code
             row.updated_at = utc_now()
@@ -1499,6 +1814,19 @@ def _operation_key_values(item_id: str, plan: UnpackExecutionPlan, operation_typ
             f"{plan.target_downloader_id}:{operation_type}"
         ).encode()
     ).hexdigest()
+
+
+def _recheck_grace_active(after: dict[str, Any]) -> bool:
+    accepted_at = after.get("recheck_accepted_at")
+    if not isinstance(accepted_at, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(accepted_at)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and timedelta(0) <= datetime.now(UTC) - parsed <= timedelta(
+        seconds=120
+    )
 
 
 def _torrent_hash(state: QbittorrentTorrentState | TransmissionTorrentState) -> str:

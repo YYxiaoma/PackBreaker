@@ -1,4 +1,11 @@
-import type { UnpackDefinition, UnpackExecutionStatus, UnpackItemStatus } from './api/unpack';
+import type {
+  UnpackDefinition,
+  UnpackExecutionItem,
+  UnpackItemDiagnostics,
+  UnpackLiveClientRead,
+  UnpackExecutionStatus,
+  UnpackItemStatus,
+} from './api/unpack';
 
 export type UnpackDefinitionStatus = UnpackDefinition['status'];
 export type UnpackTriggerKind = UnpackDefinition['trigger_kind'];
@@ -87,6 +94,87 @@ export function unpackErrorLabel(code: string | null, message: string | null): s
     TARGET_CONFLICT: '目标位置存在冲突，未执行覆盖',
   };
   return (code && known[code]) || '暂无错误信息';
+}
+
+export function unpackItemExternalRiskLabel(
+  item: Pick<UnpackExecutionItem, 'status' | 'has_external_operations' | 'last_error_code'>,
+): string | null {
+  if (
+    item.status !== 'EXECUTION_ERROR' ||
+    !item.has_external_operations ||
+    ![
+      'UNPACK_EXEC_MATERIALIZATION_PROOF_MISSING',
+      'UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT',
+      'UNPACK_SEED_RECONCILE_REQUIRED',
+    ].includes(item.last_error_code ?? '')
+  ) {
+    return null;
+  }
+  // The item-list contract does not expose execution_state/STARTING. Warn
+  // conservatively instead of inventing a precise client state from status.
+  return '已存在外部操作，下载器可能已启动；物化文件或操作证据异常，必须人工对账，禁止普通重试、重新添加种子或删除操作记录。';
+}
+
+/** Evidence-based read-only checklist. Nothing here approves or clears a journal. */
+export function unpackReconciliationGuidance(
+  historical: Pick<
+    UnpackItemDiagnostics,
+    'reconciliation_reasons' | 'requires_manual_reconciliation' | 'operations_truncated'
+  >,
+  live: Pick<UnpackLiveClientRead, 'status' | 'error_code'> | null,
+): string[] {
+  const steps: string[] = [];
+  const reasons = new Set(historical.reconciliation_reasons);
+  if (reasons.has('JOURNAL_RECONCILE_REQUIRED')) {
+    steps.push(
+      '存在待人工对账的外部流水：核对操作类型、最后错误和实际客户端结果，不要覆盖或清空 journal。',
+    );
+  }
+  if (reasons.has('EXTERNAL_WRITE_UNCONFIRMED')) {
+    steps.push(
+      '失败任务存在未确认外部写入：先确认请求是否到达下载器，再决定后续处理；不能自动重试或重发。',
+    );
+  }
+  if (reasons.has('MATERIALIZATION_EVIDENCE_INVALID')) {
+    steps.push(
+      '冻结的物化文件身份或流水证明异常：人工核对原文件、目标文件及 inode/链接关系，不可直接覆盖媒体。',
+    );
+  }
+  if (reasons.has('MULTIPLE_DOWNLOADER_ADD_PROOFS') || live?.error_code === 'ADD_PROOF_AMBIGUOUS') {
+    steps.push(
+      '同一影片存在 qBittorrent（qB）与 Transmission 两套 ADD 流水：不能自动选择、认领或修改任一客户端下载任务，须人工核对两端操作与冻结计划。',
+    );
+  }
+  if (live === null) {
+    steps.push('尚未执行本次实时只读核验；历史流水不能代表当前下载器状态。');
+  } else if (live.status === 'MATCHED') {
+    steps.push(
+      '此次查询确认 Hash、保存路径与归属标签匹配，但不代表对账完成，也不证明目标媒体文件仍完整。',
+    );
+  } else if (live.status === 'MISSING') {
+    steps.push(
+      '此次查询未找到目标种子：需人工核对下载器连接、冻结 Hash 与任务变动，不得据此自动重新添加。',
+    );
+  } else if (live.status === 'OWNERSHIP_MISMATCH') {
+    steps.push(
+      '发现种子归属冲突：人工核对 Hash、保存路径与标签，禁止接管或移除疑似其他程序的种子。',
+    );
+  } else if (live.status === 'UNRESOLVED_ADD') {
+    steps.push('ADD 请求结果未获可信确认；为避免误认领，本次未查询或接管下载器中的同 Hash 种子。');
+  } else if (live.status === 'NO_ADD_EVIDENCE') {
+    steps.push('冻结的 ADD 成功证明不存在；未执行下载器核验，不能推断外部没有该种子。');
+  } else {
+    steps.push('下载器状态未知或查询时证据发生变化；不能据此认定种子已丢失或已安全做种。');
+  }
+  if (historical.operations_truncated) {
+    steps.push('操作记录列表已截断；必须人工核对全部 journal，未显示的流水也可能存在冲突。');
+  }
+  if (historical.requires_manual_reconciliation) {
+    steps.push(
+      '必须人工核对并保留完整证据；实时只读结果不会解除安全拦截、自动清除对账状态或自动执行写操作。',
+    );
+  }
+  return steps;
 }
 
 export function unpackProgressPercent(totalCount: number, completedCount: number): number {
