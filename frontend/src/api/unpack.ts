@@ -36,6 +36,9 @@ export interface UnpackItemDiagnostics {
   status: UnpackItemStatus;
   item_version: number;
   execution_stage: string | null;
+  plan_status: 'NOT_CREATED' | 'READY' | 'BLOCKED' | 'INVALID';
+  plan_blocked_reasons: string[];
+  acceptance_read_only: boolean;
   last_error_code: string | null;
   last_error_message: string | null;
   requires_manual_reconciliation: boolean;

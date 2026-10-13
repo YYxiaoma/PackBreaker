@@ -248,6 +248,9 @@ class UnpackItemDiagnosticsResponse(BaseModel):
     item_version: int
     execution_stage: str | None
     last_error_code: str | None
+    plan_status: Literal["NOT_CREATED", "READY", "BLOCKED", "INVALID"]
+    plan_blocked_reasons: list[str]
+    acceptance_read_only: bool
     last_error_message: str | None
     requires_manual_reconciliation: bool
     reconciliation_reasons: list[str]
@@ -873,6 +876,9 @@ async def get_unpack_item_diagnostics(
         status=view.status,
         item_version=view.item_version,
         execution_stage=view.execution_stage,
+        plan_status=cast(Literal["NOT_CREATED", "READY", "BLOCKED", "INVALID"], view.plan_status),
+        plan_blocked_reasons=list(view.plan_blocked_reasons),
+        acceptance_read_only=view.acceptance_read_only,
         last_error_code=view.last_error_code,
         last_error_message=view.last_error_message,
         requires_manual_reconciliation=view.requires_manual_reconciliation,

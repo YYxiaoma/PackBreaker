@@ -47,7 +47,7 @@ const ITEM_STATUS_LABELS: Record<UnpackItemStatus, string> = {
   CONTENT_VERIFYING: '内容校验中',
   CONTENT_VERIFIED: '内容校验通过',
   CONTENT_MISMATCH: '内容不一致',
-  PLAN_PENDING: '执行计划就绪',
+  PLAN_PENDING: '执行计划待处理',
   EXECUTING: '执行中',
   CLIENT_VERIFYING: '下载器校验中',
   COMPLETED: '已完成',
@@ -65,6 +65,35 @@ export function unpackExecutionStatusLabel(value: UnpackExecutionStatus): string
 
 export function unpackItemStatusLabel(value: UnpackItemStatus): string {
   return ITEM_STATUS_LABELS[value];
+}
+
+export function unpackItemStatusSummary(
+  item: Pick<UnpackExecutionItem, 'status' | 'last_error_code'>,
+): string {
+  if (item.status === 'PLAN_PENDING' && item.last_error_code === 'UNPACK_EXECUTION_PLAN_BLOCKED') {
+    return '执行计划已阻断';
+  }
+  return unpackItemStatusLabel(item.status);
+}
+
+export function unpackPlanStatusLabel(value: UnpackItemDiagnostics['plan_status']): string {
+  const labels: Record<UnpackItemDiagnostics['plan_status'], string> = {
+    NOT_CREATED: '尚未生成',
+    READY: '冻结计划无阻断（未实时复核）',
+    BLOCKED: '冻结计划已阻断',
+    INVALID: '计划证明无效，请人工检查',
+  };
+  return labels[value];
+}
+
+export function unpackPlanBlockReasonLabel(value: string): string {
+  const labels: Record<string, string> = {
+    TARGET_PARENT_UNSAFE: '目标目录不存在或不安全',
+    TARGET_EXISTS: '目标文件存在冲突',
+    CROSS_DEVICE: '跨设备硬链接不被允许',
+    MAPPING_UNSUPPORTED: '文件映射证据不完整或已变化',
+  };
+  return labels[value] ?? '其他安全阻断';
 }
 
 export function unpackTriggerLabel(value: UnpackTriggerKind): string {

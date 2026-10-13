@@ -4668,6 +4668,10 @@
       },
       "UnpackItemDiagnosticsResponse": {
         "properties": {
+          "acceptance_read_only": {
+            "title": "Acceptance Read Only",
+            "type": "boolean"
+          },
           "downloader_state_live_checked": {
             "title": "Downloader State Live Checked",
             "type": "boolean"
@@ -4728,6 +4732,23 @@
             "title": "Operations Truncated",
             "type": "boolean"
           },
+          "plan_blocked_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Plan Blocked Reasons",
+            "type": "array"
+          },
+          "plan_status": {
+            "enum": [
+              "NOT_CREATED",
+              "READY",
+              "BLOCKED",
+              "INVALID"
+            ],
+            "title": "Plan Status",
+            "type": "string"
+          },
           "reconciliation_reasons": {
             "items": {
               "type": "string"
@@ -4749,6 +4770,9 @@
           "item_version",
           "execution_stage",
           "last_error_code",
+          "plan_status",
+          "plan_blocked_reasons",
+          "acceptance_read_only",
           "last_error_message",
           "requires_manual_reconciliation",
           "reconciliation_reasons",

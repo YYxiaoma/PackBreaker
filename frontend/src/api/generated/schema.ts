@@ -3010,6 +3010,8 @@ export interface components {
     };
     /** UnpackItemDiagnosticsResponse */
     UnpackItemDiagnosticsResponse: {
+      /** Acceptance Read Only */
+      acceptance_read_only: boolean;
       /** Downloader State Live Checked */
       downloader_state_live_checked: boolean;
       /** Execution Stage */
@@ -3028,6 +3030,13 @@ export interface components {
       operations: components['schemas']['UnpackOperationDiagnosticResponse'][];
       /** Operations Truncated */
       operations_truncated: boolean;
+      /** Plan Blocked Reasons */
+      plan_blocked_reasons: string[];
+      /**
+       * Plan Status
+       * @enum {string}
+       */
+      plan_status: 'NOT_CREATED' | 'READY' | 'BLOCKED' | 'INVALID';
       /** Reconciliation Reasons */
       reconciliation_reasons: string[];
       /** Requires Manual Reconciliation */

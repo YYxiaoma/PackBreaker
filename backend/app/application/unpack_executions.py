@@ -7,11 +7,13 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
+from backend.app.application.unpack_acceptance import READ_ONLY_ACCEPTANCE_MARKER
 from backend.app.domain.unpack import (
     REVIEWABLE_ITEM_STATUSES,
     UnpackExecutionStatus,
     UnpackItemStatus,
 )
+from backend.app.domain.unpack_execution_plan import unpack_execution_plan_from_payload
 from backend.app.infrastructure.persistence.models import (
     UnpackExecution,
     UnpackExecutionItem,
@@ -130,6 +132,9 @@ class UnpackItemDiagnosticsView:
     item_version: int
     execution_stage: str | None
     last_error_code: str | None
+    plan_status: str
+    plan_blocked_reasons: tuple[str, ...]
+    acceptance_read_only: bool
     last_error_message: str | None
     requires_manual_reconciliation: bool
     reconciliation_reasons: tuple[str, ...]
@@ -372,11 +377,41 @@ class UnpackExecutionQueryService:
                     updated_at=row.updated_at,
                 )
 
+            # Report only the validated, frozen plan's state and enum blocker
+            # codes. Never return source paths, torrent content, raw journal
+            # intent, download credentials or an assertion of LIVE readiness.
+            plan_status = "NOT_CREATED"
+            blocked_reasons: tuple[str, ...] = ()
+            if item.execution_plan is not None or item.execution_plan_digest is not None:
+                plan_status = "INVALID"
+                try:
+                    plan = unpack_execution_plan_from_payload(item.execution_plan)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    if (
+                        plan.plan_digest == item.execution_plan_digest
+                        and plan.item_id == item.id
+                        and plan.candidate_id == item.selected_candidate_id
+                        and plan.candidate_generation == item.candidate_generation
+                    ):
+                        plan_status = "READY" if plan.ready else "BLOCKED"
+                        blocked_reasons = tuple(reason.value for reason in plan.blocked_reasons)
+            execution = session.get(UnpackExecution, item.execution_id)
+            acceptance_read_only = (
+                execution is not None
+                and isinstance(execution.config_snapshot, dict)
+                and execution.config_snapshot.get("acceptance_mode") == READ_ONLY_ACCEPTANCE_MARKER
+            )
+
             return UnpackItemDiagnosticsView(
                 item_id=item.id,
                 status=UnpackItemStatus(item.status),
                 item_version=item.version,
                 execution_stage=stage,
+                plan_status=plan_status,
+                plan_blocked_reasons=blocked_reasons,
+                acceptance_read_only=acceptance_read_only,
                 last_error_code=item.last_error_code,
                 last_error_message=item.last_error_message,
                 requires_manual_reconciliation=bool(reasons),

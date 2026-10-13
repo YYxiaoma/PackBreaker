@@ -6,6 +6,9 @@ import {
   unpackItemExternalRiskLabel,
   unpackReconciliationGuidance,
   unpackItemStatusLabel,
+  unpackItemStatusSummary,
+  unpackPlanStatusLabel,
+  unpackPlanBlockReasonLabel,
   unpackProgressPercent,
   unpackSourceKindLabel,
   unpackTriggerLabel,
@@ -25,6 +28,24 @@ describe('unpack presentation', () => {
     expect(unpackItemStatusLabel('MATCHED_AUTO')).toBe('自动匹配成功');
     expect(unpackItemStatusLabel('AUXILIARY_FETCHING')).toBe('补齐辅助文件');
     expect(unpackItemStatusLabel('EXECUTION_ERROR')).toBe('执行错误');
+  });
+
+  it('does not misrepresent blocked frozen plans as ready or live-verified', () => {
+    expect(unpackItemStatusLabel('PLAN_PENDING')).toBe('执行计划待处理');
+    expect(
+      unpackItemStatusSummary({
+        status: 'PLAN_PENDING',
+        last_error_code: 'UNPACK_EXECUTION_PLAN_BLOCKED',
+      }),
+    ).toBe('执行计划已阻断');
+    expect(unpackItemStatusSummary({ status: 'PLAN_PENDING', last_error_code: null })).toBe(
+      '执行计划待处理',
+    );
+    expect(unpackPlanStatusLabel('BLOCKED')).toContain('阻断');
+    expect(unpackPlanStatusLabel('READY')).toContain('未实时复核');
+    expect(unpackPlanStatusLabel('INVALID')).toContain('无效');
+    expect(unpackPlanBlockReasonLabel('TARGET_PARENT_UNSAFE')).toContain('目标目录');
+    expect(unpackPlanBlockReasonLabel('untrusted-raw-text')).toBe('其他安全阻断');
   });
 
   it('exposes post-START drift as manual reconciliation instead of normal retry', () => {

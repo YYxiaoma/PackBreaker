@@ -60,6 +60,9 @@ import {
   unpackItemExternalRiskLabel,
   unpackReconciliationGuidance,
   unpackItemStatusLabel,
+  unpackItemStatusSummary,
+  unpackPlanStatusLabel,
+  unpackPlanBlockReasonLabel,
   unpackProgressPercent,
   unpackSourceKindLabel,
   unpackTriggerLabel,
@@ -1810,6 +1813,32 @@ onMounted(() => {
             </div>
           </div>
           <el-alert
+            v-if="diagnostics.acceptance_read_only"
+            title="此执行属于冻结只读验收：不允许媒体物化、辅助文件落位或下载器 ADD / RECHECK / START。"
+            type="info"
+            :closable="false"
+            style="margin-bottom: 12px"
+          />
+          <el-alert
+            :title="'冻结执行计划：' + unpackPlanStatusLabel(diagnostics.plan_status)"
+            :description="
+              diagnostics.plan_status === 'BLOCKED'
+                ? '阻断原因：' +
+                  diagnostics.plan_blocked_reasons
+                    .map((reason) => unpackPlanBlockReasonLabel(reason) + '（' + reason + '）')
+                    .join('、') +
+                  '。仅为冻结时的历史证据；不能据此解除安全门。'
+                : '只读历史计划状态，不代表文件系统、下载器或授权状态已完成实时校验。'
+            "
+            :type="
+              diagnostics.plan_status === 'BLOCKED' || diagnostics.plan_status === 'INVALID'
+                ? 'warning'
+                : 'info'
+            "
+            :closable="false"
+            style="margin-bottom: 12px"
+          />
+          <el-alert
             v-if="diagnostics.requires_manual_reconciliation"
             title="此任务存在未解决的外部操作风险，必须人工对账；查看或查询不解除安全拦截。"
             type="error"
@@ -2064,7 +2093,7 @@ onMounted(() => {
           <el-table-column label="状态" width="145"
             ><template #default="{ row }"
               ><el-tag :type="itemStatusTag(row.status)">{{
-                unpackItemStatusLabel(row.status)
+                unpackItemStatusSummary(row)
               }}</el-tag></template
             ></el-table-column
           >

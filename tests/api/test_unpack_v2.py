@@ -9,7 +9,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from backend.app.api.dependencies import CSRF_COOKIE
+from backend.app.application.unpack_acceptance import READ_ONLY_ACCEPTANCE_MARKER
 from backend.app.config import AppSettings
+from backend.app.domain.execution_plan import ExecutionPlanBlockReason
+from backend.app.domain.task_definition import TaskConflictPolicy, TaskStorageMode
+from backend.app.domain.unpack_execution_plan import (
+    UnpackExecutionPlan,
+    unpack_execution_plan_to_payload,
+)
+from backend.app.domain.verification import VerificationLevel
 from backend.app.infrastructure.persistence.models import (
     Downloader,
     Site,
@@ -283,6 +291,88 @@ def test_item_diagnostics_read_only_redacts_journal_private_fields(tmp_path: Pat
         ):
             assert private not in body
         assert client.get("/api/v1/unpack/items/no-such-id/diagnostics").status_code == 404
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("kind", ("blocked", "ready", "corrupt", "not_created"))
+def test_frozen_plan_diagnostics_is_readonly_validated_and_redacted(
+    tmp_path: Path, kind: str
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, candidate_id = _seed_item_action_fixture(app, item_status="PLAN_PENDING")
+        with app.state.runtime.session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            assert item is not None
+            execution = session.get(UnpackExecution, item.execution_id)
+            assert execution is not None
+            execution.config_snapshot = {
+                "acceptance_mode": READ_ONLY_ACCEPTANCE_MARKER,
+                "passkey": "private-execution-secret",
+            }
+            if kind != "not_created":
+                item.selected_candidate_id = candidate_id
+                plan = UnpackExecutionPlan(
+                    item_id=item.id,
+                    item_version_before=max(1, item.version - 1),
+                    candidate_id=candidate_id,
+                    candidate_generation=item.candidate_generation,
+                    metainfo_digest="a" * 64,
+                    verification_level=VerificationLevel.FULL_VERIFIED,
+                    output_directory="/private/source-path-secret",
+                    storage_mode=TaskStorageMode.COPY,
+                    conflict_policy=TaskConflictPolicy.VERIFY_REUSE_OR_STOP,
+                    target_device=1,
+                    target_downloader_id="downloader-private-secret",
+                    target_downloader_version=1,
+                    target_downloader_binding_digest="b" * 64,
+                    target_remote_save_path="/private/downloader-secret",
+                    client_check_required=True,
+                    actions=(),
+                    create_directories=(),
+                    blocked_reasons=(ExecutionPlanBlockReason.TARGET_PARENT_UNSAFE,)
+                    if kind != "ready"
+                    else (),
+                    created_at=datetime.now(UTC),
+                )
+                payload = unpack_execution_plan_to_payload(plan)
+                payload["passkey"] = "private-plan-secret"
+                if kind == "corrupt":
+                    payload["ready"] = True
+                    payload["candidate_id"] = "unauthorized-other-candidate"
+                item.execution_plan = payload
+                item.execution_plan_digest = plan.plan_digest
+            session.commit()
+        response = client.get(f"/api/v1/unpack/items/{item_id}/diagnostics")
+        assert response.status_code == 200
+        data = response.json()
+        assert (
+            data["plan_status"]
+            == {
+                "blocked": "BLOCKED",
+                "ready": "READY",
+                "corrupt": "INVALID",
+                "not_created": "NOT_CREATED",
+            }[kind]
+        )
+        assert data["plan_blocked_reasons"] == (
+            ["TARGET_PARENT_UNSAFE"] if kind == "blocked" else []
+        )
+        assert data["acceptance_read_only"] is True
+        assert data["filesystem_state_live_checked"] is False
+        assert data["downloader_state_live_checked"] is False
+        assert data["operations"] == []
+        for private in (
+            "private-execution-secret",
+            "private-plan-secret",
+            "source-path-secret",
+            "downloader-private-secret",
+            "downloader-secret",
+        ):
+            assert private not in response.text
+        with app.state.runtime.session_factory() as session:
+            assert not session.scalars(select(UnpackExternalOperationJournal)).all()
     finally:
         client.__exit__(None, None, None)
 
