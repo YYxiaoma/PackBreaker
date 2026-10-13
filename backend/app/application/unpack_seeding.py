@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.downloaders import (
@@ -16,7 +16,10 @@ from backend.app.application.downloaders import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
-from backend.app.application.unpack_acceptance import is_readonly_acceptance_execution
+from backend.app.application.unpack_acceptance import (
+    READ_ONLY_ACCEPTANCE_MARKER,
+    is_readonly_acceptance_execution,
+)
 from backend.app.application.unpack_materialization import (
     assert_materialization_journals_applied,
     assert_materialization_targets_current,
@@ -348,6 +351,13 @@ class UnpackSeedingService:
             executions = session.scalars(
                 select(UnpackExecution)
                 .where(
+                    or_(
+                        UnpackExecution.config_snapshot["acceptance_mode"].as_string().is_(None),
+                        UnpackExecution.config_snapshot["acceptance_mode"].as_string()
+                        != READ_ONLY_ACCEPTANCE_MARKER,
+                    )
+                )
+                .where(
                     select(UnpackExecutionItem.id)
                     .where(UnpackExecutionItem.execution_id == UnpackExecution.id)
                     .where(
@@ -552,12 +562,12 @@ class UnpackSeedingService:
             generation = item.candidate_generation
             site_config_id = candidate.site_id
 
+        resolver = getattr(self._site_provider, "bindings_for_unpack_execution", None)
+        active = (
+            resolver(execution_id) if callable(resolver) else self._site_provider.enabled_adapters()
+        )
         site = next(
-            (
-                entry
-                for entry in self._site_provider.enabled_adapters()
-                if entry.config_id == site_config_id
-            ),
+            (entry for entry in active if entry.config_id == site_config_id),
             None,
         )
         if site is None:

@@ -5,11 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
-from backend.app.application.unpack_acceptance import is_readonly_acceptance_execution
+from backend.app.application.unpack_acceptance import (
+    READ_ONLY_ACCEPTANCE_MARKER,
+    is_readonly_acceptance_execution,
+)
 from backend.app.application.unpack_existing_reuse import verify_existing_reuse
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.operation import OperationStatus
@@ -83,6 +86,15 @@ class UnpackMaterializationService:
             return tuple(
                 session.scalars(
                     select(UnpackExecution.id)
+                    .where(
+                        or_(
+                            UnpackExecution.config_snapshot["acceptance_mode"]
+                            .as_string()
+                            .is_(None),
+                            UnpackExecution.config_snapshot["acceptance_mode"].as_string()
+                            != READ_ONLY_ACCEPTANCE_MARKER,
+                        )
+                    )
                     .where(
                         select(UnpackExecutionItem.id)
                         .where(UnpackExecutionItem.execution_id == UnpackExecution.id)

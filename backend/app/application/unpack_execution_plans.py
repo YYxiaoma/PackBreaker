@@ -293,12 +293,14 @@ class UnpackExecutionPlanService:
             )
 
     async def _build_plan(self, context: _PlanContext) -> UnpackExecutionPlan:
+        resolver = getattr(self._site_provider, "bindings_for_unpack_execution", None)
+        active = (
+            resolver(context.execution_id)
+            if callable(resolver)
+            else self._site_provider.enabled_adapters()
+        )
         site = next(
-            (
-                item
-                for item in self._site_provider.enabled_adapters()
-                if item.config_id == context.site_config_id
-            ),
+            (item for item in active if item.config_id == context.site_config_id),
             None,
         )
         if site is None:
