@@ -40,6 +40,7 @@ from backend.app.application.secrets import SecretStore
 from backend.app.application.sites import SiteService
 from backend.app.application.system_health import SystemResourceSampler
 from backend.app.application.system_upgrades import SystemUpgradeService
+from backend.app.application.unpack_acceptance import UnpackAcceptanceScope
 from backend.app.application.unpack_auxiliary import UnpackAuxiliaryStagingService
 from backend.app.application.unpack_content_verification import (
     UnpackContentVerificationService,
@@ -209,11 +210,13 @@ def create_app(
             path_scope=path_scope,
         )
         app.state.unpack_source_scan_service = unpack_source_scan_service
+        acceptance_scope = UnpackAcceptanceScope(resolved_settings.config_dir)
         app.state.unpack_definition_service = UnpackDefinitionService(
             resolved_runtime.session_factory,
             data_root=resolved_settings.data_dir,
             timezone=resolved_settings.timezone,
             path_scope=path_scope,
+            acceptance_scope=acceptance_scope,
         )
         unpack_discovery_service = UnpackDiscoveryService(
             resolved_runtime.session_factory,
@@ -265,6 +268,7 @@ def create_app(
             resolved_runtime.session_factory,
             secret_store,
             reliability_registry=site_reliability_registry,
+            acceptance_scope=acceptance_scope,
         )
         app.state.site_service = site_service
         unpack_match_coordinator = UnpackMatchCoordinator(

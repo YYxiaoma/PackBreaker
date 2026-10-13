@@ -17,6 +17,7 @@ from backend.app.application.downloaders import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
+from backend.app.application.unpack_acceptance import is_readonly_acceptance_execution
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.file_mapping import AutoMappingDecision, SourceFileCandidate, auto_map_files
 from backend.app.domain.operation import OperationStatus
@@ -198,6 +199,8 @@ class UnpackAuxiliaryStagingService:
     ) -> UnpackAuxiliaryReport:
         if limit < 1 or limit > 50:
             raise self._invalid("辅助文件批次必须位于 1 到 50 之间")
+        if is_readonly_acceptance_execution(self._session_factory, execution_id):
+            return self._report(execution_id, processed_count=0)
         item_ids = self._list_item_ids(execution_id, limit=limit)
         processed = 0
         for item_id in item_ids:
@@ -389,12 +392,14 @@ class UnpackAuxiliaryStagingService:
             )
 
     async def _prepare(self, context: _Context) -> _Prepared:
+        resolver = getattr(self._site_provider, "bindings_for_unpack_execution", None)
+        active = (
+            resolver(context.execution_id)
+            if callable(resolver)
+            else self._site_provider.enabled_adapters()
+        )
         site_binding = next(
-            (
-                item
-                for item in self._site_provider.enabled_adapters()
-                if item.config_id == context.site_config_id
-            ),
+            (item for item in active if item.config_id == context.site_config_id),
             None,
         )
         if site_binding is None:

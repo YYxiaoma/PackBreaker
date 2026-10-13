@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretKindMismatch, SecretNotFound, SecretStore
+from backend.app.application.unpack_acceptance import UnpackAcceptanceScope
 from backend.app.domain.proxy import ProxyConfig
 from backend.app.domain.site_adapter import SiteAdapter
 from backend.app.domain.site_config import (
@@ -28,7 +29,7 @@ from backend.app.domain.site_config import (
     trusted_site_base_url,
 )
 from backend.app.infrastructure.adapters.sites import SiteAdapterError, SiteAdapterFactory
-from backend.app.infrastructure.persistence.models import Site
+from backend.app.infrastructure.persistence.models import Site, UnpackExecution
 from backend.app.infrastructure.persistence.site_repositories import SiteRepository
 from backend.app.infrastructure.site_reliability import (
     SiteReliabilityHealth,
@@ -114,7 +115,9 @@ class SiteService:
         *,
         adapter_factory: SiteAdapterFactory | None = None,
         reliability_registry: SiteReliabilityRegistry | None = None,
+        acceptance_scope: UnpackAcceptanceScope | None = None,
     ) -> None:
+        self._acceptance_scope = acceptance_scope
         self._session_factory = session_factory
         self._secret_store = secret_store
         self._adapter_factory = adapter_factory or SiteAdapterFactory()
@@ -261,6 +264,39 @@ class SiteService:
                 )
             )
         return tuple(result)
+
+    def bindings_for_unpack_execution(self, execution_id: str) -> tuple[EnabledSiteAdapter, ...]:
+        """Never promote an acceptance-only CarPT site into global enabled sites."""
+        normal = self.enabled_adapters()
+        if self._acceptance_scope is None:
+            return normal
+        with self._session_factory() as session:
+            execution = session.get(UnpackExecution, execution_id)
+            if execution is None or not self._acceptance_scope.authorize_execution(
+                session, execution
+            ):
+                return normal
+            site_id = execution.config_snapshot["site_ids"][0]
+            record = session.get(Site, site_id)
+            if record is None:
+                return normal
+            snapshot = self._snapshot(record)
+        if snapshot.secret_id is None:
+            return normal
+        credential = self._read_primary_credential(snapshot)
+        return (
+            EnabledSiteAdapter(
+                config_id=snapshot.id,
+                config_version=snapshot.version,
+                site_id=self._expected_site_id(snapshot.type),
+                adapter=self._reliability_registry.wrap(
+                    config_id=snapshot.id,
+                    config_version=snapshot.version,
+                    adapter=self._create_adapter(snapshot, credential),
+                    min_request_interval_seconds=snapshot.search_interval_seconds,
+                ),
+            ),
+        )
 
     def enabled_site_versions(self) -> tuple[tuple[str, int], ...]:
         with self._session_factory() as session:

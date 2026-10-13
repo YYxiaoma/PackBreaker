@@ -10,6 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
+from backend.app.application.unpack_acceptance import (
+    READ_ONLY_ACCEPTANCE_MARKER,
+    UnpackAcceptanceScope,
+)
 from backend.app.application.unpack_site_readiness import require_ready_unpack_sites
 from backend.app.application.unpack_source_scans import (
     UnpackSourceScanService,
@@ -118,8 +122,10 @@ class UnpackDefinitionService:
         data_root: Path,
         timezone: str,
         path_scope: AuthorizedPathScope | None = None,
+        acceptance_scope: UnpackAcceptanceScope | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._acceptance_scope = acceptance_scope
         self._timezone = timezone
         self._path_scope = path_scope or AuthorizedPathScope.legacy_only(legacy_data_root=data_root)
         self._source_scans = UnpackSourceScanService(
@@ -316,7 +322,12 @@ class UnpackDefinitionService:
             }:
                 raise self._conflict("当前任务状态不能执行")
 
-            require_ready_unpack_sites(session, definition.site_ids)
+            acceptance = bool(
+                self._acceptance_scope is not None
+                and self._acceptance_scope.authorize_definition(session, definition)
+            )
+            if not acceptance:
+                require_ready_unpack_sites(session, definition.site_ids)
             trigger_kind = UnpackTriggerKind(definition.trigger_kind)
             if trigger_kind is UnpackTriggerKind.MONITOR:
                 cron_expression = definition.cron_expression
@@ -359,7 +370,10 @@ class UnpackDefinitionService:
                 definition_id=definition.id,
                 trigger=UnpackExecutionTrigger.MANUAL.value,
                 status=UnpackExecutionStatus.DISCOVERING.value,
-                config_snapshot=self._config_snapshot(session, definition),
+                config_snapshot={
+                    **self._config_snapshot(session, definition),
+                    **({"acceptance_mode": READ_ONLY_ACCEPTANCE_MARKER} if acceptance else {}),
+                },
                 discovery_complete=False,
                 total_count=0,
                 matched_auto_count=0,

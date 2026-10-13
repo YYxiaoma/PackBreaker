@@ -80,6 +80,7 @@ class UnpackMatchReport:
 
 @dataclass(frozen=True, slots=True)
 class _ClaimedItem:
+    execution_id: str
     item_id: str
     generation: int
     unit: TaskUnit
@@ -243,6 +244,7 @@ class UnpackMatchCoordinator:
             item.version += 1
             session.commit()
             return _ClaimedItem(
+                execution_id=execution.id,
                 item_id=item.id,
                 generation=generation,
                 unit=unit,
@@ -253,7 +255,9 @@ class UnpackMatchCoordinator:
     async def _match_claimed(self, claimed: _ClaimedItem) -> None:
         try:
             if claimed.site_config_ids:
-                bindings, missing_site_ids = self._selected_bindings(claimed.site_config_ids)
+                bindings, missing_site_ids = self._selected_bindings(
+                    claimed.site_config_ids, execution_id=claimed.execution_id
+                )
             else:
                 # Do not load/decrypt any unrelated enabled site for an empty
                 # or tampered historical execution snapshot.
@@ -280,8 +284,14 @@ class UnpackMatchCoordinator:
     def _selected_bindings(
         self,
         selected_ids: tuple[str, ...],
+        *,
+        execution_id: str,
     ) -> tuple[tuple[EnabledSiteAdapter, ...], tuple[str, ...]]:
-        by_id = {item.config_id: item for item in self._site_provider.enabled_adapters()}
+        resolver = getattr(self._site_provider, "bindings_for_unpack_execution", None)
+        active = (
+            resolver(execution_id) if callable(resolver) else self._site_provider.enabled_adapters()
+        )
+        by_id = {item.config_id: item for item in active}
         bindings = tuple(by_id[site_id] for site_id in selected_ids if site_id in by_id)
         missing = tuple(site_id for site_id in selected_ids if site_id not in by_id)
         return bindings, missing

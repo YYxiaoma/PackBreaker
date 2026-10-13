@@ -70,6 +70,7 @@ class UnpackContentVerificationReport:
 
 @dataclass(frozen=True, slots=True)
 class _VerificationClaim:
+    execution_id: str
     item_id: str
     item_version: int
     candidate_id: str
@@ -283,6 +284,7 @@ class UnpackContentVerificationService:
             candidate.verification_error_code = None
             session.commit()
             return _VerificationClaim(
+                execution_id=execution.id,
                 item_id=item.id,
                 item_version=item.version,
                 candidate_id=candidate.id,
@@ -390,12 +392,14 @@ class UnpackContentVerificationService:
             session.commit()
 
     def _binding_for(self, claim: _VerificationClaim) -> EnabledSiteAdapter:
+        resolver = getattr(self._site_provider, "bindings_for_unpack_execution", None)
+        active = (
+            resolver(claim.execution_id)
+            if callable(resolver)
+            else self._site_provider.enabled_adapters()
+        )
         binding = next(
-            (
-                item
-                for item in self._site_provider.enabled_adapters()
-                if item.config_id == claim.site_config_id
-            ),
+            (item for item in active if item.config_id == claim.site_config_id),
             None,
         )
         if binding is None:
