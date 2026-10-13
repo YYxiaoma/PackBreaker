@@ -15,7 +15,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  seven-site-release-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Block v1.1.2 release preparation until seven real site E2E receipts and explicit approval exist
+        if: github.ref_name == 'v1.1.2'
+        run: python3 scripts/validate_v112_site_release_gate.py --require-ready
+
   arm64-validation:
+    needs: seven-site-release-preflight
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -80,6 +92,7 @@ jobs:
             python -m backend.app.maintenance backup
 
   cookiecloud-upstream-validation:
+    needs: seven-site-release-preflight
     runs-on: ubuntu-24.04
     permissions:
       contents: read
