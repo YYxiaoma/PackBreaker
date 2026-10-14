@@ -254,3 +254,81 @@ def test_host_evidence_mismatch_to_request_is_not_overridden_by_proposal(tmp_pat
         )
     finally:
         client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("depth", ["parent", "ancestor"])
+def test_host_evidence_parent_symlink_cannot_redirect_identical_document(
+    tmp_path: Path, depth: str
+) -> None:
+    client, app, proposal, ex, item, parent, output, _ = _scenario(tmp_path)
+    try:
+        request = _first(ex, item, proposal)
+        actual_dir = tmp_path / "evidence-source"
+        actual_dir.mkdir()
+        _put(actual_dir / "evidence.json", _document(request, parent, output))
+        alias = tmp_path / "evidence-alias"
+        alias.symlink_to(actual_dir, target_is_directory=True)
+        path = alias / "evidence.json"
+        if depth == "ancestor":
+            path = alias / "nested" / "evidence.json"
+            (actual_dir / "nested").mkdir()
+            _put(actual_dir / "nested" / "evidence.json", _document(request, parent, output))
+        assert _run(app, path, request, parent, output).status is (
+            ScopedInitialIntentStatus.BLOCKED_HOST_EVIDENCE
+        )
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_host_evidence_parent_directory_replaced_during_openat_read_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backend.app.application import unpack_scoped_host_evidence as host_module
+    from backend.app.application.unpack_scoped_descriptor_evidence import (
+        _pin_directory as pinned_directory_open,
+    )
+
+    client, app, proposal, ex, item, parent, output, _ = _scenario(tmp_path)
+    try:
+        request = _first(ex, item, proposal)
+        evidence_dir = tmp_path / "evidence-dir"
+        evidence_dir.mkdir()
+        evidence_path = evidence_dir / "evidence.json"
+        same_document = _document(request, parent, output)
+        _put(evidence_path, same_document)
+        original_pin = pinned_directory_open
+        count = 0
+
+        def replace_on_second_pin(stack: Any, path: Path) -> int:
+            nonlocal count
+            count += 1
+            if count == 2:
+                evidence_dir.rename(tmp_path / "moved-original-evidence-dir")
+                evidence_dir.mkdir()
+                _put(evidence_path, same_document)
+            return original_pin(stack, path)
+
+        monkeypatch.setattr(host_module, "_pin_directory", replace_on_second_pin)
+        assert _run(app, evidence_path, request, parent, output).status is (
+            ScopedInitialIntentStatus.BLOCKED_HOST_EVIDENCE
+        )
+        assert count == 2
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_host_evidence_noncanonical_parent_path_is_rejected(tmp_path: Path) -> None:
+    client, app, proposal, ex, item, parent, output, _ = _scenario(tmp_path)
+    try:
+        request = _first(ex, item, proposal)
+        evidence_dir = tmp_path / "evidence-dir"
+        evidence_dir.mkdir()
+        evidence_path = evidence_dir / "evidence.json"
+        _put(evidence_path, _document(request, parent, output))
+        # Do not normalize /../ before the inspector sees the path.
+        poisoned = Path(str(evidence_dir) + "/../evidence-dir/evidence.json")
+        assert _run(app, poisoned, request, parent, output).status is (
+            ScopedInitialIntentStatus.BLOCKED_HOST_EVIDENCE
+        )
+    finally:
+        client.__exit__(None, None, None)

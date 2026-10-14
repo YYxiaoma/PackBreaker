@@ -10,11 +10,15 @@ from __future__ import annotations
 import json
 import os
 import stat
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
+
+from backend.app.application.unpack_scoped_descriptor_evidence import _pin_directory
+from backend.app.application.unpack_scoped_write_environment import _canonical_absolute
 
 if TYPE_CHECKING:
     from backend.app.application.unpack_scoped_initial_intent import ScopedInitialIntentRequest
@@ -98,34 +102,54 @@ class HostApprovalEvidenceInspector:
     ) -> HostEvidenceResult:
         result = HostEvidenceResult
         current = now or datetime.now(UTC)
-        if current.tzinfo is None or not self.path.is_absolute():
+        if current.tzinfo is None or not _canonical_absolute(self.path):
             return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
-        try:
-            fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        except OSError:
-            return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
-        try:
-            initial = os.fstat(fd)
-            if (
-                not stat.S_ISREG(initial.st_mode)
-                or stat.S_IMODE(initial.st_mode) & 0o077
-                or initial.st_uid != os.geteuid()
-                or initial.st_size < 2
-                or initial.st_size > 4096
-            ):
+        # O_NOFOLLOW on a whole pathname only protects its final component.
+        # Pin *every* ancestor via openat(dir_fd) before opening the file.
+        with ExitStack() as stack:
+            try:
+                parent_fd = _pin_directory(stack, self.path.parent)
+                parent_before = os.fstat(parent_fd)
+                fd = os.open(
+                    self.path.name,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_fd,
+                )
+                stack.callback(os.close, fd)
+                initial = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(initial.st_mode)
+                    or stat.S_IMODE(initial.st_mode) & 0o077
+                    or initial.st_uid != os.geteuid()
+                    or initial.st_size < 2
+                    or initial.st_size > 4096
+                ):
+                    return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
+                with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as stream:
+                    document = json.loads(stream.read(4097))
+                final = os.fstat(fd)
+                named = os.stat(self.path.name, dir_fd=parent_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(named.st_mode)
+                    or _file_identity(initial) != _file_identity(final)
+                    or _file_identity(final) != _file_identity(named)
+                ):
+                    return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
+                # A pinned old dirfd can still refer to an unlinked ancestor.
+                # Reopen from / and check parent and file name identities.
+                with ExitStack() as again:
+                    fresh_parent = _pin_directory(again, self.path.parent)
+                    parent_after = os.fstat(fresh_parent)
+                    fresh_name = os.stat(self.path.name, dir_fd=fresh_parent, follow_symlinks=False)
+                    if (
+                        (parent_before.st_dev, parent_before.st_ino)
+                        != (parent_after.st_dev, parent_after.st_ino)
+                        or not stat.S_ISREG(fresh_name.st_mode)
+                        or _file_identity(final) != _file_identity(fresh_name)
+                    ):
+                        return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
+            except (OSError, UnicodeError, ValueError):
                 return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
-            with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as stream:
-                document = json.loads(stream.read(4097))
-            final = os.fstat(fd)
-            named = self.path.lstat()
-            if _file_identity(initial) != _file_identity(final) or _file_identity(
-                final
-            ) != _file_identity(named):
-                return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
-        except (OSError, UnicodeError, ValueError):
-            return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
-        finally:
-            os.close(fd)
 
         if (
             not isinstance(document, dict)
