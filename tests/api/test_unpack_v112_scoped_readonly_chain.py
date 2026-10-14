@@ -235,6 +235,58 @@ def test_scope_file_revoked_during_descriptor_observation(
         client.__exit__(None, None, None)
 
 
+def test_proposal_replaced_with_identical_payload_during_descriptor_scan_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, app, _, ex, it, parent, output, _ = _scenario(tmp_path)
+    try:
+        inspector = ScopedWriteProposalInspector(app.state.settings.config_dir)
+        original_bytes = inspector.path.read_bytes()
+        original = inspect_scoped_descriptor_evidence
+
+        def replace_same_payload(*args: Any, **kwargs: Any) -> ScopedDescriptorEvidence:
+            result = original(*args, **kwargs)
+            temp = inspector.path.with_name("replacement-proposal.json")
+            temp.write_bytes(original_bytes)
+            temp.chmod(0o600)
+            temp.replace(inspector.path)
+            return result
+
+        monkeypatch.setattr(
+            "backend.app.application.unpack_scoped_readonly_chain.inspect_scoped_descriptor_evidence",
+            replace_same_payload,
+        )
+        assert _inspect(app, ex, it, parent, output).status is ScopedChainStatus.BLOCKED_PROPOSAL
+        assert inspector.path.read_bytes() == original_bytes
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_proposal_metadata_change_during_descriptor_scan_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, app, _, ex, it, parent, output, _ = _scenario(tmp_path)
+    try:
+        inspector = ScopedWriteProposalInspector(app.state.settings.config_dir)
+        original = inspect_scoped_descriptor_evidence
+
+        def touch_same_payload(*args: Any, **kwargs: Any) -> ScopedDescriptorEvidence:
+            result = original(*args, **kwargs)
+            import os
+
+            info = inspector.path.stat()
+            os.utime(inspector.path, ns=(info.st_atime_ns, info.st_mtime_ns + 1000000000))
+            return result
+
+        monkeypatch.setattr(
+            "backend.app.application.unpack_scoped_readonly_chain.inspect_scoped_descriptor_evidence",
+            touch_same_payload,
+        )
+        assert _inspect(app, ex, it, parent, output).status is ScopedChainStatus.BLOCKED_PROPOSAL
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_version_drift_after_fixture_is_blocked(
     tmp_path: Path,
 ) -> None:

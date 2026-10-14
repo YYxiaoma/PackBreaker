@@ -78,6 +78,20 @@ def _absolute_canonical(value: str) -> bool:
     )
 
 
+ProposalFileIdentity = tuple[int, int, int, int, int]
+
+
+def _proposal_identity(info: os.stat_result) -> ProposalFileIdentity:
+    """File identity, including metadata change detectors (not a write lease)."""
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
 class ScopedWriteProposalInspector:
     """Fail-closed metadata validator; matching never grants execution privileges."""
 
@@ -85,6 +99,13 @@ class ScopedWriteProposalInspector:
         self.path = config_dir / "v112-unpack-scoped-write-proposal.json"
 
     def _read(self, *, now: datetime | None = None) -> dict[str, Any] | None:
+        observed = self._read_with_identity(now=now)
+        return observed[0] if observed is not None else None
+
+    def _read_with_identity(
+        self, *, now: datetime | None = None
+    ) -> tuple[dict[str, Any], ProposalFileIdentity] | None:
+        """Pin the read to one regular file, verifying its name still points to it."""
         try:
             fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         except OSError:
@@ -100,6 +121,13 @@ class ScopedWriteProposalInspector:
                 return None
             with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as stream:
                 payload = json.loads(stream.read(4097))
+            end_info = os.fstat(fd)
+            named_info = self.path.lstat()
+            if _proposal_identity(info) != _proposal_identity(end_info) or _proposal_identity(
+                end_info
+            ) != _proposal_identity(named_info):
+                return None
+
         except (OSError, UnicodeError, ValueError):
             return None
         finally:
@@ -147,7 +175,7 @@ class ScopedWriteProposalInspector:
             or not current < expiry <= current + timedelta(hours=1)
         ):
             return None
-        return payload
+        return payload, _proposal_identity(end_info)
 
     def matches_frozen_preflight(
         self,

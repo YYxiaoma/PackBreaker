@@ -300,6 +300,21 @@ def test_frozen_db_mutation_is_never_accepted(tmp_path: Path, change: str) -> No
         client.__exit__(None, None, None)
 
 
+def test_proposal_identity_read_is_stable_and_non_authorizing(tmp_path: Path) -> None:
+    client, app, _, execution_id, item_id = _setup(tmp_path)
+    try:
+        inspector = ScopedWriteProposalInspector(app.state.settings.config_dir)
+        first = inspector._read_with_identity(now=_NOW)
+        second = inspector._read_with_identity(now=_NOW)
+        assert first is not None and first == second
+        assert first[0]["execution_id"] == execution_id
+        assert first[0]["item_id"] == item_id
+        assert len(first[1]) == 5
+        assert _matches(app, execution_id, item_id)
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_proposal_revocation_unreadable_permissions_symlink_and_oversize(
     tmp_path: Path,
 ) -> None:

@@ -72,10 +72,12 @@ def inspect_pristine_scoped_carpt_chain(
     ):
         return report(ScopedChainStatus.BLOCKED_TRUSTED_TARGET)
     with session.no_autoflush:
-        initial = inspector._read(now=now)
+        initial_snapshot = inspector._read_with_identity(now=now)
+        if initial_snapshot is None:
+            return report(ScopedChainStatus.BLOCKED_PROPOSAL)
+        initial, file_identity = initial_snapshot
         if (
-            initial is None
-            or initial["execution_id"] != execution_id
+            initial["execution_id"] != execution_id
             or initial["item_id"] != item_id
             or initial["output_directory"] != expected_output.as_posix()
         ):
@@ -120,9 +122,13 @@ def inspect_pristine_scoped_carpt_chain(
         # changed the item while the filesystem evidence was collected.
         # Expire it before the second read; this is NOT a write lock or grant.
         session.expire_all()
-        current = inspector._read(now=now)
-        if current != initial or not inspector.matches_frozen_preflight(
-            session, execution_id=execution_id, item_id=item_id, now=now
+        current_snapshot = inspector._read_with_identity(now=now)
+        if (
+            current_snapshot is None
+            or current_snapshot != (initial, file_identity)
+            or not inspector.matches_frozen_preflight(
+                session, execution_id=execution_id, item_id=item_id, now=now
+            )
         ):
             return report(ScopedChainStatus.BLOCKED_PROPOSAL)
         audit = audit_scoped_carpt_journal_rows(
