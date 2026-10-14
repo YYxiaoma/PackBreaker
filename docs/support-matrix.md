@@ -1,14 +1,18 @@
-# PackBreaker 支持矩阵（更新于 2026-10-12）
+# PackBreaker 支持矩阵（更新于 2026-10-14）
 
-本页区分**正式发布、代码可用、真实只读探测、独立内容/辅种全链路验收**。一个站点可配置、连接成功或有客户端既有种子，都不等于正式完成该站的端到端业务验收。
+**当前代码支持 18 个站点：原有 11 站及新增七站均为 `SUPPORTED`（Adapter 已接入并可用于正常拆包任务）。** 新站仍需在站点管理中配置凭证并显式启用；CookieCloud 可为七个 Cookie 站点按固定 HTTPS Profile 域名自动导入或更新凭证，新导入配置默认停用。手动/监控拆包正常执行还取决于源文件、候选 Torrent、完整内容验证、冻结计划、下载器路径/归属与操作权限。
 
-### 2026-10-12 本轮新增实测（最新证据，优先于下方历史快照）
+**`SUPPORTED` 只表示代码适配与任务准入，不代表七站独立真实 E2E 已通过。** 正式发布的七站 E2E 收据仍是 0/7；独立收据及发行授权门禁保持不变。参见 [用户范围决策](./v1.1.2-user-acceptance-decision-20261014.md) 和 [Issue #5](https://github.com/YYxiaoma/PackBreaker/issues/5)。
+
+以下 2026-10-12 的记录保留为**历史证据快照**，其中对 Registry 状态及候选镜像“最新”的说法不再代表当前代码事实。
+
+### 2026-10-12 历史实测记录（保留当时证据）
 
 - **U2：用户批准的受限真实性验收通过**，在缺少匹配动画媒体的前提下，真实 Cookie 认证、用户资料只读 GET、两页分页搜索各 50 条（共 100 条，每页大小/做种/下载数/发布时间均 50/50）、首条详情的站点与种子身份匹配，以及用户提交的 private v1 / 25 文件 / 3,272 Piece 种子元信息解析均成功；合成 NexusPHP/候选分页契约回归成功。用户本轮明确豁免 U2 的媒体 Piece 和客户端下载器 E2E，故标记为**受限范围验收通过（带豁免）**，绝不能声称这两项已实测或将 Registry 自动改为正式支持。
 - **Audiences、不可躺：独立原媒体全 Piece 通过**，分别 **7,321/7,321** 和 **1,831/1,831**，源快照未变化。Transmission 中已有两份同 hash 的现存任务，均在完整做种且有历史做种时间。用户希望删除后重加，但客户端公开 RPC 不能无损恢复原任务添加时间/做种历史及其他内部统计；本轮为保护原始做种未删除、停止、重检或认领它们。仍缺来自 PackBreaker 正式冻结计划及 journal 的受控任务链，而非内容一致性。
 - **SpringSunday：新的合法 66 GB 原种及真实内容全 Piece 已通过**。用户最初给的路径多一层 `downloads2`；原 `[SSD]` 文件对应 20,719,045,435 字节版本，不能硬套在现有 66,033,395,661 字节影片上。依据真实站点页面唯一同容量候选、同站详情身份（详情未列出容量）、一次合法 `fetch_torrent` 取得的原始 private torrent，**精确文件大小和文件名均匹配**；独立读取该 66 GB 原媒体完成 **3,936/3,936 Piece FULL_VERIFIED**，零失配，源快照不变。TR 已有完全相同 InfoHash 的 SpringSunday 做种任务，`have_valid == size_when_done`、`have_unchecked=0`、100% 正在做种。保护既有任务，没有重新添加/停止/删除；仍缺正式 PackBreaker 新任务计划与 journal 全链路。
 - **候选代码证据**：GitHub [Draft PR #32](https://github.com/YYxiaoma/PackBreaker/pull/32) 源码树与整合后的本地 SHA 完全一致；[CI #38215842378](https://github.com/YYxiaoma/PackBreaker/actions/runs/38215842378) 共 **arm64、quality、browser-e2e、container、updater-e2e 五个 Job 全部成功**。本地合并后端 **1,762 passed、4 skipped**，前端 65 passed，生产构建及静态门禁通过。此处不是完整七站 PackBreaker 真实业务 E2E、不是双仓库最终候选镜像交付，也不是正式 Release。
-- **发布门禁**：七新增站的代码 Registry 仍保持 `PENDING_REAL_VALIDATION`。U2 经用户同意的例外验收要在候选/正式支持决策中单独标注。其余站点仍需完成从站点合法取种、冻结计划、独立媒体落位、operation journal 到客户端恢复的完整业务链；不得把本次只读 Piece 或直接客户端测试与该业务 E2E 混同。
+- **当时的发布门禁**：2026-10-12 七新增站的 Registry 仍保持 `PENDING_REAL_VALIDATION`；2026-10-14 起源码已改为 `SUPPORTED`，但真实 E2E 发布门禁仍未放开。U2 经用户同意的例外验收要在候选/正式支持决策中单独标注。其余站点仍需完成从站点合法取种、冻结计划、独立媒体落位、operation journal 到客户端恢复的完整业务链；不得把本次只读 Piece 或直接客户端测试与该业务 E2E 混同。
 
 
 - **最新正式 Release：v1.1.1**。源码提交 `b779e3270f2a3b3d8c380e22ac36f06ce55f8252`；不可变 GHCR index 为 `sha256:839daecddf8c3d60566b688b2016d47d84935c4b35da8cd2028aab073836def9`。
@@ -29,7 +33,7 @@
 
 源路径允许显式挂载并授权的 `/downloads`、`/downloads2` 等绝对路径，不再强制在 `/data` 下。跨设备硬链接、符号链接逃逸、未证实目标 ownership、无法完成 Piece 校验时必须阻断；下载器校验语义不可互相代替。
 
-## 2. 当前 11 个内置站点（代码可启用）
+## 2. 原有 11 个内置站点（代码可启用）
 
 | 站点 | 认证 | 状态和仍待验收的边界 |
 | --- | --- | --- |
@@ -47,18 +51,20 @@
 
 以上站点“代码可启用”的含义是 Adapter 和任务入口已实现，**不是**每站都在独立正式 PackBreaker 任务中完成了真实取种、媒体校验、文件操作、下载器做种和恢复测试。
 
-## 3. 七个新增站点（仅可配置及只读探测）
+## 3. 七个新增站点（代码适配已完成、可启用正常任务）
 
-| 站点 | Registry 状态 | 已有真实证据 / 必须补齐 |
+| 站点 | 当前代码状态 | 历史真实证据与尚缺的收据 |
 | --- | --- | --- |
-| PTerClub | `PENDING_REAL_VALIDATION` | 2026-10-11 已有认证成功、真实搜索 27 条及四字段 27/27 可解析；仍缺合法取种、独立 Piece 和正式任务 |
-| Audiences | `PENDING_REAL_VALIDATION` | 已通过真实认证搜索/详情与独立 Piece 7,321/7,321；2026-10-12 在隔离 SQLite 冻结计划和真实 QB 5.2.3 中完成 ADD/RECHECK/START 三条 journal 全部 APPLIED、做种及安全清理，正式新站任务 UI 全链路仍待验收 |
-| SpringSunday | `PENDING_REAL_VALIDATION` | 2026-10-12 从真实站点严格匹配取得 66 GB 合法原种，并对指定电影媒体完成 **3,936/3,936 Piece FULL_VERIFIED**；TR 同 hash 既有任务 100% 正在做种，未修改。仍缺 PackBreaker 正式业务流水 E2E |
-| HDDolby | `PENDING_REAL_VALIDATION` | 2026-10-11 45 秒只读搜索 9 条，日期/大小/做种/下载四字段均 9/9；已保存超时值变更后连接状态 `UNTESTED`，取种、Piece 与任务仍缺 |
-| U2 | `PENDING_REAL_VALIDATION` | 既有 19/19 动画搜索及详情身份已验证；2026-10-10 另一个动画查询返回 50 条，大小、做种、下载数均 50/50 可解析，但有下一页；间歇连接错误、合法取种及独立 Piece 仍待验收 |
-| 不可躺（TANGPT） | `PENDING_REAL_VALIDATION` | 用户提供的原种对应 Piece 1,831/1,831；2026-10-12 在隔离 SQLite 冻结计划及真实 QB 5.2.3 中完成 ADD/RECHECK/START 三条 journal 全部 APPLIED、做种及安全清理，候选歧义与正式新站 UI 任务链仍待验收 |
-| CarPT | `PENDING_REAL_VALIDATION` | 已有唯一严格候选和详情身份证据；用户提供的新候选在隔离审计中完整 Piece **1,831/1,831** 通过；正式站点支持和 PackBreaker 任务链仍未验收 |
-七站的加密配置和只读连接测试**不授权启用正式任务**。即使有人手动将数据库记录设为启用，也不得解密凭据进入生产适配链；只有逐站通过认证、同源保护、契约、错误分类及受控真实验证后才能修改 Registry 的正式支持范围。
+| PTerClub | `SUPPORTED` | 真实认证、搜索及解析已有证据；尚无新 PackBreaker Web execution 的完整 E2E 收据 |
+| Audiences | `SUPPORTED` | 搜索、内容 Piece 验证和隔离客户端子链已有证据；正式新站任务全链回执仍缺 |
+| SpringSunday | `SUPPORTED` | 66 GB 合法原种与 3,936/3,936 Piece 通过，已有外部同 hash 任务不可接管；完整新任务 E2E 仍缺 |
+| HDDolby | `SUPPORTED` | 搜索/详情曾通过，站点间歇超时需后续版本继续复核；完整新任务 E2E 仍缺 |
+| U2 | `SUPPORTED` | 真实只读搜索/详情与 Torrent 解析已有用户受限范围批准；媒体/客户端下载器环节未实测 |
+| 不可躺（TANGPT） | `SUPPORTED` | 独立 Piece 与隔离客户端子链已有证据；正式新站任务全链回执仍缺 |
+| CarPT | `SUPPORTED` | 独立 Piece 与客户端子链已分别测试；此前旧 Web execution 被永久冻结为只读，不能作为新的可写 E2E 收据 |
+
+七站的正常执行由显式启用的站点配置、任务准入、真实文件/下载器权限及全部业务门禁控制。**旧只读 `acceptance_mode` 执行不得解冻；只能由正常新 execution 进入生产 Worker，且不保证站点在线或目标媒体适配。**
+
 
 ## 4. 真实验收证据与发布边界
 

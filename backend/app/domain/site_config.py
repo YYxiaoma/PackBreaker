@@ -165,7 +165,6 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.AUDIENCES: SiteProfile(
         kind=SiteKind.AUDIENCES,
@@ -175,7 +174,6 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.SPRING_SUNDAY: SiteProfile(
         kind=SiteKind.SPRING_SUNDAY,
@@ -185,7 +183,6 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.HDDOLBY: SiteProfile(
         kind=SiteKind.HDDOLBY,
@@ -198,7 +195,6 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.U2: SiteProfile(
         kind=SiteKind.U2,
@@ -208,7 +204,6 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.TANGPT: SiteProfile(
         kind=SiteKind.TANGPT,
@@ -218,7 +213,6 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
     SiteKind.CARPT: SiteProfile(
         kind=SiteKind.CARPT,
@@ -228,13 +222,13 @@ SITE_PROFILE_REGISTRY: dict[SiteKind, SiteProfile] = {
         search_interval_seconds=2.0,
         supports_user_agent=True,
         supports_browser_emulation=True,
-        support_status=SiteSupportStatus.PENDING_REAL_VALIDATION,
     ),
 }
 
 
-# v1.1.1: seven newly registered sites are configurable but not yet eligible
-# for production jobs. Never implicitly authorize future enum members.
+# Explicit allowlist of implemented adapters eligible for normal tasks.
+# Independent real-E2E evidence and release approval remain separate.
+# Future site kinds are never implicitly admitted.
 PERSISTED_SITE_KINDS = frozenset(
     {
         SiteKind.MTEAM,
@@ -248,6 +242,13 @@ PERSISTED_SITE_KINDS = frozenset(
         SiteKind.PTTIME,
         SiteKind.ROUSI_PRO,
         SiteKind.LINGYIN_CLUB,
+        SiteKind.PTERCLUB,
+        SiteKind.AUDIENCES,
+        SiteKind.SPRING_SUNDAY,
+        SiteKind.HDDOLBY,
+        SiteKind.U2,
+        SiteKind.TANGPT,
+        SiteKind.CARPT,
     }
 )
 CONFIGURABLE_SITE_KINDS = frozenset(SiteKind)

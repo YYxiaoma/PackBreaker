@@ -289,8 +289,9 @@ class ScopedWriteProposalInspector:
             or site.enabled
             or site.secret_id is None
             or site.connection_status != "OK"
+            # This inspector is non-authorizing in either registry state.
             or site_profile(SiteKind.CARPT).support_status
-            is not SiteSupportStatus.PENDING_REAL_VALIDATION
+            not in {SiteSupportStatus.SUPPORTED, SiteSupportStatus.PENDING_REAL_VALIDATION}
             or downloader is None
             or downloader.type != "TRANSMISSION"
             or not downloader.enabled

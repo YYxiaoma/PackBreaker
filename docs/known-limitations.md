@@ -1,5 +1,7 @@
 # PackBreaker 已知限制（更新于 2026-10-12）
 
+> **2026-10-14 代码功能更新：** 七个新增站点的 NexusPHP 适配器现已开放正常启用与拆包任务准入，CookieCloud 支持导入和同步七站的 Cookie。具体支持范围见 [支持矩阵](./support-matrix.md)。正式独立真实 E2E 收据及发布门禁仍待完成，下方历史条目保留其当时的真实证据口径。
+
 > **2026-10-14 范围决定：** 用户已对 CarPT、七新站及已有站点回归作阶段性管理验收确认，并将网络、Tracker、异常恢复的现场验证顺延后续版本。技术上仍缺少完整 E2E 收据，不能冒充实测通过或自动放开发布门禁。详见 [用户阶段性验收确认与后续安排](./v1.1.2-user-acceptance-decision-20261014.md)。
 
 **2026-10-12 最新补充（覆盖本页较早的验收阶段）：** U2 按用户明确批准的无媒体范围，通过实时登录、账户资料、双页搜索 100 条、详情身份与原始私种结构；其媒体 Piece 与客户端 E2E 为**用户批准的豁免**。Audiences、不可躺的原媒体独立全 Piece 分别通过 7,321/7,321、1,831/1,831；TR 中已有同 hash 外部完整做种任务，重建不能无损保留任务历史，因此没有按用户原提议删除这些任务。SpringSunday 最初提交的 `[SSD]` 种子仅对应 20.7 GB，不能用于指定的 66 GB 电影；随后已从合法站点唯一相符的候选重新取得该电影真正的 66 GB 私种，源媒体独立全 Piece **3,936/3,936** 全部通过，TR 已有同 InfoHash 的 100% 做种任务但未被修改，仍未完成正式 PackBreaker journal 任务链。CarPT、PTerClub、HDDolby 先前独立 TR ADD/VERIFY/START 成功并已清理。GitHub [Draft PR #32](https://github.com/YYxiaoma/PackBreaker/pull/32) 的五项 [CI](https://github.com/YYxiaoma/PackBreaker/actions/runs/38215842378) 均通过。**正式 v1.1.2 Release 未授权；七站 Registry 均未升级正式支持。**

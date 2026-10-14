@@ -133,8 +133,10 @@ class UnpackAcceptanceScope:
             and site.version == scope["site_version"]
             and site.secret_id is not None
             and site.connection_status == "OK"
+            # Historical read-only acceptance remains read-only when the
+            # adapter becomes available for ordinary, explicitly enabled tasks.
             and site_profile(SiteKind.CARPT).support_status
-            is SiteSupportStatus.PENDING_REAL_VALIDATION
+            in {SiteSupportStatus.SUPPORTED, SiteSupportStatus.PENDING_REAL_VALIDATION}
             and client is not None
             and client.type == "TRANSMISSION"
             and client.enabled

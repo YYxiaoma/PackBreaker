@@ -479,10 +479,10 @@ def test_cookiecloud_sync_imports_missing_supported_cookie_sites_without_api_key
         assert repeated.json()["unchanged_sites"] == expected_cookies
 
 
-def test_cookiecloud_sync_seven_v111_sites_are_encrypted_and_remain_disabled(
+def test_cookiecloud_sync_seven_supported_sites_are_encrypted_and_manual_enable(
     tmp_path: Path,
 ) -> None:
-    """The seven unaccepted adapters may be configured but must not seed."""
+    """Import all seven encrypted Cookies; explicit enable is a separate admin action."""
     from urllib.parse import urlsplit
 
     from backend.app.domain.site_config import SiteKind, site_profile
@@ -578,24 +578,24 @@ def test_cookiecloud_sync_seven_v111_sites_are_encrypted_and_remain_disabled(
         sites = {site["type"]: site for site in sites_response.json()["items"]}
         assert set(sites) == {kind.value for kind in kinds}
         for kind in kinds:
-            assert available[kind.value]["support_status"] == "PENDING_REAL_VALIDATION"
+            assert available[kind.value]["support_status"] == "SUPPORTED"
             site = sites[kind.value]
             assert site["enabled"] is False
             assert site["credential_configured"] is True
             assert "PRIVATE_SYNTHETIC_" not in json.dumps(site)
-            blocked = client.post(
+            enabled = client.post(
                 f"/api/v1/sites/{site['id']}/actions",
                 headers={**headers, "If-Match": f'"{site["version"]}"'},
                 json={"action": "enable"},
             )
-            assert blocked.status_code == 409
-            assert blocked.json()["code"] == "SITE_ADAPTER_PENDING"
+            assert enabled.status_code == 200, enabled.text
+            assert enabled.json()["enabled"] is True
 
         with app.state.runtime.session_factory() as session:
             stored = session.scalars(select(Site)).all()
             assert len(stored) == len(kinds)
             for site in stored:
-                assert site.enabled is False
+                assert site.enabled is True
                 assert site.secret_id is not None
                 assert (
                     app.state.secret_store.get(site.secret_id)

@@ -122,7 +122,7 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
         assert items["TANGPT"]["base_url"] == "https://tangpt.top"
         for kind in ("PTERCLUB", "AUDIENCES", "SPRING_SUNDAY", "HDDOLBY", "U2", "TANGPT", "CARPT"):
             assert items[kind]["credential_kind"] == "COOKIE"
-            assert items[kind]["support_status"] == "PENDING_REAL_VALIDATION"
+            assert items[kind]["support_status"] == "SUPPORTED"
     finally:
         client.__exit__(None, None, None)
 
@@ -216,7 +216,7 @@ def test_supported_site_profiles_can_enable_without_connection_probe(tmp_path: P
     client, app = _authenticated_client(tmp_path)
     try:
         supported = [kind for kind in SiteKind if site_kind_is_persistable(kind)]
-        assert len(supported) == 11
+        assert len(supported) == 18
         for kind in supported:
             profile = site_profile(kind)
             secret = f"synthetic-secret-for-{kind.value}"
@@ -269,7 +269,7 @@ def test_supported_site_profiles_can_enable_without_connection_probe(tmp_path: P
         SiteKind.CARPT,
     ),
 )
-def test_v111_pending_site_saves_encrypted_cookie_but_cannot_enable(
+def test_seven_new_supported_sites_save_encrypted_cookie_and_can_enable(
     tmp_path: Path, kind: SiteKind
 ) -> None:
     client, app = _authenticated_client(tmp_path)
@@ -295,11 +295,11 @@ def test_v111_pending_site_saves_encrypted_cookie_but_cannot_enable(
             headers={**_csrf(client), "If-Match": '"1"'},
             json={"action": "enable"},
         )
-        assert enable.status_code == 409
-        assert enable.json()["code"] == "SITE_ADAPTER_PENDING"
+        assert enable.status_code == 200, enable.text
+        assert enable.json()["enabled"] is True
         with app.state.runtime.session_factory() as session:
             row = session.get(Site, site_id)
-            assert row is not None and row.enabled is False and row.secret_id is not None
+            assert row is not None and row.enabled is True and row.secret_id is not None
             encrypted = session.get(SecretRecord, row.secret_id)
             assert encrypted is not None and cookie not in encrypted.ciphertext
     finally:

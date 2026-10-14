@@ -16,8 +16,8 @@ from backend.app.domain.site_config import (
 
 def test_site_profile_registry_lists_supported_and_planned_origins() -> None:
     assert set(SITE_PROFILE_REGISTRY) == set(SiteKind)
-    assert len(PERSISTED_SITE_KINDS) == 11
-    assert len(set(SiteKind) - PERSISTED_SITE_KINDS) == 7
+    assert len(PERSISTED_SITE_KINDS) == 18
+    assert len(set(SiteKind) - PERSISTED_SITE_KINDS) == 0
     assert frozenset(SiteKind) == CONFIGURABLE_SITE_KINDS
     assert trusted_site_base_url(SiteKind.MTEAM) == "https://kp.m-team.cc"
     assert trusted_site_base_url(SiteKind.HDTIME) == "https://hdtime.org"
