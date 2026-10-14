@@ -48,6 +48,7 @@ class ScopedInitialIntentStatus(StrEnum):
     BLOCKED_TRANSACTION = "BLOCKED_TRANSACTION"
     BLOCKED_HOST_EVIDENCE = "BLOCKED_HOST_EVIDENCE"
     HOST_EVIDENCE_ONLY_NO_GRANT = "HOST_EVIDENCE_ONLY_NO_GRANT"
+    HOST_SIGNED_EVIDENCE_ONLY_NO_GRANT = "HOST_SIGNED_EVIDENCE_ONLY_NO_GRANT"
     FIRST_INTENT_SHAPE_ONLY_NO_GRANT = "FIRST_INTENT_SHAPE_ONLY_NO_GRANT"
 
 
@@ -189,7 +190,10 @@ def inspect_initial_scoped_intent_transaction(
                         expected_output=expected_output,
                         now=now,
                     )
-                    if first.status is not HostEvidenceStatus.OBSERVED_UNTRUSTED_NO_GRANT:
+                    if first.status not in {
+                        HostEvidenceStatus.OBSERVED_UNTRUSTED_NO_GRANT,
+                        HostEvidenceStatus.OBSERVED_SIGNED_NO_GRANT,
+                    }:
                         return report(
                             ScopedInitialIntentStatus.BLOCKED_HOST_EVIDENCE, first.status.value
                         )
@@ -214,6 +218,8 @@ def inspect_initial_scoped_intent_transaction(
                         return report(ScopedInitialIntentStatus.BLOCKED_HOST_EVIDENCE)
                     # Untrusted evidence alone cannot satisfy a real host
                     # authorization policy or permit a durable journal.
+                    if first is not None and first.signature_verified:
+                        return report(ScopedInitialIntentStatus.HOST_SIGNED_EVIDENCE_ONLY_NO_GRANT)
                     return report(ScopedInitialIntentStatus.HOST_EVIDENCE_ONLY_NO_GRANT)
                 return checked
             finally:

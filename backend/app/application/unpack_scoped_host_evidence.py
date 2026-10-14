@@ -7,6 +7,8 @@ valid, these observations are permanently non-authorizing.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import stat
@@ -17,6 +19,9 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 from backend.app.application.unpack_scoped_descriptor_evidence import _pin_directory
 from backend.app.application.unpack_scoped_write_environment import _canonical_absolute
 
@@ -24,6 +29,8 @@ if TYPE_CHECKING:
     from backend.app.application.unpack_scoped_initial_intent import ScopedInitialIntentRequest
 
 _SCHEMA = "packbreaker-v112-host-approval-evidence-v1"
+_SIGNED_SCHEMA = "packbreaker-v112-host-evidence-signed-v1"
+
 _FIELDS = frozenset(
     {
         "schema",
@@ -50,6 +57,7 @@ class HostEvidenceStatus(StrEnum):
     BLOCKED_EXPIRED_OR_REVOKED = "BLOCKED_EXPIRED_OR_REVOKED"
     BLOCKED_SCOPE_MISMATCH = "BLOCKED_SCOPE_MISMATCH"
     OBSERVED_UNTRUSTED_NO_GRANT = "OBSERVED_UNTRUSTED_NO_GRANT"
+    OBSERVED_SIGNED_NO_GRANT = "OBSERVED_SIGNED_NO_GRANT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +68,7 @@ class HostEvidenceResult:
     host_approval_obtained: Literal[False] = False
     permits_replay: Literal[False] = False
     downloader_contacted: Literal[False] = False
+    signature_verified: bool = False
 
 
 def _file_identity(info: os.stat_result) -> _FileIdentity:
@@ -86,11 +95,29 @@ def _canonical_path(path: str) -> bool:
     )
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate approval evidence key")
+        result[key] = value
+    return result
+
+
+def _canonical_payload(payload: dict[str, object]) -> bytes:
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+
 class HostApprovalEvidenceInspector:
     """Read a separate, explicitly selected file; never issue a grant."""
 
-    def __init__(self, evidence_path: Path) -> None:
+    def __init__(self, evidence_path: Path, *, trusted_public_key: bytes | None = None) -> None:
         self.path = evidence_path
+        # This key must come from a separate, protected administrator/host
+        # trust anchor, NEVER from the approval document being checked.
+        self.trusted_public_key = trusted_public_key
 
     def inspect(
         self,
@@ -126,7 +153,9 @@ class HostApprovalEvidenceInspector:
                 ):
                     return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
                 with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as stream:
-                    document = json.loads(stream.read(4097))
+                    document = json.loads(
+                        stream.read(4097), object_pairs_hook=_reject_duplicate_json_keys
+                    )
                 final = os.fstat(fd)
                 named = os.stat(self.path.name, dir_fd=parent_fd, follow_symlinks=False)
                 if (
@@ -151,10 +180,36 @@ class HostApprovalEvidenceInspector:
             except (OSError, UnicodeError, ValueError):
                 return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
 
+        authenticated = False
+        if isinstance(document, dict) and set(document) == {"payload", "signature"}:
+            signature = document["signature"]
+            signed_payload = document["payload"]
+            if (
+                not isinstance(signed_payload, dict)
+                or not isinstance(signature, str)
+                or not isinstance(self.trusted_public_key, bytes)
+                or len(self.trusted_public_key) != 32
+            ):
+                return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
+            try:
+                raw_signature = base64.b64decode(signature, validate=True)
+                if len(raw_signature) != 64:
+                    return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
+                Ed25519PublicKey.from_public_bytes(self.trusted_public_key).verify(
+                    raw_signature, _canonical_payload(signed_payload)
+                )
+            except (InvalidSignature, ValueError, binascii.Error, TypeError):
+                return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
+            document = signed_payload
+            authenticated = True
+        elif self.trusted_public_key is not None:
+            # Supplying a trusted key switches to strict signed-only mode.
+            return result(HostEvidenceStatus.BLOCKED_ABSENT_OR_INVALID)
+
         if (
             not isinstance(document, dict)
             or set(document) != _FIELDS
-            or document.get("schema") != _SCHEMA
+            or document.get("schema") != (_SIGNED_SCHEMA if authenticated else _SCHEMA)
             or type(document.get("revoked")) is not bool
             or any(
                 not isinstance(document.get(k), str) or not document[k]
@@ -204,4 +259,10 @@ class HostApprovalEvidenceInspector:
             or expected_output.parent != approved_parent
         ):
             return result(HostEvidenceStatus.BLOCKED_SCOPE_MISMATCH)
-        return result(HostEvidenceStatus.OBSERVED_UNTRUSTED_NO_GRANT, _file_identity(final))
+        return result(
+            HostEvidenceStatus.OBSERVED_SIGNED_NO_GRANT
+            if authenticated
+            else HostEvidenceStatus.OBSERVED_UNTRUSTED_NO_GRANT,
+            _file_identity(final),
+            signature_verified=authenticated,
+        )
