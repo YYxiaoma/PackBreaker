@@ -174,3 +174,20 @@ def is_readonly_acceptance_execution(
     with session_factory() as session:
         execution = session.get(UnpackExecution, execution_id)
         return execution is not None and UnpackAcceptanceScope.is_acceptance_execution(execution)
+
+
+def is_write_blocked_acceptance_execution(
+    session_factory: sessionmaker[Session], execution_id: str
+) -> bool:
+    """Fail closed for ALL acceptance modes, including unknown/future ones.
+
+    A write-capable acceptance mode must only be admitted through a separate,
+    positive, execution-bound authorization gate. Until that gate exists and is
+    explicitly enabled, any mode key (even null/empty) blocks worker side effects.
+    Ordinary executions with no acceptance_mode key retain legacy behavior.
+    """
+    with session_factory() as session:
+        execution = session.get(UnpackExecution, execution_id)
+        if execution is None or not isinstance(execution.config_snapshot, dict):
+            return True
+        return "acceptance_mode" in execution.config_snapshot

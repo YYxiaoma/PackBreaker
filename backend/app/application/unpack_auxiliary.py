@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, cast
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.downloaders import (
@@ -17,10 +17,7 @@ from backend.app.application.downloaders import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
-from backend.app.application.unpack_acceptance import (
-    READ_ONLY_ACCEPTANCE_MARKER,
-    is_readonly_acceptance_execution,
-)
+from backend.app.application.unpack_acceptance import is_write_blocked_acceptance_execution
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.file_mapping import AutoMappingDecision, SourceFileCandidate, auto_map_files
 from backend.app.domain.operation import OperationStatus
@@ -181,13 +178,10 @@ class UnpackAuxiliaryStagingService:
                 session.scalars(
                     select(UnpackExecution.id)
                     .where(
-                        or_(
-                            UnpackExecution.config_snapshot["acceptance_mode"]
-                            .as_string()
-                            .is_(None),
-                            UnpackExecution.config_snapshot["acceptance_mode"].as_string()
-                            != READ_ONLY_ACCEPTANCE_MARKER,
-                        )
+                        func.json_type(UnpackExecution.config_snapshot).is_("object"),
+                        func.json_type(UnpackExecution.config_snapshot, "$.acceptance_mode").is_(
+                            None
+                        ),
                     )
                     .where(UnpackExecution.status == UnpackExecutionStatus.CONTENT_VERIFYING.value)
                     .where(
@@ -211,7 +205,7 @@ class UnpackAuxiliaryStagingService:
     ) -> UnpackAuxiliaryReport:
         if limit < 1 or limit > 50:
             raise self._invalid("辅助文件批次必须位于 1 到 50 之间")
-        if is_readonly_acceptance_execution(self._session_factory, execution_id):
+        if is_write_blocked_acceptance_execution(self._session_factory, execution_id):
             return self._report(execution_id, processed_count=0)
         item_ids = self._list_item_ids(execution_id, limit=limit)
         processed = 0
