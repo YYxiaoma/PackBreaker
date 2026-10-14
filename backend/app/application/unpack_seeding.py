@@ -16,7 +16,10 @@ from backend.app.application.downloaders import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
-from backend.app.application.unpack_acceptance import is_write_blocked_acceptance_execution
+from backend.app.application.unpack_acceptance import (
+    assert_unmarked_execution_for_write,
+    is_write_blocked_acceptance_execution,
+)
 from backend.app.application.unpack_materialization import (
     assert_materialization_journals_applied,
     assert_materialization_targets_current,
@@ -168,6 +171,7 @@ class UnpackSeedingService:
             item = session.get(UnpackExecutionItem, item_id)
             if item is None:
                 raise self._item_not_found()
+
             item_version = item.version
             item_candidate = item.selected_candidate_id
             if item.execution_plan is None or item.execution_plan_digest is None:
@@ -425,6 +429,11 @@ class UnpackSeedingService:
                 TimeoutError,
                 ValueError,
             ) as exc:
+                if (
+                    isinstance(exc, ApplicationError)
+                    and exc.code == "UNPACK_ACCEPTANCE_WRITE_NOT_AUTHORIZED"
+                ):
+                    continue  # Marker changed after scheduling; retain the frozen item.
                 code, message = _safe_error(exc)
                 self._mark_error(
                     item_id,
@@ -482,6 +491,7 @@ class UnpackSeedingService:
             item = session.get(UnpackExecutionItem, item_id)
             if item is None:
                 raise self._item_not_found()
+            assert_unmarked_execution_for_write(session, item.execution_id)
             if item.status not in {
                 UnpackItemStatus.EXECUTING.value,
                 UnpackItemStatus.CLIENT_VERIFYING.value,
@@ -1654,6 +1664,9 @@ class UnpackSeedingService:
             # another worker changed the item. Fence the pending write in the
             # same transaction that reserves its external operation journal.
             item = session.get(UnpackExecutionItem, prepared.item_id)
+            if item is None:
+                raise _StaleSeedingCheckpoint()
+            assert_unmarked_execution_for_write(session, item.execution_id)
             if (
                 item is None
                 or item.status

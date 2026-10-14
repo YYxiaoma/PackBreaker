@@ -17,7 +17,10 @@ from backend.app.application.downloaders import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
-from backend.app.application.unpack_acceptance import is_write_blocked_acceptance_execution
+from backend.app.application.unpack_acceptance import (
+    assert_unmarked_execution_for_write,
+    is_write_blocked_acceptance_execution,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.file_mapping import AutoMappingDecision, SourceFileCandidate, auto_map_files
 from backend.app.domain.operation import OperationStatus
@@ -297,6 +300,11 @@ class UnpackAuxiliaryStagingService:
                 expected_candidate_id=(context.candidate_id if context is not None else None),
             )
         except (ApplicationError, DomainViolation) as exc:
+            if (
+                isinstance(exc, ApplicationError)
+                and exc.code == "UNPACK_ACCEPTANCE_WRITE_NOT_AUTHORIZED"
+            ):
+                return  # A revoked/frozen execution is not a failed media item.
             code, message = _safe_error(exc)
             self._mark_error(
                 item_id,
@@ -311,8 +319,10 @@ class UnpackAuxiliaryStagingService:
             item = session.get(UnpackExecutionItem, item_id)
             if item is None:
                 raise self._item_not_found()
+            assert_unmarked_execution_for_write(session, item.execution_id)
             if item.status != UnpackItemStatus.AUXILIARY_FETCHING.value:
                 raise self._conflict("影片项当前不处于辅助文件补齐阶段")
+
             execution = session.get(UnpackExecution, item.execution_id)
             if execution is None:
                 raise self._not_found()
@@ -1240,6 +1250,10 @@ class UnpackAuxiliaryStagingService:
             # The source item may have been canceled or matched to another
             # candidate while an earlier read-only site/downloader RPC was
             # awaiting. Fence every external write at its durable intent.
+            item = session.get(UnpackExecutionItem, item_id)
+            if item is None:
+                raise self._item_not_found()
+            assert_unmarked_execution_for_write(session, item.execution_id)
             _current_records(session, prepared.context)
             existing = session.scalar(
                 select(UnpackExternalOperationJournal).where(

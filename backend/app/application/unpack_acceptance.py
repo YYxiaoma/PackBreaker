@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.app.application.errors import ApplicationError
 from backend.app.domain.site_config import SiteKind, SiteSupportStatus, site_profile
 from backend.app.infrastructure.persistence.models import (
     Downloader,
@@ -174,6 +175,26 @@ def is_readonly_acceptance_execution(
     with session_factory() as session:
         execution = session.get(UnpackExecution, execution_id)
         return execution is not None and UnpackAcceptanceScope.is_acceptance_execution(execution)
+
+
+def assert_unmarked_execution_for_write(session: Session, execution_id: str) -> None:
+    """Recheck acceptance exclusion in the caller's journal transaction.
+
+    Scheduler checks are insufficient. Call after beginning the existing
+    SQLite write transaction and before any durable external operation intent.
+    """
+    execution = session.get(UnpackExecution, execution_id)
+    if (
+        execution is None
+        or not isinstance(execution.config_snapshot, dict)
+        or "acceptance_mode" in execution.config_snapshot
+    ):
+        raise ApplicationError(
+            code="UNPACK_ACCEPTANCE_WRITE_NOT_AUTHORIZED",
+            status=409,
+            title="验收任务禁止进行外部写入",
+            detail="当前执行没有独立获准的写入链，文件与下载器操作保持关闭",
+        )
 
 
 def is_write_blocked_acceptance_execution(

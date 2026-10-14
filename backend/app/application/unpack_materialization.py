@@ -9,7 +9,10 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
-from backend.app.application.unpack_acceptance import is_write_blocked_acceptance_execution
+from backend.app.application.unpack_acceptance import (
+    assert_unmarked_execution_for_write,
+    is_write_blocked_acceptance_execution,
+)
 from backend.app.application.unpack_existing_reuse import verify_existing_reuse
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.operation import OperationStatus
@@ -144,10 +147,10 @@ class UnpackMaterializationService:
                 self._materialize_actions(item_id, plan, expected_version=version)
                 self._mark_materialized(item_id, plan, expected_version=version)
             except (ApplicationError, DomainViolation, ValueError) as exc:
-                if (
-                    isinstance(exc, ApplicationError)
-                    and exc.code == "UNPACK_EXECUTION_PLAN_BLOCKED"
-                ):
+                if isinstance(exc, ApplicationError) and exc.code in {
+                    "UNPACK_EXECUTION_PLAN_BLOCKED",
+                    "UNPACK_ACCEPTANCE_WRITE_NOT_AUTHORIZED",
+                }:
                     # A frozen, unsafe plan is not an execution failure. Keep its
                     # original blockers and version for explicit remediation.
                     continue
@@ -215,6 +218,8 @@ class UnpackMaterializationService:
             item = session.get(UnpackExecutionItem, item_id)
             if item is None:
                 raise self._item_not_found()
+            assert_unmarked_execution_for_write(session, item.execution_id)
+
             if item.status not in {
                 UnpackItemStatus.PLAN_PENDING.value,
                 UnpackItemStatus.EXECUTING.value,
@@ -689,9 +694,11 @@ class UnpackMaterializationService:
         with self._session_factory() as session:
             begin_immediate_write(session)
             item = session.get(UnpackExecutionItem, item_id)
+            if item is None:
+                raise self._item_not_found()
+            assert_unmarked_execution_for_write(session, item.execution_id)
             if (
-                item is None
-                or item.status != UnpackItemStatus.EXECUTING.value
+                item.status != UnpackItemStatus.EXECUTING.value
                 or item.version != expected_version
                 or item.selected_candidate_id != plan.candidate_id
                 or item.candidate_generation != plan.candidate_generation
@@ -701,6 +708,7 @@ class UnpackMaterializationService:
                 # Never reserve a filesystem operation for a canceled or
                 # reselected item after an earlier read-only path probe.
                 raise self._conflict("文件写入前的任务版本或候选已经变化")
+
             existing = session.scalar(
                 select(UnpackExternalOperationJournal).where(
                     UnpackExternalOperationJournal.idempotency_key == key
