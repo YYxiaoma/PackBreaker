@@ -22,6 +22,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # risk acceptance gate compares the reviewed base commit to HEAD
       - name: Require v1.1.2 real E2E receipts OR audited explicit risk acceptance and approval
         if: github.ref_name == 'v1.1.2'
         run: python3 scripts/validate_v112_site_release_gate.py --require-ready
@@ -171,6 +173,8 @@ jobs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # v1.1.2 release gate checks reviewed source ancestry
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
