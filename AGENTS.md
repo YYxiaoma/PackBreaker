@@ -58,7 +58,7 @@ scripts/                            检查、测试、OpenAPI、验收与发布�
 - **领域优先**：安全判定与状态迁移放在 domain/application 层；API router 不自行复制业务门禁；适配器保留 qB、Transmission、PT 站点的协议差异。
 - **完整跨层修改**：API 变更应同步 `frontend/openapi.json`、`frontend/src/api/generated/schema.ts`、调用处、契约/回归测试；数据库字段变更应同步 ORM、Alembic、序列化与迁移测试。
 - **界面以当前组件为准**：检查桌面和窄屏、亮/暗主题、loading/empty/error、按钮可点击区域、长内容省略和弹窗状态。不要依照早期菜单截图或已删除的路由重新引入功能。
-- **文档按需参考**：模块复杂时再阅读 `docs/architecture.md`、`docs/matching-and-filesystem-safety.md`、`docs/adapters.md`、`docs/testing.md` 和当前相关验收文档。文档与运行代码不符时先核实并显式记录差异，不能让旧版设计覆盖当前实现。
+- **文档按需参考**：模块复杂时再阅读 `docs/README.md`、`docs/testing.md`、`docs/support-matrix.md`、`docs/known-limitations.md` 和当前相关验收材料。文档与运行代码不符时先核实并显式记录差异，不能让旧版设计覆盖当前实现。
 
 ## 4. 不可削弱的系统安全边界
 

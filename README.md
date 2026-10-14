@@ -75,7 +75,7 @@ docker compose up -d
 - 媒体目录须在宿主机存在，并确保 `PUID/PGID` 具备所需访问权限；容器内路径用于下载器路径映射。
 - 不挂载 `docker.sock` 时可通过宿主机 `docker compose pull && docker compose up -d` 升级；Web 一键升级需要该高权限挂载，且不会自动更新 `compose.yaml` 的镜像声明。
 
-详见 [部署与运维文档](./docs/deployment.md)。
+详见 [部署与运维文档](./docs/README.md#部署与首次配置)。
 
 ## 本地开发
 
@@ -113,7 +113,7 @@ uv run python scripts/check.py
 uv run python scripts/test.py
 ```
 
-更多说明见 [本地开发指南](./docs/local-development.md) 与 [AGENTS.md](./AGENTS.md)。
+更多说明见 [本地开发指南](./docs/README.md#本地开发) 与 [AGENTS.md](./AGENTS.md)。
 
 ## 技术栈
 

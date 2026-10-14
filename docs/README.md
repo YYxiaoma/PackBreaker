@@ -1,92 +1,164 @@
-# PackBreaker 研发文档
+# PackBreaker 项目说明
 
-本目录集中维护 PackBreaker 当前可实现、可测试和可验收的研发约束。已移除的历史需求基线 HTML 仅通过 Git 历史追溯。
+本文依据 v1.1.2 当前实现整理，作为使用与维护入口。历史开发流水、里程碑清单和旧 UI 原型已从文档目录清理；历史版本可通过 Git tag 和 GitHub Releases 查阅。
 
-## 文档优先级
+## 当前版本与边界
 
-发生冲突时按以下顺序处理：
+v1.1.2 已正式发布，源码提交为 `970cbdd199cf4f9e459ccf76bf23c982d2fa16e6`，提供 Linux AMD64 与 ARM64 镜像。
 
-1. 当前版本设计、支持矩阵、测试与验收文档：产品范围、安全目标和验收标准。
-2. 本目录中的模块设计文档：模块接口、数据流和实现约束。
-3. [AGENTS.md](../AGENTS.md)：代码、测试、凭证和交付规范。
-4. README：项目概览。
+- GHCR：`ghcr.io/yyxiaoma/packbreaker`
+- Docker Hub：`yyxiaoma01/packbreaker`
+- [正式发行与附件](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.1.2)
+- [发布流水线](https://github.com/YYxiaoma/PackBreaker/actions/runs/38545506607)
 
-任何设计变更都不能静默降低已经冻结并由测试/验收覆盖的安全门。确需改变产品范围或安全约束时，必须同步更新对应版本设计、测试、支持边界与验收文档。
+七个新增站点已开放为 `SUPPORTED`；这表示代码适配与任务准入，不表示完整真实业务链已逐站验收。七站正式完整 E2E 收据仍为 **0/7**，本次发布采用用户明确接受该缺口的策略。网络、Tracker 与异常恢复现场验证留待后续版本，见 [已知限制](known-limitations.md)。
 
-## 文档导航
+## 功能入口
 
-| 文档 | 用途 | 首次使用阶段 |
-| --- | --- | --- |
-| [历史 UI 原型记录](./prototype.md) | 仅供追溯早期交互原型；不代表当前产品能力 | 历史 |
-| [系统架构](./architecture.md) | 划分进程、模块、数据流、并发与恢复边界 | M1 |
-| [领域模型与数据设计](./domain-model.md) | 定义实体、状态机、约束和迁移原则 | M1 |
-| [API 设计](./api.md) | 约定认证、错误、幂等和首版端点 | M1-M3 |
-| [适配器开发规范](./adapters.md) | 约定站点、下载器、通知适配器契约 | M1-M4 |
-| [匹配验证与文件安全](./matching-and-filesystem-safety.md) | 规定候选评分、piece 校验、硬链接及回滚算法 | M2-M4 |
-| [测试与验收](./testing.md) | 建立测试分层、合成语料和发布门禁 | M1-M6 |
-| [M2 退出清单](./m2-exit-checklist.md) | 区分 M2 已完成代码能力、自动化证据与真实语料/环境验收缺口 | M2 |
-| [M6 退出清单](./m6-exit-checklist.md) | 跟踪发布、备份恢复、升级、诊断与 v1.0 发布门禁 | M6 |
-| [数据库升级兼容矩阵](./upgrade-compatibility.md) | 定义 revision 升级、原子切换与备份回滚支持边界 | M6 |
-| [发布流程与供应链证据](./release-process.md) | 定义镜像 digest、SBOM、发布清单和 tag 发布门禁 | M6 |
-| [v1.0 验收证据索引](./v1-acceptance-evidence.json) | 逐项绑定 25 条 v1.0 验收要求与自动化/现场/外部证据 | M6 |
-| [v1.0 支持矩阵](./support-matrix.md) | 发布平台、下载器、站点、文件系统与升级支持边界 | M6 |
-| [v1.0 已知限制](./known-limitations.md) | 明确尚未闭环的发布证据与安全边界 | M6 |
-| [v0.1.6 真实环境验收记录](./v0.1.6-real-environment-acceptance.md) | 记录 v0.1.5→v0.1.6 真实配置副本迁移、下载器/站点只读现场证据与待外部条件项 | v0.1.6 |
-| [v0.1.7 开发与发布记录](./v0.1.7-development.md) | 记录 Compose Web 升级能力、Candidate Docker E2E、正式 Release 身份与供应链证据 | v0.1.7 |
-| [v0.1.8 研发文档](./v0.1.8-development.md) | 定义任务生命周期收口、风险授权、Telegram 高风险审批、自动校验与 Stage A 现状梳理 | v0.1.8 |
-| [v0.1.9 发布说明与验收范围](./v0.1.9-release.md) | 总览重构、资源状态、任务中心/导航精简和运行日志可读性；跟踪正式发布证据 | v0.1.9 |
-| [v1.0.1 研发记录](./v1.0.1-development.md) | 已确认五项优化、代码实现边界与尚待的站点/路径真实验收 | v1.0.1 |
-| [v1.0.1 正式发布与受控恢复记录](./v1.0.1-release.md) | 记录已发布 Tag/镜像摘要、失败与恢复流水线、发布资产和八站禁用边界 | v1.0.1 |
-| [v1.0.2 研发记录](./v1.0.2-development.md) | 八站配置开放、固定站点来源与正式任务禁用门禁的研发变更 | v1.0.2 |
-| [v1.0.2 正式发布与受控恢复记录](./v1.0.2-release.md) | 正式 Tag、双架构镜像、失败与恢复流水线、供应链资产以及下版升级基线 | v1.0.2 |
-| [v1.0.3 研发记录](./v1.0.3-development.md) | docker.sock 已挂载但应用降权后无法升级的处理、错误分类、版本弹窗精简及隔离验收计划 | v1.0.3 |
-| [v1.0.3 正式发布与受控恢复记录](./v1.0.3-release.md) | 记录已发布 Tag、双架构镜像摘要、原始 QEMU 失败与受控恢复、正式资产核验及现场部署限制 | v1.0.3 |
-| [v1.0.4 研发记录](./v1.0.4-development.md) | 匿名 Docker Volume 保留、v1.0.3→v1.0.4 Web updater 与双架构候选验收 | v1.0.4 |
-| [v1.0.4 正式发布与受控恢复记录](./v1.0.4-release.md) | 正式 Tag、双架构不可变 digest、QEMU 隔离恢复、供应链资产和下版升级基线 | v1.0.4 |
-| [v1.0.5 研发设计与验收文档](./v1.0.5-development.md) | 全站点运行门禁开放、easychen/CookieCloud 同步与下载器任意挂载路径授权模型 | v1.0.5 |
-| [v1.0.5 正式发布记录](./v1.0.5-release.md) | 正式 Tag、双架构不可变 digest、CookieCloud upstream 门、升级/回滚、发布资产与下版基线 | v1.0.5 |
-| [v1.0.6 研发与发布前验收记录](./v1.0.6-development.md) | 在线升级进度反馈、自动刷新、v1.0.5→v1.0.6 updater 与双架构候选验收 | v1.0.6 |
-| [v1.0.6 正式发布记录](./v1.0.6-release.md) | 正式 Tag、双架构不可变 digest、升级/回滚、ARM64、供应链资产与下版基线 | v1.0.6 |
-| [v1.0.7 研发设计](./v1.0.7-development.md) | 影片去重、完整 SHA-256 安全判定、原子链接替换、崩溃恢复与在线升级刷新连续性 | v1.0.7 |
-| [v1.0.7 正式发布记录](./v1.0.7-release.md) | 正式 Tag、双架构不可变 digest、影片去重 NAS 验收、升级/回滚、供应链资产与下版基线 | v1.0.7 |
-| [v1.0.8 研发设计](./v1.0.8-development.md) | 去除单一 /data 根限制、显式挂载绝对路径与直接非 root 运行模型 | v1.0.8 |
-| [v1.0.8 正式发布记录](./v1.0.8-release.md) | 正式 Tag、双架构不可变 digest、非 root/绝对挂载路径、升级/回滚、供应链资产与下版基线 | v1.0.8 |
-| [v1.0.9 研发设计](./v1.0.9-development.md) | GHCR + Docker Hub 双 Registry 发布，以及只配置 PUID/PGID 的自动降权启动模型 | v1.0.9 |
-| [v1.0.15 研发设计](./v1.0.15-development.md) | 数据拆包 v2：任务中心两卡化、统一手动/监控执行链、分页发现、分批匹配、人工审核、item 重试及在线升级 503 诊断修复 | v1.0.15 |
-| [数据拆包 v2 架构设计](./design/unpack-flow-v2-architecture.md) | 定义统一拆包 pipeline、状态机、分页发现、批量匹配、exact-match、审核与恢复模型 | v1.0.15 |
-| [数据拆包 v2 API 与数据模型](./design/unpack-flow-v2-api-data-model.md) | 定义新拆包表结构、API、强版本、幂等、目录树和破坏性迁移方案 | v1.0.15 |
-| [数据拆包 v2 测试与验收](./design/unpack-flow-v2-test-plan.md) | 定义单元/API/集成/浏览器/迁移/升级 Bug 回归和候选发布门禁 | v1.0.15 |
-| [数据拆包 v2 实施计划](./design/unpack-flow-v2-implementation-plan.md) | 将重构拆成 WP1-WP11，冻结产品决策、开发顺序和旧模型删除清单 | v1.0.15 |
-| [部署、运维与安全](./deployment.md) | 约定容器、卷、备份、升级和密钥管理 | M1/M6 |
-| [本地开发指南](./local-development.md) | 统一工具链、命令、配置和日常工作流 | M1 |
-| [研发路线图](./development-roadmap.md) | 将 M0-M6 拆成可交付工作包与退出条件 | 全阶段 |
-| [v0.1.5 任务中心最终设计](./v0.1.5-task-center-design.md) | 定义手动/监控拆包任务、Cron、执行记录、失败重试、默认规则与双语日志展示 | v0.1.5 |
+| 入口 | 当前能力 |
+| --- | --- |
+| 总览 | 系统资源、站点与下载器连接、任务生命周期概览 |
+| 数据拆包 | 手动与监控任务、影片发现、跨站匹配、候选审核、内容验证、受控物化、客户端下载校验及做种 |
+| 数据去重 | 重复影片预检、完整内容哈希、审核与受控文件复用 |
+| 站点管理 | 固定站点 Profile、凭证、代理、连接测试，与 CookieCloud 双卡切换 |
+| 下载器 | qBittorrent / Transmission 配置、连接状态、任务与路径映射 |
+| 通知 | Telegram、Server酱、站内 Inbox |
+| AI 助手 | OpenAI-compatible Provider、模型、只读 Tools、Telegram 对话 |
+| 系统运维 | 日志、健康诊断、备份恢复、版本检查及受控升级 |
 
-## 推荐阅读顺序
+自动批准保持关闭；候选分数或文件名相同不能替代内容验证和执行安全门。
 
-新参与者先阅读需求基线和系统架构，再根据工作范围阅读对应文档：
+## 部署与首次配置
 
-- 后端核心：领域模型 → API → 匹配与文件安全 → 测试。
-- 站点/下载器接入：适配器 → API → 测试。
-- 前端：API → 领域状态 → 测试中的端到端场景。
-- 发布运维：部署 → 测试 → 研发路线图的 M6 门禁。
+推荐 Docker Compose。将以下内容保存为 `compose.yaml`，替换媒体路径、UID 和 GID：
 
-## 当前持续验收输入
+```yaml
+services:
+  packbreaker:
+    image: ghcr.io/yyxiaoma/packbreaker:1.1.2
+    container_name: packbreaker
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      PACKBREAKER_TIMEZONE: "Asia/Shanghai"
+    volumes:
+      - packbreaker-config:/config
+      - /path/to/downloads:/downloads
+    security_opt:
+      - no-new-privileges:true
 
-以下信息需要继续从真实环境积累，但当前没有一项要求通过放宽安全门或人为制造错误来获得：
+volumes:
+  packbreaker-config:
+```
 
-- 蜂巢 3.3T 大包的日志与可提交合成等价案例；真实源目录已完成只读扫描，代表性 torrent 元数据已收到。
-- 7 个失败样例及人工归因已完成 7 / 7；新的真实故障继续追加，但不再为数量制造失败，见 [`real-failure-samples.md`](./real-failure-samples.md)。
-- 首批 qBittorrent 5.2.3 / WebAPI 2.15.1、Transmission 4.1.3 与 NAS 路径映射已经完成真实联调；后续版本兼容继续按新环境增量验收。
-- 候选评分已建立真实标定基线，见 [`candidate-threshold-calibration.md`](./candidate-threshold-calibration.md)。当前 12 个去重 `FULL_VERIFIED` 正样本但无高置信内容错误负样本，因此 `recommended_threshold=null`、自动批准保持关闭；后续自然积累正负标签再更新报告。
-- repair 真实 field E2E 等待自然产生的 `CLIENT_CHECK_REQUIRED/RETRY`；现阶段不通过修改真实媒体或伪造 RETRY 来制造验收样本。
+```bash
+docker compose pull
+docker compose up -d
+docker logs packbreaker
+```
 
-在真实语料证明可安全自动批准前，非同 Info-hash 候选只能进入人工确认和/或完整内容/客户端下载器校验流程。
+浏览器访问 `http://服务器IP:8000`。管理员用户名为 `admin`，首次临时密码从容器启动日志获取，登录后按提示改密。生产部署建议固定版本或发行附件中的不可变 digest。
 
-M4 的正式退出证据见 [`m4-exit-checklist.md`](./m4-exit-checklist.md)；当前已允许进入 M5，repair 天然样本与候选负标签继续作为持续现场验收。
+1. 持久保存 `/config`，其中包含数据库、配置及受保护凭证所依赖的数据；迁移和恢复前先备份。
+2. 将媒体目录挂载为明确的容器路径。界面使用容器路径，下载器保存路径通过路径映射对应。
+3. 配置下载器并测试连接，再配置站点 Cookie / API Key 或 CookieCloud。
+4. 从小范围手动任务开始，检查发现结果、候选、内容校验和计划后再运行。
+5. 监控任务涉及周期触发，应先验证来源范围、目标路径与下载器配置。
 
-## 维护规则
+仓库根目录的 Compose 默认构建本地镜像；上述示例使用已发布镜像，二者用途不同。
 
-- 接口、表结构、状态或安全门变化时，同一提交更新相应文档和测试计划。
-- 完成一个里程碑后，在路线图中登记结论、遗留风险和下一阶段输入。
-- 示例只能使用合成或完全脱敏的数据，不得提交真实 passkey、Cookie、Token、torrent 或媒体内容。
+### 路径、权限与数据保护
+
+- 宿主机媒体路径与容器路径必须对应，下载器也必须能访问最终保存位置。
+- Hardlink 要求源与目标在同一文件系统；无法硬链接时依实际执行计划与授权使用 COPY。
+- 源媒体不允许被下载器修改。可能恢复下载的目标必须先隔离为独立 inode。
+- 下载器已有相同 hash 不代表可被认领，还需要路径、归属和 journal 证据。
+- 不直接手工修改运行数据库、journal 或任务状态以跳过阻断。
+
+### 升级与恢复
+
+未挂载 Docker socket 时，在宿主机执行：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Web 一键升级需要显式挂载 `/var/run/docker.sock:/var/run/docker.sock`，这会授予容器 Docker 主机管理权限。升级前检查健康状态、备份与目标镜像身份；Web 升级不会自动改写宿主机 Compose 的镜像声明。失败后按升级记录检查旧容器和数据库恢复结果，不能只通过更换镜像标签推断数据库已回滚。
+
+备份使用系统设置中的备份功能或已提供的 maintenance 命令；恢复时保持应用停止或遵循维护工具的离线约束，避免复制运行中的 SQLite 文件造成不一致。
+
+## 数据拆包执行过程
+
+任务定义和来源扫描生成影片项，随后进行跨站搜索、详情解析和 torrent 元信息匹配。审核与内容验证通过后，后端冻结执行计划，再按计划物化文件、添加下载器任务、验证客户端状态并启动做种。
+
+- 匹配结果只是候选；`FULL_VERIFIED` 必须来自所要求的完整内容验证。
+- Transmission 需要独立 verify；qBittorrent 是否可跳过部分校验取决于真实能力与有效证据。
+- 外部操作先记录 journal intent，再执行并记录结果。
+- 响应丢失时先读取真实状态并对账，不能盲目重复 ADD / START。
+- 取消、回滚和资源释放只能处理被当前计划与 journal 证明归属的对象。
+- 手动与监控任务共用业务执行链；任务定义、execution、影片项和外部操作有各自状态。
+
+## 架构与代码导航
+
+| 位置 | 职责 |
+| --- | --- |
+| `backend/app/api/` | FastAPI 路由、认证、请求及响应契约 |
+| `backend/app/application/` | 拆包、去重、站点、下载器、通知、升级等流程 |
+| `backend/app/domain/` | 领域状态、匹配规则、安全不变量与执行计划 |
+| `backend/app/infrastructure/` | 外部协议适配、文件系统及持久化 |
+| `backend/migrations/` | Alembic 数据库迁移 |
+| `frontend/src/components/` | Vue 管理界面，任务入口为 TaskCenterV2 |
+| `frontend/src/api/` | API 调用与生成的 TypeScript 类型 |
+| `tests/` | 单元、API、应用、契约及集成测试 |
+| `scripts/` | 检查、测试、契约生成、隔离验收和发布辅助 |
+| `.github/workflows/` | CI、容器验证、候选交付及正式发布 |
+
+后端为 Python 3.11 / FastAPI / SQLAlchemy / Alembic / SQLite，前端为 Vue 3 / TypeScript / Vite / Element Plus / Pinia。数据库迁移、OpenAPI 与生成类型必须随接口变更同步。
+
+## 本地开发
+
+需要 Python 3.11、uv、Node.js 22.12+、Corepack，前端锁定 pnpm 10.34.5。
+
+```bash
+uv sync --frozen --all-groups
+corepack enable
+corepack pnpm --dir frontend install --frozen-lockfile
+mkdir -p runtime/dev/config runtime/dev/data
+PACKBREAKER_CONFIG_DIR="$PWD/runtime/dev/config" \
+PACKBREAKER_DATA_DIR="$PWD/runtime/dev/data" \
+uv run python -m backend.app.server
+```
+
+另开终端执行 `corepack pnpm --dir frontend dev`，访问 `http://127.0.0.1:5173`，API 代理到本地 8000 端口。开发目录不得复用生产数据库、凭证或媒体。
+
+```bash
+uv run python scripts/check.py
+uv run python scripts/test.py
+```
+
+前者执行仓库扫描、证据和基线检查、Ruff、mypy、前端 lint/typecheck 及 OpenAPI 漂移检查；后者运行后端测试、前端测试和构建。UI 变更还应运行相关浏览器门禁，详见 [测试与验收](testing.md) 和根目录 [AGENTS.md](../AGENTS.md)。
+
+## 故障排查
+
+| 现象 | 优先检查 |
+| --- | --- |
+| 搜索或详情超时 | 站点网络、凭证、代理、限流、实际 Profile 超时；保留稳定错误码 |
+| 文件找不到或无写权限 | 容器挂载、路径映射、PUID/PGID、目标根权限 |
+| 目标冲突或计划 stale | 当前源/目标快照、配置版本与计划身份；重新预检 |
+| 客户端校验未完成 | 客户端实际进度、暂停状态、保存路径、verify journal |
+| 未决操作或重启恢复阻断 | 日志、执行记录与 journal 对账，先确认真实外部状态 |
+| 升级失败 | 发行 manifest/digest、Docker 权限、健康检查、备份及回滚记录 |
+
+提交问题时提供版本、架构、错误码、复现步骤和脱敏日志，不上传 Cookie、Passkey、API Key、真实 torrent、数据库或完整私有媒体路径。
+
+## 文档与证据维护
+
+- [站点支持边界](support-matrix.md)
+- [已知限制](known-limitations.md)
+- [测试与验收](testing.md)
+
+CI 依赖的 JSON 清单和 v1.1.2 发布授权记录继续保留，不能通过清理文档篡改验收结果。旧验收索引所需的原始材料迁至 `evidence/legacy/`，仅用于已有证据校验，不作为当前操作指南。已发布 tag 与 Release 附件保持不变。后续维护以 main 和当前实现为准，文档更新不能代替真实环境验证。

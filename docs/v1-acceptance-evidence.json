@@ -7,8 +7,14 @@
       "criterion": "真实验收语料中的自动误辅种为 0。",
       "status": "field_evidence",
       "evidence": [
-        {"path": "docs/candidate-threshold-calibration.md", "contains": "recommended_threshold"},
-        {"path": "docs/README.md", "contains": "自动批准保持关闭"}
+        {
+          "path": "evidence/legacy/candidate-threshold-calibration.md",
+          "contains": "recommended_threshold"
+        },
+        {
+          "path": "docs/README.md",
+          "contains": "自动批准保持关闭"
+        }
       ]
     },
     {
@@ -16,8 +22,14 @@
       "criterion": "qB 与 TR 各完成一条真实端到端任务，包含人工确认和失败回滚。",
       "status": "field_evidence",
       "evidence": [
-        {"path": "docs/testing.md", "contains": "qBittorrent v5.2.3 / WebAPI 2.15.1"},
-        {"path": "docs/m2-exit-checklist.md", "contains": "Transmission 也已完成两条真实写链"}
+        {
+          "path": "docs/testing.md",
+          "contains": "qBittorrent v5.2.3 / WebAPI 2.15.1"
+        },
+        {
+          "path": "evidence/legacy/m2-exit-checklist.md",
+          "contains": "Transmission 也已完成两条真实写链"
+        }
       ]
     },
     {
@@ -25,8 +37,14 @@
       "criterion": "7 个失败样例完成归因并形成回归测试",
       "status": "field_evidence",
       "evidence": [
-        {"path": "docs/real-failure-samples.md", "contains": "已正式归档：7 / 7"},
-        {"path": "tests/application/test_downloader_operations.py", "contains": "test_response_lost_recovers_by_hash_save_path_and_ownership_tag_without_second_add"}
+        {
+          "path": "evidence/legacy/real-failure-samples.md",
+          "contains": "已正式归档：7 / 7"
+        },
+        {
+          "path": "tests/application/test_downloader_operations.py",
+          "contains": "test_response_lost_recovers_by_hash_save_path_and_ownership_tag_without_second_add"
+        }
       ]
     },
     {
@@ -34,8 +52,14 @@
       "criterion": "重复触发 10 次结果唯一。",
       "status": "covered",
       "evidence": [
-        {"path": "tests/integration/test_persistence.py", "contains": "test_task_create_replayed_ten_times_is_unique"},
-        {"path": "tests/application/test_downloader_operations.py", "contains": "test_ten_concurrent_adds_are_serialized_to_one_external_add"}
+        {
+          "path": "tests/integration/test_persistence.py",
+          "contains": "test_task_create_replayed_ten_times_is_unique"
+        },
+        {
+          "path": "tests/application/test_downloader_operations.py",
+          "contains": "test_ten_concurrent_adds_are_serialized_to_one_external_add"
+        }
       ]
     },
     {
@@ -43,9 +67,18 @@
       "criterion": "LINKING、ADDING、CLIENT_VERIFYING 故障注入后恢复正确。",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_linking.py", "contains": "LINKING_SOURCE_CHANGED"},
-        {"path": "tests/application/test_task_adding.py", "contains": "test_qb_response_lost_recovers_without_second_add"},
-        {"path": "tests/application/test_task_adding.py", "contains": "test_client_verifying_crash_after_recheck_applied_recovers_without_second_recheck"}
+        {
+          "path": "tests/application/test_task_linking.py",
+          "contains": "LINKING_SOURCE_CHANGED"
+        },
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_qb_response_lost_recovers_without_second_add"
+        },
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_client_verifying_crash_after_recheck_applied_recovers_without_second_recheck"
+        }
       ]
     },
     {
@@ -53,8 +86,14 @@
       "criterion": "execution plan 必须绑定明确的目标下载器 version/能力摘要/远端 save path",
       "status": "covered",
       "evidence": [
-        {"path": "tests/unit/test_unpack_v2_execution_plan.py", "contains": "assert plan.target_remote_save_path == \"/downloads/seeding\""},
-        {"path": "tests/unit/test_unpack_v2_execution_plan.py", "contains": "assert plan.target_downloader_version == 5"}
+        {
+          "path": "tests/unit/test_unpack_v2_execution_plan.py",
+          "contains": "assert plan.target_remote_save_path == \"/downloads/seeding\""
+        },
+        {
+          "path": "tests/unit/test_unpack_v2_execution_plan.py",
+          "contains": "assert plan.target_downloader_version == 5"
+        }
       ]
     },
     {
@@ -62,9 +101,18 @@
       "criterion": "ADDING 覆盖 qB 响应丢失与“journal 已 APPLIED、task 状态尚未提交”两个崩溃点",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_adding.py", "contains": "test_qb_response_lost_recovers_without_second_add"},
-        {"path": "tests/application/test_task_adding.py", "contains": "test_crash_after_qb_applied_only_finishes_task_transition_on_replay"},
-        {"path": "tests/application/test_task_adding.py", "contains": "test_client_check_required_transitions_to_client_verifying_without_skip"}
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_qb_response_lost_recovers_without_second_add"
+        },
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_crash_after_qb_applied_only_finishes_task_transition_on_replay"
+        },
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_client_check_required_transitions_to_client_verifying_without_skip"
+        }
       ]
     },
     {
@@ -72,9 +120,18 @@
       "criterion": "CLIENT_VERIFYING 必须以独立 recheck journal + 单步状态 tick 工作",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_adding.py", "contains": "test_client_verifying_tracks_check_progress_then_enters_seeding"},
-        {"path": "tests/application/test_task_adding.py", "contains": "test_client_verifying_incomplete_check_transitions_to_retry"},
-        {"path": "tests/application/test_downloader_operations.py", "contains": "test_recheck_response_lost_with_unchanged_state_requires_reconciliation"}
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_client_verifying_tracks_check_progress_then_enters_seeding"
+        },
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_client_verifying_incomplete_check_transitions_to_retry"
+        },
+        {
+          "path": "tests/application/test_downloader_operations.py",
+          "contains": "test_recheck_response_lost_with_unchanged_state_requires_reconciliation"
+        }
       ]
     },
     {
@@ -82,9 +139,18 @@
       "criterion": "SEEDING 必须以独立 start journal 驱动",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_adding.py", "contains": "test_seeding_start_response_loss_recovers_without_second_start"},
-        {"path": "tests/application/test_task_adding.py", "contains": "test_seeding_crash_after_start_applied_only_finishes_task_on_replay"},
-        {"path": "tests/application/test_downloader_operations.py", "contains": "test_ten_concurrent_starts_are_serialized_to_one_external_start"}
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_seeding_start_response_loss_recovers_without_second_start"
+        },
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_seeding_crash_after_start_applied_only_finishes_task_on_replay"
+        },
+        {
+          "path": "tests/application/test_downloader_operations.py",
+          "contains": "test_ten_concurrent_starts_are_serialized_to_one_external_start"
+        }
       ]
     },
     {
@@ -92,9 +158,18 @@
       "criterion": "启动恢复必须有界扫描",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_adding.py", "contains": "test_startup_recovery_step_limit_is_bounded"},
-        {"path": "tests/application/test_task_adding.py", "contains": "test_startup_recovery_blocked_task_does_not_prevent_later_task"},
-        {"path": "tests/application/test_analysis_cancellation.py", "contains": "COOPERATIVE_ANALYSIS"}
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_startup_recovery_step_limit_is_bounded"
+        },
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_startup_recovery_blocked_task_does_not_prevent_later_task"
+        },
+        {
+          "path": "tests/application/test_analysis_cancellation.py",
+          "contains": "COOPERATIVE_ANALYSIS"
+        }
       ]
     },
     {
@@ -102,8 +177,14 @@
       "criterion": "取消/回滚必须证明 qB 与文件资源都属于当前 task/execution plan",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_adding.py", "contains": "test_cancellation_removes_qb_and_rolls_back_only_journal_owned_files"},
-        {"path": "tests/application/test_task_adding.py", "contains": "test_startup_recovery_resumes_rolling_back_without_second_qb_remove"}
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_cancellation_removes_qb_and_rolls_back_only_journal_owned_files"
+        },
+        {
+          "path": "tests/application/test_task_adding.py",
+          "contains": "test_startup_recovery_resumes_rolling_back_without_second_qb_remove"
+        }
       ]
     },
     {
@@ -111,7 +192,10 @@
       "criterion": "`DONE` 是不可逆终态",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_actions.py", "contains": "test_release_action_keeps_done_and_replays_receipt"}
+        {
+          "path": "tests/application/test_task_actions.py",
+          "contains": "test_release_action_keeps_done_and_replays_receipt"
+        }
       ]
     },
     {
@@ -119,8 +203,14 @@
       "criterion": "副作用开始前取消必须覆盖",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_actions.py", "contains": "test_pre_side_effect_cancel_finishes_without_resource_coordinator"},
-        {"path": "tests/application/test_analysis_cancellation.py", "contains": "COOPERATIVE_ANALYSIS"}
+        {
+          "path": "tests/application/test_task_actions.py",
+          "contains": "test_pre_side_effect_cancel_finishes_without_resource_coordinator"
+        },
+        {
+          "path": "tests/application/test_analysis_cancellation.py",
+          "contains": "COOPERATIVE_ANALYSIS"
+        }
       ]
     },
     {
@@ -128,8 +218,14 @@
       "criterion": "数据拆包 v2 的公开写动作必须要求管理会话 CSRF；人工审核还必须要求 `If-Match` + `Idempotency-Key`，重试动作要求 `If-Match`。",
       "status": "covered",
       "evidence": [
-        {"path": "tests/api/test_unpack_v2.py", "contains": "test_unpack_write_api_requires_admin_csrf"},
-        {"path": "tests/api/test_unpack_v2.py", "contains": "test_unpack_item_review_api_requires_version_and_replays_idempotently"}
+        {
+          "path": "tests/api/test_unpack_v2.py",
+          "contains": "test_unpack_write_api_requires_admin_csrf"
+        },
+        {
+          "path": "tests/api/test_unpack_v2.py",
+          "contains": "test_unpack_item_review_api_requires_version_and_replays_idempotently"
+        }
       ]
     },
     {
@@ -137,8 +233,14 @@
       "criterion": "浏览器门禁必须覆盖公开动作 UI",
       "status": "covered",
       "evidence": [
-        {"path": "scripts/check-prototype.cjs", "contains": "QBITTORRENT_SEEDING_CONFIRMED"},
-        {"path": "scripts/check-prototype.cjs", "contains": "浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端"}
+        {
+          "path": "scripts/check-prototype.cjs",
+          "contains": "QBITTORRENT_SEEDING_CONFIRMED"
+        },
+        {
+          "path": "scripts/check-prototype.cjs",
+          "contains": "浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端"
+        }
       ]
     },
     {
@@ -146,8 +248,14 @@
       "criterion": "数据拆包 v2 前端公开动作控制必须覆盖：保存与执行分离；仅 `review_allowed=true` 的影片显示“审核”；匹配超时 / 匹配错误只暴露 item 级“重试”；审核弹窗默认选中最高候选但不自动提交；全部可见业务状态保持中文。",
       "status": "covered",
       "evidence": [
-        {"path": "scripts/check-unpack-v2-ui.cjs", "contains": "自动匹配成功与待人工审核都必须提供审核按钮"},
-        {"path": "scripts/check-unpack-v2-ui.cjs", "contains": "保存并执行"}
+        {
+          "path": "scripts/check-unpack-v2-ui.cjs",
+          "contains": "自动匹配成功与待人工审核都必须提供审核按钮"
+        },
+        {
+          "path": "scripts/check-unpack-v2-ui.cjs",
+          "contains": "保存并执行"
+        }
       ]
     },
     {
@@ -155,9 +263,18 @@
       "criterion": "数据拆包 v2 不再暴露旧 TaskEvent/SSE 接口；执行详情由 execution + items 分页快照提供，支持稳定 item 游标、状态筛选和六阶段中文管线；终态通过通知 outbox 幂等投影，不依赖浏览器保持 EventSource 连接。",
       "status": "covered",
       "evidence": [
-        {"path": "tests/api/test_unpack_v2.py", "contains": "/api/v1/unpack/executions/{execution_id}/items"},
-        {"path": "backend/app/application/notifications.py", "contains": "project_unpack_execution_results"},
-        {"path": "scripts/check-unpack-v2-ui.cjs", "contains": "客户端校验 / 完成"}
+        {
+          "path": "tests/api/test_unpack_v2.py",
+          "contains": "/api/v1/unpack/executions/{execution_id}/items"
+        },
+        {
+          "path": "backend/app/application/notifications.py",
+          "contains": "project_unpack_execution_results"
+        },
+        {
+          "path": "scripts/check-unpack-v2-ui.cjs",
+          "contains": "客户端校验 / 完成"
+        }
       ]
     },
     {
@@ -165,8 +282,14 @@
       "criterion": "operation journal → TaskEvent 投影必须与 journal insert/CAS 同事务",
       "status": "covered",
       "evidence": [
-        {"path": "tests/integration/test_persistence.py", "contains": "test_operation_journal_projects_qb_events_without_target_or_snapshot_payload"},
-        {"path": "scripts/check-prototype.cjs", "contains": "QBITTORRENT_REMOVE_APPLIED"}
+        {
+          "path": "tests/integration/test_persistence.py",
+          "contains": "test_operation_journal_projects_qb_events_without_target_or_snapshot_payload"
+        },
+        {
+          "path": "scripts/check-prototype.cjs",
+          "contains": "QBITTORRENT_REMOVE_APPLIED"
+        }
       ]
     },
     {
@@ -174,7 +297,10 @@
       "criterion": "operation journal 对账接口必须验证响应字段白名单",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_downloader_operations.py", "contains": "test_qb_add_reconcile_can_prove_missing_after_snapshot_from_intent_and_current_state"}
+        {
+          "path": "tests/application/test_downloader_operations.py",
+          "contains": "test_qb_add_reconcile_can_prove_missing_after_snapshot_from_intent_and_current_state"
+        }
       ]
     },
     {
@@ -182,9 +308,18 @@
       "criterion": "operation journal retention 必须覆盖 preview 与写时双重证明",
       "status": "covered",
       "evidence": [
-        {"path": "tests/application/test_task_operations.py", "contains": "test_retention_purge_commits_tombstone_and_replays_after_response_loss"},
-        {"path": "tests/application/test_task_operations.py", "contains": "test_retention_plan_and_purge_fail_closed_on_all_reference_types"},
-        {"path": "backend/app/infrastructure/persistence/models.py", "contains": "OperationJournalTombstone"}
+        {
+          "path": "tests/application/test_task_operations.py",
+          "contains": "test_retention_purge_commits_tombstone_and_replays_after_response_loss"
+        },
+        {
+          "path": "tests/application/test_task_operations.py",
+          "contains": "test_retention_plan_and_purge_fail_closed_on_all_reference_types"
+        },
+        {
+          "path": "backend/app/infrastructure/persistence/models.py",
+          "contains": "OperationJournalTombstone"
+        }
       ]
     },
     {
@@ -192,9 +327,18 @@
       "criterion": "数据拆包 v2 不得暴露旧任务的 retention/purge 前端入口；历史 journal 清理继续在后端 fail-closed 并支持同键重放",
       "status": "covered",
       "evidence": [
-        {"path": "scripts/check-unpack-v2-ui.cjs", "contains": "v2 任务中心不得暴露旧 retention/purge 入口"},
-        {"path": "tests/application/test_task_operations.py", "contains": "test_retention_purge_commits_tombstone_and_replays_after_response_loss"},
-        {"path": "tests/application/test_task_operations.py", "contains": "test_retention_plan_and_purge_fail_closed_on_all_reference_types"}
+        {
+          "path": "scripts/check-unpack-v2-ui.cjs",
+          "contains": "v2 任务中心不得暴露旧 retention/purge 入口"
+        },
+        {
+          "path": "tests/application/test_task_operations.py",
+          "contains": "test_retention_purge_commits_tombstone_and_replays_after_response_loss"
+        },
+        {
+          "path": "tests/application/test_task_operations.py",
+          "contains": "test_retention_plan_and_purge_fail_closed_on_all_reference_types"
+        }
       ]
     },
     {
@@ -202,9 +346,18 @@
       "criterion": "站点管理前端必须直接使用真实 `/sites` 契约而非本地演示状态",
       "status": "covered",
       "evidence": [
-        {"path": "tests/api/test_sites.py", "contains": "test_site_credential_is_encrypted_write_only_and_clearable"},
-        {"path": "tests/unit/test_nexusphp_adapters.py", "contains": "test_hhclub_card_layout_search_and_download_use_exact_script_names"},
-        {"path": "scripts/check-prototype.cjs", "contains": "打开站点列表不得读取内部 health/circuit 状态"}
+        {
+          "path": "tests/api/test_sites.py",
+          "contains": "test_site_credential_is_encrypted_write_only_and_clearable"
+        },
+        {
+          "path": "tests/unit/test_nexusphp_adapters.py",
+          "contains": "test_hhclub_card_layout_search_and_download_use_exact_script_names"
+        },
+        {
+          "path": "scripts/check-prototype.cjs",
+          "contains": "打开站点列表不得读取内部 health/circuit 状态"
+        }
       ]
     },
     {
@@ -212,9 +365,18 @@
       "criterion": "源文件在所有验收场景中内容与 inode 不变。",
       "status": "field_evidence",
       "evidence": [
-        {"path": "tests/application/test_m2_corpus_acceptance.py", "contains": "before.st_ino"},
-        {"path": "tests/application/test_filesystem_operations.py", "contains": "source_before.st_ino"},
-        {"path": "docs/testing.md", "contains": "源文件 device/inode/size/mtime 与 preflight 快照一致"}
+        {
+          "path": "tests/application/test_m2_corpus_acceptance.py",
+          "contains": "before.st_ino"
+        },
+        {
+          "path": "tests/application/test_filesystem_operations.py",
+          "contains": "source_before.st_ino"
+        },
+        {
+          "path": "docs/testing.md",
+          "contains": "源文件 device/inode/size/mtime 与 preflight 快照一致"
+        }
       ]
     },
     {
@@ -222,10 +384,22 @@
       "criterion": "数据库、配置导出、日志、通知和诊断包无可用明文凭证。",
       "status": "covered",
       "evidence": [
-        {"path": "tests/api/test_downloaders.py", "contains": "test_downloader_credential_is_encrypted_and_never_returned"},
-        {"path": "tests/api/test_system_health.py", "contains": "test_diagnostic_export_contains_only_whitelisted_aggregate_health"},
-        {"path": "tests/unit/test_operational_logs.py", "contains": "test_rotating_operational_log_is_bounded_persistent_and_redacted"},
-        {"path": "tests/unit/test_repository_scan.py", "contains": "test_repository_scan_detects_private_key_and_known_token_shapes"}
+        {
+          "path": "tests/api/test_downloaders.py",
+          "contains": "test_downloader_credential_is_encrypted_and_never_returned"
+        },
+        {
+          "path": "tests/api/test_system_health.py",
+          "contains": "test_diagnostic_export_contains_only_whitelisted_aggregate_health"
+        },
+        {
+          "path": "tests/unit/test_operational_logs.py",
+          "contains": "test_rotating_operational_log_is_bounded_persistent_and_redacted"
+        },
+        {
+          "path": "tests/unit/test_repository_scan.py",
+          "contains": "test_repository_scan_detects_private_key_and_known_token_shapes"
+        }
       ]
     },
     {
@@ -233,10 +407,22 @@
       "criterion": "备份、迁移、升级健康检查和失败回滚演练通过。",
       "status": "covered",
       "evidence": [
-        {"path": "tests/integration/test_backups.py", "contains": "test_restore_rolls_back_current_database_when_post_switch_validation_fails"},
-        {"path": "tests/integration/test_upgrade_matrix.py", "contains": "test_post_switch_validation_failure_restores_pre_upgrade_snapshot"},
-        {"path": ".github/workflows/ci.yml", "contains": "restore-backup"},
-        {"path": "docs/m6-exit-checklist.md", "contains": "34851129257"}
+        {
+          "path": "tests/integration/test_backups.py",
+          "contains": "test_restore_rolls_back_current_database_when_post_switch_validation_fails"
+        },
+        {
+          "path": "tests/integration/test_upgrade_matrix.py",
+          "contains": "test_post_switch_validation_failure_restores_pre_upgrade_snapshot"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "contains": "restore-backup"
+        },
+        {
+          "path": "evidence/legacy/m6-exit-checklist.md",
+          "contains": "34851129257"
+        }
       ]
     }
   ]
