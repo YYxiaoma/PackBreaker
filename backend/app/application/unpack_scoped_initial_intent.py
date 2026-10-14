@@ -17,6 +17,10 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.app.application.unpack_scoped_host_evidence import (
+    HostApprovalEvidenceInspector,
+    HostEvidenceStatus,
+)
 from backend.app.application.unpack_scoped_readonly_chain import (
     ScopedChainStatus,
     inspect_pristine_scoped_carpt_chain,
@@ -42,6 +46,8 @@ class ScopedInitialIntentStatus(StrEnum):
     BLOCKED_OPERATION = "BLOCKED_OPERATION"
     BLOCKED_KEY_CONFLICT = "BLOCKED_KEY_CONFLICT"
     BLOCKED_TRANSACTION = "BLOCKED_TRANSACTION"
+    BLOCKED_HOST_EVIDENCE = "BLOCKED_HOST_EVIDENCE"
+    HOST_EVIDENCE_ONLY_NO_GRANT = "HOST_EVIDENCE_ONLY_NO_GRANT"
     FIRST_INTENT_SHAPE_ONLY_NO_GRANT = "FIRST_INTENT_SHAPE_ONLY_NO_GRANT"
 
 
@@ -167,6 +173,7 @@ def inspect_initial_scoped_intent_transaction(
     approved_parent: Path,
     expected_output: Path,
     now: datetime | None = None,
+    host_evidence: HostApprovalEvidenceInspector | None = None,
 ) -> ScopedInitialIntentReport:
     """Take a real SQLite lock, inspect only, rollback; never reserve intent."""
     report = ScopedInitialIntentReport
@@ -174,7 +181,19 @@ def inspect_initial_scoped_intent_transaction(
         with session_factory() as session:
             begin_immediate_write(session)
             try:
-                return _inspect_first_intent_inside_locked_session(
+                first = None
+                if host_evidence is not None:
+                    first = host_evidence.inspect(
+                        request,
+                        approved_parent=approved_parent,
+                        expected_output=expected_output,
+                        now=now,
+                    )
+                    if first.status is not HostEvidenceStatus.OBSERVED_UNTRUSTED_NO_GRANT:
+                        return report(
+                            ScopedInitialIntentStatus.BLOCKED_HOST_EVIDENCE, first.status.value
+                        )
+                checked = _inspect_first_intent_inside_locked_session(
                     session,
                     inspector,
                     request,
@@ -182,6 +201,21 @@ def inspect_initial_scoped_intent_transaction(
                     expected_output=expected_output,
                     now=now,
                 )
+                if checked.status is not ScopedInitialIntentStatus.FIRST_INTENT_SHAPE_ONLY_NO_GRANT:
+                    return checked
+                if host_evidence is not None:
+                    second = host_evidence.inspect(
+                        request,
+                        approved_parent=approved_parent,
+                        expected_output=expected_output,
+                        now=now,
+                    )
+                    if second != first:
+                        return report(ScopedInitialIntentStatus.BLOCKED_HOST_EVIDENCE)
+                    # Untrusted evidence alone cannot satisfy a real host
+                    # authorization policy or permit a durable journal.
+                    return report(ScopedInitialIntentStatus.HOST_EVIDENCE_ONLY_NO_GRANT)
+                return checked
             finally:
                 session.rollback()
     except Exception:
