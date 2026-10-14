@@ -1,436 +1,100 @@
-# AGENTS.md
+# AGENTS.md — PackBreaker 当前代码库开发准则
 
-本文件适用于整个 PackBreaker 仓库，是自动化编码代理、代码生成工具和协作开发者必须遵守的仓库级规则。
+本指南适用于 PackBreaker 仓库中的自动化编码代理（包括 GPT-6）。**以当前工作树中的实现为事实来源**，不是产品历史、版本变更日志或功能宣传。目标是在保护媒体、下载器和凭证的前提下，尽可能自主地完成研发、验证和交付。
 
-目标不是“尽快让代码跑起来”，而是**在不破坏源数据、不泄漏凭证、不绕过安全门的前提下持续推进功能**。
+## 1. Agent 执行方式
 
----
+1. **先检查，再行动**：确认 Git 分支、工作区改动、用户目标；定位相关模块和测试。以正在运行的代码、接口、状态机及 Registry 为准，不从旧文档推断功能已实现。
+2. **主动推进**：对明确授权的工作自行完成调查、编码、测试、修复、复测和 diff 审查。小任务直接做；跨模块任务使用简短计划。避免反复要求用户确认已经给出的信息或许可。
+3. **按需读取**：先读相关入口及调用链，再扩大到相邻层；不要例行通读全部 docs 或运行无关的全量测试。保留长任务的当前分支、HEAD、改动和验收证据，避免重复工作。
+4. **权限与副作用分级**：普通源码/文档编辑、只读检查及隔离合成测试可以在已授权工作区自主执行。真实站点敏感请求、取种、下载器写 RPC、媒体/辅助文件物化或删除、真实数据库迁移、Docker 守护进程、NAS/宿主机变更、远端推送及发布，必须满足各自的用户授权、程序门禁和执行环境许可。已有许可仅适用于其明确范围，不能替代实际权限。
+5. **失败时继续做可做的事**：将代码问题、测试问题、站点故障和权限拦截分别诊断；处理可修复的部分。不得绕过宿主机或工具安全拒绝，也不能通过更换工具、关闭检查或伪造授权达到相同写入效果。
+6. **用证据沟通**：区分“已编码”“自动化通过”“真实环境验收通过”“仍待验收/外部阻断”。中文汇报，协议字段和稳定状态码保留英文。不要把 Mock/Fake、构建绿灯或仅有提案代码写成真实业务完成。
 
-## 1. 沟通与事实口径
+## 2. 当前产品结构与功能入口
 
-- 与用户沟通、界面文案、说明文档和提交说明优先使用中文。
-- 代码标识符、协议字段、第三方 API 原始名称保持英文。
-- 必须明确区分：
-  - **已实现**：代码与测试已经存在；
-  - **已验证**：已有自动化或真实环境证据；
-  - **计划实现 / PENDING**：只有设计或 Registry 占位；
-  - **外部阻塞**：需要真实站点、Provider、Bot、Docker daemon 等外部条件。
-- 不得把 MockTransport、Fake backend 或设计文档描述成真实环境证据。
-- 不得为了让测试通过而弱化安全断言、删除失败场景、跳过迁移验证或扩大默认权限。
+以下模块来自现有前后端代码；**有入口或适配器不代表所有外部站点均已完成真实验收**。
 
----
+| 用户功能 | 当前入口 | 主要实现位置 |
+| --- | --- | --- |
+| 总览 | 系统、磁盘、CPU、内存、站点/下载器连接与任务生命周期 | `frontend/src/components/OverviewDashboard.vue`、`backend/app/application/system_health.py` |
+| 数据拆包 | 任务中心：手动/监控拆包、任务筛选、执行记录、影片发现/匹配、候选审核、内容校验、辅种及错误恢复 | `frontend/src/components/TaskCenterV2.vue`、`backend/app/api/unpack.py`、`backend/app/application/unpack_*.py` |
+| 数据去重 | 任务中心：目录预检、去重任务、候选对、审核、完整哈希核对与受控执行 | `frontend/src/components/MovieDedupPanel.vue`、`backend/app/api/movie_dedup.py`、`backend/app/application/movie_dedup*.py` |
+| 站点管理 | 固定 Profile、Cookie/API Key、代理、连接测试、支持状态与站点适配器 | `frontend/src/components/SiteManagement.vue`、`backend/app/api/sites.py`、`backend/app/domain/site_config.py` |
+| 下载器 | 系统设置：qBittorrent/Transmission 配置、连接、任务/指标、路径映射及受控动作 | `frontend/src/components/DownloaderManagement.vue`、`backend/app/api/downloaders.py`、`backend/app/application/*downloader*.py` |
+| CookieCloud | 系统设置：配置、连通性、手动/计划同步及本地凭证处理 | `frontend/src/components/CookieCloudManagement.vue`、`backend/app/application/cookiecloud*.py` |
+| 通知 | 系统设置及站内 Inbox：Telegram、Server酱、连接测试、事件通知/审核 | `frontend/src/components/NotificationManagement.vue`、`backend/app/api/notifications.py` |
+| AI 助手 | 系统设置：Provider、模型、只读 Tools、Telegram 对话 | `frontend/src/components/AIAgentManagement.vue`、`backend/app/application/ai_*.py` |
+| 系统运维 | 系统设置及版本入口：日志、健康/诊断、备份恢复、版本检查与受控在线升级 | `frontend/src/components/OperationalLogs.vue`、`frontend/src/components/BackupManagement.vue`、`frontend/src/components/VersionPopover.vue`、`backend/app/api/system.py` |
+| 管理与外观 | 管理员登录/改密、用户菜单、明暗主题、响应式导航 | `frontend/src/App.vue`、`backend/app/api/auth.py` |
 
-## 2. 研发约束的优先级
+### 数据拆包的主业务链
 
-发生冲突时按以下顺序判断：
+按实际代码追踪 `unpack_definitions`、`unpack_discovery`、`unpack_matching`、`unpack_content_verification`、`unpack_execution_plans`、`unpack_materialization`、`unpack_seeding`、`unpack_item_actions`、`unpack_monitor` 等模块。核心语义是：
 
-1. `docs/README.md` 中当前版本设计、支持矩阵、已知限制、测试与验收文档；
-2. 已落地的领域安全不变量与自动化测试；
-3. 本文件；
-4. README 产品介绍。
+`任务定义/来源 → 影片发现 → 跨站候选 → 详情与 torrent 元信息 → 内容验证 → 人工审核/安全门 → 冻结执行计划 → 文件复用或受控物化 → 客户端校验 → 启动做种 → 记录/恢复/对账`
 
-README 可以有宣传表达，但**不能作为降低安全门或扩大正式支持范围的依据**。
+- 手动与监控任务共用业务执行链，但触发、筛选及调度方式不同。
+- 影片项、任务定义、执行实例、下载器操作各有生命周期；修改重试/状态机时同时检查 API、数据库、前端和后台调度。
+- 匹配失败、网络超时、辅助文件补齐、客户端离线与重启恢复应有明确的错误分类、重试上限、幂等语义和人工介入出口。
+- 现有 scoped acceptance 的提案、证据、审计、宿主机检查模块并不自动授予写入权限；**只读冻结实例不可升级为写入实例**。以 worker 的实际门禁、事务条件及真实环境授权为准。
 
-历史需求基线 HTML 和早期原型图片已从当前工作树移除，需要追溯时使用 Git 历史。
-
----
-
-## 3. 当前仓库结构
+## 3. 代码组织与修改落点
 
 ```text
-backend/                     FastAPI、领域服务、适配器、持久化、迁移
-backend/migrations/          Alembic 历史迁移链
-frontend/                    Vue 3 管理端
-tests/                       单元 / API / Application / Integration 测试
-docs/                        设计、支持矩阵、验收、部署和发布文档
-scripts/                     check / test / 发布 / 运维 / E2E 工具
-release-baseline.json        上一正式 Release 的不可变升级基线
-frontend/openapi.json        受版本控制的 OpenAPI 快照
-frontend/src/api/generated/  OpenAPI 生成的 TypeScript 类型
+backend/app/api/                    HTTP API、权限校验及输入输出契约
+backend/app/application/            拆包/去重/站点/下载器/通知/AI 等应用流程
+backend/app/domain/                 状态机、安全门、验证与业务不变量
+backend/app/infrastructure/         外部适配器、文件与持久化实现
+backend/migrations/                 Alembic 数据库迁移
+frontend/src/components/           管理界面与交互
+frontend/src/api/                  API 客户端及生成类型
+frontend/src/stores/               前端状态
+tests/{unit,api,application,contract,integration}/  分层回归
+scripts/                            检查、测试、OpenAPI、验收与发布辅助
+.github/workflows/                  CI、候选镜像和正式发布流水线
 ```
 
-技术基线：
-
-- Python 3.11
-- FastAPI / SQLAlchemy / Alembic / SQLite WAL
-- Vue 3 / Vite / TypeScript strict / Element Plus / Pinia
-- pytest / Ruff / mypy / Vitest / Playwright
-- Docker 单镜像；当前正式 v1.0.3 发布 `linux/amd64` + `linux/arm64`，v0.1.9 及以前仅承诺 `linux/amd64`。v1.0.2 起八个新增站点仍为 `PENDING_REAL_VALIDATION`：仅允许加密保存配置和只读连接测试，不允许启用正式辅种任务；真实业务验收尚未完成，不能将配置开放描述为已通过真实任务验收
-
----
-
-## 4. 不可破坏的核心安全不变量
-
-### 4.1 源数据只读
-
-- 源媒体数据默认视为只读。
-- 自动流程不得截断、覆盖、重命名或删除源文件。
-- Hardlink 目标如果需要被客户端下载器写入修复，必须先隔离为独立 inode。
-- 任何实现都不能因为“目标文件看起来是 PackBreaker 创建的”就猜测 ownership；必须有 journal / snapshot 证据。
-
-### 4.2 候选验证不能偷懒
-
-- 名称、总大小、IMDb/豆瓣 ID、文件名相似度、抽样 hash 只能用于筛选和排序。
-- 只有满足当前领域规则的 `FULL_VERIFIED` 才能进入允许跳过客户端校验的路径。
-- qBittorrent 是否能 skip checking 还必须受实际 WebAPI capability 约束。
-- Transmission 不得因为已有 piece 证据就跳过自身 verify 流程。
-- 无法证明时应保持人工确认、客户端下载校验、阻断或 `RECONCILE_REQUIRED`，不能“猜成功”。
-
-### 4.3 路径与文件系统必须失败关闭
-
-必须拒绝：
-
-- 未位于显式授权挂载根内的绝对路径
-- `..` 路径穿越
-- NUL
-- 越过允许根目录
-- 不受信符号链接
-- 不可证明 ownership 的目标覆盖
-- 跨设备 Hardlink
-
-v1.0.8 起路径命名空间以容器根 `/` 为起点，允许用户直接使用
-`/downloads`、`/downloads2` 等管理员显式挂载的绝对目录。容器根 `/`
-本身不是文件副作用授权根；`/config`、系统目录、未挂载路径与符号链接逃逸
-继续失败关闭。历史相对路径继续按 `PACKBREAKER_DATA_DIR` 解释以兼容旧任务。
-
-文件系统副作用必须有 preflight、snapshot、journal 与幂等恢复证据。
-
-### 4.4 所有外部写操作都必须可重放、可恢复
-
-以下动作必须进入 operation journal 或对应的持久化幂等链：
-
-- 创建目录
-- 创建 / 删除 Hardlink
-- qB add / recheck / start / remove
-- Transmission add / verify / start / remove
-- repair 写入
-- rollback / release
-
-要求：
-
-- **先记录意图，再执行副作用，再记录结果**；
-- 响应丢失时先读真实状态对账，不盲目重发；
-- 重启后能够从已有 journal 继续收敛；
-- 回滚只处理能证明由 PackBreaker 创建且 after snapshot 仍匹配的资源。
-
----
-
-## 5. 凭证与隐私
-
-### 5.1 SecretStore
-
-以下秘密必须进入 SecretStore 或专用强哈希，不得明文落库：
-
-- 站点 Cookie / API Key
-- 下载器密码 / API Key
-- 代理密码
-- Telegram Bot Token
-- Server酱 SendKey
-- AI Provider API Key
-- 管理员密码
-
-GET API 只能返回 `credential_configured` 等布尔状态，不得回显秘密。
-
-### 5.2 日志与诊断
-
-日志、错误、通知、诊断包、AI Tool 上下文、测试快照中不得出现：
-
-- Cookie
-- API Key
-- Token
-- 密码
-- announce URL query
-- 带 userinfo 的 URL
-- 真实 torrent payload
-- 第三方原始敏感响应
-
-一次性管理员临时密码是特殊启动凭证：
-
-- 只允许通过专用 bootstrap 输出到 stderr；
-- 不进入结构化 logging sink；
-- 不写数据库；
-- 不进入通知、诊断或 AI 上下文。
-
----
-
-## 6. 站点开发规则
-
-- 站点请求目标必须来自受审查的 `SiteProfileRegistry`。
-- 不允许用户输入任意 URL 决定 Cookie / API Key 的发送目标。
-- 生产任务可启用范围只由 `PERSISTED_SITE_KINDS` 决定；仅允许存储配置/连接测试的范围由 `CONFIGURABLE_SITE_KINDS` 及 Profile 状态共同约束，两者不得混为一谈。
-- `PENDING_ADAPTER` 站点可以在 Registry / UI 中展示，但必须：
-  - 前端禁用保存/测试；
-  - 后端返回稳定的 pending 错误；
-  - 不创建 Site；
-  - 不创建 Secret。
-- `PENDING_REAL_VALIDATION` 站点可以依固定 Profile origin 保存加密配置并执行只读连接测试，但必须默认停用；Web/API 的启用动作和正式任务适配器加载仍须由服务端拒绝。即使数据库被直接导入 `enabled=1`，也不得解密凭据或进入生产任务执行链路。
-- 新站点从 pending 升级为正式支持前，至少需要：
-  1. 认证方式确认；
-  2. adapter；
-  3. 共享契约测试；
-  4. 错误分类；
-  5. 凭证同源保护；
-  6. 真实只读验收。
-- 不得通过自动 Headless Browser、验证码绕过或 JS Challenge 绕过扩大兼容范围。
-- torrent 下载 token / 一次性下载链接默认不得做隐式自动重试。
-
----
-
-## 7. 下载器开发规则
-
-qBittorrent 与 Transmission 通过统一领域接口接入，但**不能抹平协议差异**。
-
-### qBittorrent
-
-- 能力判断必须基于真实 WebAPI version。
-- add / recheck / start / remove 必须验证 hash、save path、ownership/tag、progress/state。
-- remove 必须固定不删除数据。
-- skip checking 只能在领域验证和 WebAPI capability 同时允许时使用。
-
-### Transmission
-
-- 4.1.x 使用 JSON-RPC 2.0 snake_case 方法。
-- add 默认 paused。
-- verify 与 start 必须是独立 journal 动作。
-- remove 必须固定 `delete_local_data=false`。
-- 不得把 qB 的 skip-check 语义套到 Transmission。
-
-路径映射变化会使旧执行计划 stale，不能在 ADDING 阶段偷偷切换 downloader / save path。
-
----
-
-## 8. 后端开发规范
-
-- Python 使用完整类型标注。
-- 领域规则放在 domain / application 层，API router 保持薄。
-- 外部网络、下载器、通知、AI Provider 使用 async I/O。
-- 所有外部调用必须有明确 timeout；重试只能用于明确幂等且安全的读取。
-- 取消必须传播，不能吞掉 `CancelledError`。
-- 稳定业务错误使用机器可读 error code；用户响应不得暴露第三方正文、堆栈或秘密。
-- 数据库时间统一使用 UTC，展示层再应用用户时区。
-- 数据库结构变更必须有 Alembic migration，不能只改 ORM。
-- SQLite migration 特别注意父表 rebuild 与 child FK / `ON DELETE` 副作用；已有真实数据兼容优先于“迁移看起来更漂亮”。
-
----
-
-## 9. 前端开发规范
-
-- 前端资源类型优先使用生成的 OpenAPI TypeScript 类型，不重复手写可能漂移的 schema。
-- 修改后端 API 后必须同步：
-  1. `frontend/openapi.json`
-  2. `frontend/src/api/generated/schema.ts`
-  3. 前端 API wrapper / store / component
-  4. 契约测试
-- 新页面必须检查：
-  - 桌面布局
-  - 390px 左右移动视口
-  - 浅色主题
-  - 深色主题
-  - loading / empty / error 状态
-- 危险操作必须展示真实影响范围并要求明确确认。
-- 凭证输入只能“写入 / 替换 / 清除”，不能回显。
-- 前端不能把旧状态伪装成实时状态；实时指标失败时显示不可用或最后成功时间。
-
----
-
-## 10. 认证、通知与 AI
-
-### 管理员认证
-
-- 正式登录为 username + password。
-- 首次 bootstrap 后若是临时密码账户，只允许改密和退出等必要动作。
-- 改密后撤销全部会话并要求重新登录。
-- 不能重新引入未认证 setup 后门。
-
-### 通知
-
-- Telegram / Server酱凭证进入 SecretStore。
-- 渠道连接关键字段变化后必须回到 `UNTESTED` 并停用，不能沿用旧连接证据。
-- 未保存表单 probe 不能创建 Channel 或 Secret。
-- 通知事件过滤在服务端执行，不能只靠前端隐藏。
-
-### AI Agent
-
-v0.1.6 的 AI 必须保持**只读**：
-
-- 支持 OpenAI 与 OpenAI-compatible；
-- Model 由用户自由填写；
-- Provider API Key 进入 SecretStore；
-- Tool 使用显式白名单；
-- 禁止任意 Shell、任意 SQL、任意 URL；
-- Tool 输出继续脱敏；
-- 有限工具轮次与上下文上限；
-- Telegram 入口必须经过 Chat ID / User ID allowlist；
-- update_id cursor 必须持久化，避免重启重复消费；
-- 未授权 Telegram 更新不能触发 Provider 或 Tool；
-- 不提供 Web AI Chat；
-- AI 不得新增绕过 CSRF、Idempotency-Key、人工审核、Execution Gate 或 journal 的写接口。
-
----
-
-## 11. 数据库与迁移
-
-- `pyproject.toml` 是当前项目版本主来源。
-- 新 migration 必须接到当前 Alembic head。
-- 历史 migration 不做重写式“美化”。
-- 每次 schema 变化至少验证：
-  - fresh DB → head；
-  - 上一正式版本 → head；
-  - migration 数据保真；
-  - Runtime 自动升级；
-  - 备份/恢复兼容。
-- 对真实生产数据库做研发验收时，默认：
-  1. SQLite backup API 创建一致性副本；
-  2. 只迁移副本；
-  3. 原库只读；
-  4. 验收结束再次确认原 revision 未变化。
-
-除非用户明确授权，不得拿真实运行库直接做开发迁移试验。
-
----
-
-## 12. 版本、OpenAPI 与发布基线
-
-### 当前版本表面必须一致
-
-修改版本时同步检查：
-
-- `pyproject.toml`
-- `frontend/package.json`
-- Dockerfile `ARG VERSION`
-- `uv.lock` root package version
-- OpenAPI `info.version`
-- runtime `app_version()`
-
-### release-baseline.json 的语义
-
-`release-baseline.json` **不是当前 candidate 版本**。
-
-它必须固定“上一正式已发布 Release”的：
-
-- version / tag
-- commit
-- immutable image digest
-- Alembic revision
-- release workflow run id
-
-它用于 candidate 的相邻版本升级和回滚门禁。不要为了“版本号看起来一致”把 baseline 改成当前未发布 candidate。
-
-### OpenAPI 生成
-
-标准流程：
-
-```bash
-python scripts/export_openapi.py frontend/openapi.json
-frontend/node_modules/.bin/openapi-typescript \
-  frontend/openapi.json \
-  -o frontend/src/api/generated/schema.ts
-frontend/node_modules/.bin/prettier \
-  --config frontend/.prettierrc.json \
-  --write frontend/src/api/generated/schema.ts
-```
-
-不要对 `frontend/openapi.json` 额外跑 Prettier；仓库漂移门使用 exporter 的规范输出。
-
----
-
-## 13. 测试规则
-
-普通自动化默认**完全离线**：
-
-- 不访问真实 PT；
-- 不访问真实 qB / Transmission；
-- 不读取真实媒体；
-- 不发送真实 Telegram；
-- 不调用真实 AI Provider；
-- 不操作 Docker daemon，除非明确在专用 Docker CI Job。
-
-修复缺陷时必须增加“修复前失败、修复后通过”的回归测试。
-
-高风险改动需要重点覆盖：
-
-- BitTorrent v1/v2/hybrid
-- 路径逃逸
-- inode / source snapshot
-- operation journal
-- 并发幂等
-- 响应丢失
-- 进程重启
-- rollback
-- migration
-- Secret canary
-
-标准本地门禁：
-
-```bash
-python scripts/check.py
-python scripts/test.py
-```
-
-其中 `scripts/check.py` 是提交前 canonical 静态门；修改生成契约、迁移、安全边界、发布逻辑时必须通过。
-
-浏览器交互变化还需要运行：
-
-```bash
-node scripts/check-prototype.cjs
-```
-
-该 E2E 的未显式 mock API 必须继续失败关闭。
-
----
-
-## 14. 真实环境验收
-
-真实环境只用于自动化无法替代的现场证据。
-
-原则：
-
-- 默认只读；
-- 先明确会发出哪些请求；
-- 不主动搜索/取种/写下载器，除非验收目标明确要求并得到用户授权；
-- 不输出 Cookie / API Key / UID / username / 内网地址；
-- 真实站点失败不能通过切镜像域名或降低校验“修成通过”；
-- 外部站点故障、缺凭证、无 Docker daemon 必须明确记为阻塞，不伪造完成。
-
-现场证据应写入专门验收文档，并只保留非敏感摘要。
-
----
-
-## 15. Git 与仓库卫生
-
-- 使用 Conventional Commits，例如：
-  - `feat: add downloader runtime metrics`
-  - `fix: preserve source inode during repair`
-  - `chore: refresh release baseline`
-- 一个提交尽量保持一个清晰主题。
-- 未经用户明确要求，不擅自 commit / push / tag / release。
-- 不 force push，除非用户明确要求并已说明风险。
-- 不提交：
-  - 真实 Cookie / API Key / Token / 密码
-  - `.torrent`
-  - SQLite 数据库
-  - runtime 日志
-  - 媒体文件
-  - secret.key
-  - 本地缓存 / 临时测试产物
-- 新增依赖前检查必要性、维护状态、许可证和锁文件。
-- 删除历史文件时同步清理 README / docs / AGENTS 中的引用。
-
----
-
-## 16. 完成一个任务前
-
-至少确认：
-
-1. 功能是否真的实现，而不是只改 UI；
-2. 安全门有没有被绕过；
-3. 是否需要 migration；
-4. OpenAPI / 生成类型是否同步；
-5. 是否需要更新支持矩阵 / 已知限制 / 当前版本设计；
-6. 是否添加了回归测试；
-7. 是否通过与改动范围匹配的静态和动态测试；
-8. 是否存在真实环境才能证明的部分；
-9. 是否误把外部阻塞描述成成功；
-10. 工作区是否混入秘密或临时产物。
-
-完成说明必须列出：**改了什么、验证了什么、还没验证什么、是否存在外部条件。**
+- **领域优先**：安全判定与状态迁移放在 domain/application 层；API router 不自行复制业务门禁；适配器保留 qB、Transmission、PT 站点的协议差异。
+- **完整跨层修改**：API 变更应同步 `frontend/openapi.json`、`frontend/src/api/generated/schema.ts`、调用处、契约/回归测试；数据库字段变更应同步 ORM、Alembic、序列化与迁移测试。
+- **界面以当前组件为准**：检查桌面和窄屏、亮/暗主题、loading/empty/error、按钮可点击区域、长内容省略和弹窗状态。不要依照早期菜单截图或已删除的路由重新引入功能。
+- **文档按需参考**：模块复杂时再阅读 `docs/architecture.md`、`docs/matching-and-filesystem-safety.md`、`docs/adapters.md`、`docs/testing.md` 和当前相关验收文档。文档与运行代码不符时先核实并显式记录差异，不能让旧版设计覆盖当前实现。
+
+## 4. 不可削弱的系统安全边界
+
+### 媒体与文件系统
+
+- 源媒体默认只读：不自动删除、覆盖、截断、改名或修改源 inode。Hardlink 目标若可能被下载器写入，必须先复制/隔离为独立 inode。
+- 文件副作用需使用显式授权的挂载/目标根、规范化路径和源/目标快照；拒绝路径穿越、NUL、符号链接逃逸、未证明归属的覆盖及跨设备硬链接。容器根 `/` 不等于写入授权根。
+- 数据去重只能在完整内容哈希及身份/设备/inode 校验等条件成立时执行；预检、人工审批、原子变更和异常恢复不可省略。
+- 任何文件创建、链接、修复、删除或回滚只针对具有 journal/快照归属证据的对象。不能擅自处理已有用户媒体或种子以凑齐验收。
+
+### 匹配、站点与下载器
+
+- 文件名、大小、媒体 ID、相似度及抽样校验只用于候选筛选；不能替代 torrent piece/内容验证。只有符合领域要求的 `FULL_VERIFIED` 才可能走免除部分客户端校验的路径。
+- qBittorrent 的跳校验还依赖实际 API 能力；Transmission 的 verify 必须独立执行。客户端行为须核对 hash、保存路径、归属和真实状态，不得仅凭请求成功认为已做种。
+- 站点支持状态以 `SiteProfileRegistry` 和后端启用逻辑为准。`PENDING_ADAPTER`、`PENDING_REAL_VALIDATION` 不能伪装成 `SUPPORTED`；只读连接测试、受限验收和全局正式任务授权是不同权限。
+- 站点 Cookie/API Key 只能发送到审查过的固定源站；不尝试绕过验证码/反爬，不对一次性取种 token 盲目重试。
+- 下载器与文件系统写操作遵循 **preflight → 冻结计划与快照 → journal intent → 副作用 → journal 结果 → 对账/恢复**；丢响应先读真实状态，不能重复执行可能非幂等的动作。删除客户端任务时不得连带删除本地数据。
+- 受限验收的只读 execution 必须永久保持只读；后续可写验收必须使用新的执行实例、独立的有效许可、精确目标及逐操作的实时准入，不可将离线提案、风险报告或宿主证据签名视为执行许可。
+
+### 账户、秘密、AI 与审计
+
+- Cookie、Passkey、API Key、登录密码、下载器凭证、Telegram Token、announce 参数等进入受保护的 SecretStore/哈希机制，不得出现在源码、Git、日志、错误详情、测试夹具、诊断导出、通知或 AI Tool 上下文。
+- 保留管理员认证、强制改密、会话撤销、CSRF、幂等键、人工审批、审核日志及 Telegram allowlist。不能通过前端隐藏代替服务端验证。
+- 内置 AI 助手保持受控只读 Tools 与最小权限，不开放任意 shell、SQL、外部 URL 或绕过执行门禁的写入工具。
+- 数据库存储/时间/备份需与现有 SQLite WAL、Alembic 和 SecretStore 兼容；真实配置或数据库验收优先使用一致性备份副本，不对生产库直接运行开发迁移。
+
+## 5. 验证与交付
+
+- 修 Bug 先尝试最小复现，并补回归测试；新功能覆盖正常路径、无权限/无凭证、冲突、超时、失联、重复执行和恢复等相关场景。
+- 先做最小相关测试，再根据受影响范围运行仓库门禁。常用命令：
+  - `python scripts/check.py`：仓库扫描、证据/基线检查、Ruff、mypy、前端 lint/typecheck 和 OpenAPI 漂移检查。
+  - `python scripts/test.py`：pytest、Vitest 与前端构建。
+  - 前端交互与拆包界面变更视情况运行 `node scripts/check-prototype.cjs`、`node scripts/check-unpack-v2-ui.cjs` 和相关浏览器 E2E。
+- 普通自动化只用隔离合成数据，默认不连接真实站点、下载器、媒体路径、生产 Bot、AI Provider 或 Docker daemon。需要外部环境验证时先明确请求和潜在副作用；未验收不能写“已通过”。
+- 版本与发布身份从当前 `pyproject.toml`、前端包、Git tag、实际工作流及不可变镜像摘要核实；`release-baseline.json` 保持上一正式发布基线，不能为了候选版本一致性而篡改。
+- 提交前检查 `git diff`、测试输出、文件列表和敏感信息。不得提交真实 `.torrent`、数据库、媒体、密钥、运行日志或缓存。未经对应授权，不执行 commit、push、merge、tag、部署或正式发布。
+- 交付说明只报告：**实际修改文件与行为、运行的验证及结果、尚未完成的真实验收/阻断、Git/发布状态**。不虚构完成度，不通过弱化安全断言获得绿灯。
+
+**维护原则**：本文件仅描述当前架构的稳定事实、操作入口和必须保留的约束。不编入历代版本的发布历史、已废弃菜单、过时的功能矩阵或某一轮的临时验收数字；功能调整时以最新代码为主同步更新对应部分。
