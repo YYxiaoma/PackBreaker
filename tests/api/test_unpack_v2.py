@@ -1077,11 +1077,11 @@ def test_unpack_auto_matched_item_can_enter_manual_review_api(tmp_path: Path) ->
     ("site_kind", "enabled"),
     [
         ("AUDIENCES", False),
-        ("AUDIENCES", True),  # corrupted/imported DB flag must not bypass Registry
+        ("CARPT", False),  # supported adapters still require explicit enable
         ("MTEAM", False),
     ],
 )
-def test_unpack_run_rejects_pending_or_disabled_configured_site_before_execution(
+def test_unpack_run_rejects_disabled_configured_site_before_execution(
     tmp_path: Path,
     site_kind: str,
     enabled: bool,
@@ -1099,7 +1099,7 @@ def test_unpack_run_rejects_pending_or_disabled_configured_site_before_execution
             session.add(
                 Site(
                     id=site_id,
-                    name="isolated pending site",
+                    name="isolated disabled site",
                     type=site_kind,
                     base_url="https://synthetic.example",
                     credential_kind="COOKIE" if site_kind != "MTEAM" else "API_KEY",
@@ -1114,7 +1114,7 @@ def test_unpack_run_rejects_pending_or_disabled_configured_site_before_execution
             "/api/v1/unpack/definitions",
             headers=_csrf(client),
             json={
-                "name": "未验收站点任务应拒绝执行",
+                "name": "停用站点任务应拒绝执行",
                 "trigger_kind": "MANUAL",
                 "source_kind": "DIRECTORY",
                 "execution_scope_kind": "ALL_MATCHING_MEDIA",

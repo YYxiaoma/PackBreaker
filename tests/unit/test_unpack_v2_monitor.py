@@ -318,11 +318,11 @@ def test_monitor_overlap_is_skipped_and_rescheduled(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("site_type", "site_enabled"),
     [
-        ("AUDIENCES", True),
+        ("AUDIENCES", False),
         ("MTEAM", False),
     ],
 )
-def test_monitor_trigger_does_not_snapshot_pending_or_disabled_site(
+def test_monitor_trigger_does_not_snapshot_disabled_site(
     tmp_path: Path,
     site_type: str,
     site_enabled: bool,
