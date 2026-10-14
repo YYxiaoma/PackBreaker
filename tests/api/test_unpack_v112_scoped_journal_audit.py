@@ -278,3 +278,19 @@ def test_real_journal_exact_site_and_client_scope_binding(
         ScopedJournalAuditStatus.BLOCKED_JOURNAL,
         ScopedJournalAuditStatus.BLOCKED_SEQUENCE,
     }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/isolated/target/evil\x00filename",
+        "/isolated/target/bad\\name",
+        "/isolated/target/../escape",
+        "/isolated/target//repeated",
+        "/isolated/target/./dot",
+    ],
+)
+def test_journal_path_guard_rejects_malformed_components(path: str) -> None:
+    from backend.app.application.unpack_scoped_journal_audit import _inside
+
+    assert not _inside("/isolated/target", path)

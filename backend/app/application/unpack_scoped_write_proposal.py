@@ -174,6 +174,7 @@ class ScopedWriteProposalInspector:
             or execution.trigger != "MANUAL"
             or execution.status != "EXECUTING"
             or item.status != "PLAN_PENDING"
+            or not isinstance(execution.config_snapshot, dict)
             or execution.config_snapshot.get("acceptance_mode") != PROPOSED_WRITE_ACCEPTANCE_MARKER
             or execution.definition_id != proposal["definition_id"]
             or item.selected_candidate_id != proposal["candidate_id"]

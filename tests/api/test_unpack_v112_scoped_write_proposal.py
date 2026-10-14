@@ -323,3 +323,19 @@ def test_proposal_revocation_unreadable_permissions_symlink_and_oversize(
         assert not _matches(app, execution_id, item_id)
     finally:
         client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("bad_snapshot", [None, "malformed", ["not-an-object"], 15])
+def test_malformed_frozen_execution_config_is_explicitly_denied(
+    tmp_path: Path, bad_snapshot: object
+) -> None:
+    client, app, _, execution_id, item_id = _setup(tmp_path)
+    try:
+        with app.state.runtime.session_factory() as session:
+            execution = session.get(UnpackExecution, execution_id)
+            assert execution is not None
+            execution.config_snapshot = bad_snapshot
+            session.commit()
+        assert not _matches(app, execution_id, item_id)
+    finally:
+        client.__exit__(None, None, None)

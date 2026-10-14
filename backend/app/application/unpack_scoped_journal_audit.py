@@ -72,8 +72,8 @@ def _inside(root: str, value: object) -> bool:
         not isinstance(value, str)
         or not value.startswith(root + "/")
         or "//" in value
-        or "\\x00" in value
-        or "\\\\" in value
+        or "\x00" in value
+        or "\\" in value
         or str(PurePosixPath(value)) != value
     ):
         return False
