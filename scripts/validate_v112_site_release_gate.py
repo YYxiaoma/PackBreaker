@@ -19,8 +19,8 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = Path("docs/v1.1.2-seven-site-release-gate.json")
-RECEIPTS_DIR = Path("docs/v1.1.2-site-receipts")
+MANIFEST = Path("evidence/releases/v1.1.2-seven-site-release-gate.json")
+RECEIPTS_DIR = Path("evidence/releases/v1.1.2-site-receipts")
 SITES = frozenset({"PTerClub", "Audiences", "SpringSunday", "HDDolby", "U2", "TANGPT", "CarPT"})
 PHASES = frozenset(
     {
@@ -47,8 +47,8 @@ RISK_SOURCE_ALLOWED = frozenset(
         "scripts/validate_v112_site_release_gate.py",
         "tests/unit/test_v112_site_release_gate.py",
         ".github/workflows/release.yml",
-        "docs/v1.1.2-user-acceptance-decision-20261014.md",
-        "docs/v1.1.2-risk-release-notes.md",
+        "evidence/releases/v1.1.2-user-acceptance-decision-20261014.md",
+        "evidence/releases/v1.1.2-risk-release-notes.md",
         "docs/support-matrix.md",
         "docs/known-limitations.md",
     }
@@ -185,12 +185,11 @@ def validate_manifest(
         if (
             relative_path.is_absolute()
             or ".." in relative_path.parts
-            or relative_path.parts[:2] != RECEIPTS_DIR.parts
-            or len(relative_path.parts) != 3
+            or relative_path.parent != RECEIPTS_DIR
             or relative_path.suffix != ".json"
             or relative_path.name != f"{key}.json"
         ):
-            errors.append(f"{key}: 证据路径必须为站点专属 docs/v1.1.2-site-receipts/{key}.json")
+            errors.append(f"{key}: 证据路径必须为站点专属 {RECEIPTS_DIR}/{key}.json")
             continue
         path = root / relative_path
         try:

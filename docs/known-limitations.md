@@ -1,6 +1,6 @@
 # 当前已知限制
 
-v1.1.2 已正式发布，但七站完整真实 E2E 收据仍为 **0/7**。用户已明确接受该实测缺口，发布不代表七站完整链路均成功。
+七站完整真实 E2E 收据仍为 **0/7**。用户已明确接受该实测缺口，发布不代表七站完整链路均成功。
 
 - CarPT 独立受控 COPY、journal、Transmission ADD/VERIFY/START 的全新 PackBreaker execution 完整回执尚缺；旧只读 execution 不得解冻。
 - 站点网络、搜索与详情超时、限流以及 HDDolby、SpringSunday 的间歇性问题仍需现场跟踪。

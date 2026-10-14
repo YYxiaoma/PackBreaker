@@ -21,8 +21,8 @@ from scripts.validate_v112_site_release_gate import (
 
 def _fixture(tmp_path: Path, *, complete: bool) -> tuple[Path, dict[str, object]]:
     root = tmp_path
-    docs = root / "docs"
-    docs.mkdir()
+    docs = (root / MANIFEST).parent
+    docs.mkdir(parents=True)
     rows: list[dict[str, object]] = []
     for index, key in enumerate(sorted(SITES), start=1):
         row: dict[str, object] = {
@@ -352,5 +352,5 @@ def test_release_rejects_uncommitted_changes(tmp_path: Path) -> None:
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "candidate")
     accepted = _git(root, "rev-parse", "HEAD")
-    (root / "docs" / "scratch.txt").write_text("uncommitted", encoding="utf-8")
+    (root / MANIFEST.parent / "scratch.txt").write_text("uncommitted", encoding="utf-8")
     assert any("未提交" in message for message in validate_source_unchanged(root, accepted))

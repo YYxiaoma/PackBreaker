@@ -1,15 +1,14 @@
 # PackBreaker 项目说明
 
-本文依据 v1.1.2 当前实现整理，作为使用与维护入口。历史开发流水、里程碑清单和旧 UI 原型已从文档目录清理；历史版本可通过 Git tag 和 GitHub Releases 查阅。
+本文依据当前实现整理，作为使用与维护入口。历史开发流水、里程碑清单和旧 UI 原型已从文档目录清理；历史版本可通过 Git tag 和 GitHub Releases 查阅。
 
 ## 当前版本与边界
 
-v1.1.2 已正式发布，源码提交为 `970cbdd199cf4f9e459ccf76bf23c982d2fa16e6`，提供 Linux AMD64 与 ARM64 镜像。
+提供 Linux AMD64 与 ARM64 镜像。
 
 - GHCR：`ghcr.io/yyxiaoma/packbreaker`
 - Docker Hub：`yyxiaoma01/packbreaker`
-- [正式发行与附件](https://github.com/YYxiaoma/PackBreaker/releases/tag/v1.1.2)
-- [发布流水线](https://github.com/YYxiaoma/PackBreaker/actions/runs/38545506607)
+- [正式发行与附件](https://github.com/YYxiaoma/PackBreaker/releases/latest)
 
 七个新增站点已开放为 `SUPPORTED`；这表示代码适配与任务准入，不表示完整真实业务链已逐站验收。七站正式完整 E2E 收据仍为 **0/7**，本次发布采用用户明确接受该缺口的策略。网络、Tracker 与异常恢复现场验证留待后续版本，见 [已知限制](known-limitations.md)。
 
@@ -35,7 +34,7 @@ v1.1.2 已正式发布，源码提交为 `970cbdd199cf4f9e459ccf76bf23c982d2fa16
 ```yaml
 services:
   packbreaker:
-    image: ghcr.io/yyxiaoma/packbreaker:1.1.2
+    image: ghcr.io/yyxiaoma/packbreaker:stable
     container_name: packbreaker
     restart: unless-stopped
     ports:
@@ -161,4 +160,4 @@ uv run python scripts/test.py
 - [已知限制](known-limitations.md)
 - [测试与验收](testing.md)
 
-CI 依赖的 JSON 清单和 v1.1.2 发布授权记录继续保留，不能通过清理文档篡改验收结果。旧验收索引所需的原始材料迁至 `evidence/legacy/`，仅用于已有证据校验，不作为当前操作指南。已发布 tag 与 Release 附件保持不变。后续维护以 main 和当前实现为准，文档更新不能代替真实环境验证。
+CI 依赖的发布清单和授权记录保存在 `evidence/releases/`，不能通过清理文档篡改验收结果。旧验收索引所需的原始材料迁至 `evidence/legacy/`，仅用于已有证据校验，不作为当前操作指南。已发布 tag 与 Release 附件保持不变。后续维护以 main 和当前实现为准，文档更新不能代替真实环境验证。
