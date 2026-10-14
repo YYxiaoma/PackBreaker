@@ -223,7 +223,18 @@ const path = require('node:path');
           cpu_load_history_count:3,cpu_load_history_0_percent:12.0,cpu_load_history_1_percent:15.0,cpu_load_history_2_percent:18.0,
         }},
         {name:'backups',status:'warning',code:'BACKUP_MISSING',detail:'尚无普通备份',metrics:{}},
-        {name:'tasks',status:'ok',code:'TASK_BACKLOG_OK',detail:'任务正常',metrics:{running:1,awaiting_confirmation:0}},
+        {name:'tasks',status:'ok',code:'TASK_BACKLOG_OK',detail:'任务正常',metrics:{running:1,awaiting_confirmation:60,retry:12}},
+        {name:'statistics',status:'ok',code:'OVERVIEW_STATISTICS_READY',detail:'本地统计',metrics:{
+          unpack_total:1286,unpack_success:1158,unpack_failed:42,unpack_running:26,
+          unpack_review:60,unpack_no_match:0,unpack_cancelled:0,
+          unpack_seeded_bytes:53436265109913,unpack_seeded_torrents:1100,unpack_volume_unknown:1,
+          dedup_jobs:32,dedup_jobs_completed:28,dedup_jobs_running:2,dedup_jobs_failed:1,
+          dedup_jobs_pending:1,dedup_jobs_cancelled:0,dedup_scan_records:2840,
+          dedup_verified_targets:248,dedup_completed_targets:186,dedup_failed_targets:1,
+          dedup_reclaimed_estimate_bytes:3760329766993,dedup_pending_estimate_bytes:1297423720775,
+          dedup_actual_reclaimed_bytes:null,
+        }},
+        {name:'operations',status:'warning',code:'OPERATION_RECONCILE_REQUIRED',detail:'对账',metrics:{reconcile_required:2}},
         {name:'sites',status:'ok',code:'SITE_OK',detail:'站点正常',metrics:{configured:1,connection_ok:1}},
         {name:'downloaders',status:'ok',code:'DOWNLOADER_OK',detail:'下载器正常',metrics:{configured:2,connection_ok:2}},
         {name:'workers',status:'ok',code:'BACKGROUND_WORKERS_OK',detail:'调度正常',metrics:{}},
@@ -735,6 +746,7 @@ const path = require('node:path');
     const overviewFirstPaintMs=Date.now()-overviewStartedAt;
     assert.ok(overviewFirstPaintMs<1500,`总览首屏不应等待慢速 Release 查询，实际 ${overviewFirstPaintMs}ms`);
     const overviewViewports=[
+      {width:2560,height:1440,name:'overview-2560'},
       {width:1920,height:1080,name:'overview-1920'},
       {width:1440,height:900,name:'overview-1440'},
       {width:1280,height:800,name:'overview-1280'},
@@ -761,10 +773,19 @@ const path = require('node:path');
         assert.ok(card.width>0&&card.height>0,`${viewport.name} 状态卡必须可见`);
         assert.ok(card.bottom<=metrics.lifeTop+1,`${viewport.name} 生命周期必须位于六张状态卡下方`);
       }
-      if(viewport.width>=1440){
+      if(viewport.width>=1440&&viewport.width<2000){
         for(let i=1;i<3;i+=1)assert.ok(Math.abs(metrics.cards[i].top-metrics.cards[0].top)<3,`${viewport.name} 第一行三列应对齐`);
         for(let i=4;i<6;i+=1)assert.ok(Math.abs(metrics.cards[i].top-metrics.cards[3].top)<3,`${viewport.name} 第二行三列应对齐`);
       }
+      if(viewport.width===2560){
+        for(const card of metrics.cards)assert.ok(Math.abs(card.top-metrics.cards[0].top)<3,'2560px 六张监控卡必须横向一行');
+        const body=await page.locator('.overview-dashboard').boundingBox();
+        assert.ok(body.height<1300,'2560×1440 总览主要内容应保持一屏内');
+      }
+      assert.equal(await page.locator('.overview-business-grid > .business-card').count(),2);
+      assert.ok((await page.locator('.overview-kpi-grid').innerText()).includes('1,158'),'成功项使用真实聚合接口');
+      assert.ok((await page.locator('.overview-kpi-grid').innerText()).includes('96.5%'),'成功率排除未结束项');
+      assert.ok((await page.locator('.overview-kpi-grid').innerText()).includes('≥'),'缺少历史体积时标注下界');
       if(viewport.width===390){
         for(let i=1;i<6;i+=1)assert.ok(metrics.cards[i].top>=metrics.cards[i-1].bottom-1,'390px 状态卡应单列');
       }
@@ -812,8 +833,8 @@ const path = require('node:path');
     const systemCard=page.locator('.overview-monitor-grid > .monitor-card').filter({hasText:'系统状态'}).first();
     await systemCard.getByText('运行正常',{exact:true}).waitFor();
     assert.equal(await systemCard.getByText('需要关注',{exact:true}).count(),0,'全局 health warning 不应覆盖四个可见子服务均正常的系统状态卡');
-    const runningCard=page.locator('.overview-kpi-grid > .kpi-card').filter({hasText:'运行中任务'}).first();
-    assert.equal((await runningCard.locator('strong').textContent())?.trim(),'1','总览运行中任务应使用统一任务执行层计数');
+    const runningCard=page.locator('.overview-task-strip > span').filter({hasText:'运行中任务'}).first();
+    assert.equal((await runningCard.locator('b').textContent())?.trim(),'1','总览运行中任务应使用统一任务执行层计数');
     assert.equal(await page.locator('.cpu-bars span:not(.is-pending)').count(),3,'CPU 图应直接加载后端已积累的历史采样');
     await page.getByText('8.0 GiB',{exact:false}).first().waitFor();
     assert.equal(await page.locator('nav').getByRole('button',{name:'升级中心',exact:true}).count(),0,'主导航不应再展示升级中心');
@@ -865,7 +886,15 @@ const path = require('node:path');
     await userMenuTrigger.click();
     await userDrawer.getByText('浅色',{exact:true}).click();
     await page.keyboard.press('Escape');
-    console.log(`总览首屏 ${overviewFirstPaintMs}ms；已检查 1920/1440/1280/390 四档布局与深色六张独立状态卡`);
+    console.log(`总览首屏 ${overviewFirstPaintMs}ms；已检查 2560/1920/1440/1280/390 五档布局与深色六张独立状态卡`);
+    await page.route('**/api/v1/system/health',route=>fulfillJson(route,{
+      status:'ok',generated_at:now(),version:'0.1.4',checks:[],
+    }));
+    await page.reload({waitUntil:'domcontentloaded'});
+    await page.getByRole('heading',{name:'PackBreaker 总览',exact:true,level:1}).waitFor();
+    const missingStatistics=await page.locator('.overview-kpi-grid').innerText();
+    assert.ok(missingStatistics.includes('—'),'缺失统计显示未知，不能伪造零值或演示数据');
+    assert.ok(!missingStatistics.includes('1,158'),'缺失统计不得沿用示例成果');
     // v1.0.15: legacy TaskDefinition/TaskExecution UI was removed. Keep the
     // production-preview navigation/overview/site/backup gates here; the
     // dedicated unpack-v2 browser gate tests creation, review, retry and

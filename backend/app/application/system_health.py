@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.backup_schedule import BackupDriverState
 from backend.app.application.notification_driver import NotificationDriverState
+from backend.app.application.overview_statistics import overview_statistics
 from backend.app.application.unpack_driver import UnpackDriverState
 from backend.app.config import AppSettings
 from backend.app.domain.movie_dedup import MovieDedupJobStatus
@@ -168,12 +169,20 @@ class SystemHealthService:
         timestamp = (now or datetime.now(UTC)).astimezone(UTC)
         with self._session_factory() as session:
             database = self._database_snapshot(session, now=timestamp)
+            statistics = overview_statistics(session)
         checks = [
             self._runtime_check(),
             self._storage_check(),
             self._resources_check(),
             self._backup_check(database, now=timestamp),
             self._task_check(database),
+            SystemHealthCheck(
+                "statistics",
+                "ok",
+                "OVERVIEW_STATISTICS_READY",
+                "本地累计统计；空间回收为执行估算，非实时物理释放",
+                {key: value for key, value in statistics.items()},
+            ),
             self._operation_check(database),
             await self._site_check(database),
             self._downloader_check(database),

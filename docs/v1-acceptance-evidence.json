@@ -1,51 +1,42 @@
 {
   "format_version": 1,
-  "source": "docs/testing.md#12-v10-验收清单",
+  "source": "docs/testing.md#ci-索引使用的验收条目",
   "requirements": [
     {
       "id": "V1-001",
       "criterion": "真实验收语料中的自动误辅种为 0。",
-      "status": "field_evidence",
+      "status": "pending_external",
       "evidence": [
-        {
-          "path": "evidence/legacy/candidate-threshold-calibration.md",
-          "contains": "recommended_threshold"
-        },
         {
           "path": "docs/README.md",
           "contains": "自动批准保持关闭"
         }
-      ]
+      ],
+      "external_blocker": "历史现场原始证据已从工作树清理；保留的文字和回归测试不能替代现场收据，需另行提供可审计证据。"
     },
     {
       "id": "V1-002",
       "criterion": "qB 与 TR 各完成一条真实端到端任务，包含人工确认和失败回滚。",
-      "status": "field_evidence",
+      "status": "pending_external",
       "evidence": [
         {
           "path": "docs/testing.md",
           "contains": "qBittorrent v5.2.3 / WebAPI 2.15.1"
-        },
-        {
-          "path": "evidence/legacy/m2-exit-checklist.md",
-          "contains": "Transmission 也已完成两条真实写链"
         }
-      ]
+      ],
+      "external_blocker": "历史现场原始证据已从工作树清理；保留的文字和回归测试不能替代现场收据，需另行提供可审计证据。"
     },
     {
       "id": "V1-003",
       "criterion": "7 个失败样例完成归因并形成回归测试",
-      "status": "field_evidence",
+      "status": "pending_external",
       "evidence": [
-        {
-          "path": "evidence/legacy/real-failure-samples.md",
-          "contains": "已正式归档：7 / 7"
-        },
         {
           "path": "tests/application/test_downloader_operations.py",
           "contains": "test_response_lost_recovers_by_hash_save_path_and_ownership_tag_without_second_add"
         }
-      ]
+      ],
+      "external_blocker": "历史现场原始证据已从工作树清理；保留的文字和回归测试不能替代现场收据，需另行提供可审计证据。"
     },
     {
       "id": "V1-004",
@@ -418,10 +409,6 @@
         {
           "path": ".github/workflows/ci.yml",
           "contains": "restore-backup"
-        },
-        {
-          "path": "evidence/legacy/m6-exit-checklist.md",
-          "contains": "34851129257"
         }
       ]
     }

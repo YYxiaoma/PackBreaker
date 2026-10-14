@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,7 +70,10 @@ def main() -> None:
     _run([sys.executable, str(ROOT / "scripts" / "validate_acceptance_evidence.py")])
     # This validates the seven-site inventory, NOT the real E2E success gate.
     # Release-only --require-ready intentionally fails while sites are pending.
-    _run([sys.executable, str(ROOT / "scripts" / "validate_v112_site_release_gate.py")])
+    # The historical inventory is scoped to its original release only.
+    current_version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    if current_version == "1.1.2":
+        _run([sys.executable, str(ROOT / "scripts" / "validate_v112_site_release_gate.py")])
     _run([sys.executable, str(ROOT / "scripts" / "validate_release_baseline.py")])
     _run([_tool("ruff"), "format", "--check", "."])
     _run([_tool("ruff"), "check", "."])

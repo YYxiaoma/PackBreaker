@@ -90,6 +90,22 @@ const systemStatusText = computed(() => {
   return '暂无数据';
 });
 
+const statistic = (key: string): number | null => metric('statistics', key);
+const statisticCount = (key: string): string => count('statistics', key);
+const successRate = computed(() => {
+  const success = statistic('unpack_success');
+  const failed = statistic('unpack_failed');
+  if (success === null || failed === null || success + failed === 0) return '—';
+  return `${((success / (success + failed)) * 100).toFixed(1)}%`;
+});
+const dedupProgress = computed(() =>
+  ratio(statistic('dedup_completed_targets'), statistic('dedup_verified_targets')),
+);
+const volumeLabel = computed(() => {
+  const value = bytes(statistic('unpack_seeded_bytes'));
+  return (statistic('unpack_volume_unknown') ?? 0) > 0 && value !== '—' ? `≥ ${value}` : value;
+});
+
 const diskTotal = computed(() => metric('storage', 'data_total_bytes'));
 const diskFree = computed(() => metric('storage', 'data_free_bytes'));
 const diskUsed = computed(() =>
@@ -159,39 +175,145 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <section class="overview-kpi-grid" aria-label="任务与连接摘要">
+    <section class="overview-kpi-grid" aria-label="拆包与去重累计成果">
       <button class="overview-card kpi-card" type="button" @click="emit('navigate', '任务中心')">
-        <span class="metric-icon orange"><Bell :size="25" /></span>
+        <span class="metric-icon green"><FileCheck2 :size="25" /></span>
         <span class="kpi-content"
-          ><span>待审核</span><strong>{{ count('tasks', 'awaiting_confirmation') }}</strong>
-          <small>个影片等待人工审核</small></span
+          ><span>辅种成功</span>
+          <strong>{{ statisticCount('unpack_success') }} <em>项</em></strong>
+          <small>已结束项成功率 {{ successRate }}</small></span
         >
         <ArrowRight :size="16" class="card-arrow" />
       </button>
-      <button class="overview-card kpi-card" type="button" @click="emit('navigate', '任务中心')">
-        <span class="metric-icon blue"><Play :size="25" /></span>
+      <article class="overview-card kpi-card">
+        <span class="metric-icon blue"><HardDrive :size="25" /></span>
         <span class="kpi-content"
-          ><span>运行中任务</span><strong>{{ count('tasks', 'running') }}</strong>
-          <small>个任务正在执行</small></span
+          ><span>累计辅种体积</span><strong>{{ volumeLabel }}</strong>
+          <small
+            >{{ statisticCount('unpack_seeded_torrents') }} 个已记录种子 · 相同目标不重复累计</small
+          >
+          <small v-if="(statistic('unpack_volume_unknown') ?? 0) > 0">
+            {{ statisticCount('unpack_volume_unknown') }} 个成功项缺少体积证据
+          </small></span
         >
-        <ArrowRight :size="16" class="card-arrow" />
-      </button>
-      <button class="overview-card kpi-card" type="button" @click="emit('navigate', '站点管理')">
-        <span class="metric-icon green"><Globe :size="25" /></span>
-        <span class="kpi-content"
-          ><span>站点状态</span><strong>{{ count('sites', 'connection_ok') }}</strong>
-          <small>个已验证可用（共 {{ count('sites', 'configured') }} 个）</small></span
-        >
-        <ArrowRight :size="16" class="card-arrow" />
-      </button>
-      <button class="overview-card kpi-card" type="button" @click="emit('navigate', '下载器')">
+      </article>
+      <article class="overview-card kpi-card">
         <span class="metric-icon purple"><HardDrive :size="25" /></span>
         <span class="kpi-content"
-          ><span>下载器状态</span><strong>{{ count('downloaders', 'connection_ok') }}</strong>
-          <small>个已验证连接（共 {{ count('downloaders', 'configured') }} 个）</small></span
+          ><span>去重回收估算</span>
+          <strong>{{ bytes(statistic('dedup_reclaimed_estimate_bytes')) }}</strong>
+          <small>基于已完成操作 · 非实时物理释放</small></span
         >
-        <ArrowRight :size="16" class="card-arrow" />
-      </button>
+      </article>
+      <article class="overview-card kpi-card">
+        <span class="metric-icon green"><CheckCircle2 :size="25" /></span>
+        <span class="kpi-content"
+          ><span>完成去重</span>
+          <strong>{{ statisticCount('dedup_completed_targets') }} <em>文件</em></strong>
+          <small>同一目标快照不重复计数</small></span
+        >
+      </article>
+    </section>
+
+    <section class="overview-business-grid" aria-label="拆包与去重统计">
+      <article class="overview-card business-card">
+        <div class="business-heading">
+          <h2>拆包辅种</h2>
+          <span>累计 {{ statisticCount('unpack_total') }} 个影片执行项</span>
+        </div>
+        <dl class="business-numbers">
+          <div>
+            <dt>成功</dt>
+            <dd class="business-success">{{ statisticCount('unpack_success') }}</dd>
+          </div>
+          <div>
+            <dt>失败 / 异常</dt>
+            <dd class="business-failure">{{ statisticCount('unpack_failed') }}</dd>
+          </div>
+          <div>
+            <dt>处理中</dt>
+            <dd>{{ statisticCount('unpack_running') }}</dd>
+          </div>
+          <div>
+            <dt>待审核</dt>
+            <dd>{{ statisticCount('unpack_review') }}</dd>
+          </div>
+        </dl>
+        <div class="business-footer">
+          <span
+            >未匹配 {{ statisticCount('unpack_no_match') }} · 已取消
+            {{ statisticCount('unpack_cancelled') }}</span
+          >
+          <span>重试不重复计数</span>
+        </div>
+        <details class="business-definition">
+          <summary>统计口径</summary>
+          <p>
+            统计当前保留记录。成功率 = 成功 ÷（成功 +
+            失败/异常）；失败/异常包含匹配超时、匹配错误、内容不符和执行错误，恢复成功后不再计为异常。处理中、待审核、未匹配及取消不进入成功率分母。
+          </p>
+          <p>
+            体积来自完成项的有效冻结计划，按种子元信息、下载器与保存路径去重；跨站或不同下载位置可分别累计，表示内容体积而非上传流量。缺少有效计划的历史成功项只计数量。
+          </p>
+        </details>
+      </article>
+      <article class="overview-card business-card">
+        <div class="business-heading">
+          <h2>数据去重</h2>
+          <span>累计 {{ statisticCount('dedup_jobs') }} 个任务</span>
+        </div>
+        <dl class="business-numbers">
+          <div>
+            <dt>扫描记录</dt>
+            <dd>{{ statisticCount('dedup_scan_records') }}</dd>
+          </div>
+          <div>
+            <dt>确认重复</dt>
+            <dd>{{ statisticCount('dedup_verified_targets') }}</dd>
+          </div>
+          <div>
+            <dt>已去重</dt>
+            <dd class="business-success">{{ statisticCount('dedup_completed_targets') }}</dd>
+          </div>
+          <div>
+            <dt>处理进度</dt>
+            <dd>{{ percent(dedupProgress) }}</dd>
+          </div>
+        </dl>
+        <div class="business-footer">
+          <span>待执行回收估算 {{ bytes(statistic('dedup_pending_estimate_bytes')) }}</span>
+          <span>失败目标 {{ statisticCount('dedup_failed_targets') }}</span>
+        </div>
+        <details class="business-definition">
+          <summary>空间与任务口径</summary>
+          <p>
+            回收估算按已完成去重目标的原分配字节统计，同一目标 device/inode/ctime
+            快照跨候选和重复扫描只计一次；待执行估算排除已完成目标与取消、失败任务。扫描记录包含历次任务记录，不代表独立文件总数。
+          </p>
+          <p>
+            实际物理释放暂无独立证据，快照、回收站及其他硬链接可能影响释放。完成
+            {{ statisticCount('dedup_jobs_completed') }} · 运行
+            {{ statisticCount('dedup_jobs_running') }} · 待处理
+            {{ statisticCount('dedup_jobs_pending') }} · 失败/部分失败
+            {{ statisticCount('dedup_jobs_failed') }} · 取消
+            {{ statisticCount('dedup_jobs_cancelled') }} 个任务。
+          </p>
+        </details>
+      </article>
+    </section>
+    <section class="overview-task-strip" aria-label="当前待办与运行任务">
+      <span
+        ><Bell :size="16" />待审核 <b>{{ count('tasks', 'awaiting_confirmation') }}</b> 个影片</span
+      >
+      <span
+        ><Play :size="16" />运行中任务 <b>{{ count('tasks', 'running') }}</b></span
+      >
+      <span
+        >可重试 <b>{{ count('tasks', 'retry') }}</b> 个影片</span
+      >
+      <span
+        >待对账 <b>{{ count('operations', 'reconcile_required') }}</b> 条操作</span
+      >
     </section>
 
     <section class="overview-monitor-grid" aria-label="系统资源与连接状态">
@@ -375,7 +497,7 @@ onUnmounted(() => {
   color: var(--ink);
 }
 .overview-heading {
-  min-height: 112px;
+  min-height: 82px;
   position: relative;
   display: flex;
   align-items: center;
@@ -463,6 +585,9 @@ onUnmounted(() => {
   transition:
     border-color 0.2s,
     transform 0.2s;
+}
+article.kpi-card {
+  cursor: default;
 }
 .kpi-card:hover {
   border-color: #91b6f3;
@@ -800,6 +925,132 @@ onUnmounted(() => {
   }
   .life-step {
     width: 42%;
+  }
+}
+
+.overview-business-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.business-card {
+  padding: 22px;
+}
+.business-heading,
+.business-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.business-heading h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.business-heading > span,
+.business-footer,
+.business-definition {
+  color: var(--muted);
+  font-size: 12px;
+}
+.business-numbers {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 22px 0;
+}
+.business-numbers > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 5px;
+}
+.business-numbers dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.business-numbers dd {
+  margin: 0;
+  font-size: clamp(22px, 1.7vw, 32px);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.business-success {
+  color: var(--green, #15946f);
+}
+.business-failure {
+  color: var(--danger, #d4505b);
+}
+.business-footer {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.business-definition {
+  margin-top: 12px;
+}
+.business-definition summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.business-definition p {
+  line-height: 1.7;
+  margin: 8px 0 0;
+}
+.kpi-content strong em {
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 400;
+}
+.overview-task-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px 28px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.overview-task-strip > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.overview-task-strip b {
+  color: var(--ink);
+}
+@media (min-width: 2000px) {
+  .overview-monitor-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .monitor-card {
+    padding: 20px;
+  }
+  .monitor-heading {
+    gap: 10px;
+  }
+  .monitor-heading strong {
+    font-size: 22px;
+  }
+  .metric-icon {
+    width: 44px;
+    height: 44px;
+  }
+  .kpi-card {
+    min-height: 132px;
+  }
+}
+@media (max-width: 1000px) {
+  .overview-business-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 480px) {
+  .business-card {
+    padding: 16px;
+  }
+  .business-numbers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
   }
 }
 </style>

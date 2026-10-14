@@ -14,7 +14,12 @@ def test_repository_v1_acceptance_evidence_manifest_is_complete_and_resolvable()
     assert validate_manifest(ROOT, manifest) == []
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     statuses = [item["status"] for item in payload["requirements"]]
-    assert statuses.count("pending_external") == 0
+    assert statuses.count("pending_external") == 3
+    assert all(
+        item.get("external_blocker")
+        for item in payload["requirements"]
+        if item["status"] == "pending_external"
+    )
     assert payload["requirements"][-1]["id"] == "V1-025"
     assert payload["requirements"][-1]["status"] == "covered"
 
