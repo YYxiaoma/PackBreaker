@@ -884,6 +884,25 @@ const path = require('node:path');
     // v1.0.10 站点管理：前端不消费 health/circuit，不提供 reset-circuit；启用仍使用当前强版本，保存凭证不回显。
     await page.locator('nav').getByRole('button',{name:'站点管理',exact:true}).click();
     await page.locator('.site-toolbar').waitFor();
+    const siteConfigMode=page.locator('.site-mode-card').filter({hasText:'站点配置'});
+    const cookieCloudMode=page.locator('.site-mode-card').filter({hasText:'CookieCloud 同步'});
+    assert.equal(await siteConfigMode.count(),1,'站点管理应有站点配置卡片');
+    assert.equal(await cookieCloudMode.count(),1,'站点管理应有 CookieCloud 同步卡片');
+    assert.equal(await siteConfigMode.getAttribute('aria-pressed'),'true','站点配置默认选中');
+    await page.route('**/api/v1/cookiecloud/config',route=>fulfillJson(route,{
+      enabled:false,server_url:'',uuid:'',password_configured:false,auto_sync:false,
+      sync_cron_expression:'*/30 * * * *',request_timeout_seconds:15,version:1,
+      connection_status:'UNTESTED',last_test_at:null,last_sync_status:'UNTESTED',
+      last_sync_at:null,updated_sites:0,matched_sites:0,eligible_sites:0,
+      unchanged_sites:0,source_domains:0,source_cookies:0,unmatched_domains:0,
+    }));
+    await cookieCloudMode.click();
+    await page.locator('.cookiecloud-management').waitFor();
+    assert.equal(await cookieCloudMode.getAttribute('aria-pressed'),'true','CookieCloud 卡片选中态');
+    assert.equal(await page.locator('.site-toolbar').count(),0,'CookieCloud 应独立于站点列表展示');
+    await siteConfigMode.click();
+    await page.locator('.site-toolbar').waitFor();
+    assert.equal(await siteConfigMode.getAttribute('aria-pressed'),'true','切回站点配置恢复选中态');
     const siteCard=page.locator('.connection-card').filter({hasText:'M-Team E2E'});
     await siteCard.waitFor();
     assert.equal(await siteCard.locator('.site-status-dot').getAttribute('title'),'已停用','停用状态应只通过简洁状态点表达');
@@ -932,6 +951,7 @@ const path = require('node:path');
     });
     assert.ok(settingsFill&&settingsFill.content>=settingsFill.container-52,
       '系统设置内容必须铺满卡片，不能保留旧版 820px 最大宽度');
+    assert.equal(await page.getByRole('tab',{name:'CookieCloud',exact:true}).count(),0,'CookieCloud 不再是系统设置页签');
     await page.getByRole('tab',{name:'备份恢复',exact:true}).click();
     await page.getByText('SQLite 一致性备份',{exact:true}).waitFor();
     await page.getByRole('button',{name:'立即备份',exact:true}).click();

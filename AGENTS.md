@@ -20,9 +20,9 @@
 | 总览 | 系统、磁盘、CPU、内存、站点/下载器连接与任务生命周期 | `frontend/src/components/OverviewDashboard.vue`、`backend/app/application/system_health.py` |
 | 数据拆包 | 任务中心：手动/监控拆包、任务筛选、执行记录、影片发现/匹配、候选审核、内容校验、辅种及错误恢复 | `frontend/src/components/TaskCenterV2.vue`、`backend/app/api/unpack.py`、`backend/app/application/unpack_*.py` |
 | 数据去重 | 任务中心：目录预检、去重任务、候选对、审核、完整哈希核对与受控执行 | `frontend/src/components/MovieDedupPanel.vue`、`backend/app/api/movie_dedup.py`、`backend/app/application/movie_dedup*.py` |
-| 站点管理 | 固定 Profile、Cookie/API Key、代理、连接测试、支持状态与站点适配器 | `frontend/src/components/SiteManagement.vue`、`backend/app/api/sites.py`、`backend/app/domain/site_config.py` |
+| 站点管理 | 两卡切换站点配置和 CookieCloud；站点固定 Profile、Cookie/API Key、代理、连接测试、支持状态与站点适配器 | `frontend/src/components/SiteManagement.vue`、`backend/app/api/sites.py`、`backend/app/domain/site_config.py` |
 | 下载器 | 系统设置：qBittorrent/Transmission 配置、连接、任务/指标、路径映射及受控动作 | `frontend/src/components/DownloaderManagement.vue`、`backend/app/api/downloaders.py`、`backend/app/application/*downloader*.py` |
-| CookieCloud | 系统设置：配置、连通性、手动/计划同步及本地凭证处理 | `frontend/src/components/CookieCloudManagement.vue`、`backend/app/application/cookiecloud*.py` |
+| CookieCloud | 站点管理：配置、连通性、手动/计划同步及本地凭证处理 | `frontend/src/components/CookieCloudManagement.vue`、`backend/app/application/cookiecloud*.py` |
 | 通知 | 系统设置及站内 Inbox：Telegram、Server酱、连接测试、事件通知/审核 | `frontend/src/components/NotificationManagement.vue`、`backend/app/api/notifications.py` |
 | AI 助手 | 系统设置：Provider、模型、只读 Tools、Telegram 对话 | `frontend/src/components/AIAgentManagement.vue`、`backend/app/application/ai_*.py` |
 | 系统运维 | 系统设置及版本入口：日志、健康/诊断、备份恢复、版本检查与受控在线升级 | `frontend/src/components/OperationalLogs.vue`、`frontend/src/components/BackupManagement.vue`、`frontend/src/components/VersionPopover.vue`、`backend/app/api/system.py` |
