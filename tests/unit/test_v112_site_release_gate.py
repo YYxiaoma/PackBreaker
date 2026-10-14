@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID
 
 from scripts.validate_v112_site_release_gate import (
@@ -26,6 +27,7 @@ def _fixture(tmp_path: Path, *, complete: bool) -> tuple[Path, dict[str, object]
     for index, key in enumerate(sorted(SITES), start=1):
         row: dict[str, object] = {
             "site_key": key,
+            "adapter_status": "SUPPORTED",
             "status": "PENDING_REAL_VALIDATION",
             "receipt_path": None,
             "receipt_sha256": None,
@@ -214,6 +216,104 @@ def test_invalid_or_non_https_evidence_ref_rejected(tmp_path: Path) -> None:
     _write(root, payload)
     errors, _ = validate_manifest(root, root / MANIFEST, require_ready=True)
     assert any("TANGPT" in error and "外部验收" in error for error in errors)
+
+
+def _risk_waiver_fixture(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
+    from scripts.validate_v112_site_release_gate import (
+        RISK_APPROVAL_REF,
+        RISK_BASE_COMMIT,
+        RISK_POLICY,
+        RISK_STATUS,
+    )
+
+    root, previous = _fixture(tmp_path, complete=False)
+    payload = cast(dict[str, Any], previous)
+    payload["policy"] = RISK_POLICY
+    payload["publication_approval"] = {"status": "APPROVED", "evidence_ref": RISK_APPROVAL_REF}
+    payload["risk_acceptance"] = {
+        "status": RISK_STATUS,
+        "evidence_ref": RISK_APPROVAL_REF,
+        "accepted_site_keys": sorted(SITES),
+        "candidate_base_commit": RISK_BASE_COMMIT,
+    }
+    _write(root, payload)
+    return root, payload
+
+
+def test_approved_risk_waiver_allows_pending_sites_without_fake_receipts(tmp_path: Path) -> None:
+    root, payload = _risk_waiver_fixture(tmp_path)
+    errors, commit = validate_manifest(root, root / MANIFEST, require_ready=True)
+    assert errors == [] and commit is None
+    assert all(row["status"] == "PENDING_REAL_VALIDATION" for row in payload["sites"])
+    assert all(row["receipt_path"] is None for row in payload["sites"])
+
+
+def test_risk_waiver_requires_specific_audited_user_approval(tmp_path: Path) -> None:
+    root, payload = _risk_waiver_fixture(tmp_path)
+    payload["publication_approval"]["evidence_ref"] = (
+        "https://github.com/YYxiaoma/PackBreaker/issues/5#issuecomment-123"
+    )
+    _write(root, payload)
+    errors, _ = validate_manifest(root, root / MANIFEST, require_ready=True)
+    assert any("风险发布必须引用" in error for error in errors)
+
+    payload["publication_approval"] = {"status": "NOT_GRANTED", "evidence_ref": None}
+    _write(root, payload)
+    errors, _ = validate_manifest(root, root / MANIFEST, require_ready=True)
+    assert any("尚未独立批准" in error for error in errors)
+
+
+def test_risk_waiver_does_not_allow_fabricated_pass_or_receipt(tmp_path: Path) -> None:
+    root, payload = _risk_waiver_fixture(tmp_path)
+    payload["sites"][0]["status"] = "COMPLETE_REAL_E2E"
+    _write(root, payload)
+    errors, _ = validate_manifest(root, root / MANIFEST, require_ready=True)
+    assert any("不得冒充 E2E" in error for error in errors)
+    payload["sites"][0]["status"] = "PENDING_REAL_VALIDATION"
+    payload["sites"][0]["receipt_path"] = "docs/v1.1.2-site-receipts/PTerClub.json"
+    _write(root, payload)
+    errors, _ = validate_manifest(root, root / MANIFEST, require_ready=True)
+    assert any("禁止挂载" in error for error in errors)
+
+
+def test_adapter_support_status_distinct_from_real_e2e_status(tmp_path: Path) -> None:
+    root, payload = _risk_waiver_fixture(tmp_path)
+    assert all(site["adapter_status"] == "SUPPORTED" for site in payload["sites"])
+    assert all(site["status"] == "PENDING_REAL_VALIDATION" for site in payload["sites"])
+    payload["sites"][0]["adapter_status"] = "PENDING_REAL_VALIDATION"
+    _write(root, payload)
+    errors, _ = validate_manifest(root, root / MANIFEST, require_ready=True)
+    assert any("代码适配状态必须为 SUPPORTED" in e for e in errors)
+
+
+def test_risk_waiver_rejects_modified_site_scope_or_base_sha(tmp_path: Path) -> None:
+    root, payload = _risk_waiver_fixture(tmp_path)
+    payload["risk_acceptance"]["accepted_site_keys"].pop()
+    _write(root, payload)
+    errors, _ = validate_manifest(root, root / MANIFEST, require_ready=True)
+    assert any("风险接受字段" in error for error in errors)
+    payload["risk_acceptance"]["accepted_site_keys"] = sorted(SITES)
+    payload["risk_acceptance"]["candidate_base_commit"] = "b" * 40
+    _write(root, payload)
+    errors, _ = validate_manifest(root, root / MANIFEST, require_ready=True)
+    assert any("风险接受字段" in error for error in errors)
+
+
+def test_risk_release_source_lineage_and_whitelist(tmp_path: Path) -> None:
+    from scripts.validate_v112_site_release_gate import validate_risk_release_source
+
+    root = tmp_path
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "tests@example.invalid")
+    _git(root, "config", "user.name", "Test")
+    (root / "docs").mkdir()
+    (root / "docs" / "v1.1.2-seven-site-release-gate.json").write_text("{}")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "synthetic baseline")
+    # A synthetic repository can never claim lineage from the explicitly
+    # approved real PackBreaker candidate commit.
+    errors = validate_risk_release_source(root)
+    assert any("并非当前发布源码的祖先" in error for error in errors)
 
 
 def _git(root: Path, *args: str) -> str:

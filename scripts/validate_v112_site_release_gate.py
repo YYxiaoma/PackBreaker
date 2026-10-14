@@ -1,4 +1,4 @@
-"""Offline, fail-closed v1.1.2 seven-site real E2E release evidence gate.
+"""Offline fail-closed v1.1.2 release gate: E2E receipts OR explicit user risk acceptance.
 
 Default mode validates the inventory without claiming it has passed.
 --require-ready is exclusively for the v1.1.2 *release* workflow.
@@ -36,6 +36,23 @@ PHASES = frozenset(
 )
 PENDING = "PENDING_REAL_VALIDATION"
 COMPLETE = "COMPLETE_REAL_E2E"
+RISK_POLICY = "USER_ACCEPTED_UNVERIFIED_REAL_E2E_V1_1_2"
+RISK_STATUS = "ACCEPTED_UNVERIFIED_REAL_E2E"
+RISK_APPROVAL_REF = "https://github.com/YYxiaoma/PackBreaker/issues/5#issuecomment-6164915759"
+RISK_BASE_COMMIT = "47234a7a0ecde25adbe6f45f19a7d308fc3efd76"
+FULL_E2E_POLICY = "ALL_SEVEN_SITES_REAL_E2E_REQUIRED"
+RISK_SOURCE_ALLOWED = frozenset(
+    {
+        str(MANIFEST),
+        "scripts/validate_v112_site_release_gate.py",
+        "tests/unit/test_v112_site_release_gate.py",
+        ".github/workflows/release.yml",
+        "docs/v1.1.2-user-acceptance-decision-20261014.md",
+        "docs/v1.1.2-risk-release-notes.md",
+        "docs/support-matrix.md",
+        "docs/known-limitations.md",
+    }
+)
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ALLOWED_DOC_PATH = str(MANIFEST)
@@ -75,16 +92,34 @@ def validate_manifest(
     except (OSError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
         return [f"七站验收清单无法读取：{type(exc).__name__}"], None
 
+    if not isinstance(payload, dict):
+        return ["七站验收清单结构错误"], None
+    policy = payload.get("policy")
     if (
-        not isinstance(payload, dict)
+        policy not in {FULL_E2E_POLICY, RISK_POLICY}
         or set(payload)
-        != {"format_version", "release_tag", "policy", "publication_approval", "sites"}
+        != (
+            {"format_version", "release_tag", "policy", "publication_approval", "sites"}
+            | ({"risk_acceptance"} if policy == RISK_POLICY else set())
+        )
         or payload["format_version"] != 1
         or payload["release_tag"] != "v1.1.2"
-        or payload["policy"] != "ALL_SEVEN_SITES_REAL_E2E_REQUIRED"
         or not isinstance(payload["sites"], list)
     ):
         return ["七站验收清单版本、发布身份、策略或结构错误"], None
+
+    if policy == RISK_POLICY:
+        risk = payload["risk_acceptance"]
+        if (
+            not isinstance(risk, dict)
+            or set(risk)
+            != {"status", "evidence_ref", "accepted_site_keys", "candidate_base_commit"}
+            or risk["status"] != RISK_STATUS
+            or risk["evidence_ref"] != RISK_APPROVAL_REF
+            or risk["accepted_site_keys"] != sorted(SITES)
+            or risk["candidate_base_commit"] != RISK_BASE_COMMIT
+        ):
+            errors.append("v1.1.2 风险接受字段、七站完整范围或已审候选 SHA 不合法")
 
     approval = payload["publication_approval"]
     if (
@@ -100,6 +135,8 @@ def validate_manifest(
             errors.append("用户尚未独立批准 v1.1.2 正式发布，保持阻断")
     elif not _source_ref_valid(approval["evidence_ref"]):
         errors.append("正式发布必须提供用户明确批准的脱敏 GitHub 证据链接")
+    elif policy == RISK_POLICY and approval["evidence_ref"] != RISK_APPROVAL_REF:
+        errors.append("风险发布必须引用本次用户明确批准的审计记录")
 
     sites: list[dict[str, Any]] = payload["sites"]
     found: set[str] = set()
@@ -107,6 +144,7 @@ def validate_manifest(
     for index, entry in enumerate(sites):
         if not isinstance(entry, dict) or set(entry) != {
             "site_key",
+            "adapter_status",
             "status",
             "receipt_path",
             "receipt_sha256",
@@ -118,12 +156,17 @@ def validate_manifest(
             errors.append(f"sites[{index}]: 站点缺失、重复或未知")
             continue
         found.add(key)
+        if entry["adapter_status"] != "SUPPORTED":
+            errors.append(f"{key}: 站点代码适配状态必须为 SUPPORTED")
         status = entry["status"]
         if status == PENDING:
             if entry["receipt_path"] is not None or entry["receipt_sha256"] is not None:
                 errors.append(f"{key}: 待验收记录禁止挂载冒充完成的证明")
-            if require_ready:
+            if require_ready and policy == FULL_E2E_POLICY:
                 errors.append(f"{key}: 真实完整 E2E 尚未验收，正式发布阻断")
+            continue
+        if policy == RISK_POLICY:
+            errors.append(f"{key}: 风险接受模式必须如实保留 PENDING，不得冒充 E2E 通过")
             continue
         if status != COMPLETE:
             errors.append(f"{key}: 未知状态或未经批准的范围豁免 {status!r}")
@@ -207,9 +250,13 @@ def validate_manifest(
     if len(accepted_commits) > 1:
         errors.append("七站必须对应同一份源码候选；禁止拼接不同源码版本的验收")
     candidate_commit = next(iter(accepted_commits)) if len(accepted_commits) == 1 else None
-    if require_ready and (
-        len(accepted_commits) != 1
-        or any(e["status"] != COMPLETE for e in sites if isinstance(e, dict) and "status" in e)
+    if (
+        require_ready
+        and policy == FULL_E2E_POLICY
+        and (
+            len(accepted_commits) != 1
+            or any(e["status"] != COMPLETE for e in sites if isinstance(e, dict) and "status" in e)
+        )
     ):
         errors.append("未集齐同一源码候选的七站完整验收")
     return errors, candidate_commit
@@ -247,14 +294,43 @@ def validate_source_unchanged(root: Path, accepted_commit: str) -> list[str]:
     return []
 
 
+def validate_risk_release_source(root: Path) -> list[str]:
+    """Pin the user waiver to the last reviewed candidate; forbid unrelated edits."""
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+
+    if git("merge-base", "--is-ancestor", RISK_BASE_COMMIT, "HEAD").returncode != 0:
+        return ["风险接受的候选源码并非当前发布源码的祖先"]
+    diff = git("diff", "--name-only", RISK_BASE_COMMIT, "HEAD")
+    if diff.returncode != 0:
+        return ["无法比对风险接受后的代码变更"]
+    changed = set(diff.stdout.splitlines())
+    if not changed.issubset(RISK_SOURCE_ALLOWED):
+        return ["风险接受后出现额外源码/配置更改，必须重新核准发布范围"]
+    state = git("status", "--porcelain")
+    if state.returncode != 0 or state.stdout.strip():
+        return ["风险发布必须使用无未提交改动的精确 Git 提交"]
+    return []
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="v1.1.2 七站真实全链离线发布阻断门禁")
+    parser = argparse.ArgumentParser(description="v1.1.2 真实 E2E 或显式用户风险接受发布门禁")
     parser.add_argument("--manifest", type=Path, default=ROOT / MANIFEST)
     parser.add_argument("--require-ready", action="store_true")
     args = parser.parse_args()
     errors, source_commit = validate_manifest(ROOT, args.manifest, require_ready=args.require_ready)
+    policy = _read_json(args.manifest).get("policy") if not errors else None
     if args.require_ready and not errors:
-        if source_commit is None:
+        if policy == RISK_POLICY:
+            errors.extend(validate_risk_release_source(ROOT))
+        elif source_commit is None:
             errors.append("完整验收缺少单一来源源码身份")
         else:
             errors.extend(validate_source_unchanged(ROOT, source_commit))
@@ -263,9 +339,14 @@ def main() -> int:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
     if args.require_ready:
-        print("v1.1.2 七站真实全链证据/源码一致性门禁通过（仍需 CI 与用户正式发布批准）")
+        if policy == RISK_POLICY:
+            print(
+                "v1.1.2 用户显式风险接受发布门禁通过；七站真实 E2E 仍为 0/7（需其他 CI/发行校验）"
+            )
+        else:
+            print("v1.1.2 七站真实全链证据/源码一致性门禁通过")
     else:
-        print("v1.1.2 七站验收清单结构通过；待验收状态不代表正式发布就绪")
+        print("v1.1.2 发布清单结构通过；未验收站点不代表真实 E2E 通过")
     return 0
 
 

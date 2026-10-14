@@ -22,7 +22,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Block v1.1.2 release preparation until seven real site E2E receipts and explicit approval exist
+      - name: Require v1.1.2 real E2E receipts OR audited explicit risk acceptance and approval
         if: github.ref_name == 'v1.1.2'
         run: python3 scripts/validate_v112_site_release_gate.py --require-ready
 
@@ -187,7 +187,7 @@ jobs:
           corepack pnpm --dir frontend install --frozen-lockfile
       - name: Validate release tag
         run: uv run python scripts/release_manifest.py --tag "$GITHUB_REF_NAME" --validate-tag-only
-      - name: Require seven full real E2E receipts for v1.1.2
+      - name: Require validated v1.1.2 audited release policy and source identity
         if: github.ref_name == 'v1.1.2'
         run: uv run python scripts/validate_v112_site_release_gate.py --require-ready
       - name: Refuse an existing GitHub Release
@@ -497,10 +497,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          notes_args=(--generate-notes)
+          if [[ "$GITHUB_REF_NAME" == "v1.1.2" ]]; then
+            notes_args=(--notes-file docs/v1.1.2-risk-release-notes.md)
+          fi
           gh release create "$GITHUB_REF_NAME" release/* \
             --verify-tag \
             --title "PackBreaker $GITHUB_REF_NAME" \
-            --generate-notes
+            "${notes_args[@]}"
       - name: Read back published Release assets before advancing image channels
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

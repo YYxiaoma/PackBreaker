@@ -1,53 +1,74 @@
 {
   "format_version": 1,
   "release_tag": "v1.1.2",
-  "policy": "ALL_SEVEN_SITES_REAL_E2E_REQUIRED",
+  "policy": "USER_ACCEPTED_UNVERIFIED_REAL_E2E_V1_1_2",
   "publication_approval": {
-    "status": "NOT_GRANTED",
-    "evidence_ref": null
+    "status": "APPROVED",
+    "evidence_ref": "https://github.com/YYxiaoma/PackBreaker/issues/5#issuecomment-6164915759"
   },
   "sites": [
     {
       "site_key": "PTerClub",
       "status": "PENDING_REAL_VALIDATION",
       "receipt_path": null,
-      "receipt_sha256": null
+      "receipt_sha256": null,
+      "adapter_status": "SUPPORTED"
     },
     {
       "site_key": "Audiences",
       "status": "PENDING_REAL_VALIDATION",
       "receipt_path": null,
-      "receipt_sha256": null
+      "receipt_sha256": null,
+      "adapter_status": "SUPPORTED"
     },
     {
       "site_key": "SpringSunday",
       "status": "PENDING_REAL_VALIDATION",
       "receipt_path": null,
-      "receipt_sha256": null
+      "receipt_sha256": null,
+      "adapter_status": "SUPPORTED"
     },
     {
       "site_key": "HDDolby",
       "status": "PENDING_REAL_VALIDATION",
       "receipt_path": null,
-      "receipt_sha256": null
+      "receipt_sha256": null,
+      "adapter_status": "SUPPORTED"
     },
     {
       "site_key": "U2",
       "status": "PENDING_REAL_VALIDATION",
       "receipt_path": null,
-      "receipt_sha256": null
+      "receipt_sha256": null,
+      "adapter_status": "SUPPORTED"
     },
     {
       "site_key": "TANGPT",
       "status": "PENDING_REAL_VALIDATION",
       "receipt_path": null,
-      "receipt_sha256": null
+      "receipt_sha256": null,
+      "adapter_status": "SUPPORTED"
     },
     {
       "site_key": "CarPT",
       "status": "PENDING_REAL_VALIDATION",
       "receipt_path": null,
-      "receipt_sha256": null
+      "receipt_sha256": null,
+      "adapter_status": "SUPPORTED"
     }
-  ]
+  ],
+  "risk_acceptance": {
+    "status": "ACCEPTED_UNVERIFIED_REAL_E2E",
+    "evidence_ref": "https://github.com/YYxiaoma/PackBreaker/issues/5#issuecomment-6164915759",
+    "accepted_site_keys": [
+      "Audiences",
+      "CarPT",
+      "HDDolby",
+      "PTerClub",
+      "SpringSunday",
+      "TANGPT",
+      "U2"
+    ],
+    "candidate_base_commit": "47234a7a0ecde25adbe6f45f19a7d308fc3efd76"
+  }
 }
