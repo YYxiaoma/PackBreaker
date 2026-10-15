@@ -504,6 +504,8 @@ jobs:
           notes_args=(--generate-notes)
           if [[ "$GITHUB_REF_NAME" == "v1.1.2" ]]; then
             notes_args=(--notes-file evidence/releases/v1.1.2-risk-release-notes.md)
+          elif [[ -f RELEASE_NOTES.md ]]; then
+            notes_args=(--notes-file RELEASE_NOTES.md)
           fi
           gh release create "$GITHUB_REF_NAME" release/* \
             --verify-tag \
