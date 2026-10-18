@@ -1,4 +1,4 @@
-// v1.0.15 数据拆包 v2 专用浏览器烟测；只使用显式 mock，不访问真实后端。
+// v1.1.4 数据拆包 v2 专用浏览器烟测；只使用显式 mock，不访问真实后端。
 const { chromium } = require(process.env.PB_PLAYWRIGHT || '../frontend/node_modules/playwright');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -20,7 +20,7 @@ async function waitReady(url) {
     }
     await sleep(250);
   }
-  throw new Error(`v1.0.15 UI 测试服务未就绪：${url}`);
+  throw new Error(`v1.1.4 UI 测试服务未就绪：${url}`);
 }
 
 function startFrontend() {
@@ -79,7 +79,7 @@ const fulfillJson = (route, body, status = 200) =>
   await page.route('**/api/v1/**', (route) => {
     const request = route.request();
     unmocked.push(request.method() + ' ' + new URL(request.url()).pathname);
-    return fulfillJson(route, { code: 'E2E_UNMOCKED_API', detail: 'v1.0.15 UI 烟测禁止未显式 mock API' }, 501);
+    return fulfillJson(route, { code: 'E2E_UNMOCKED_API', detail: 'v1.1.4 UI 烟测禁止未显式 mock API' }, 501);
   });
 
   await page.route('**/api/v1/auth/me', (route) =>
@@ -94,18 +94,18 @@ const fulfillJson = (route, body, status = 200) =>
     fulfillJson(route, { count: 0 }),
   );
   await page.route('**/api/v1/system/health', (route) =>
-    fulfillJson(route, { status: 'ok', generated_at: now, version: '1.0.15', checks: [] }),
+    fulfillJson(route, { status: 'ok', generated_at: now, version: '1.1.4', checks: [] }),
   );
   await page.route('**/api/v1/system/upgrade', (route) =>
     fulfillJson(route, {
-      current_version: '1.0.15',
-      latest_version: '1.0.15',
+      current_version: '1.1.4',
+      latest_version: '1.1.4',
       update_available: false,
       can_upgrade: false,
       blocked_reasons: [],
       release_error_code: null,
       target_image_digest: null,
-      target_tag: 'v1.0.15',
+      target_tag: 'v1.1.4',
       helper_status: null,
     }),
   );
@@ -412,7 +412,7 @@ const fulfillJson = (route, body, status = 200) =>
     if (!match) {
       return fulfillJson(
         route,
-        { code: 'E2E_UNMOCKED_ITEM_API', detail: 'v1.0.15 item API 未显式 mock' },
+        { code: 'E2E_UNMOCKED_ITEM_API', detail: 'v1.1.4 item API 未显式 mock' },
         501,
       );
     }
@@ -515,8 +515,9 @@ const fulfillJson = (route, body, status = 200) =>
 
   try {
     await page.goto(`${frontendUrl}/#%E4%BB%BB%E5%8A%A1%E4%B8%AD%E5%BF%83`, { waitUntil: 'domcontentloaded' });
-    await page.getByRole('heading', { name: '任务中心', exact: true, level: 2 }).waitFor();
-    assert.equal(await page.locator('aside.sidebar nav').getByText('关于', { exact: true }).count(), 0);
+    await page.getByRole('heading', { name: '数据拆包', exact: true, level: 2 }).waitFor();
+    const sidebarNav = page.locator('aside.sidebar nav');
+    assert.equal(await sidebarNav.getByText('关于', { exact: true }).count(), 0);
     const aboutCorner = page.getByRole('button', { name: '关于 PackBreaker' });
     await aboutCorner.waitFor({ state: 'visible' });
     const cornerRect = await aboutCorner.boundingBox();
@@ -531,18 +532,16 @@ const fulfillJson = (route, body, status = 200) =>
     await aboutCorner.click();
     await page.waitForURL(/#(?:%E5%85%B3%E4%BA%8E|关于)/i);
     await page.goto(`${frontendUrl}/#%E4%BB%BB%E5%8A%A1%E4%B8%AD%E5%BF%83`, { waitUntil: 'domcontentloaded' });
-    await page.getByRole('heading', { name: '任务中心', exact: true, level: 2 }).waitFor();
+    await page.getByRole('heading', { name: '数据拆包', exact: true, level: 2 }).waitFor();
     await page.setViewportSize({ width: 1440, height: 980 });
 
-    const modeCards = page.locator('.mode-card');
-    assert.equal(await modeCards.count(), 2, 'v1.0.15 顶部必须只保留两个任务卡片');
-    assert.equal(await modeCards.filter({ hasText: '数据拆包' }).count(), 1);
-    assert.equal(await modeCards.filter({ hasText: '数据去重' }).count(), 1);
-    assert.equal(await modeCards.filter({ hasText: '数据拆包' }).evaluate((el) => el.classList.contains('active')), true);
+    assert.equal(await sidebarNav.getByText('数据拆包', { exact: true }).count(), 1, '任务中心应通过二级菜单提供数据拆包');
+    assert.equal(await sidebarNav.getByText('数据去重', { exact: true }).count(), 1, '数据去重应是独立二级菜单');
+    assert.equal(await page.locator('main .movie-dedup-panel').count(), 0, '数据拆包视图不得混入影片去重页面');
     assert.equal(
       await page.getByRole('button', { name: '清理历史 payload', exact: true }).count(),
       0,
-      'v2 任务中心不得暴露旧 retention/purge 入口',
+      '数据拆包视图不得暴露旧 retention/purge 入口',
     );
 
     await page.getByText('电影库手动拆包', { exact: true }).waitFor();
@@ -784,24 +783,27 @@ const fulfillJson = (route, body, status = 200) =>
     assert.equal(createdDefinitionBodies[0].source_scan_id, 'scan-1');
     assert.equal(createdDefinitionBodies[0].source_kind, 'DIRECTORY');
 
-    await modeCards.filter({ hasText: '数据去重' }).click();
-    await page.getByRole('button', { name: '新增任务', exact: true }).click();
+    await sidebarNav.getByText('数据去重', { exact: true }).click();
+    await page.locator('main .movie-dedup-panel').waitFor({ state: 'visible' });
+    await page.getByText('影片去重', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '新增影片去重任务', exact: true }).click();
     const dedupDialog = page.locator('.el-dialog').filter({ hasText: '新增影片去重任务' }).last();
     await dedupDialog.waitFor({ state: 'visible' });
     await dedupDialog.locator('.el-dialog__headerbtn').click();
-    await modeCards.filter({ hasText: '数据拆包' }).click();
+    await sidebarNav.getByText('数据拆包', { exact: true }).click();
+    await page.getByRole('heading', { name: '数据拆包', exact: true, level: 2 }).waitFor();
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(100);
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
       true,
-      'v1.0.15 任务中心 390px 不应产生页面级横向溢出',
+      'v1.1.4 数据拆包视图 390px 不应产生页面级横向溢出',
     );
 
-    assert.deepEqual(unmocked, [], 'v1.0.15 UI 烟测不得请求未显式 mock 的 API');
+    assert.deepEqual(unmocked, [], 'v1.1.4 UI 烟测不得请求未显式 mock 的 API');
     assert.deepEqual(errors, []);
-    console.log(`通过：v1.0.15 ${productionPreview ? '生产构建' : '开发构建'}两卡任务中心、Cron 辅助、下载器来源、保存语义、自动匹配审核、重试与 390px 响应式烟测。`);
+    console.log(`通过：v1.1.4 ${productionPreview ? '生产构建' : '开发构建'}独立数据拆包/去重路由、影片去重新增入口、Cron 辅助、下载器来源、保存语义、自动匹配审核、重试与 390px 响应式烟测。`);
   } finally {
     await browser.close();
   }
