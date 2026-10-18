@@ -10,6 +10,10 @@ export type SitePatchInput = components['schemas']['SitePatchRequest'];
 export type SiteProbeResult = components['schemas']['SiteProbeResponse'];
 export type SiteProfile = components['schemas']['SiteProfileResponse'];
 export type SiteTemporaryProbeInput = components['schemas']['SiteTemporaryProbeRequest'];
+export type SiteDetail = components['schemas']['SiteDetailResponse'];
+export type SiteSyncHistoryItem = components['schemas']['SiteSyncHistoryItemResponse'];
+export type SiteSyncHistory = components['schemas']['SiteSyncHistoryResponse'];
+export type SiteSeeding = components['schemas']['SiteSeedingResponse'];
 
 export function siteProfileOptionLabel(
   profile: Pick<SiteProfile, 'display_name' | 'support_status'>,
@@ -48,6 +52,26 @@ export async function probeSite(payload: SiteTemporaryProbeInput): Promise<SiteP
 
 export async function getSite(id: string): Promise<Site> {
   const response = await apiClient.get<Site>(sitePath(id));
+  return response.data;
+}
+
+export async function getSiteDetail(id: string): Promise<SiteDetail> {
+  const response = await apiClient.get<SiteDetail>(`${sitePath(id)}/detail`);
+  return response.data;
+}
+
+export async function syncSiteDetail(id: string): Promise<SiteDetail> {
+  const response = await apiClient.post<SiteDetail>(`${sitePath(id)}/sync`);
+  return response.data;
+}
+
+export async function listSiteSyncHistory(id: string): Promise<SiteSyncHistoryItem[]> {
+  const response = await apiClient.get<SiteSyncHistory>(`${sitePath(id)}/sync-history`);
+  return response.data.items;
+}
+
+export async function listSiteSeeding(id: string): Promise<SiteSeeding> {
+  const response = await apiClient.get<SiteSeeding>(`${sitePath(id)}/seeding`);
   return response.data;
 }
 

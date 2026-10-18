@@ -525,11 +525,14 @@ defineExpose({ openCreate, refresh });
   <div class="movie-dedup-panel">
     <div class="table-card" v-loading="loading">
       <div class="table-card-head">
-        <div>
+        <div class="table-card-title">
           <b>影片去重</b>
           <span>{{ jobs.length }} 个任务</span>
         </div>
-        <small>最终自动替换必须完整 SHA-256 一致；默认优先硬链接，跨文件系统不会静默降级。</small>
+        <div class="table-card-actions">
+          <small>最终自动替换必须完整 SHA-256 一致；默认优先硬链接，跨文件系统不会静默降级。</small>
+          <el-button type="primary" @click="openCreate()">新增影片去重任务</el-button>
+        </div>
       </div>
       <el-empty v-if="!loading && !jobs.length" description="暂无影片去重任务" />
       <el-table v-else :data="jobs" class="movie-job-table">
@@ -883,6 +886,11 @@ defineExpose({ openCreate, refresh });
   display: flex;
   gap: 8px;
   align-items: baseline;
+}
+.table-card-head > .table-card-actions {
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .table-card-head span,
 .table-card-head small,

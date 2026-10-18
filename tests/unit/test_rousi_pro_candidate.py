@@ -50,18 +50,75 @@ async def test_rousi_pro_candidate_uses_api_key_header_only_on_reviewed_readonly
     assert (await adapter.test_connection()).site_id == "rousi_pro"
     assert len(requests) == 1
 
-    # The search endpoint has an independently verified contract. Torrent
-    # details/download and the removed user profile still fail closed.
-    for action in (
-        adapter.fetch_details("123"),
-        adapter.fetch_torrent("123"),
-        adapter.fetch_user_profile(),
-    ):
-        with pytest.raises(SiteAdapterError) as exc:
-            await action
-        assert exc.value.code == "SITE_ADAPTER_PENDING"
-        assert _KEY not in str(exc.value)
-    assert len(requests) == 1
+    # The reviewed profile endpoint is a separate read-only operation and must
+    # use Bearer authentication, never the attendance api-token header.
+    def profile_handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert str(request.url) == f"{_ORIGIN}/api/v1/profile"
+        assert request.headers.get("authorization") == f"Bearer {_KEY}"
+        assert request.headers.get("api-token") is None
+        assert request.headers.get("cookie") is None
+        return httpx2.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "id": 619,
+                    "username": "synthetic-user",
+                    "level_text": "Lv.5",
+                    "registered_at": "2024-01-01T00:00:00Z",
+                    "last_active_at": "2024-02-03T04:05:06Z",
+                    "uploaded": 1073741824,
+                    "downloaded": 536870912,
+                    "ratio": 2.0,
+                    "karma": 1000.5,
+                    "seeding_leeching_data": {"seeding_count": 10, "seeding_size": 10737418240},
+                },
+            },
+        )
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(profile_handler)).create(
+        kind=SiteKind.ROUSI_PRO,
+        base_url=_ORIGIN,
+        credential_kind=SiteCredentialKind.API_KEY,
+        credential=_KEY,
+    )
+    profile = await adapter.fetch_user_profile()
+    assert profile.uid == "619"
+    assert profile.username == "synthetic-user"
+    assert profile.user_level == "Lv.5"
+    assert profile.uploaded_bytes == 1073741824
+    assert profile.downloaded_bytes == 536870912
+    assert profile.ratio == 2.0
+    assert profile.seeding_count == 10
+    assert profile.seeding_size_bytes == 10737418240
+    assert profile.bonus == 1000.5
+    assert profile.join_time is not None
+    assert profile.last_access_at is not None
+    assert profile.last_access_at.isoformat() == "2024-02-03T04:05:06+00:00"
+    assert len(requests) == 2
+    assert _KEY not in repr(profile)
+
+
+@pytest.mark.asyncio
+async def test_rousi_pro_profile_preserves_missing_optional_fields_as_none() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/api/v1/profile"
+        return httpx2.Response(200, json={"code": 0, "data": {"id": 7, "username": "u"}})
+
+    adapter = RousiProCandidateAdapter(_KEY, transport=httpx2.MockTransport(handler))
+    profile = await adapter.fetch_user_profile()
+    assert profile.uid == "7"
+    assert profile.username == "u"
+    assert profile.uploaded_bytes is None
+    assert profile.downloaded_bytes is None
+    assert profile.ratio is None
+    assert profile.seeding_count is None
+    assert profile.seeding_size_bytes is None
+    assert profile.bonus is None
+    assert profile.join_time is None
+    assert profile.last_access_at is None
 
 
 @pytest.mark.asyncio

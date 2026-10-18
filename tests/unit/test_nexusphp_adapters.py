@@ -193,6 +193,12 @@ async def test_hdtime_user_profile_is_loaded_on_demand_from_same_origin() -> Non
                     <tr><td>做种量</td><td>4.00 TiB</td></tr>
                     <tr><td>魔力值</td><td>56.75</td></tr>
                     <tr><td>每小时魔力值</td><td>7.25</td></tr>
+                    <tr><td>加入日期</td><td>2024-01-15 10:30:22</td></tr>
+                    <tr><td>最近动向</td><td>2026-10-16 10:20:00</td></tr>
+                    <tr><td>H&R 状态</td><td>正常</td></tr>
+                    <tr><td>H&R 次数</td><td>0</td></tr>
+                    <tr><td>未读消息</td><td>3</td></tr>
+                    <tr><td colspan="2"><a href="myhr.php?userid=42">H&amp;R: 2/0/5</a></td></tr>
                   </table>
                 </body></html>
                 """,
@@ -219,6 +225,13 @@ async def test_hdtime_user_profile_is_loaded_on_demand_from_same_origin() -> Non
     assert profile.bonus == 56.75
     assert profile.seeding_points is None
     assert profile.bonus_per_hour == 7.25
+    assert profile.join_time is not None
+    assert profile.join_time.isoformat() == "2024-01-15T02:30:22+00:00"
+    assert profile.last_access_at is not None
+    assert profile.last_access_at.isoformat() == "2026-10-16T02:20:00+00:00"
+    assert profile.hnr_status == "正常"
+    assert profile.hnr_count == 0
+    assert profile.message_count == 3
 
 
 @pytest.mark.asyncio

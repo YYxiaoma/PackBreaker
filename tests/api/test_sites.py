@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -14,9 +15,17 @@ from backend.app.api.dependencies import CSRF_COOKIE
 from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretStore
 from backend.app.config import AppSettings
+from backend.app.domain.site_adapter import SiteUserProfile
 from backend.app.domain.site_config import SiteKind, site_kind_is_persistable, site_profile
+from backend.app.domain.site_search import SiteSearchCapabilities
+from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.adapters.sites import SiteAdapterFactory
-from backend.app.infrastructure.persistence.models import SecretRecord, Site
+from backend.app.infrastructure.persistence.models import (
+    SecretRecord,
+    Site,
+    SiteUserProfileSnapshot,
+    SiteUserProfileSync,
+)
 from backend.app.infrastructure.persistence.site_repositories import SiteRepository
 from backend.app.main import create_app
 
@@ -66,6 +75,185 @@ def _create_site(client: TestClient, api_key: str = "synthetic-mteam-key") -> di
     assert response.status_code == 201
     assert response.headers["ETag"] == '"1"'
     return cast(dict[str, object], response.json())
+
+
+def test_site_detail_reads_cached_profile_and_never_exposes_credentials(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    secret = "synthetic-site-detail-secret"
+    try:
+        created = _create_site(client, secret)
+        site_id = str(created["id"])
+        now = datetime.now(UTC)
+        with app.state.runtime.session_factory() as session:
+            session.add(
+                SiteUserProfileSnapshot(
+                    site_id=site_id,
+                    uid="123456",
+                    username="demo001",
+                    user_level="Power User",
+                    join_time=now,
+                    last_access_at=now,
+                    uploaded_bytes=12_345,
+                    downloaded_bytes=1_234,
+                    ratio=10.02,
+                    seeding_count=256,
+                    seeding_size_bytes=8_192,
+                    hnr_status="正常",
+                    hnr_count=0,
+                    message_count=2,
+                    fetched_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                SiteUserProfileSync(
+                    site_id=site_id,
+                    status="SUCCESS",
+                    started_at=now,
+                    finished_at=now,
+                    duration_ms=128,
+                    field_count=7,
+                )
+            )
+            session.commit()
+
+        detail = client.get(f"/api/v1/sites/{site_id}/detail")
+        assert detail.status_code == 200
+        body = detail.json()
+        assert body["account"]["username"] == "demo001"
+        assert body["account"]["user_level"] == "Power User"
+        assert body["account"]["join_time"] == now.isoformat().replace("+00:00", "Z")
+        assert body["account"]["hnr_status"] == "正常"
+        assert body["account"]["last_access_at"] == now.isoformat().replace("+00:00", "Z")
+        assert body["account"]["hnr_count"] == 0
+        assert body["account"]["message_count"] == 2
+        assert body["statistics"]["ratio"] == 10.02
+        assert body["connection"]["last_sync_duration_ms"] == 128
+        assert body["support_status"] == "SUPPORTED"
+        assert body["site_version"] is None
+        assert body["config_version"] == 1
+        assert body["capabilities"]["search"] is True
+        assert body["capabilities"]["torrent_detail"] is True
+        assert body["capabilities"]["torrent_download"] is True
+        assert body["capabilities"]["user_info"] is True
+        assert body["capabilities"]["seeding_info"] is False
+        assert body["capabilities"]["api"] is True
+        assert body["capabilities"]["cookie"] is False
+        assert body["capabilities"]["browser_emulation"] is False
+        assert body["capabilities"]["proxy"] is True
+        assert secret not in detail.text
+
+        listed = client.get("/api/v1/sites")
+        assert listed.status_code == 200
+        summary = listed.json()["items"][0]["user_summary"]
+        assert summary["username"] == "demo001"
+        assert summary["seeding_count"] == 256
+        assert secret not in listed.text
+
+        history = client.get(f"/api/v1/sites/{site_id}/sync-history")
+        assert history.status_code == 200
+        assert history.json()["items"][0]["status"] == "SUCCESS"
+
+        seeding = client.get(f"/api/v1/sites/{site_id}/seeding")
+        assert seeding.status_code == 200
+        assert seeding.json() == {"supported": False, "items": [], "next_cursor": None}
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_site_user_profile_sync_persists_latest_snapshot_and_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    secret = "synthetic-sync-secret"
+    try:
+        created = _create_site(client, secret)
+        site_id = str(created["id"])
+
+        class FakeAdapter:
+            async def capabilities(self) -> SiteSearchCapabilities:
+                return SiteSearchCapabilities()
+
+            async def fetch_user_profile(self) -> SiteUserProfile:
+                return SiteUserProfile(
+                    site_id="mteam",
+                    uid="sync-123",
+                    username="synced-user",
+                    user_level="Power User",
+                    uploaded_bytes=20_000,
+                    downloaded_bytes=2_000,
+                    ratio=10.0,
+                    seeding_count=9,
+                )
+
+        monkeypatch.setattr(
+            app.state.site_service._adapter_factory,
+            "create",
+            lambda **_kwargs: FakeAdapter(),
+        )
+
+        response = client.post(f"/api/v1/sites/{site_id}/sync", headers=_csrf(client))
+        assert response.status_code == 200
+        body = response.json()
+        assert body["account"]["username"] == "synced-user"
+        assert body["statistics"]["seeding_count"] == 9
+        assert secret not in response.text
+
+        with app.state.runtime.session_factory() as session:
+            snapshot = session.get(SiteUserProfileSnapshot, site_id)
+            assert snapshot is not None
+            assert snapshot.username == "synced-user"
+            history = list(
+                session.scalars(
+                    select(SiteUserProfileSync).where(SiteUserProfileSync.site_id == site_id)
+                )
+            )
+            assert len(history) == 1
+            assert history[0].status == "SUCCESS"
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("exception_kind", ["parse", "adapter"])
+def test_site_user_profile_sync_history_never_persists_raw_exception_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exception_kind: str
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    sentinel = "synthetic-secret-from-remote-response"
+    try:
+        created = _create_site(client)
+        site_id = str(created["id"])
+
+        class FakeAdapter:
+            async def capabilities(self) -> SiteSearchCapabilities:
+                return SiteSearchCapabilities()
+
+            async def fetch_user_profile(self) -> SiteUserProfile:
+                if exception_kind == "parse":
+                    raise ValueError(f"invalid user value: {sentinel}")
+                raise SiteAdapterError("SITE_AUTH_FAILED", f"remote credential: {sentinel}")
+
+        monkeypatch.setattr(
+            app.state.site_service._adapter_factory,
+            "create",
+            lambda **_kwargs: FakeAdapter(),
+        )
+
+        response = client.post(f"/api/v1/sites/{site_id}/sync", headers=_csrf(client))
+        assert response.status_code == 502
+        assert sentinel not in response.text
+
+        history = client.get(f"/api/v1/sites/{site_id}/sync-history")
+        assert history.status_code == 200
+        assert sentinel not in history.text
+        expected_message = (
+            "站点返回的用户信息不符合 PackBreaker 数据约束"
+            if exception_kind == "parse"
+            else "站点用户信息同步失败（SITE_AUTH_FAILED）"
+        )
+        assert history.json()["items"][0]["error_message"] == expected_message
+    finally:
+        client.__exit__(None, None, None)
 
 
 def test_removed_site_user_profile_has_no_business_entrypoint(tmp_path: Path) -> None:

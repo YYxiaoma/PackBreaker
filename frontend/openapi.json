@@ -2855,6 +2855,185 @@
         "title": "SiteCredentialKind",
         "type": "string"
       },
+      "SiteDetailCapabilitiesResponse": {
+        "properties": {
+          "api": {
+            "title": "Api",
+            "type": "boolean"
+          },
+          "browser_emulation": {
+            "title": "Browser Emulation",
+            "type": "boolean"
+          },
+          "cookie": {
+            "title": "Cookie",
+            "type": "boolean"
+          },
+          "proxy": {
+            "title": "Proxy",
+            "type": "boolean"
+          },
+          "search": {
+            "title": "Search",
+            "type": "boolean"
+          },
+          "seeding_info": {
+            "title": "Seeding Info",
+            "type": "boolean"
+          },
+          "torrent_detail": {
+            "title": "Torrent Detail",
+            "type": "boolean"
+          },
+          "torrent_download": {
+            "title": "Torrent Download",
+            "type": "boolean"
+          },
+          "user_info": {
+            "title": "User Info",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "search",
+          "torrent_detail",
+          "torrent_download",
+          "user_info",
+          "seeding_info",
+          "api",
+          "cookie",
+          "browser_emulation",
+          "proxy"
+        ],
+        "title": "SiteDetailCapabilitiesResponse",
+        "type": "object"
+      },
+      "SiteDetailConnectionResponse": {
+        "properties": {
+          "circuit_state": {
+            "enum": [
+              "CLOSED",
+              "OPEN",
+              "HALF_OPEN"
+            ],
+            "title": "Circuit State",
+            "type": "string"
+          },
+          "credential_configured": {
+            "title": "Credential Configured",
+            "type": "boolean"
+          },
+          "credential_kind": {
+            "$ref": "#/components/schemas/SiteCredentialKind"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "last_sync_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync At"
+          },
+          "last_sync_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync Duration Ms"
+          },
+          "last_test_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Test At"
+          }
+        },
+        "required": [
+          "credential_configured",
+          "credential_kind",
+          "last_test_at",
+          "last_sync_at",
+          "last_sync_duration_ms",
+          "circuit_state",
+          "last_error_code"
+        ],
+        "title": "SiteDetailConnectionResponse",
+        "type": "object"
+      },
+      "SiteDetailResponse": {
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/SiteUserProfileResponse"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/SiteDetailCapabilitiesResponse"
+          },
+          "config_version": {
+            "title": "Config Version",
+            "type": "integer"
+          },
+          "connection": {
+            "$ref": "#/components/schemas/SiteDetailConnectionResponse"
+          },
+          "site": {
+            "$ref": "#/components/schemas/SiteViewResponse"
+          },
+          "site_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Version"
+          },
+          "statistics": {
+            "$ref": "#/components/schemas/SiteUserStatisticsResponse"
+          },
+          "support_status": {
+            "$ref": "#/components/schemas/SiteSupportStatus"
+          }
+        },
+        "required": [
+          "site",
+          "account",
+          "statistics",
+          "connection",
+          "support_status",
+          "site_version",
+          "config_version",
+          "capabilities"
+        ],
+        "title": "SiteDetailResponse",
+        "type": "object"
+      },
       "SiteHealthResponse": {
         "properties": {
           "cache_entries": {
@@ -3363,6 +3542,106 @@
         "title": "SiteProxyPatchInput",
         "type": "object"
       },
+      "SiteSeedingItemResponse": {
+        "properties": {
+          "last_activity_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity At"
+          },
+          "seeding_time_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeding Time Seconds"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "torrent_id": {
+            "title": "Torrent Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "torrent_id",
+          "title",
+          "size_bytes",
+          "status",
+          "seeding_time_seconds",
+          "last_activity_at"
+        ],
+        "title": "SiteSeedingItemResponse",
+        "type": "object"
+      },
+      "SiteSeedingResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SiteSeedingItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported",
+          "items",
+          "next_cursor"
+        ],
+        "title": "SiteSeedingResponse",
+        "type": "object"
+      },
       "SiteSupportStatus": {
         "enum": [
           "SUPPORTED",
@@ -3371,6 +3650,90 @@
         ],
         "title": "SiteSupportStatus",
         "type": "string"
+      },
+      "SiteSyncHistoryItemResponse": {
+        "properties": {
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "field_count": {
+            "title": "Field Count",
+            "type": "integer"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "title": "Finished At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "SUCCESS",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "started_at",
+          "finished_at",
+          "duration_ms",
+          "field_count",
+          "error_code",
+          "error_message"
+        ],
+        "title": "SiteSyncHistoryItemResponse",
+        "type": "object"
+      },
+      "SiteSyncHistoryResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SiteSyncHistoryItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "SiteSyncHistoryResponse",
+        "type": "object"
       },
       "SiteTemporaryProbeRequest": {
         "properties": {
@@ -3441,6 +3804,357 @@
           "credential"
         ],
         "title": "SiteTemporaryProbeRequest",
+        "type": "object"
+      },
+      "SiteUserProfileResponse": {
+        "properties": {
+          "hnr_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hnr Count"
+          },
+          "hnr_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hnr Status"
+          },
+          "join_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Join Time"
+          },
+          "last_access_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Access At"
+          },
+          "message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Count"
+          },
+          "remark": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remark"
+          },
+          "uid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uid"
+          },
+          "user_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Level"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "uid",
+          "username",
+          "user_level",
+          "join_time",
+          "last_access_at",
+          "hnr_status",
+          "hnr_count",
+          "message_count",
+          "remark"
+        ],
+        "title": "SiteUserProfileResponse",
+        "type": "object"
+      },
+      "SiteUserStatisticsResponse": {
+        "properties": {
+          "bonus": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bonus"
+          },
+          "bonus_per_hour": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bonus Per Hour"
+          },
+          "downloaded_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloaded Bytes"
+          },
+          "ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ratio"
+          },
+          "real_downloaded_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Real Downloaded Bytes"
+          },
+          "real_uploaded_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Real Uploaded Bytes"
+          },
+          "seeding_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeding Count"
+          },
+          "seeding_points": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeding Points"
+          },
+          "seeding_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeding Size Bytes"
+          },
+          "torrents_posted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrents Posted"
+          },
+          "uploaded_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded Bytes"
+          }
+        },
+        "required": [
+          "real_uploaded_bytes",
+          "real_downloaded_bytes",
+          "uploaded_bytes",
+          "downloaded_bytes",
+          "ratio",
+          "torrents_posted",
+          "seeding_count",
+          "seeding_size_bytes",
+          "bonus",
+          "seeding_points",
+          "bonus_per_hour"
+        ],
+        "title": "SiteUserStatisticsResponse",
+        "type": "object"
+      },
+      "SiteUserSummaryResponse": {
+        "properties": {
+          "downloaded_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloaded Bytes"
+          },
+          "fetched_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fetched At"
+          },
+          "ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ratio"
+          },
+          "seeding_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeding Count"
+          },
+          "uploaded_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded Bytes"
+          },
+          "user_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Level"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "username",
+          "user_level",
+          "uploaded_bytes",
+          "downloaded_bytes",
+          "ratio",
+          "seeding_count",
+          "fetched_at"
+        ],
+        "title": "SiteUserSummaryResponse",
         "type": "object"
       },
       "SiteViewResponse": {
@@ -3550,6 +4264,9 @@
             "title": "Search Interval Seconds",
             "type": "integer"
           },
+          "support_status": {
+            "$ref": "#/components/schemas/SiteSupportStatus"
+          },
           "type": {
             "$ref": "#/components/schemas/SiteKind"
           },
@@ -3568,6 +4285,16 @@
               }
             ],
             "title": "User Agent"
+          },
+          "user_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SiteUserSummaryResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "version": {
             "title": "Version",
@@ -3592,6 +4319,7 @@
           "proxy_username",
           "proxy_credential_configured",
           "capabilities",
+          "support_status",
           "connection_status",
           "enabled",
           "version",
@@ -5798,7 +6526,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.1.3"
+    "version": "1.1.4"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10337,6 +11065,64 @@
         ]
       }
     },
+    "/api/v1/sites/{site_id}/detail": {
+      "get": {
+        "operationId": "get_site_detail_api_v1_sites__site_id__detail_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "site_id",
+            "required": true,
+            "schema": {
+              "title": "Site Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Site Detail",
+        "tags": [
+          "sites"
+        ]
+      }
+    },
     "/api/v1/sites/{site_id}/health": {
       "get": {
         "operationId": "get_site_health_api_v1_sites__site_id__health_get",
@@ -10390,6 +11176,212 @@
           }
         },
         "summary": "Get Site Health",
+        "tags": [
+          "sites"
+        ]
+      }
+    },
+    "/api/v1/sites/{site_id}/seeding": {
+      "get": {
+        "operationId": "get_site_seeding_api_v1_sites__site_id__seeding_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "site_id",
+            "required": true,
+            "schema": {
+              "title": "Site Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteSeedingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Site Seeding",
+        "tags": [
+          "sites"
+        ]
+      }
+    },
+    "/api/v1/sites/{site_id}/sync": {
+      "post": {
+        "operationId": "sync_site_user_profile_api_v1_sites__site_id__sync_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "site_id",
+            "required": true,
+            "schema": {
+              "title": "Site Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync Site User Profile",
+        "tags": [
+          "sites"
+        ]
+      }
+    },
+    "/api/v1/sites/{site_id}/sync-history": {
+      "get": {
+        "operationId": "get_site_sync_history_api_v1_sites__site_id__sync_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "site_id",
+            "required": true,
+            "schema": {
+              "title": "Site Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteSyncHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Site Sync History",
         "tags": [
           "sites"
         ]

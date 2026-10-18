@@ -339,6 +339,7 @@ class NexusPhpWebAdapter:
             site_id=self._profile.site_id,
             uid=uid,
             username=username,
+            timezone_offset_minutes=self._profile.timezone_offset_minutes,
         )
         if self._profile.site_id == "hhclub" and profile.bonus_per_hour is None:
             # HHClub displays the hourly rate on its independent bonus page.
@@ -884,13 +885,25 @@ def _parse_nexus_user_profile(
     site_id: str,
     uid: str | None,
     username: str | None,
+    timezone_offset_minutes: int,
 ) -> SiteUserProfile:
     text = "|".join(parser.text_parts)
+    hnr_link_count, hnr_link_status = _profile_hnr(parser)
     uploaded = _profile_size(text, "上传量", "Uploaded")
     downloaded = _profile_size(text, "下载量", "Downloaded")
     ratio = _profile_float(text, "分享率", "Ratio")
     if ratio is None and uploaded is not None and downloaded not in {None, 0}:
         ratio = uploaded / downloaded
+    hnr_count = _profile_int(
+        text,
+        "H&R 次数",
+        "H&R次数",
+        "HNR 次数",
+        "HNR次数",
+        "H&R Count",
+    )
+    if hnr_count is None:
+        hnr_count = hnr_link_count
     return SiteUserProfile(
         site_id=site_id,
         uid=uid,
@@ -907,7 +920,60 @@ def _parse_nexus_user_profile(
         bonus=_profile_float(text, "魔力值", "Bonus"),
         seeding_points=_profile_float(text, "做种积分", "Seeding Points"),
         bonus_per_hour=_profile_float(text, "每小时魔力值", "每小时魔力", "Bonus per hour"),
+        join_time=_profile_datetime(
+            text,
+            "加入日期",
+            "加入时间",
+            "入站时间",
+            "注册时间",
+            "注册日期",
+            "Join Time",
+            "Registered",
+            timezone_offset_minutes=timezone_offset_minutes,
+        ),
+        last_access_at=_profile_datetime(
+            text,
+            "最近动向",
+            "最近访问时间",
+            "最后访问时间",
+            "最近访问",
+            "Last Access At",
+            timezone_offset_minutes=timezone_offset_minutes,
+        ),
+        hnr_status=_profile_text(
+            text,
+            "H&R 状态",
+            "H&R状态",
+            "HNR 状态",
+            "HNR状态",
+            "H&R Status",
+            max_length=64,
+        )
+        or hnr_link_status,
+        hnr_count=hnr_count,
+        message_count=_profile_int(
+            text,
+            "未读消息",
+            "未读消息数",
+            "未读消息数量",
+            "消息数",
+            "Message Count",
+        ),
     )
+
+
+def _profile_hnr(parser: _NexusHtmlParser) -> tuple[int | None, str | None]:
+    for href, title, label in reversed(parser.all_links):
+        parsed = urlsplit(href)
+        if parsed.path.lstrip("/") != "myhr.php":
+            continue
+        value = _clean_text(f"{title or ''} {label}")
+        numbers = [int(item) for item in re.findall(r"\d+", value)]
+        if not numbers:
+            continue
+        unsatisfied = numbers[1] if len(numbers) >= 2 else numbers[0]
+        return unsatisfied, "正常" if unsatisfied == 0 else "异常"
+    return None, None
 
 
 def _profile_named_level(parser: _NexusHtmlParser) -> str | None:
@@ -1076,6 +1142,29 @@ def _profile_text(text: str, *labels: str, max_length: int) -> str | None:
     if value is None or len(value) > max_length:
         return None
     return value
+
+
+def _profile_datetime(text: str, *labels: str, timezone_offset_minutes: int) -> datetime | None:
+    value = _profile_text(text, *labels, max_length=256)
+    if value is None:
+        return None
+    normalized = value.split(" (", 1)[0].strip()
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+    ):
+        try:
+            parsed = datetime.strptime(normalized, fmt)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            parsed = parsed.replace(tzinfo=timezone(timedelta(minutes=timezone_offset_minutes)))
+        return parsed
+    return None
 
 
 def _profile_size(text: str, *labels: str) -> int | None:

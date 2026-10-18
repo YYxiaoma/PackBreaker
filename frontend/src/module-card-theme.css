@@ -134,13 +134,16 @@ body {
 }
 
 #app .sidebar nav {
-  display: grid;
-  grid-auto-rows: 44px;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   gap: 6px;
   width: 100%;
   min-width: 0;
+  min-height: 0;
   margin-top: 22px;
   overflow-x: hidden;
+  overflow-y: auto;
 }
 
 #app .nav-item {

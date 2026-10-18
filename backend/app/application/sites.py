@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from math import ceil
+from time import perf_counter
 from typing import Any, Literal
 from urllib.parse import quote
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -14,12 +17,13 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretKindMismatch, SecretNotFound, SecretStore
 from backend.app.application.unpack_acceptance import UnpackAcceptanceScope
 from backend.app.domain.proxy import ProxyConfig
-from backend.app.domain.site_adapter import SiteAdapter
+from backend.app.domain.site_adapter import SiteAdapter, SiteUserProfile
 from backend.app.domain.site_config import (
     DEFAULT_COOKIE_USER_AGENT,
     SiteCredentialKind,
     SiteKind,
     SiteProbeStatus,
+    SiteSupportStatus,
     normalize_site_base_url,
     normalize_site_credential,
     required_site_credential_kind,
@@ -29,7 +33,12 @@ from backend.app.domain.site_config import (
     trusted_site_base_url,
 )
 from backend.app.infrastructure.adapters.sites import SiteAdapterError, SiteAdapterFactory
-from backend.app.infrastructure.persistence.models import Site, UnpackExecution
+from backend.app.infrastructure.persistence.models import (
+    Site,
+    SiteUserProfileSnapshot,
+    SiteUserProfileSync,
+    UnpackExecution,
+)
 from backend.app.infrastructure.persistence.site_repositories import SiteRepository
 from backend.app.infrastructure.site_reliability import (
     SiteReliabilityHealth,
@@ -56,12 +65,53 @@ class SiteView:
     proxy_username: str | None
     proxy_credential_configured: bool
     capabilities: dict[str, Any]
+    support_status: SiteSupportStatus
     connection_status: SiteProbeStatus
     enabled: bool
     version: int
     last_test_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+_USER_PROFILE_DATA_FIELDS = (
+    "uid",
+    "username",
+    "user_level",
+    "join_time",
+    "last_access_at",
+    "real_uploaded_bytes",
+    "real_downloaded_bytes",
+    "uploaded_bytes",
+    "downloaded_bytes",
+    "ratio",
+    "torrents_posted",
+    "seeding_count",
+    "seeding_size_bytes",
+    "bonus",
+    "seeding_points",
+    "bonus_per_hour",
+    "hnr_status",
+    "hnr_count",
+    "message_count",
+    "remark",
+)
+
+
+def _duration_ms(started_clock: float) -> int:
+    return max(0, int(round((perf_counter() - started_clock) * 1000)))
+
+
+def _user_profile_field_count(profile: SiteUserProfile) -> int:
+    return sum(getattr(profile, field_name) is not None for field_name in _USER_PROFILE_DATA_FIELDS)
+
+
+def _user_profile_record_values(profile: SiteUserProfile) -> dict[str, object]:
+    return {
+        field_name: getattr(profile, field_name) for field_name in _USER_PROFILE_DATA_FIELDS
+    } | {
+        "fetched_at": profile.fetched_at,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +172,7 @@ class SiteService:
         self._secret_store = secret_store
         self._adapter_factory = adapter_factory or SiteAdapterFactory()
         self._reliability_registry = reliability_registry or SiteReliabilityRegistry()
+        self._profile_sync_locks: dict[str, asyncio.Lock] = {}
 
     def list_sites(self) -> list[SiteView]:
         with self._session_factory() as session:
@@ -130,6 +181,34 @@ class SiteService:
     def get(self, site_id: str) -> SiteView:
         with self._session_factory() as session:
             return self._view(self._require_record(SiteRepository(session), site_id))
+
+    def detail_capabilities(self, site_id: str) -> dict[str, bool]:
+        """Return backend-authoritative feature capabilities for the detail view."""
+        site = self.get(site_id)
+        if site.type is SiteKind.ROUSI_PRO:
+            return {
+                "search": True,
+                "torrent_detail": False,
+                "torrent_download": site.download_credential_configured,
+                "user_info": True,
+                "seeding_info": False,
+                "api": site.credential_kind is SiteCredentialKind.API_KEY,
+                "cookie": site.credential_kind is SiteCredentialKind.COOKIE,
+                "browser_emulation": site_profile(site.type).supports_browser_emulation,
+                "proxy": site_profile(site.type).supports_proxy,
+            }
+        supported = site.support_status is not SiteSupportStatus.PENDING_ADAPTER
+        return {
+            "search": supported,
+            "torrent_detail": supported,
+            "torrent_download": supported,
+            "user_info": supported,
+            "seeding_info": False,
+            "api": site.credential_kind is SiteCredentialKind.API_KEY,
+            "cookie": site.credential_kind is SiteCredentialKind.COOKIE,
+            "browser_emulation": site_profile(site.type).supports_browser_emulation,
+            "proxy": site_profile(site.type).supports_proxy,
+        }
 
     def sync_cookiecloud_credentials(
         self,
@@ -666,6 +745,238 @@ class SiteService:
             tested_at=tested_at,
         )
         return {"status": "ok", "capabilities": capabilities}
+
+    def get_user_profile(self, site_id: str) -> SiteUserProfile | None:
+        with self._session_factory() as session:
+            record = session.get(SiteUserProfileSnapshot, site_id)
+            if record is None:
+                return None
+            return SiteUserProfile(
+                site_id=site_id,
+                uid=record.uid,
+                username=record.username,
+                user_level=record.user_level,
+                join_time=record.join_time,
+                last_access_at=record.last_access_at,
+                real_uploaded_bytes=record.real_uploaded_bytes,
+                real_downloaded_bytes=record.real_downloaded_bytes,
+                uploaded_bytes=record.uploaded_bytes,
+                downloaded_bytes=record.downloaded_bytes,
+                ratio=record.ratio,
+                torrents_posted=record.torrents_posted,
+                seeding_count=record.seeding_count,
+                seeding_size_bytes=record.seeding_size_bytes,
+                bonus=record.bonus,
+                seeding_points=record.seeding_points,
+                bonus_per_hour=record.bonus_per_hour,
+                hnr_status=record.hnr_status,
+                hnr_count=record.hnr_count,
+                message_count=record.message_count,
+                remark=record.remark,
+                fetched_at=record.fetched_at,
+            )
+
+    def list_user_profile_sync_history(
+        self, site_id: str, *, limit: int = 30
+    ) -> list[dict[str, object]]:
+        bounded_limit = min(max(limit, 1), 30)
+        with self._session_factory() as session:
+            rows = list(
+                session.scalars(
+                    select(SiteUserProfileSync)
+                    .where(SiteUserProfileSync.site_id == site_id)
+                    .order_by(SiteUserProfileSync.started_at.desc())
+                    .limit(bounded_limit)
+                )
+            )
+        return [
+            {
+                "id": row.id,
+                "status": row.status,
+                "started_at": row.started_at,
+                "finished_at": row.finished_at,
+                "duration_ms": row.duration_ms,
+                "field_count": row.field_count,
+                "error_code": row.error_code,
+                "error_message": row.error_message,
+            }
+            for row in rows
+        ]
+
+    async def sync_user_profile(self, site_id: str) -> SiteUserProfile:
+        lock = self._profile_sync_locks.setdefault(site_id, asyncio.Lock())
+        if lock.locked():
+            raise ApplicationError(
+                code="SITE_PROFILE_SYNC_IN_PROGRESS",
+                status=409,
+                title="站点用户信息正在同步",
+                detail="同一站点同时只允许执行一个用户信息同步任务",
+            )
+        await lock.acquire()
+        try:
+            return await self._sync_user_profile_unlocked(site_id)
+        finally:
+            lock.release()
+
+    async def _sync_user_profile_unlocked(self, site_id: str) -> SiteUserProfile:
+        snapshot = self._connection_snapshot(site_id)
+        if snapshot.secret_id is None:
+            raise ApplicationError(
+                code="SITE_CREDENTIAL_REQUIRED",
+                status=409,
+                title="站点凭证未配置",
+                detail="同步站点用户信息需要已配置的站点凭证",
+            )
+
+        started_at = datetime.now(UTC)
+        started_clock = perf_counter()
+
+        try:
+            credential = self._read_primary_credential(snapshot)
+            adapter = self._reliability_registry.wrap(
+                config_id=snapshot.id,
+                config_version=snapshot.version,
+                adapter=self._create_adapter(snapshot, credential),
+                min_request_interval_seconds=snapshot.search_interval_seconds,
+            )
+            profile = await adapter.fetch_user_profile()
+            expected_site_id = self._expected_site_id(snapshot.type)
+            if profile.site_id != expected_site_id:
+                raise ApplicationError(
+                    code="SITE_IDENTITY_MISMATCH",
+                    status=502,
+                    title="站点用户信息身份不匹配",
+                    detail="站点适配器返回了意外的站点身份",
+                )
+        except SiteAdapterError as exc:
+            finished_at = datetime.now(UTC)
+            self._record_user_profile_sync(
+                site_id,
+                status="FAILED",
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=_duration_ms(started_clock),
+                field_count=0,
+                error_code=exc.code,
+                # Adapter exception text can include untrusted remote response data.
+                # Persist only the stable code in sync history, never raw exception text.
+                error_message=f"站点用户信息同步失败（{exc.code}）",
+            )
+            raise self._profile_sync_error(exc) from exc
+        except ApplicationError as exc:
+            finished_at = datetime.now(UTC)
+            self._record_user_profile_sync(
+                site_id,
+                status="FAILED",
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=_duration_ms(started_clock),
+                field_count=0,
+                error_code=exc.code,
+                error_message=exc.detail,
+            )
+            raise
+        except ValueError as exc:
+            finished_at = datetime.now(UTC)
+            self._record_user_profile_sync(
+                site_id,
+                status="FAILED",
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=_duration_ms(started_clock),
+                field_count=0,
+                error_code="SITE_INVALID_RESPONSE",
+                # Parsing exceptions may echo the rejected remote value.
+                error_message="站点返回的用户信息不符合 PackBreaker 数据约束",
+            )
+            raise ApplicationError(
+                code="SITE_INVALID_RESPONSE",
+                status=502,
+                title="站点用户信息解析失败",
+                detail="站点返回的用户信息不符合 PackBreaker 数据约束",
+            ) from exc
+
+        finished_at = datetime.now(UTC)
+        field_count = _user_profile_field_count(profile)
+        with self._session_factory() as session:
+            record = session.get(SiteUserProfileSnapshot, site_id)
+            values = _user_profile_record_values(profile)
+            if record is None:
+                session.add(SiteUserProfileSnapshot(site_id=site_id, **values))
+            else:
+                for field_name, value in values.items():
+                    setattr(record, field_name, value)
+                record.updated_at = finished_at
+            session.add(
+                SiteUserProfileSync(
+                    site_id=site_id,
+                    status="SUCCESS",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=_duration_ms(started_clock),
+                    field_count=field_count,
+                    error_code=None,
+                    error_message=None,
+                )
+            )
+            self._prune_user_profile_sync_history(session, site_id)
+            session.commit()
+        return profile
+
+    def _record_user_profile_sync(
+        self,
+        site_id: str,
+        *,
+        status: str,
+        started_at: datetime,
+        finished_at: datetime,
+        duration_ms: int,
+        field_count: int,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> None:
+        with self._session_factory() as session:
+            session.add(
+                SiteUserProfileSync(
+                    site_id=site_id,
+                    status=status,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=duration_ms,
+                    field_count=field_count,
+                    error_code=error_code,
+                    error_message=(error_message or "")[:512] or None,
+                )
+            )
+            self._prune_user_profile_sync_history(session, site_id)
+            session.commit()
+
+    @staticmethod
+    def _prune_user_profile_sync_history(session: Session, site_id: str) -> None:
+        rows = list(
+            session.scalars(
+                select(SiteUserProfileSync)
+                .where(SiteUserProfileSync.site_id == site_id)
+                .order_by(SiteUserProfileSync.started_at.desc())
+                .offset(30)
+            )
+        )
+        for row in rows:
+            session.delete(row)
+
+    @staticmethod
+    def _profile_sync_error(exc: SiteAdapterError) -> ApplicationError:
+        return ApplicationError(
+            code=exc.code,
+            status=429 if exc.code == "SITE_RATE_LIMITED" else 502,
+            title="站点用户信息同步失败",
+            # Adapter errors can originate from untrusted remote responses; expose only
+            # the stable error code rather than arbitrary exception text.
+            detail=f"站点用户信息同步失败（{exc.code}）",
+            retry_after=ceil(exc.retry_after_seconds)
+            if exc.retry_after_seconds is not None
+            else None,
+        )
 
     async def probe(
         self,
@@ -1246,6 +1557,7 @@ class SiteService:
             proxy_username=record.proxy_username,
             proxy_credential_configured=record.proxy_secret_id is not None,
             capabilities=dict(record.capabilities),
+            support_status=site_profile(SiteKind(record.type)).support_status,
             connection_status=SiteProbeStatus(record.connection_status),
             enabled=record.enabled,
             version=record.version,

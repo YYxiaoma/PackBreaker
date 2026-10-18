@@ -28,9 +28,20 @@ CONFIG_READ_ACCESS = require_admin_principal
 CONFIG_WRITE_ACCESS = require_admin_csrf_principal
 
 
+class SiteUserSummaryResponse(BaseModel):
+    username: str | None
+    user_level: str | None
+    uploaded_bytes: int | None
+    downloaded_bytes: int | None
+    ratio: float | None
+    seeding_count: int | None
+    fetched_at: datetime | None
+
+
 class SiteViewResponse(BaseModel):
     id: str
     name: str
+    user_summary: SiteUserSummaryResponse | None = None
     type: SiteKind
     base_url: str
     credential_kind: SiteCredentialKind
@@ -46,6 +57,7 @@ class SiteViewResponse(BaseModel):
     proxy_username: str | None
     proxy_credential_configured: bool
     capabilities: dict[str, Any]
+    support_status: SiteSupportStatus
     connection_status: SiteProbeStatus
     enabled: bool
     version: int
@@ -177,8 +189,195 @@ class SiteHealthResponse(BaseModel):
     last_error_code: str | None
 
 
-def _view(record: SiteView) -> SiteViewResponse:
+class SiteUserProfileResponse(BaseModel):
+    uid: str | None
+    username: str | None
+    user_level: str | None
+    join_time: datetime | None
+    last_access_at: datetime | None
+    hnr_status: str | None
+    hnr_count: int | None
+    message_count: int | None
+    remark: str | None
+
+
+class SiteUserStatisticsResponse(BaseModel):
+    real_uploaded_bytes: int | None
+    real_downloaded_bytes: int | None
+    uploaded_bytes: int | None
+    downloaded_bytes: int | None
+    ratio: float | None
+    torrents_posted: int | None
+    seeding_count: int | None
+    seeding_size_bytes: int | None
+    bonus: float | None
+    seeding_points: float | None
+    bonus_per_hour: float | None
+
+
+class SiteDetailConnectionResponse(BaseModel):
+    credential_configured: bool
+    credential_kind: SiteCredentialKind
+    last_test_at: datetime | None
+    last_sync_at: datetime | None
+    last_sync_duration_ms: int | None
+    circuit_state: Literal["CLOSED", "OPEN", "HALF_OPEN"]
+    last_error_code: str | None
+
+
+class SiteDetailCapabilitiesResponse(BaseModel):
+    search: bool
+    torrent_detail: bool
+    torrent_download: bool
+    user_info: bool
+    seeding_info: bool
+    api: bool
+    cookie: bool
+    browser_emulation: bool
+    proxy: bool
+
+
+class SiteDetailResponse(BaseModel):
+    site: SiteViewResponse
+    account: SiteUserProfileResponse
+    statistics: SiteUserStatisticsResponse
+    connection: SiteDetailConnectionResponse
+    support_status: SiteSupportStatus
+    site_version: str | None
+    config_version: int
+    capabilities: SiteDetailCapabilitiesResponse
+
+
+class SiteSyncHistoryItemResponse(BaseModel):
+    id: str
+    status: Literal["SUCCESS", "FAILED"]
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    field_count: int
+    error_code: str | None
+    error_message: str | None
+
+
+class SiteSyncHistoryResponse(BaseModel):
+    items: list[SiteSyncHistoryItemResponse]
+
+
+class SiteSeedingItemResponse(BaseModel):
+    torrent_id: str
+    title: str
+    size_bytes: int | None
+    status: str | None
+    seeding_time_seconds: int | None
+    last_activity_at: datetime | None
+
+
+class SiteSeedingResponse(BaseModel):
+    supported: bool
+    items: list[SiteSeedingItemResponse]
+    next_cursor: str | None
+
+
+def _user_profile_response(profile: Any) -> SiteUserProfileResponse:
+    return SiteUserProfileResponse(
+        uid=profile.uid,
+        username=profile.username,
+        user_level=profile.user_level,
+        join_time=profile.join_time,
+        last_access_at=profile.last_access_at,
+        hnr_status=profile.hnr_status,
+        hnr_count=profile.hnr_count,
+        message_count=profile.message_count,
+        remark=profile.remark,
+    )
+
+
+def _user_statistics_response(profile: Any) -> SiteUserStatisticsResponse:
+    return SiteUserStatisticsResponse(
+        real_uploaded_bytes=profile.real_uploaded_bytes,
+        real_downloaded_bytes=profile.real_downloaded_bytes,
+        uploaded_bytes=profile.uploaded_bytes,
+        downloaded_bytes=profile.downloaded_bytes,
+        ratio=profile.ratio,
+        torrents_posted=profile.torrents_posted,
+        seeding_count=profile.seeding_count,
+        seeding_size_bytes=profile.seeding_size_bytes,
+        bonus=profile.bonus,
+        seeding_points=profile.seeding_points,
+        bonus_per_hour=profile.bonus_per_hour,
+    )
+
+
+async def _site_detail_response(request: Request, site_id: str) -> SiteDetailResponse:
+    service = site_service(request)
+    site = service.get(site_id)
+    profile = service.get_user_profile(site_id)
+    history = service.list_user_profile_sync_history(site_id, limit=1)
+    health = _health(await service.health(site_id))
+    last_sync_duration_ms = (
+        history[0]["duration_ms"]
+        if history and isinstance(history[0]["duration_ms"], int)
+        else None
+    )
+    empty_account = SiteUserProfileResponse(
+        uid=None,
+        username=None,
+        user_level=None,
+        join_time=None,
+        last_access_at=None,
+        hnr_status=None,
+        hnr_count=None,
+        message_count=None,
+        remark=None,
+    )
+    empty_statistics = SiteUserStatisticsResponse(
+        real_uploaded_bytes=None,
+        real_downloaded_bytes=None,
+        uploaded_bytes=None,
+        downloaded_bytes=None,
+        ratio=None,
+        torrents_posted=None,
+        seeding_count=None,
+        seeding_size_bytes=None,
+        bonus=None,
+        seeding_points=None,
+        bonus_per_hour=None,
+    )
+    return SiteDetailResponse(
+        site=_view(site),
+        account=_user_profile_response(profile) if profile is not None else empty_account,
+        statistics=_user_statistics_response(profile) if profile is not None else empty_statistics,
+        connection=SiteDetailConnectionResponse(
+            credential_configured=site.credential_configured,
+            credential_kind=site.credential_kind,
+            last_test_at=site.last_test_at,
+            last_sync_at=profile.fetched_at if profile is not None else None,
+            last_sync_duration_ms=last_sync_duration_ms,
+            circuit_state=health.circuit_state,
+            last_error_code=health.last_error_code,
+        ),
+        support_status=site.support_status,
+        site_version=None,
+        config_version=site.version,
+        capabilities=SiteDetailCapabilitiesResponse(**service.detail_capabilities(site_id)),
+    )
+
+
+def _view(record: SiteView, profile: Any | None = None) -> SiteViewResponse:
     return SiteViewResponse(
+        user_summary=(
+            SiteUserSummaryResponse(
+                username=profile.username,
+                user_level=profile.user_level,
+                uploaded_bytes=profile.uploaded_bytes,
+                downloaded_bytes=profile.downloaded_bytes,
+                ratio=profile.ratio,
+                seeding_count=profile.seeding_count,
+                fetched_at=profile.fetched_at,
+            )
+            if profile is not None
+            else None
+        ),
         id=record.id,
         name=record.name,
         type=record.type,
@@ -196,6 +395,7 @@ def _view(record: SiteView) -> SiteViewResponse:
         proxy_username=record.proxy_username,
         proxy_credential_configured=record.proxy_credential_configured,
         capabilities=record.capabilities,
+        support_status=record.support_status,
         connection_status=record.connection_status,
         enabled=record.enabled,
         version=record.version,
@@ -308,7 +508,11 @@ async def list_sites(
     request: Request,
     _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
 ) -> SiteListResponse:
-    return SiteListResponse(items=[_view(item) for item in site_service(request).list_sites()])
+    service = site_service(request)
+    items = service.list_sites()
+    return SiteListResponse(
+        items=[_view(item, service.get_user_profile(item.id)) for item in items]
+    )
 
 
 @router.get("/sites/profiles", response_model=SiteProfileListResponse)
@@ -412,6 +616,51 @@ async def get_site(
     _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
 ) -> JSONResponse:
     return _json_with_etag(site_service(request).get(site_id))
+
+
+@router.get("/sites/{site_id}/detail", response_model=SiteDetailResponse)
+async def get_site_detail(
+    site_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> SiteDetailResponse:
+    return await _site_detail_response(request, site_id)
+
+
+@router.post("/sites/{site_id}/sync", response_model=SiteDetailResponse)
+async def sync_site_user_profile(
+    site_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
+) -> SiteDetailResponse:
+    await site_service(request).sync_user_profile(site_id)
+    return await _site_detail_response(request, site_id)
+
+
+@router.get("/sites/{site_id}/sync-history", response_model=SiteSyncHistoryResponse)
+async def get_site_sync_history(
+    site_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> SiteSyncHistoryResponse:
+    service = site_service(request)
+    service.get(site_id)
+    return SiteSyncHistoryResponse(
+        items=[
+            SiteSyncHistoryItemResponse.model_validate(item)
+            for item in service.list_user_profile_sync_history(site_id)
+        ]
+    )
+
+
+@router.get("/sites/{site_id}/seeding", response_model=SiteSeedingResponse)
+async def get_site_seeding(
+    site_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> SiteSeedingResponse:
+    site_service(request).get(site_id)
+    return SiteSeedingResponse(supported=False, items=[], next_cursor=None)
 
 
 @router.patch("/sites/{site_id}", response_model=SiteViewResponse)

@@ -788,6 +788,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/sites/{site_id}/detail': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Site Detail */
+    get: operations['get_site_detail_api_v1_sites__site_id__detail_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/sites/{site_id}/health': {
     parameters: {
       query?: never;
@@ -797,6 +814,57 @@ export interface paths {
     };
     /** Get Site Health */
     get: operations['get_site_health_api_v1_sites__site_id__health_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/sites/{site_id}/seeding': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Site Seeding */
+    get: operations['get_site_seeding_api_v1_sites__site_id__seeding_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/sites/{site_id}/sync': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Sync Site User Profile */
+    post: operations['sync_site_user_profile_api_v1_sites__site_id__sync_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/sites/{site_id}/sync-history': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Site Sync History */
+    get: operations['get_site_sync_history_api_v1_sites__site_id__sync_history_get'];
     put?: never;
     post?: never;
     delete?: never;
@@ -2372,6 +2440,59 @@ export interface components {
      * @enum {string}
      */
     SiteCredentialKind: 'API_KEY' | 'COOKIE';
+    /** SiteDetailCapabilitiesResponse */
+    SiteDetailCapabilitiesResponse: {
+      /** Api */
+      api: boolean;
+      /** Browser Emulation */
+      browser_emulation: boolean;
+      /** Cookie */
+      cookie: boolean;
+      /** Proxy */
+      proxy: boolean;
+      /** Search */
+      search: boolean;
+      /** Seeding Info */
+      seeding_info: boolean;
+      /** Torrent Detail */
+      torrent_detail: boolean;
+      /** Torrent Download */
+      torrent_download: boolean;
+      /** User Info */
+      user_info: boolean;
+    };
+    /** SiteDetailConnectionResponse */
+    SiteDetailConnectionResponse: {
+      /**
+       * Circuit State
+       * @enum {string}
+       */
+      circuit_state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+      /** Credential Configured */
+      credential_configured: boolean;
+      credential_kind: components['schemas']['SiteCredentialKind'];
+      /** Last Error Code */
+      last_error_code: string | null;
+      /** Last Sync At */
+      last_sync_at: string | null;
+      /** Last Sync Duration Ms */
+      last_sync_duration_ms: number | null;
+      /** Last Test At */
+      last_test_at: string | null;
+    };
+    /** SiteDetailResponse */
+    SiteDetailResponse: {
+      account: components['schemas']['SiteUserProfileResponse'];
+      capabilities: components['schemas']['SiteDetailCapabilitiesResponse'];
+      /** Config Version */
+      config_version: number;
+      connection: components['schemas']['SiteDetailConnectionResponse'];
+      site: components['schemas']['SiteViewResponse'];
+      /** Site Version */
+      site_version: string | null;
+      statistics: components['schemas']['SiteUserStatisticsResponse'];
+      support_status: components['schemas']['SiteSupportStatus'];
+    };
     /** SiteHealthResponse */
     SiteHealthResponse: {
       /** Cache Entries */
@@ -2540,11 +2661,68 @@ export interface components {
       /** Username */
       username?: string | null;
     };
+    /** SiteSeedingItemResponse */
+    SiteSeedingItemResponse: {
+      /** Last Activity At */
+      last_activity_at: string | null;
+      /** Seeding Time Seconds */
+      seeding_time_seconds: number | null;
+      /** Size Bytes */
+      size_bytes: number | null;
+      /** Status */
+      status: string | null;
+      /** Title */
+      title: string;
+      /** Torrent Id */
+      torrent_id: string;
+    };
+    /** SiteSeedingResponse */
+    SiteSeedingResponse: {
+      /** Items */
+      items: components['schemas']['SiteSeedingItemResponse'][];
+      /** Next Cursor */
+      next_cursor: string | null;
+      /** Supported */
+      supported: boolean;
+    };
     /**
      * SiteSupportStatus
      * @enum {string}
      */
     SiteSupportStatus: 'SUPPORTED' | 'PENDING_ADAPTER' | 'PENDING_REAL_VALIDATION';
+    /** SiteSyncHistoryItemResponse */
+    SiteSyncHistoryItemResponse: {
+      /** Duration Ms */
+      duration_ms: number;
+      /** Error Code */
+      error_code: string | null;
+      /** Error Message */
+      error_message: string | null;
+      /** Field Count */
+      field_count: number;
+      /**
+       * Finished At
+       * Format: date-time
+       */
+      finished_at: string;
+      /** Id */
+      id: string;
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'SUCCESS' | 'FAILED';
+    };
+    /** SiteSyncHistoryResponse */
+    SiteSyncHistoryResponse: {
+      /** Items */
+      items: components['schemas']['SiteSyncHistoryItemResponse'][];
+    };
     /** SiteTemporaryProbeRequest */
     SiteTemporaryProbeRequest: {
       /**
@@ -2566,6 +2744,69 @@ export interface components {
       type: components['schemas']['SiteKind'];
       /** User Agent */
       user_agent?: string | null;
+    };
+    /** SiteUserProfileResponse */
+    SiteUserProfileResponse: {
+      /** Hnr Count */
+      hnr_count: number | null;
+      /** Hnr Status */
+      hnr_status: string | null;
+      /** Join Time */
+      join_time: string | null;
+      /** Last Access At */
+      last_access_at: string | null;
+      /** Message Count */
+      message_count: number | null;
+      /** Remark */
+      remark: string | null;
+      /** Uid */
+      uid: string | null;
+      /** User Level */
+      user_level: string | null;
+      /** Username */
+      username: string | null;
+    };
+    /** SiteUserStatisticsResponse */
+    SiteUserStatisticsResponse: {
+      /** Bonus */
+      bonus: number | null;
+      /** Bonus Per Hour */
+      bonus_per_hour: number | null;
+      /** Downloaded Bytes */
+      downloaded_bytes: number | null;
+      /** Ratio */
+      ratio: number | null;
+      /** Real Downloaded Bytes */
+      real_downloaded_bytes: number | null;
+      /** Real Uploaded Bytes */
+      real_uploaded_bytes: number | null;
+      /** Seeding Count */
+      seeding_count: number | null;
+      /** Seeding Points */
+      seeding_points: number | null;
+      /** Seeding Size Bytes */
+      seeding_size_bytes: number | null;
+      /** Torrents Posted */
+      torrents_posted: number | null;
+      /** Uploaded Bytes */
+      uploaded_bytes: number | null;
+    };
+    /** SiteUserSummaryResponse */
+    SiteUserSummaryResponse: {
+      /** Downloaded Bytes */
+      downloaded_bytes: number | null;
+      /** Fetched At */
+      fetched_at: string | null;
+      /** Ratio */
+      ratio: number | null;
+      /** Seeding Count */
+      seeding_count: number | null;
+      /** Uploaded Bytes */
+      uploaded_bytes: number | null;
+      /** User Level */
+      user_level: string | null;
+      /** Username */
+      username: string | null;
     };
     /** SiteViewResponse */
     SiteViewResponse: {
@@ -2610,6 +2851,7 @@ export interface components {
       request_timeout_seconds: number;
       /** Search Interval Seconds */
       search_interval_seconds: number;
+      support_status: components['schemas']['SiteSupportStatus'];
       type: components['schemas']['SiteKind'];
       /**
        * Updated At
@@ -2618,6 +2860,7 @@ export interface components {
       updated_at: string;
       /** User Agent */
       user_agent: string | null;
+      user_summary?: components['schemas']['SiteUserSummaryResponse'] | null;
       /** Version */
       version: number;
     };
@@ -5461,6 +5704,39 @@ export interface operations {
       };
     };
   };
+  get_site_detail_api_v1_sites__site_id__detail_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteDetailResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   get_site_health_api_v1_sites__site_id__health_get: {
     parameters: {
       query?: never;
@@ -5481,6 +5757,108 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['SiteHealthResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_site_seeding_api_v1_sites__site_id__seeding_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteSeedingResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  sync_site_user_profile_api_v1_sites__site_id__sync_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteDetailResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_site_sync_history_api_v1_sites__site_id__sync_history_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        site_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteSyncHistoryResponse'];
         };
       };
       /** @description Validation Error */

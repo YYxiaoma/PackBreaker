@@ -106,7 +106,7 @@ def test_site_relation_guard_preserves_real_historic_rows_during_upgrade(
 def test_v110_formal_adjacent_sqlite_upgrade_preserves_existing_site_task_and_secret(
     tmp_path: Path,
 ) -> None:
-    """Official v1.1.0 schema (0044) → v1.1.1 (0045), with real FK rows."""
+    """Official v1.1.0 schema (0044) → current v1.1.4 head (0046), with real FK rows."""
     database = tmp_path / "v110-adjacent.db"
     _historic_linked_database(database)
     config = Config("alembic.ini")
@@ -129,7 +129,7 @@ def test_v110_formal_adjacent_sqlite_upgrade_preserves_existing_site_task_and_se
     assert _identity(database) == before
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0045_seven_site_capacity_v111",
+            "0046_site_user_profile_v114",
         )
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -355,3 +355,55 @@ def test_site_relation_guard_preserves_existing_download_secret_reference(
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
             "0030_site_download_credential_v101",
         )
+
+
+def test_v114_site_profile_migration_downgrade_and_reupgrade_are_isolated(
+    tmp_path: Path,
+) -> None:
+    """The v1.1.4 profile migration can be reversed without touching existing site rows."""
+    database = tmp_path / "site-profile-roundtrip.db"
+    _historic_linked_database(database)
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database)
+
+    command.upgrade(config, "head")
+    with sqlite3.connect(database) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert {"site_user_profile", "site_user_profile_sync"} <= tables
+        connection.execute(
+            "INSERT INTO site_user_profile "
+            "(site_id, username, fetched_at, updated_at) "
+            "VALUES ('old-site', 'synthetic-user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        connection.execute(
+            "INSERT INTO site_user_profile_sync "
+            "(id, site_id, status, started_at, finished_at, duration_ms, field_count) "
+            "VALUES ('synthetic-sync', 'old-site', 'SUCCESS', CURRENT_TIMESTAMP, "
+            "CURRENT_TIMESTAMP, 12, 2)"
+        )
+
+    command.downgrade(config, "0045_seven_site_capacity_v111")
+    with sqlite3.connect(database) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "site_user_profile" not in tables
+        assert "site_user_profile_sync" not in tables
+        assert connection.execute("SELECT id FROM site WHERE id='old-site'").fetchone() == (
+            "old-site",
+        )
+        assert connection.execute(
+            "SELECT site_id FROM task_definition WHERE id='old-task'"
+        ).fetchone() == ("old-site",)
+
+    command.upgrade(config, "head")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "0046_site_user_profile_v114",
+        )
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)

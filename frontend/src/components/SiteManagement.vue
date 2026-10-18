@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Activity, Globe, Plus, RefreshCw, Settings2 } from '@lucide/vue';
+import { Activity, Globe, LayoutGrid, List, Plus, RefreshCw, Search, Settings2 } from '@lucide/vue';
 
 import { ApiProblem, toApiProblem } from '../api/client';
 import type {
@@ -16,6 +16,7 @@ import type {
 } from '../api/sites';
 import { useSiteStore } from '../stores/sites';
 import { siteProfileOptionLabel } from '../api/sites';
+import SiteDetailDrawer from './SiteDetailDrawer.vue';
 
 interface SiteDraft {
   id: string | null;
@@ -45,6 +46,38 @@ interface SiteDraft {
 const store = useSiteStore();
 const { items, profiles, loading, error, busy } = storeToRefs(store);
 const dialog = ref(false);
+const detailDrawer = ref(false);
+const selectedSiteId = ref<string | null>(null);
+const searchKeyword = ref('');
+const typeFilter = ref<SiteKind | ''>('');
+const statusFilter = ref<Site['connection_status'] | ''>('');
+const sortMode = ref<'name' | 'status' | 'sync'>('name');
+const viewMode = ref<'grid' | 'list'>('grid');
+
+const visibleItems = computed(() => {
+  const keyword = searchKeyword.value.trim().toLocaleLowerCase();
+  const filtered = items.value.filter((item) => {
+    const matchesKeyword =
+      !keyword ||
+      [item.name, item.base_url, item.user_summary?.username]
+        .filter(Boolean)
+        .some((value) => String(value).toLocaleLowerCase().includes(keyword));
+    const matchesType = !typeFilter.value || item.type === typeFilter.value;
+    const matchesStatus = !statusFilter.value || item.connection_status === statusFilter.value;
+    return matchesKeyword && matchesType && matchesStatus;
+  });
+
+  return filtered.slice().sort((a, b) => {
+    if (sortMode.value === 'name') return a.name.localeCompare(b.name, 'zh-CN');
+    if (sortMode.value === 'status') {
+      return (
+        statusRank(a.connection_status) - statusRank(b.connection_status) ||
+        a.name.localeCompare(b.name, 'zh-CN')
+      );
+    }
+    return syncTimestamp(b) - syncTimestamp(a) || a.name.localeCompare(b.name, 'zh-CN');
+  });
+});
 const saving = ref(false);
 const probingDraft = ref(false);
 const draft = reactive<SiteDraft>({
@@ -98,9 +131,7 @@ function profileConfigurable(profile: SiteProfile | undefined): boolean {
 }
 
 function connectionLabel(status: Site['connection_status']): string {
-  if (status === 'OK') return '已验证';
-  if (status === 'FAILED') return '失败';
-  return '未测试';
+  return statusLabel(status);
 }
 
 function statusTag(status: Site['connection_status']): 'success' | 'danger' | 'info' {
@@ -120,6 +151,59 @@ function statusText(item: Site): string {
   if (item.connection_status === 'UNTESTED') return '未测试';
   if (item.connection_status === 'FAILED') return '连接失败';
   return '连接正常';
+}
+
+function statusRank(status: Site['connection_status']): number {
+  if (status === 'OK') return 0;
+  if (status === 'FAILED') return 1;
+  return 2;
+}
+
+function syncTimestamp(item: Site): number {
+  const value = item.user_summary?.fetched_at;
+  if (!value) return 0;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function statusLabel(status: Site['connection_status']): string {
+  if (status === 'OK') return '在线';
+  if (status === 'FAILED') return '异常';
+  return '未测试';
+}
+
+function typeLabel(kind: SiteKind): string {
+  return kindLabel(kind);
+}
+
+function faviconUrl(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    return url.origin + '/favicon.ico';
+  } catch {
+    return '';
+  }
+}
+
+function hideFavicon(event: Event): void {
+  (event.currentTarget as HTMLImageElement | null)?.style.setProperty('display', 'none');
+}
+
+function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  if (value < 1024) return value + ' B';
+  const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
+  let size = value;
+  let unit = -1;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return size >= 100 ? size.toFixed(0) + ' ' + units[unit] : size.toFixed(2) + ' ' + units[unit];
+}
+
+function formatRatio(value: number | null | undefined): string {
+  return value === null || value === undefined ? '—' : value.toFixed(2);
 }
 
 function isBusy(item: Site, operation: string): boolean {
@@ -205,6 +289,11 @@ function openEdit(item: Site) {
     proxyCredentialConfigured: item.proxy_credential_configured,
   });
   dialog.value = true;
+}
+
+function openDetail(item: Site) {
+  selectedSiteId.value = item.id;
+  detailDrawer.value = true;
 }
 
 function credentialPayload(): SiteCredentialInput | undefined {
@@ -507,8 +596,54 @@ async function remove(item: Site) {
 <template>
   <div>
     <div class="site-toolbar">
-      <el-button :loading="loading" @click="refresh()"><RefreshCw :size="15" />刷新</el-button>
-      <el-button type="primary" @click="openCreate"><Plus :size="15" />添加站点</el-button>
+      <div class="site-filters">
+        <el-input
+          v-model="searchKeyword"
+          clearable
+          placeholder="搜索站点名称、域名或用户名..."
+          class="site-search"
+        >
+          <template #prefix><Search :size="16" /></template>
+        </el-input>
+        <el-select v-model="typeFilter" clearable placeholder="站点类型" class="site-filter">
+          <el-option
+            v-for="profile in profiles"
+            :key="profile.kind"
+            :label="profile.display_name"
+            :value="profile.kind"
+          />
+        </el-select>
+        <el-select v-model="statusFilter" clearable placeholder="连接状态" class="site-filter">
+          <el-option label="在线" value="OK" />
+          <el-option label="异常" value="FAILED" />
+          <el-option label="未测试" value="UNTESTED" />
+        </el-select>
+        <el-select v-model="sortMode" class="site-filter">
+          <el-option label="按名称排序" value="name" />
+          <el-option label="按状态排序" value="status" />
+          <el-option label="按最近同步排序" value="sync" />
+        </el-select>
+      </div>
+      <div class="site-toolbar-actions">
+        <el-button-group>
+          <el-button
+            :type="viewMode === 'grid' ? 'primary' : 'default'"
+            aria-label="卡片视图"
+            @click="viewMode = 'grid'"
+          >
+            <LayoutGrid :size="16" />
+          </el-button>
+          <el-button
+            :type="viewMode === 'list' ? 'primary' : 'default'"
+            aria-label="列表视图"
+            @click="viewMode = 'list'"
+          >
+            <List :size="16" />
+          </el-button>
+        </el-button-group>
+        <el-button :loading="loading" @click="refresh()"><RefreshCw :size="15" />刷新</el-button>
+        <el-button type="primary" @click="openCreate"><Plus :size="15" />添加站点</el-button>
+      </div>
     </div>
 
     <el-alert
@@ -521,20 +656,29 @@ async function remove(item: Site) {
       class="section-space"
     />
 
-    <div v-loading="loading" class="connection-cards">
-      <article v-for="item in items" :key="item.id" class="panel connection-card">
-        <div class="card-title">
-          <span class="connection-icon"><Globe :size="25" /></span>
-          <div>
-            <h3 class="site-name-line">
+    <div v-if="viewMode === 'grid'" v-loading="loading" class="site-cards">
+      <article v-for="item in visibleItems" :key="item.id" class="panel site-card">
+        <div class="site-card-header">
+          <span class="site-card-icon">
+            <Globe :size="24" />
+            <img
+              v-if="faviconUrl(item.base_url)"
+              :src="faviconUrl(item.base_url)"
+              :alt="item.name"
+              loading="lazy"
+              @error="hideFavicon"
+            />
+          </span>
+          <div class="site-card-title">
+            <div class="site-name-line">
+              <h3>{{ item.name }}</h3>
               <span
                 class="site-status-dot"
                 :class="`site-status-dot--${statusState(item)}`"
                 :title="statusText(item)"
               />
-              {{ item.name }}
-            </h3>
-            <small>{{ kindLabel(item.type) }} · 配置 v{{ item.version }}</small>
+            </div>
+            <small>{{ kindLabel(item.type) }}</small>
           </div>
           <el-switch
             :model-value="item.enabled"
@@ -549,42 +693,70 @@ async function remove(item: Site) {
             @change="toggleEnabled(item, $event === true)"
           />
         </div>
-        <p class="endpoint">{{ item.base_url }}</p>
-        <div class="downloader-probe-tags">
-          <el-tag :type="statusTag(item.connection_status)">
-            连接 {{ connectionLabel(item.connection_status) }}
+
+        <p class="site-endpoint" :title="item.base_url">{{ item.base_url }}</p>
+
+        <div class="site-status-tags">
+          <el-tag size="small" :type="statusTag(item.connection_status)">
+            {{ connectionLabel(item.connection_status) }}
           </el-tag>
-          <el-tag :type="item.credential_configured ? 'success' : 'info'">
-            {{ item.credential_configured ? `${credentialLabel(item.type)} 已配置` : '未配置凭证' }}
+          <el-tag size="small" :type="item.credential_configured ? 'success' : 'info'">
+            {{ item.credential_configured ? credentialLabel(item.type) + ' 已配置' : '未配置凭证' }}
           </el-tag>
           <el-tag
             v-if="item.type === 'ROUSI_PRO'"
+            size="small"
             :type="item.download_credential_configured ? 'success' : 'info'"
           >
             {{ item.download_credential_configured ? '下载 Cookie 已配置' : '下载 Cookie 未配置' }}
           </el-tag>
         </div>
-        <dl class="config-summary">
-          <dt>请求超时</dt>
-          <dd>{{ item.request_timeout_seconds }} 秒</dd>
-          <dt>搜索间隔</dt>
-          <dd>{{ item.search_interval_seconds }} 秒</dd>
-          <dt>代理</dt>
-          <dd>
-            {{
-              item.proxy_enabled ? `${item.proxy_host ?? '—'}:${item.proxy_port ?? '—'}` : '未启用'
-            }}
-          </dd>
-          <dt>最近测试</dt>
-          <dd>
-            {{ item.last_test_at ? new Date(item.last_test_at).toLocaleString() : '尚未测试' }}
-          </dd>
-        </dl>
-        <div class="card-actions">
+
+        <div class="site-summary">
+          <div>
+            <span>用户名</span>
+            <strong>{{ item.user_summary?.username ?? '—' }}</strong>
+          </div>
+          <div>
+            <span>用户等级</span>
+            <strong>{{ item.user_summary?.user_level ?? '—' }}</strong>
+          </div>
+          <div>
+            <span>上传量</span>
+            <strong>{{
+              item.user_summary ? formatBytes(item.user_summary.uploaded_bytes) : '—'
+            }}</strong>
+          </div>
+          <div>
+            <span>下载量</span>
+            <strong>{{
+              item.user_summary ? formatBytes(item.user_summary.downloaded_bytes) : '—'
+            }}</strong>
+          </div>
+          <div>
+            <span>分享率</span>
+            <strong>{{ item.user_summary ? formatRatio(item.user_summary.ratio) : '—' }}</strong>
+          </div>
+          <div>
+            <span>做种数</span>
+            <strong>{{ item.user_summary?.seeding_count ?? '—' }}</strong>
+          </div>
+          <div class="site-summary-wide">
+            <span>最后同步</span>
+            <strong>{{
+              item.user_summary?.fetched_at
+                ? new Date(item.user_summary.fetched_at).toLocaleString()
+                : '尚未同步'
+            }}</strong>
+          </div>
+        </div>
+
+        <div class="site-card-actions">
+          <el-button type="primary" size="small" @click="openDetail(item)">查看详情</el-button>
           <el-button size="small" :loading="isBusy(item, 'test')" @click="testConnection(item)">
             <Activity :size="14" />测试连接
           </el-button>
-          <el-button size="small" @click="openEdit(item)"> <Settings2 :size="14" />配置 </el-button>
+          <el-button size="small" @click="openEdit(item)"> <Settings2 :size="14" />编辑 </el-button>
           <el-button link type="danger" :loading="isBusy(item, 'delete')" @click="remove(item)">
             删除
           </el-button>
@@ -592,10 +764,76 @@ async function remove(item: Site) {
       </article>
     </div>
 
+    <el-table
+      v-if="viewMode === 'list' && (visibleItems.length > 0 || loading)"
+      v-loading="loading"
+      :data="visibleItems"
+      class="site-list"
+      row-key="id"
+      size="default"
+    >
+      <el-table-column label="站点" min-width="220">
+        <template #default="{ row }">
+          <div class="site-list-name">
+            <span class="site-card-icon site-card-icon--small">
+              <Globe :size="19" />
+              <img
+                v-if="faviconUrl(row.base_url)"
+                :src="faviconUrl(row.base_url)"
+                :alt="row.name"
+                loading="lazy"
+                @error="hideFavicon"
+              />
+            </span>
+            <div>
+              <strong>{{ row.name }}</strong>
+              <small>{{ row.base_url }}</small>
+            </div>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="类型" width="110">
+        <template #default="{ row }">{{ typeLabel(row.type) }}</template>
+      </el-table-column>
+      <el-table-column label="连接状态" width="100">
+        <template #default="{ row }">
+          <el-tag size="small" :type="statusTag(row.connection_status)">{{
+            statusLabel(row.connection_status)
+          }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="用户名" width="130" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.user_summary?.username ?? '—' }}</template>
+      </el-table-column>
+      <el-table-column label="分享率" width="90">
+        <template #default="{ row }">{{ formatRatio(row.user_summary?.ratio) }}</template>
+      </el-table-column>
+      <el-table-column label="最后同步" width="170">
+        <template #default="{ row }">{{
+          row.user_summary?.fetched_at
+            ? new Date(row.user_summary.fetched_at).toLocaleString()
+            : '尚未同步'
+        }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="210" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="openDetail(row)">查看详情</el-button>
+          <el-button link @click="openEdit(row)">编辑</el-button>
+          <el-button link type="danger" :loading="isBusy(row, 'delete')" @click="remove(row)"
+            >删除</el-button
+          >
+        </template>
+      </el-table-column>
+    </el-table>
+
+    <el-empty
+      v-if="!loading && items.length > 0 && !visibleItems.length && !error"
+      description="没有匹配的站点"
+    />
+
     <el-empty v-if="!loading && !items.length && !error" description="暂无站点配置">
       <el-button type="primary" @click="openCreate">添加第一个站点</el-button>
     </el-empty>
-
     <el-dialog
       v-model="dialog"
       :title="editing ? '编辑站点' : '添加站点'"
@@ -748,15 +986,249 @@ async function remove(item: Site) {
         >
       </template>
     </el-dialog>
+
+    <SiteDetailDrawer v-model="detailDrawer" :site-id="selectedSiteId" />
   </div>
 </template>
 
 <style scoped>
 .site-toolbar {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.site-filters {
+  display: flex;
+  min-width: 0;
+  flex: 1;
   gap: 8px;
-  margin-bottom: 16px;
+}
+
+.site-search {
+  width: min(290px, 30vw);
+}
+
+.site-filter {
+  width: 135px;
+}
+
+.site-toolbar-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.site-list {
+  width: 100%;
+}
+
+.site-list-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.site-list-name > div {
+  min-width: 0;
+}
+
+.site-list-name strong,
+.site-list-name small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-list-name small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.site-card-icon--small {
+  flex-basis: 38px;
+  width: 38px;
+  height: 38px;
+}
+
+@media (max-width: 1100px) {
+  .site-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .site-filters {
+    flex-wrap: wrap;
+  }
+
+  .site-search {
+    width: min(100%, 320px);
+  }
+}
+
+@media (max-width: 700px) {
+  .site-filter {
+    flex: 1 1 140px;
+  }
+
+  .site-toolbar-actions {
+    justify-content: flex-end;
+  }
+}
+
+.site-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.site-card {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  overflow: hidden;
+}
+
+.site-card-header {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+
+.site-card-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--blue);
+}
+
+.site-card-icon img {
+  position: absolute;
+  inset: 4px;
+  width: calc(100% - 8px);
+  height: calc(100% - 8px);
+  border-radius: 7px;
+  object-fit: contain;
+  background: var(--surface);
+}
+
+.site-card-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.site-card-title small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.site-name-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+}
+
+.site-name-line h3 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-endpoint {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-status-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.site-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 12px;
+  padding-top: 2px;
+}
+
+.site-summary > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.site-summary span {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.site-summary strong {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-summary-wide {
+  grid-column: 1 / -1;
+}
+
+.site-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+
+.site-card-actions .el-button {
+  margin-left: 0;
+}
+
+@media (max-width: 1180px) {
+  .site-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1050px) {
+  .site-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 800px) {
+  .site-cards {
+    grid-template-columns: 1fr;
+  }
 }
 
 .site-name-line {

@@ -4,8 +4,12 @@ import { apiClient } from './client';
 import {
   credentialKindForSite,
   deleteSite,
+  getSiteDetail,
+  listSiteSeeding,
+  listSiteSyncHistory,
   setSiteEnabled,
   siteProfileOptionLabel,
+  syncSiteDetail,
   updateSite,
 } from './sites';
 
@@ -57,6 +61,27 @@ describe('站点 API 并发前置条件', () => {
       { name: '新名称', clear_credential: false, clear_download_cookie: false },
       { headers: { 'If-Match': '"7"' } },
     );
+  });
+
+  it('站点详情与同步接口使用独立只读/写入路径', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
+      data: { site: { id: 'site-1' }, account: {}, statistics: {}, connection: {} },
+    });
+    const post = vi
+      .spyOn(apiClient, 'post')
+      .mockResolvedValue({ data: { site: { id: 'site-1' } } });
+
+    await getSiteDetail('site-1');
+    await syncSiteDetail('site-1');
+    await listSiteSyncHistory('site-1');
+    await listSiteSeeding('site-1');
+
+    expect(get.mock.calls.map((call) => call[0])).toEqual([
+      '/sites/site-1/detail',
+      '/sites/site-1/sync-history',
+      '/sites/site-1/seeding',
+    ]);
+    expect(post).toHaveBeenCalledWith('/sites/site-1/sync');
   });
 
   it('删除与启停都携带当前版本', async () => {

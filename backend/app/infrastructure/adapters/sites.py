@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, cast
 from urllib.parse import urljoin, urlsplit
@@ -46,6 +47,19 @@ _MTEAM_DEFAULT_BASE_URL = "https://kp.m-team.cc"
 _MTEAM_TORRENT_LIMIT_BYTES = 20 * 1024 * 1024
 _MTEAM_MIN_REQUEST_INTERVAL_SECONDS = 90.0
 _MTEAM_MAX_DOWNLOAD_REDIRECTS = 3
+_MTEAM_ROLE_NAMES = {
+    "1": "User",
+    "2": "Power User",
+    "3": "Elite User",
+    "4": "Crazy User",
+    "5": "Insane User",
+    "6": "Veteran User",
+    "7": "Extreme User",
+    "8": "Ultimate User",
+    "9": "mTorrent Master",
+    "10": "VIP",
+}
+
 _MTEAM_DOWNLOAD_REDIRECT_HOST_SUFFIXES = ("m-team.cc", "halomt.com", "groueta.cc")
 _IMDB_ID_RE = re.compile(r"tt\d{5,10}", re.IGNORECASE)
 _DOUBAN_ID_RE = re.compile(r"\d{3,12}")
@@ -256,11 +270,11 @@ class MTeamAdapter:
         ratio = _first_nonnegative_float(sources, "ratio", "shareRatio", "shareRate")
         if ratio is None and uploaded is not None and downloaded not in {None, 0}:
             ratio = uploaded / downloaded
-        return SiteUserProfile(
+        profile = SiteUserProfile(
             site_id=_MTEAM_SITE_ID,
             uid=_first_text(sources, "id", "uid", "userId", max_length=128),
             username=_first_text(sources, "username", "name", "userName", max_length=256),
-            user_level=_first_named_level(sources),
+            user_level=_mteam_user_level(sources),
             real_uploaded_bytes=_first_nonnegative_int(
                 sources, "realUploaded", "realUpload", "realUploadedBytes"
             ),
@@ -284,7 +298,57 @@ class MTeamAdapter:
             bonus_per_hour=_first_nonnegative_float(
                 sources, "bonusPerHour", "hourlyBonus", "bonusHour"
             ),
+            join_time=_first_aware_datetime(sources, "joinTime", "join_time", "createdDate"),
+            last_access_at=_first_aware_datetime(
+                sources, "lastAccessAt", "last_access_at", "lastBrowse", "lastLogin"
+            ),
+            hnr_count=_first_nonnegative_int(
+                sources, "hnrCount", "hnrUnsatisfied", "hnrPreWarning"
+            ),
+            message_count=_first_nonnegative_int(
+                sources, "messageCount", "unreadMessages", "unreadMessageCount"
+            ),
         )
+        if (
+            profile.username is not None
+            and profile.seeding_count is None
+            and profile.seeding_size_bytes is None
+        ):
+            try:
+                peer_data = await self._post_api("/api/tracker/myPeerStatistics")
+                if isinstance(peer_data, Mapping):
+                    profile = replace(
+                        profile,
+                        seeding_count=_optional_nonnegative_int(peer_data.get("seederCount")),
+                        seeding_size_bytes=_optional_nonnegative_int(peer_data.get("seederSize")),
+                    )
+            except SiteAdapterError:
+                pass
+        if profile.username is not None and profile.bonus_per_hour is None:
+            try:
+                bonus_data = await self._post_api("/api/tracker/mybonus")
+                if isinstance(bonus_data, Mapping):
+                    formula_params = bonus_data.get("formulaParams")
+                    if isinstance(formula_params, Mapping):
+                        profile = replace(
+                            profile,
+                            bonus_per_hour=_optional_nonnegative_float(
+                                formula_params.get("finalBs")
+                            ),
+                        )
+            except SiteAdapterError:
+                pass
+        if profile.username is not None and profile.message_count is None:
+            try:
+                message_data = await self._post_api("/api/msg/notify/statistic")
+                if isinstance(message_data, Mapping):
+                    profile = replace(
+                        profile,
+                        message_count=_optional_nonnegative_int(message_data.get("unMake")),
+                    )
+            except SiteAdapterError:
+                pass
+        return profile
 
     async def search(self, query: SearchQuery) -> SearchPage:
         payload: dict[str, object] = {
@@ -625,7 +689,7 @@ def _mteam_profile_sources(value: Mapping[object, object]) -> tuple[Mapping[obje
     # Profile metadata and statistics may be nested under more than one
     # documented profile/status envelope. Never recurse into arbitrary JSON
     # fields such as search results, user-generated records, or lists.
-    keys = ("member", "user", "profile", "status", "stats", "memberCount")
+    keys = ("member", "user", "profile", "status", "stats", "memberCount", "memberStatus")
     sources: list[Mapping[object, object]] = []
     pending: list[tuple[Mapping[object, object], int]] = [(value, 0)]
     seen: set[int] = set()
@@ -641,6 +705,13 @@ def _mteam_profile_sources(value: Mapping[object, object]) -> tuple[Mapping[obje
                 if isinstance(nested, Mapping):
                     pending.append((nested, depth + 1))
     return tuple(sources)
+
+
+def _mteam_user_level(sources: tuple[Mapping[object, object], ...]) -> str | None:
+    role = _first_text(sources, "role", "userRole", max_length=64)
+    if (mapped := _mteam_role_name(role)) is not None:
+        return mapped
+    return _first_named_level(sources)
 
 
 def _first_named_level(sources: tuple[Mapping[object, object], ...]) -> str | None:
@@ -678,6 +749,27 @@ def _first_nonnegative_int(sources: tuple[Mapping[object, object], ...], *keys: 
     for source in sources:
         for key in keys:
             if (value := _optional_nonnegative_int(source.get(key))) is not None:
+                return value
+    return None
+
+
+def _mteam_role_name(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized in _MTEAM_ROLE_NAMES:
+        return _MTEAM_ROLE_NAMES[normalized]
+    return _MTEAM_ROLE_NAMES.get(normalized)
+
+
+def _first_aware_datetime(
+    sources: tuple[Mapping[object, object], ...], *keys: str
+) -> datetime | None:
+    for source in sources:
+        for key in keys:
+            if (value := _optional_aware_datetime(source.get(key))) is not None:
                 return value
     return None
 

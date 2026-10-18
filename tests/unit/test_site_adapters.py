@@ -622,26 +622,38 @@ async def test_mteam_configured_site_origin_is_not_used_as_api_origin() -> None:
 @pytest.mark.asyncio
 async def test_mteam_user_profile_normalizes_nested_stats_and_preserves_missing_values() -> None:
     def handler(request: httpx2.Request) -> httpx2.Response:
-        assert request.url.path == "/api/member/profile"
-        return httpx2.Response(
-            200,
-            json={
-                "code": "0",
-                "data": {
-                    "id": "42",
-                    "username": "SyntheticUser",
-                    "userClass": "Elite",
-                    "stats": {
-                        "uploaded": "1099511627776",
-                        "downloaded": "549755813888",
-                        "realUploaded": "1073741824",
-                        "torrentCount": "12",
-                        "seedingCount": "34",
-                        "bonus": "56.75",
+        if request.url.path == "/api/member/profile":
+            return httpx2.Response(
+                200,
+                json={
+                    "code": "0",
+                    "data": {
+                        "id": "42",
+                        "username": "SyntheticUser",
+                        "userClass": "Elite",
+                        "memberStatus": {
+                            "createdDate": "2024-01-15T10:30:22+08:00",
+                            "lastBrowse": "2026-10-16T10:20:00+08:00",
+                        },
+                        "stats": {
+                            "uploaded": "1099511627776",
+                            "downloaded": "549755813888",
+                            "realUploaded": "1073741824",
+                            "torrentCount": "12",
+                            "seedingCount": "34",
+                            "bonus": "56.75",
+                        },
                     },
                 },
-            },
-        )
+            )
+        if request.url.path == "/api/tracker/mybonus":
+            return httpx2.Response(
+                200,
+                json={"code": "0", "data": {"formulaParams": {"finalBs": "7.25"}}},
+            )
+        if request.url.path == "/api/msg/notify/statistic":
+            return httpx2.Response(200, json={"code": "0", "data": {"unMake": "3"}})
+        raise AssertionError(f"unexpected M-Team profile path: {request.url.path}")
 
     profile = await MTeamAdapter(
         "synthetic", transport=httpx2.MockTransport(handler)
@@ -659,30 +671,51 @@ async def test_mteam_user_profile_normalizes_nested_stats_and_preserves_missing_
     assert profile.torrents_posted == 12
     assert profile.seeding_count == 34
     assert profile.bonus == 56.75
-    assert profile.bonus_per_hour is None
+    assert profile.bonus_per_hour == 7.25
+    assert profile.join_time is not None
+    assert profile.join_time.isoformat() == "2024-01-15T02:30:22+00:00"
+    assert profile.last_access_at is not None
+    assert profile.last_access_at.isoformat() == "2026-10-16T02:20:00+00:00"
+    assert profile.message_count == 3
 
 
 @pytest.mark.asyncio
 async def test_mteam_user_profile_supports_current_member_count_shape() -> None:
     def handler(request: httpx2.Request) -> httpx2.Response:
-        assert request.url.path == "/api/member/profile"
-        return httpx2.Response(
-            200,
-            json={
-                "code": "0",
-                "data": {
-                    "id": "42",
-                    "username": "SyntheticUser",
-                    "role": "USER",
-                    "memberCount": {
-                        "uploaded": "1099511627776",
-                        "downloaded": "549755813888",
-                        "shareRate": "2.0",
-                        "bonus": "56.75",
+        if request.url.path == "/api/member/profile":
+            return httpx2.Response(
+                200,
+                json={
+                    "code": "0",
+                    "data": {
+                        "id": "42",
+                        "username": "SyntheticUser",
+                        "role": "USER",
+                        "memberCount": {
+                            "uploaded": "1099511627776",
+                            "downloaded": "549755813888",
+                            "shareRate": "2.0",
+                            "bonus": "56.75",
+                        },
                     },
                 },
-            },
-        )
+            )
+        if request.url.path == "/api/tracker/myPeerStatistics":
+            return httpx2.Response(
+                200,
+                json={
+                    "code": "0",
+                    "data": {"seederCount": "34", "seederSize": "4398046511104"},
+                },
+            )
+        if request.url.path == "/api/tracker/mybonus":
+            return httpx2.Response(
+                200,
+                json={"code": "0", "data": {"formulaParams": {"finalBs": "7.25"}}},
+            )
+        if request.url.path == "/api/msg/notify/statistic":
+            return httpx2.Response(200, json={"code": "0", "data": {"unMake": "2"}})
+        raise AssertionError(f"unexpected M-Team profile path: {request.url.path}")
 
     profile = await MTeamAdapter(
         "synthetic", transport=httpx2.MockTransport(handler)
@@ -696,6 +729,10 @@ async def test_mteam_user_profile_supports_current_member_count_shape() -> None:
     assert profile.downloaded_bytes == 549755813888
     assert profile.ratio == 2.0
     assert profile.bonus == 56.75
+    assert profile.bonus_per_hour == 7.25
+    assert profile.seeding_count == 34
+    assert profile.seeding_size_bytes == 4398046511104
+    assert profile.message_count == 2
 
 
 @pytest.mark.asyncio
