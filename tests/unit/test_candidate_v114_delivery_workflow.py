@@ -51,19 +51,19 @@ def test_v114_requires_two_successful_sha_matched_workflows_before_publish() -> 
     baseline_script = next(
         step["run"]
         for step in steps
-        if step.get("name") == "Require verified v1.1.2 immutable upgrade baseline"
+        if step.get("name") == "Require verified v1.1.3 immutable upgrade baseline"
     )
     for required in (
-        'baseline.version == "1.1.2"',
-        'baseline.tag == "v1.1.2"',
-        "970cbdd199cf4f9e459ccf76bf23c982d2fa16e6",
-        "sha256:e2d3963ce0eaabc1e323180bab3e3f6274151b9bf8fa97d2e61aa992dc59a153",
+        'baseline.version == "1.1.3"',
+        'baseline.tag == "v1.1.3"',
+        "c5d9a9d95073969c728d77ea16c8c14bb4f31e8d",
+        "sha256:b6bbfbf3480434625a6324d54ccd9d815fe2d53cfae0dd52671a2ded1122e981",
         "0045_seven_site_capacity_v111",
     ):
         assert required in baseline_script
     assert (
         names.index("Verify candidate source identity and version")
-        < names.index("Require verified v1.1.2 immutable upgrade baseline")
+        < names.index("Require verified v1.1.3 immutable upgrade baseline")
         < names.index("Require successful CI and Docker E2E for the exact candidate SHA")
         < names.index("Refuse existing candidate tags in either registry")
         < names.index("Build and push one multi-arch candidate to both registries")
