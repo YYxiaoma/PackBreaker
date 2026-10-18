@@ -11,11 +11,17 @@ import {
   Bell,
   Search,
   Menu,
+  FolderSearch,
+  Copy,
+  Cloud,
+  HardDrive,
+  Settings2,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import TaskCenterV2 from './components/TaskCenterV2.vue';
 import OverviewDashboard from './components/OverviewDashboard.vue';
 import WorkspaceManagement from './components/WorkspaceManagement.vue';
+import MovieDedupPanel from './components/MovieDedupPanel.vue';
 import AuthGate from './components/AuthGate.vue';
 import PasswordChangeGate from './components/PasswordChangeGate.vue';
 import UserMenuDrawer from './components/UserMenuDrawer.vue';
@@ -25,7 +31,16 @@ import packBreakerIcon from './assets/packbreaker-icon.png';
 import AboutPage from './components/AboutPage.vue';
 import { AUTH_REQUIRED_EVENT } from './api/client';
 import { getAdminInboxUnreadCount } from './api/notifications';
-import { normalizePrimaryRoute, type PrimaryRoute } from './navigation';
+import {
+  ensurePrimaryExpanded,
+  getPrimaryRoute,
+  NAVIGATION_GROUPS,
+  normalizeRoute,
+  togglePrimaryExpansion,
+  type PrimaryRoute,
+  type Route,
+  type SecondaryRoute,
+} from './navigation';
 import { useAuthStore } from './stores/auth';
 
 type ThemeMode = 'light' | 'dark' | 'system';
@@ -73,38 +88,131 @@ function handleSystemThemeChange(event: MediaQueryListEvent): void {
   systemDark.value = event.matches;
 }
 
-const nav: Array<{ name: PrimaryRoute; icon: typeof LayoutDashboard }> = [
-  { name: '总览', icon: LayoutDashboard },
-  { name: '任务中心', icon: ListChecks },
-  { name: '站点管理', icon: Globe },
-  { name: '系统设置', icon: Settings },
+type IconComponent = typeof LayoutDashboard;
+type NavChild = { name: SecondaryRoute; icon: IconComponent };
+type NavGroup = {
+  name: PrimaryRoute;
+  icon: IconComponent;
+  children: NavChild[];
+};
+
+const primaryIconMap: Record<PrimaryRoute, IconComponent> = {
+  总览: LayoutDashboard,
+  任务中心: ListChecks,
+  配置中心: Settings2,
+  系统管理: Settings,
+};
+
+const childIconMap: Record<SecondaryRoute, IconComponent> = {
+  数据拆包: FolderSearch,
+  数据去重: Copy,
+  CookieCloud配置: Cloud,
+  站点配置: Globe,
+  下载器配置: HardDrive,
+  通知配置: Bell,
+  日志浏览: ListChecks,
+  Agent配置: Settings2,
+  备份恢复: HardDrive,
+};
+
+const nav: NavGroup[] = NAVIGATION_GROUPS.map((group) => ({
+  name: group.name,
+  icon: primaryIconMap[group.name],
+  children: group.children.map((name) => ({ name, icon: childIconMap[name] })),
+}));
+
+type SearchEntry = {
+  name: string;
+  target: Route;
+  icon: IconComponent;
+  aliases: string;
+};
+
+const searchableNav: SearchEntry[] = [
+  { name: '总览', target: '总览', icon: LayoutDashboard, aliases: '仪表盘 dashboard 状态' },
+  ...nav.flatMap((group) =>
+    group.children.map((child) => ({
+      name: child.name,
+      target: normalizeRoute(child.name),
+      icon: child.icon,
+      aliases:
+        group.name +
+        ' ' +
+        (
+          {
+            数据拆包: '任务 手动 监控 执行 重试',
+            数据去重: '任务 去重 影片 文件',
+            CookieCloud配置: 'cookie cloud 同步',
+            站点配置: '站点 pt cookie api',
+            下载器配置: '下载器 qb transmission',
+            通知配置: '通知 telegram serverchan',
+            日志浏览: '日志 记录 查询 log',
+            Agent配置: 'agent ai 模型',
+            备份恢复: '备份 恢复 导入 导出',
+          } satisfies Record<SecondaryRoute, string>
+        )[child.name],
+    })),
+  ),
+  { name: '关于', target: '关于', icon: Info, aliases: '版本 帮助' },
 ];
-const searchableNav = [...nav, { name: '关于' as const, icon: Info }];
+
 const searchResults = computed(() => {
   const query = searchQuery.value.trim().toLocaleLowerCase();
-  const aliases: Partial<Record<PrimaryRoute, string>> = {
-    总览: '仪表盘 dashboard 状态',
-    任务中心: '任务 审批 执行 计划 重试',
-    站点管理: '站点 pt cookie api',
-    系统设置: '通知 备份 ai 设置 下载器 qb transmission 日志 记录 查询 log',
-    关于: '版本 帮助',
-  };
   return searchableNav.filter(
-    (item) =>
-      !query || (item.name + ' ' + (aliases[item.name] ?? '')).toLocaleLowerCase().includes(query),
+    (item) => !query || (item.name + ' ' + item.aliases).toLocaleLowerCase().includes(query),
   );
 });
-const initialRoute = location.hash.slice(1) ? decodeURIComponent(location.hash.slice(1)) : '总览';
-const route = ref<PrimaryRoute>(normalizePrimaryRoute(initialRoute));
+
+function readHashRoute(): Route {
+  const raw = location.hash.slice(1);
+  if (!raw) return '总览';
+  try {
+    return normalizeRoute(decodeURIComponent(raw));
+  } catch {
+    return '总览';
+  }
+}
+
+const route = ref<Route>(readHashRoute());
+const initialPrimary = getPrimaryRoute(route.value);
+const expandedPrimary = ref<PrimaryRoute[]>(initialPrimary ? [initialPrimary] : []);
 const mobile = ref(false);
-watch(route, (v) => {
-  location.hash = encodeURIComponent(v);
-  document.title = `PackBreaker · ${v}`;
-  mobile.value = false;
+
+const breadcrumbItems = computed(() => {
+  const primary = getPrimaryRoute(route.value);
+  return primary && primary !== route.value
+    ? [primary, route.value.split('/').at(-1) ?? route.value]
+    : [route.value];
 });
+
+function selectPrimaryRoute(name: PrimaryRoute): void {
+  const group = nav.find((item) => item.name === name);
+  if (!group || group.children.length === 0) {
+    route.value = name;
+    expandedPrimary.value = [];
+    return;
+  }
+
+  expandedPrimary.value = togglePrimaryExpansion(expandedPrimary.value, name);
+}
+
+function selectRoute(target: string): void {
+  route.value = normalizeRoute(target);
+}
+
+watch(
+  route,
+  (v) => {
+    expandedPrimary.value = ensurePrimaryExpanded(expandedPrimary.value, getPrimaryRoute(v));
+    location.hash = encodeURIComponent(v);
+    document.title = 'PackBreaker · ' + v;
+    mobile.value = false;
+  },
+  { immediate: true },
+);
+
 window.addEventListener('hashchange', () => {
-  const next = decodeURIComponent(location.hash.slice(1));
-  route.value = normalizePrimaryRoute(next);
+  route.value = readHashRoute();
 });
 watch(
   dark,
@@ -147,14 +255,14 @@ async function refreshUnreadCount(): Promise<void> {
     // 顶栏未读红点读取失败不能阻断主界面。
   }
 }
-function selectSearchRoute(target: PrimaryRoute): void {
-  route.value = target;
+function selectSearchRoute(target: Route): void {
+  selectRoute(target);
   searchQuery.value = '';
   searchOpen.value = false;
 }
 function searchOnEnter(): void {
   const first = searchResults.value[0];
-  if (first) selectSearchRoute(first.name);
+  if (first) selectSearchRoute(first.target);
 }
 async function logout(): Promise<void> {
   try {
@@ -191,14 +299,41 @@ function openVersionPopover(): void {
         </span>
       </div>
       <nav aria-label="主导航">
-        <button
-          v-for="item in nav"
-          :key="item.name"
-          :class="['nav-item', { active: route === item.name }]"
-          @click="route = item.name"
-        >
-          <component :is="item.icon" :size="19" /><span>{{ item.name }}</span>
-        </button>
+        <template v-for="item in nav" :key="item.name">
+          <button
+            type="button"
+            :class="['nav-item nav-primary', { active: getPrimaryRoute(route) === item.name }]"
+            :aria-current="getPrimaryRoute(route) === item.name ? 'page' : undefined"
+            :aria-expanded="item.children.length ? expandedPrimary.includes(item.name) : undefined"
+            @click="selectPrimaryRoute(item.name)"
+          >
+            <component :is="item.icon" :size="19" />
+            <span>{{ item.name }}</span>
+            <ChevronDown
+              v-if="item.children.length"
+              :size="16"
+              class="nav-expand-icon"
+              :class="{ expanded: expandedPrimary.includes(item.name) }"
+              aria-hidden="true"
+            />
+          </button>
+          <div
+            v-if="item.children.length && expandedPrimary.includes(item.name)"
+            class="nav-children"
+          >
+            <button
+              v-for="child in item.children"
+              :key="child.name"
+              type="button"
+              :class="['nav-subitem', { active: normalizeRoute(child.name) === route }]"
+              :aria-current="normalizeRoute(child.name) === route ? 'page' : undefined"
+              @click="selectRoute(child.name)"
+            >
+              <component :is="child.icon" :size="17" />
+              <span>{{ child.name }}</span>
+            </button>
+          </div>
+        </template>
       </nav>
       <div class="sidebar-slogan">
         <strong>更自动，更自由</strong>
@@ -211,7 +346,11 @@ function openVersionPopover(): void {
         <div class="breadcrumb">
           <button class="icon-button mobile-only" aria-label="展开导航" @click="mobile = true">
             <Menu :size="20" /></button
-          ><span>工作空间</span><ChevronRight :size="15" /><b>{{ route }}</b>
+          ><span>工作空间</span>
+          <template v-for="item in breadcrumbItems" :key="item">
+            <ChevronRight :size="15" />
+            <b>{{ item }}</b>
+          </template>
         </div>
         <div class="topbar-search" @focusin="searchOpen = true" @focusout="searchOpen = false">
           <Search :size="19" aria-hidden="true" />
@@ -235,8 +374,8 @@ function openVersionPopover(): void {
               :key="item.name"
               type="button"
               role="option"
-              :aria-selected="route === item.name"
-              @mousedown.prevent="selectSearchRoute(item.name)"
+              :aria-selected="route === item.target"
+              @mousedown.prevent="selectSearchRoute(item.target)"
             >
               <component :is="item.icon" :size="17" /><span>{{ item.name }}</span>
               <ChevronRight :size="15" />
@@ -268,16 +407,11 @@ function openVersionPopover(): void {
         </div>
       </header>
       <main>
-        <TaskCenterV2
-          v-if="route === '任务中心'"
-          @navigate="route = normalizePrimaryRoute($event)"
-        />
-        <OverviewDashboard
-          v-else-if="route === '总览'"
-          @navigate="route = normalizePrimaryRoute($event)"
-        />
+        <OverviewDashboard v-if="route === '总览'" @navigate="selectRoute($event)" />
         <AboutPage v-else-if="route === '关于'" @open-version="openVersionPopover" />
-        <WorkspaceManagement v-show="!['任务中心', '总览', '关于'].includes(route)" :page="route" />
+        <TaskCenterV2 v-else-if="route === '任务中心/数据拆包'" />
+        <MovieDedupPanel v-else-if="route === '任务中心/数据去重'" />
+        <WorkspaceManagement v-else :page="route" />
         <footer><span>PackBreaker</span></footer>
       </main>
     </div>

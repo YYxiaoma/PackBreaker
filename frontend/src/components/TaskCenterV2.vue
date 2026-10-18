@@ -3,10 +3,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   CheckCircle2,
   Clock3,
-  Copy,
   Eye,
   FolderOpen,
-  FolderSearch,
   Ellipsis,
   Play,
   Plus,
@@ -69,9 +67,6 @@ import {
   unpackVerificationLevelLabel,
 } from '../unpackPresentation';
 import { createUnpackDiagnosticsGuard } from '../unpackDiagnosticsGuard';
-import MovieDedupPanel from './MovieDedupPanel.vue';
-
-type ActiveView = 'UNPACK' | 'DEDUP';
 type TriggerKind = 'MANUAL' | 'MONITOR';
 type SourceKind = 'DIRECTORY' | 'DOWNLOADER';
 type StorageMode = 'HARDLINK' | 'SYMLINK' | 'COPY';
@@ -114,15 +109,12 @@ interface Draft {
   cronExpression: string;
 }
 
-const activeView = ref<ActiveView>('UNPACK');
-const dedupPanel = ref<InstanceType<typeof MovieDedupPanel> | null>(null);
 const loading = ref(false);
 const saving = ref(false);
 const definitions = ref<UnpackDefinition[]>([]);
 const executions = ref<UnpackExecution[]>([]);
 const sites = ref<Site[]>([]);
 const downloaders = ref<Downloader[]>([]);
-const dedupStats = ref({ total: 0, running: 0, review: 0, completed: 0 });
 
 const typeFilter = ref('');
 const statusFilter = ref('');
@@ -225,25 +217,6 @@ const visibleRows = computed(() => {
       sourceText(row.definition).toLocaleLowerCase().includes(query)
     );
   });
-});
-
-const unpackStats = computed(() => {
-  let manual = 0;
-  let monitor = 0;
-  let review = 0;
-  let errors = 0;
-  for (const row of rows.value) {
-    if (row.definition.trigger_kind === 'MANUAL') manual += 1;
-    else monitor += 1;
-    if (row.execution?.status === 'REVIEW_REQUIRED') review += 1;
-    if (
-      row.definition.status === 'ERROR' ||
-      ['COMPLETED_WITH_ERRORS', 'FAILED'].includes(row.execution?.status ?? '')
-    ) {
-      errors += 1;
-    }
-  }
-  return { total: rows.value.length, manual, monitor, review, errors };
 });
 
 const selectedMediaCount = computed(() => scanSelectedCount.value);
@@ -1244,52 +1217,16 @@ onMounted(() => {
   <section class="v2-task-center">
     <div class="toolbar">
       <div>
-        <h2>任务中心</h2>
+        <h2>数据拆包</h2>
         <p>数据拆包统一使用影片发现、候选匹配、内容校验与安全辅种执行链。</p>
       </div>
       <div class="toolbar-actions">
         <el-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</el-button>
-        <el-button
-          type="primary"
-          @click="activeView === 'UNPACK' ? openCreate() : dedupPanel?.openCreate()"
-        >
-          <Plus :size="15" />新增任务
-        </el-button>
+        <el-button type="primary" @click="openCreate()"> <Plus :size="15" />新增任务 </el-button>
       </div>
     </div>
 
-    <div class="mode-cards">
-      <button
-        :class="['mode-card', { active: activeView === 'UNPACK' }]"
-        @click="activeView = 'UNPACK'"
-      >
-        <span class="mode-icon"><FolderSearch :size="22" /></span>
-        <span>
-          <b>数据拆包</b>
-          <small>
-            手动 {{ unpackStats.manual }} · 监控 {{ unpackStats.monitor }} · 待人工审核
-            {{ unpackStats.review }} · 异常 {{ unpackStats.errors }}
-          </small>
-        </span>
-        <strong>{{ unpackStats.total }}</strong>
-      </button>
-      <button
-        :class="['mode-card', { active: activeView === 'DEDUP' }]"
-        @click="activeView = 'DEDUP'"
-      >
-        <span class="mode-icon dedup"><Copy :size="22" /></span>
-        <span>
-          <b>数据去重</b>
-          <small>
-            运行中 {{ dedupStats.running }} · 待审核 {{ dedupStats.review }} · 已完成
-            {{ dedupStats.completed }}
-          </small>
-        </span>
-        <strong>{{ dedupStats.total }}</strong>
-      </button>
-    </div>
-
-    <div v-if="activeView === 'UNPACK'" class="table-card" v-loading="loading">
+    <div class="table-card" v-loading="loading">
       <div class="table-head">
         <div><b>数据拆包任务</b><span>手动与监控共用同一执行链</span></div>
         <div class="filters">
@@ -1414,8 +1351,6 @@ onMounted(() => {
         保存任务只创建“待执行”任务，不会自动启动。列表「重新匹配」会重试当前执行的全部失败影片；如仅需重试单部影片，请先点击「查看」，再点击对应影片的「重新匹配」。候选仍须通过种子内容校验后才能辅种。
       </div>
     </div>
-
-    <MovieDedupPanel v-else ref="dedupPanel" @stats="dedupStats = $event" />
 
     <el-dialog
       v-model="createVisible"
@@ -2279,63 +2214,6 @@ onMounted(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
-.mode-cards {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-.mode-card {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 12px;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface);
-  color: inherit;
-  text-align: left;
-  transition: 0.16s ease;
-}
-.mode-card:hover {
-  border-color: var(--blue);
-  box-shadow: 0 8px 26px rgba(31, 93, 255, 0.08);
-}
-.mode-card.active {
-  border-color: var(--blue);
-  background: var(--blue-soft);
-  box-shadow: 0 0 0 2px rgba(31, 93, 255, 0.12);
-}
-.mode-icon {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 11px;
-  background: var(--blue-soft);
-  color: var(--blue);
-}
-.mode-card.active .mode-icon {
-  background: var(--blue);
-  color: #fff;
-}
-.mode-icon.dedup {
-  color: #7c3aed;
-}
-.mode-card.active .mode-icon.dedup {
-  background: #7c3aed;
-  color: #fff;
-}
-.mode-card span:nth-child(2) {
-  display: grid;
-  gap: 4px;
-}
-.mode-card small {
-  color: var(--muted);
-}
-.mode-card strong {
-  font-size: 25px;
-}
 .table-card {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -2643,7 +2521,6 @@ onMounted(() => {
     align-items: stretch;
     flex-direction: column;
   }
-  .mode-cards,
   .form-grid,
   .form-grid.three,
   .metric-grid,

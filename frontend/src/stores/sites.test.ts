@@ -39,6 +39,7 @@ const site: Site = {
   proxy_username: null,
   proxy_credential_configured: false,
   capabilities: {},
+  support_status: 'SUPPORTED',
   connection_status: 'OK',
   enabled: false,
   version: 4,

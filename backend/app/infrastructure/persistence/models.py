@@ -474,6 +474,53 @@ class Site(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class SiteUserProfileSnapshot(Base):
+    __tablename__ = "site_user_profile"
+
+    site_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("site.id", ondelete="CASCADE"), primary_key=True
+    )
+    uid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    username: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    user_level: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    join_time: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_access_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    real_uploaded_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    real_downloaded_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    uploaded_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    downloaded_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ratio: Mapped[float | None] = mapped_column(nullable=True)
+    torrents_posted: Mapped[int | None] = mapped_column(nullable=True)
+    seeding_count: Mapped[int | None] = mapped_column(nullable=True)
+    seeding_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bonus: Mapped[float | None] = mapped_column(nullable=True)
+    seeding_points: Mapped[float | None] = mapped_column(nullable=True)
+    bonus_per_hour: Mapped[float | None] = mapped_column(nullable=True)
+    hnr_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    hnr_count: Mapped[int | None] = mapped_column(nullable=True)
+    message_count: Mapped[int | None] = mapped_column(nullable=True)
+    remark: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class SiteUserProfileSync(Base):
+    __tablename__ = "site_user_profile_sync"
+    __table_args__ = (Index("ix_site_user_profile_sync_site_started", "site_id", "started_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    site_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("site.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    duration_ms: Mapped[int] = mapped_column(nullable=False)
+    field_count: Mapped[int] = mapped_column(nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
 class TaskDefinition(Base):
     __tablename__ = "task_definition"
     __table_args__ = (

@@ -28,6 +28,7 @@ from backend.app.infrastructure.torrent_parser import parse_torrent
 
 _BASE_URL = "https://rousi.pro"
 _READ_ONLY_AUTH_PATH = "/api/points/attendance/stats"
+_PROFILE_PATH = "/api/v1/profile"
 _RESPONSE_LIMIT = 32 * 1024
 _SEARCH_PATH = "/api/v1/torrents"
 _SEARCH_RESPONSE_LIMIT = 2 * 1024 * 1024
@@ -113,7 +114,7 @@ class RousiProCandidateAdapter:
         # is included: authenticated requests return a broad unfiltered list.
         # Only the authentication test receives the API key. Never send Cookie
         # or API key to public search, follow redirects or print credentials.
-        if path not in {_READ_ONLY_AUTH_PATH, _SEARCH_PATH}:
+        if path not in {_READ_ONLY_AUTH_PATH, _PROFILE_PATH, _SEARCH_PATH}:
             raise ValueError("Rousi Pro API 只允许已审查的只读接口")
         try:
             async with (
@@ -121,6 +122,7 @@ class RousiProCandidateAdapter:
                     timeout=self._timeout_seconds,
                     follow_redirects=False,
                     trust_env=False,
+                    http2=True,
                     transport=self._transport,
                     proxy=self._proxy_url,
                 ) as client,
@@ -130,7 +132,14 @@ class RousiProCandidateAdapter:
                     headers=(
                         {"api-token": self._api_key, "Accept": "application/json"}
                         if path == _READ_ONLY_AUTH_PATH
-                        else {"Accept": "application/json"}
+                        else (
+                            {
+                                "Authorization": _bearer_auth(self._api_key),
+                                "Accept": "application/json",
+                            }
+                            if path == _PROFILE_PATH
+                            else {"Accept": "application/json"}
+                        )
                     ),
                     params=params,
                 ) as response,
@@ -165,7 +174,7 @@ class RousiProCandidateAdapter:
         except SiteAdapterError:
             raise
         except (httpx2.TimeoutException, httpx2.NetworkError) as exc:
-            # Authentication and public keyword search are read-only GETs.
+            # Authentication, profile and public keyword search are read-only GETs.
             # Transient connectivity failures can be retried only by the
             # caller's bounded site reliability / matching policy. Torrent
             # download stays outside this retry contract.
@@ -188,7 +197,48 @@ class RousiProCandidateAdapter:
         return data
 
     async def fetch_user_profile(self) -> SiteUserProfile:
-        raise SiteAdapterError("SITE_ADAPTER_PENDING", "Rousi Pro 用户资料功能不在版本范围")
+        data = await self._read_only_json(_PROFILE_PATH, size_limit=_RESPONSE_LIMIT)
+        if type(data.get("code")) is not int or data["code"] != 0:
+            raise SiteAdapterError("SITE_AUTH_FAILED", "Rousi Pro 用户资料接口认证失败")
+        raw = data.get("data")
+        if not isinstance(raw, dict):
+            raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 用户资料响应缺少数据结构")
+
+        seeding = raw.get("seeding_leeching_data")
+        if not isinstance(seeding, dict):
+            seeding = {}
+        uploaded = _nonnegative_int(raw.get("uploaded"))
+        downloaded = _nonnegative_int(raw.get("downloaded"))
+        ratio = _nonnegative_float(raw.get("ratio"))
+        if ratio is None and uploaded is not None and downloaded not in {None, 0}:
+            ratio = uploaded / downloaded
+        uid = raw.get("id")
+        if uid is not None and (type(uid) is not int or uid < 0):
+            raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 用户 ID 格式无效")
+        username = raw.get("username")
+        if username is not None and (
+            not isinstance(username, str) or not username.strip() or len(username) > 256
+        ):
+            username = None
+        user_level = raw.get("level_text") or raw.get("role_text")
+        if user_level is not None and (
+            not isinstance(user_level, str) or not user_level.strip() or len(user_level) > 256
+        ):
+            user_level = None
+        return SiteUserProfile(
+            site_id="rousi_pro",
+            uid=str(uid) if uid is not None else None,
+            username=username.strip() if isinstance(username, str) else None,
+            user_level=user_level.strip() if isinstance(user_level, str) else None,
+            uploaded_bytes=uploaded,
+            downloaded_bytes=downloaded,
+            ratio=ratio,
+            seeding_count=_nonnegative_int(seeding.get("seeding_count")),
+            seeding_size_bytes=_nonnegative_int(seeding.get("seeding_size")),
+            bonus=_nonnegative_float(raw.get("karma")),
+            join_time=_parse_rousipro_datetime(raw.get("registered_at")),
+            last_access_at=_parse_rousipro_datetime(raw.get("last_active_at")),
+        )
 
     async def search(self, query: SearchQuery) -> SearchPage:
         # An external-ID-only query has no verified API mapping. Do not turn it
@@ -263,6 +313,7 @@ class RousiProCandidateAdapter:
                     timeout=self._timeout_seconds,
                     follow_redirects=False,
                     trust_env=False,
+                    http2=True,
                     transport=self._transport,
                     proxy=self._proxy_url,
                 ) as client,
@@ -357,6 +408,36 @@ def _parse_rousi_candidate(raw: object) -> CandidateMeta:
         category=category,
         published_at=published,
     )
+
+
+def _bearer_auth(value: str) -> str:
+    normalized = value.strip()
+    return normalized if normalized.lower().startswith("bearer ") else f"Bearer {normalized}"
+
+
+def _nonnegative_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 用户资料数值格式无效")
+    parsed = float(value)
+    if parsed < 0 or parsed == float("inf") or parsed != parsed:
+        raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 用户资料数值超出允许范围")
+    return parsed
+
+
+def _parse_rousipro_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 用户注册时间格式无效")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 用户注册时间格式无效") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 用户注册时间缺少时区")
+    return parsed
 
 
 def _nonnegative_int(value: object) -> int | None:

@@ -177,6 +177,65 @@ button svg,
 .nav-item:hover {
   background: var(--blue-soft);
 }
+.nav-primary > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-expand-icon {
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: transform 0.16s ease;
+}
+
+.nav-expand-icon.expanded {
+  transform: rotate(180deg);
+}
+
+.nav-children {
+  display: grid;
+  gap: 2px;
+  margin: -1px 0 5px 13px;
+  padding: 2px 0 2px 9px;
+  border-left: 1px solid var(--line);
+}
+
+.nav-subitem {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-height: 38px;
+  padding: 9px 10px 9px 11px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+}
+
+.nav-subitem span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-subitem:hover {
+  background: var(--blue-soft);
+  color: var(--ink);
+}
+
+.nav-subitem.active {
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.nav-subitem:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+}
 .nav-item small {
   margin-left: auto;
   color: var(--muted);

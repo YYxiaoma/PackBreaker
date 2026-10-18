@@ -41,6 +41,12 @@ class SiteUserProfile:
     bonus: float | None = None
     seeding_points: float | None = None
     bonus_per_hour: float | None = None
+    join_time: datetime | None = None
+    last_access_at: datetime | None = None
+    hnr_status: str | None = None
+    hnr_count: int | None = None
+    message_count: int | None = None
+    remark: str | None = None
     fetched_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -54,6 +60,8 @@ class SiteUserProfile:
             "torrents_posted",
             "seeding_count",
             "seeding_size_bytes",
+            "hnr_count",
+            "message_count",
         ):
             value = getattr(self, field_name)
             if value is not None and (type(value) is not int or value < 0):
@@ -64,6 +72,16 @@ class SiteUserProfile:
             value = getattr(self, field_name)
             if value is not None and (not isfinite(value) or value < 0):
                 raise ValueError(f"{field_name} 必须是有限非负数")
+        for field_name in ("join_time", "last_access_at"):
+            value = getattr(self, field_name)
+            if value is not None:
+                if value.tzinfo is None or value.utcoffset() is None:
+                    raise ValueError(f"{field_name} 必须带时区")
+                object.__setattr__(self, field_name, value.astimezone(UTC))
+        if self.hnr_status is not None and len(self.hnr_status) > 64:
+            raise ValueError("hnr_status 长度不能超过 64")
+        if self.remark is not None and len(self.remark) > 512:
+            raise ValueError("remark 长度不能超过 512")
         if self.fetched_at.tzinfo is None or self.fetched_at.utcoffset() is None:
             raise ValueError("站点用户详情获取时间必须带时区")
         object.__setattr__(self, "fetched_at", self.fetched_at.astimezone(UTC))

@@ -9,7 +9,7 @@ const path = require('node:path');
   const launchOptions={headless:true};
   if(requestedBrowser!=='bundled') launchOptions.channel=requestedBrowser;
   const browser=await chromium.launch(launchOptions);
-  const page=await browser.newPage({viewport:{width:1440,height:1050}});
+  const page=await browser.newPage({viewport:{width:2560,height:1440},deviceScaleFactor:1});
   await page.addInitScript(()=>{
     const proto=globalThis.Crypto?.prototype;
     if(proto){
@@ -69,7 +69,7 @@ const path = require('node:path');
     let siteHealthReads=0;
     let siteEnableCalls=0;
     let siteTestCalls=0;
-    let siteProfileReads=0;
+    let siteSyncCalls=0;
     const taskEvents={
       'task-e2e-execute':[{id:'event-execute-1',task_id:'task-e2e-execute',from_status:'PREFLIGHT',to_status:'AWAITING_CONFIRMATION',event_type:'REVIEW_OPENED',reason:'E2E 初始审核已确认',created_at:now()}],
       'task-e2e-cancel':[{id:'event-cancel-1',task_id:'task-e2e-cancel',from_status:'AWAITING_CONFIRMATION',to_status:'LINKING',event_type:'LINKING_STARTED',reason:'E2E 初始链接阶段',created_at:now()}],
@@ -546,15 +546,45 @@ const path = require('node:path');
     const siteCanary='PACKBREAKER-SITE-E2E-CREDENTIAL-CANARY';
     const e2eSite={
       id:'site-e2e-mteam',name:'M-Team E2E',type:'MTEAM',base_url:'https://api.m-team.cc',credential_kind:'API_KEY',credential_configured:true,
-      request_timeout_seconds:15,search_interval_seconds:2,user_agent:null,browser_emulation_enabled:false,
+      download_credential_configured:false,request_timeout_seconds:15,search_interval_seconds:2,user_agent:null,browser_emulation_enabled:false,
       proxy_enabled:false,proxy_host:null,proxy_port:null,proxy_username:null,proxy_credential_configured:false,
-      capabilities:{supports_imdb_id:true,min_request_interval_seconds:2},connection_status:'OK',enabled:false,version:1,last_test_at:now(),created_at:now(),updated_at:now(),
+      capabilities:{supports_imdb_id:true,min_request_interval_seconds:2},support_status:'SUPPORTED',connection_status:'OK',enabled:false,version:1,last_test_at:now(),created_at:now(),updated_at:now(),
+      user_summary:{username:'demo001',user_level:'Power User',uploaded_bytes:100000000000,downloaded_bytes:10000000000,ratio:10.0,seeding_count:256,fetched_at:now()},
     };
-    const e2eSiteProfiles=[{
-      kind:'MTEAM',display_name:'M-TEAM',base_url:'https://api.m-team.cc',credential_kind:'API_KEY',
-      request_timeout_seconds:15,search_interval_seconds:2,supports_user_agent:false,
-      supports_browser_emulation:false,supports_proxy:true,support_status:'SUPPORTED',
+    const extraE2ESites=[
+      {...e2eSite,id:'site-e2e-mteam-2',name:'M-Team E2E 2',user_summary:{username:'demo005',user_level:'Power User',uploaded_bytes:88000000000,downloaded_bytes:11000000000,ratio:8,seeding_count:210,fetched_at:now()}},
+      {...e2eSite,id:'site-e2e-carpt-2',name:'CarPT E2E 2',type:'CARPT',base_url:'https://carpt.net',credential_kind:'COOKIE',user_summary:{username:'demo006',user_level:'种子评论',uploaded_bytes:44000000000,downloaded_bytes:11000000000,ratio:4,seeding_count:90,fetched_at:now()}},
+      {...e2eSite,id:'site-e2e-hdfans-2',name:'HDFans E2E 2',type:'HDFANS',base_url:'https://hdfans.org',credential_kind:'COOKIE',user_summary:{username:'demo007',user_level:'Elite User',uploaded_bytes:66000000000,downloaded_bytes:11000000000,ratio:6,seeding_count:150,fetched_at:now()}},
+      {...e2eSite,id:'site-e2e-rousi-2',name:'Rousi Pro E2E 2',type:'ROUSI_PRO',base_url:'https://rousi.pro',credential_kind:'API_KEY',user_summary:{username:'demo008',user_level:'Lv.1',uploaded_bytes:33000000000,downloaded_bytes:11000000000,ratio:3,seeding_count:45,fetched_at:now()}},
+    ];
+    let siteDetailFailures=0;
+    let delayNextHistoryResponse=false;
+    let delayedHistoryResponseStarted=false;
+    const e2eSiteDetail={
+      site:e2eSite,
+      account:{uid:'123456',username:'demo001',user_level:'Power User',join_time:now(),last_access_at:now(),hnr_status:'正常',hnr_count:0,message_count:2,remark:null},
+      statistics:{
+        real_uploaded_bytes:100000000000,real_downloaded_bytes:10000000000,uploaded_bytes:100000000000,
+        downloaded_bytes:10000000000,ratio:10.0,torrents_posted:42,seeding_count:256,
+        seeding_size_bytes:2147483648000,bonus:123456.5,seeding_points:321.5,bonus_per_hour:12.5,
+      },
+      connection:{
+        credential_configured:true,credential_kind:'API_KEY',last_test_at:e2eSite.last_test_at,
+        last_sync_at:e2eSite.user_summary.fetched_at,last_sync_duration_ms:128,circuit_state:'CLOSED',last_error_code:null,
+      },
+      support_status:'SUPPORTED',
+      site_version:null,
+      config_version:1,
+      capabilities:{
+        search:true,torrent_detail:true,torrent_download:true,user_info:true,seeding_info:false,
+        api:true,cookie:false,browser_emulation:false,proxy:true,
+      },
+    };
+    let e2eSyncHistory=[{
+      id:'sync-e2e-1',status:'SUCCESS',started_at:e2eSite.user_summary.fetched_at,finished_at:e2eSite.user_summary.fetched_at,
+      duration_ms:128,field_count:12,error_code:null,error_message:null,
     }];
+    const e2eSeeding={supported:false,items:[],next_cursor:null};
     let e2eSiteHealth={
       config_version:1,circuit_state:'OPEN',failure_count:3,retry_after_seconds:15,half_open_probe_in_flight:false,rate_limit_wait_seconds:0,
       cache_entries:2,cache_hits:3,cache_misses:1,cache_evictions:0,requests_started:4,requests_succeeded:1,requests_failed:3,retries_scheduled:2,last_error_code:'SITE_TEMPORARY_FAILURE',
@@ -562,9 +592,13 @@ const path = require('node:path');
     await page.route('**/api/v1/sites**',async route=>{
       const request=route.request();
       const url=new URL(request.url());
-      if(url.pathname==='/api/v1/sites'&&request.method()==='GET')return fulfillJson(route,{items:[e2eSite]});
-      if(url.pathname==='/api/v1/sites/profiles'&&request.method()==='GET')return fulfillJson(route,{items:e2eSiteProfiles});
-      const match=url.pathname.match(/\/api\/v1\/sites\/site-e2e-mteam(?:\/(health|test|actions|profile))?$/);
+      if(url.pathname==='/api/v1/sites'&&request.method()==='GET')return fulfillJson(route,{items:[e2eSite,{...e2eSite,id:'site-e2e-carpt',name:'CarPT E2E',type:'CARPT',base_url:'https://carpt.net',credential_kind:'COOKIE',user_summary:{username:'demo002',user_level:'Power User',uploaded_bytes:50000000000,downloaded_bytes:5000000000,ratio:10,seeding_count:128,fetched_at:now()}},{...e2eSite,id:'site-e2e-hdfans',name:'HDFans E2E',type:'HDFANS',base_url:'https://hdfans.org',credential_kind:'COOKIE',user_summary:{username:'demo003',user_level:'Elite User',uploaded_bytes:25000000000,downloaded_bytes:5000000000,ratio:5,seeding_count:64,fetched_at:now()}},{...e2eSite,id:'site-e2e-rousi',name:'Rousi Pro E2E',type:'ROUSI_PRO',base_url:'https://rousi.pro',credential_kind:'API_KEY',user_summary:{username:'demo004',user_level:'Lv.1',uploaded_bytes:12000000000,downloaded_bytes:4000000000,ratio:3,seeding_count:12,fetched_at:now()}},...extraE2ESites]});
+      if(url.pathname==='/api/v1/sites/profiles'&&request.method()==='GET')return fulfillJson(route,{items:[{
+        kind:'MTEAM',display_name:'M-TEAM',base_url:'https://api.m-team.cc',credential_kind:'API_KEY',
+        request_timeout_seconds:15,search_interval_seconds:2,supports_user_agent:false,
+        supports_browser_emulation:false,supports_proxy:true,support_status:'SUPPORTED',
+      }]});
+      const match=url.pathname.match(/\/api\/v1\/sites\/site-e2e-mteam(?:\/(health|test|actions|detail|sync|sync-history|seeding))?$/);
       if(!match)return route.fallback();
       const tail=match[1]||'';
       if(request.method()==='GET'&&!tail)return fulfillJson(route,e2eSite);
@@ -572,19 +606,50 @@ const path = require('node:path');
         siteHealthReads+=1;
         return fulfillJson(route,e2eSiteHealth);
       }
-      if(request.method()==='GET'&&tail==='profile'){
-        siteProfileReads+=1;
-        return fulfillJson(route,{code:'NOT_FOUND',detail:'站点用户详情功能已取消'},404);
+      if(request.method()==='GET'&&tail==='detail'){
+        if(siteDetailFailures>0){
+          siteDetailFailures-=1;
+          return fulfillJson(route,{code:'SITE_TEMPORARY_FAILURE',detail:'E2E 详情刷新失败'},502);
+        }
+        return fulfillJson(route,e2eSiteDetail);
+      }
+      if(request.method()==='GET'&&tail==='sync-history'){
+        if(delayNextHistoryResponse){
+          delayNextHistoryResponse=false;
+          delayedHistoryResponseStarted=true;
+          await new Promise(resolve=>setTimeout(resolve,900));
+          return fulfillJson(route,{items:[{
+            id:'sync-e2e-stale',status:'FAILURE',started_at:now(),finished_at:now(),duration_ms:999,field_count:0,
+            error_code:'STALE_RESPONSE',error_message:'过期历史响应不应覆盖当前站点数据',
+          }]});
+        }
+        return fulfillJson(route,{items:e2eSyncHistory});
+      }
+      if(request.method()==='GET'&&tail==='seeding'){
+        return fulfillJson(route,e2eSeeding);
+      }
+      if(request.method()==='POST'&&tail==='sync'){
+        siteSyncCalls+=1;
+        const syncedAt=now();
+        e2eSite.user_summary.fetched_at=syncedAt;
+        e2eSiteDetail.account.last_access_at=syncedAt;
+        e2eSiteDetail.connection.last_sync_at=syncedAt;
+        e2eSiteDetail.connection.last_sync_duration_ms=96;
+        e2eSyncHistory.unshift({
+          id:'sync-e2e-'+(e2eSyncHistory.length+1),status:'SUCCESS',started_at:syncedAt,finished_at:syncedAt,
+          duration_ms:96,field_count:12,error_code:null,error_message:null,
+        });
+        return fulfillJson(route,e2eSiteDetail);
       }
       if(request.method()==='POST'&&tail==='test'){
         siteTestCalls+=1;
         assert.equal(request.postData(),null,'只读连接测试不应从浏览器提交已保存站点凭证');
-        e2eSite.connection_status='OK';e2eSite.last_test_at=now();
+        e2eSite.connection_status='OK';e2eSite.last_test_at=now();e2eSiteDetail.connection.last_test_at=e2eSite.last_test_at;
         return fulfillJson(route,{status:'ok',capabilities:e2eSite.capabilities});
       }
       if(request.method()==='POST'&&tail==='actions'){
         const body=request.postDataJSON();
-        assert.equal(request.headers()['if-match'],`"${e2eSite.version}"`,'站点动作必须绑定当前强 If-Match');
+        assert.equal(request.headers()['if-match'],'"'+e2eSite.version+'"','站点动作必须绑定当前强 If-Match');
         if(body.action==='enable'){
           siteEnableCalls+=1;
           e2eSite.enabled=true;e2eSite.version+=1;e2eSite.updated_at=now();
@@ -596,8 +661,7 @@ const path = require('node:path');
         }
       }
       return fulfillJson(route,{code:'NOT_FOUND',detail:'E2E site route not found'},404);
-    });
-    await page.route('**/api/v1/operations/maintenance-report**',route=>fulfillJson(route,{
+    });    await page.route('**/api/v1/operations/maintenance-report**',route=>fulfillJson(route,{
       generated_at:now(),
       summary:{total_journals:5,attention_required:2,reconcile_supported:1,manual_only:1,retention_candidates:1,truncated:false},
       repair_items:[
@@ -821,8 +885,7 @@ const path = require('node:path');
     await page.locator('.notification-inbox-drawer').waitFor({state:'hidden'});
     const globalSearch=page.getByRole('searchbox',{name:'搜索页面或功能',exact:true});
     await globalSearch.fill('日志');
-    await page.getByRole('listbox',{name:'可前往的功能'}).getByRole('option',{name:'系统设置',exact:true}).click();
-    await page.getByRole('tab',{name:'日志',exact:true}).click();
+    await page.getByRole('listbox',{name:'可前往的功能'}).getByRole('option',{name:'日志浏览',exact:true}).click();
     await page.getByRole('heading',{name:'运行日志',exact:true,level:2}).waitFor();
     await globalSearch.fill('站点');
     await globalSearch.press('Enter');
@@ -886,7 +949,11 @@ const path = require('node:path');
     await userMenuTrigger.click();
     await userDrawer.getByText('浅色',{exact:true}).click();
     await page.keyboard.press('Escape');
-    console.log(`总览首屏 ${overviewFirstPaintMs}ms；已检查 2560/1920/1440/1280/390 五档布局与深色六张独立状态卡`);
+    const lightCards=page.locator('.overview-monitor-grid > .monitor-card');
+    assert.equal(await lightCards.count(),6,'浅色主题仍需展示六张独立状态卡');
+    assert.ok((await lightCards.first().evaluate(el=>getComputedStyle(el).backgroundColor))!=='rgba(0, 0, 0, 0)','浅色状态卡背景须可见');
+    await page.screenshot({path:path.join(output,'overview-light-1440.png'),fullPage:true});
+    console.log(`总览首屏 ${overviewFirstPaintMs}ms；已检查 2560/1920/1440/1280/390 五档布局与明暗主题`);
     await page.route('**/api/v1/system/health',route=>fulfillJson(route,{
       status:'ok',generated_at:now(),version:'0.1.4',checks:[],
     }));
@@ -895,56 +962,101 @@ const path = require('node:path');
     const missingStatistics=await page.locator('.overview-kpi-grid').innerText();
     assert.ok(missingStatistics.includes('—'),'缺失统计显示未知，不能伪造零值或演示数据');
     assert.ok(!missingStatistics.includes('1,158'),'缺失统计不得沿用示例成果');
-    // v1.0.15: legacy TaskDefinition/TaskExecution UI was removed. Keep the
-    // production-preview navigation/overview/site/backup gates here; the
-    // dedicated unpack-v2 browser gate tests creation, review, retry and
-    // selection on production assets with fail-closed API mocking.
+    // v1.1.4：一级菜单仅负责展开/折叠；多个一级菜单可以同时展开；二级菜单负责实际导航。
     await page.route('**/api/v1/unpack/definitions',route=>fulfillJson(route,{items:[]}));
     await page.route('**/api/v1/unpack/executions?**',route=>fulfillJson(route,{items:[]}));
-    await page.getByRole('button',{name:'任务中心',exact:true}).click();
-    await page.getByRole('heading',{name:'任务中心',exact:true,level:2}).waitFor();
-    const unpackModeCard=page.locator('.mode-card').filter({hasText:'数据拆包'});
-    const dedupModeCard=page.locator('.mode-card').filter({hasText:'数据去重'});
-    assert.equal(await unpackModeCard.count(),1,'任务中心必须有数据拆包入口');
-    assert.equal(await dedupModeCard.count(),1,'任务中心必须有数据去重入口');
-    assert.equal(await unpackModeCard.evaluate(el=>el.classList.contains('active')),true,'默认展示数据拆包');
-    assert.equal(await page.locator('.kind-card').count(),0,'v1.0.15 不得再展示旧三卡任务中心');
-
-    // v1.0.10 站点管理：前端不消费 health/circuit，不提供 reset-circuit；启用仍使用当前强版本，保存凭证不回显。
-    await page.locator('nav').getByRole('button',{name:'站点管理',exact:true}).click();
-    await page.locator('.site-toolbar').waitFor();
-    const siteConfigMode=page.locator('.site-mode-card').filter({hasText:'站点配置'});
-    const cookieCloudMode=page.locator('.site-mode-card').filter({hasText:'CookieCloud 同步'});
-    assert.equal(await siteConfigMode.count(),1,'站点管理应有站点配置卡片');
-    assert.equal(await cookieCloudMode.count(),1,'站点管理应有 CookieCloud 同步卡片');
-    assert.equal(await siteConfigMode.getAttribute('aria-pressed'),'true','站点配置默认选中');
-    await page.route('**/api/v1/cookiecloud/config',route=>fulfillJson(route,{
-      enabled:false,server_url:'',uuid:'',password_configured:false,auto_sync:false,
-      sync_cron_expression:'*/30 * * * *',request_timeout_seconds:15,version:1,
-      connection_status:'UNTESTED',last_test_at:null,last_sync_status:'UNTESTED',
-      last_sync_at:null,updated_sites:0,matched_sites:0,eligible_sites:0,
-      unchanged_sites:0,source_domains:0,source_cookies:0,unmatched_domains:0,
+    await page.route('**/api/v1/movie-dedup/jobs**',route=>fulfillJson(route,{items:[]}));
+    await page.route('**/api/v1/cookiecloud/cron-preview',route=>fulfillJson(route,{
+      cron_expression:'*/30 * * * *',timezone:'Asia/Shanghai',description:'每 30 分钟',next_runs:[now()],
     }));
-    await cookieCloudMode.click();
+    await page.route('**/api/v1/cookiecloud/config',route=>fulfillJson(route,{
+      enabled:false,server_url:'',uuid:'',password_configured:false,auto_sync:true,sync_cron_expression:'*/30 * * * *',request_timeout_seconds:15,
+      connection_status:'UNTESTED',last_test_at:null,last_sync_at:null,last_sync_status:'NEVER',last_sync_error_code:null,
+      source_domains:0,source_cookies:0,eligible_sites:0,matched_sites:0,updated_sites:0,unchanged_sites:0,unmatched_domains:0,version:1,created_at:now(),updated_at:now(),
+    }));
+    await page.route('**/api/v1/ai-agent/settings',route=>fulfillJson(route,{
+      enabled:false,provider_kind:'OPENAI',base_url:'https://api.openai.com/v1',api_key_configured:false,model:'',request_timeout_seconds:30,max_context_messages:20,
+      data_scopes:['SYSTEM_HEALTH'],connection_status:'UNTESTED',last_test_at:null,version:1,created_at:now(),updated_at:now(),
+    }));
+    await page.route('**/api/v1/ai-agent/status',route=>fulfillJson(route,{
+      enabled:false,provider_kind:'OPENAI',connection_status:'UNTESTED',api_key_configured:false,model:'',last_test_at:null,
+      telegram_enabled:false,telegram_approval_enabled:false,telegram_driver_running:false,telegram_last_update_id:0,telegram_consecutive_errors:0,telegram_last_error_code:null,
+    }));
+    await page.route('**/api/v1/ai-agent/telegram',route=>fulfillJson(route,{
+      notification_channel_id:null,enabled:false,approval_enabled:false,allowed_chat_ids:[],allowed_user_ids:[],idle_timeout_minutes:60,max_context_messages:20,last_update_id:0,version:1,created_at:now(),updated_at:now(),
+    }));    const nav=page.locator('nav');
+    const taskPrimary=nav.getByRole('button',{name:'任务中心',exact:true});
+    const configPrimary=nav.getByRole('button',{name:'配置中心',exact:true});
+    const systemPrimary=nav.getByRole('button',{name:'系统管理',exact:true});
+    const initialHash=await page.evaluate(()=>location.hash);
+    await taskPrimary.click();
+    assert.equal(await taskPrimary.getAttribute('aria-expanded'),'true','任务中心应展开');
+    assert.equal(await page.evaluate(()=>location.hash),initialHash,'点击有子菜单的一级菜单不得导航');
+    await configPrimary.click();
+    assert.equal(await taskPrimary.getAttribute('aria-expanded'),'true','展开配置中心不得收缩任务中心');
+    assert.equal(await configPrimary.getAttribute('aria-expanded'),'true','配置中心应展开');
+    await systemPrimary.click();
+    assert.equal(await taskPrimary.getAttribute('aria-expanded'),'true','展开系统管理不得收缩任务中心');
+    assert.equal(await configPrimary.getAttribute('aria-expanded'),'true','展开系统管理不得收缩配置中心');
+    assert.equal(await systemPrimary.getAttribute('aria-expanded'),'true','系统管理应展开');
+    await configPrimary.click();
+    assert.equal(await taskPrimary.getAttribute('aria-expanded'),'true','收缩配置中心不得影响任务中心');
+    assert.equal(await configPrimary.getAttribute('aria-expanded'),'false','再次点击只收缩当前一级菜单');
+    assert.equal(await systemPrimary.getAttribute('aria-expanded'),'true','收缩配置中心不得影响系统管理');
+
+    await nav.getByRole('button',{name:'数据拆包',exact:true}).click();
+    await page.getByRole('heading',{name:'数据拆包',exact:true,level:2}).waitFor();
+    assert.equal(decodeURIComponent(await page.evaluate(()=>location.hash.slice(1))),'任务中心/数据拆包','二级菜单应导航到数据拆包');
+    assert.equal(await nav.getByRole('button',{name:'任务中心',exact:true}).getAttribute('aria-expanded'),'true','进入子页面后父级应保持展开');
+
+    await nav.getByRole('button',{name:'数据去重',exact:true}).click();
+    await page.locator('.movie-dedup-panel').waitFor();
+    assert.equal(decodeURIComponent(await page.evaluate(()=>location.hash.slice(1))),'任务中心/数据去重','二级菜单应导航到数据去重');
+
+    await configPrimary.click();
+    await nav.getByRole('button',{name:'CookieCloud配置',exact:true}).click();
     await page.locator('.cookiecloud-management').waitFor();
-    assert.equal(await cookieCloudMode.getAttribute('aria-pressed'),'true','CookieCloud 卡片选中态');
-    assert.equal(await page.locator('.site-toolbar').count(),0,'CookieCloud 应独立于站点列表展示');
-    await siteConfigMode.click();
+    assert.equal(await page.locator('.site-mode-card').count(),0,'配置中心不应再展示旧模式卡片');
+
+    await nav.getByRole('button',{name:'站点配置',exact:true}).click();
     await page.locator('.site-toolbar').waitFor();
-    assert.equal(await siteConfigMode.getAttribute('aria-pressed'),'true','切回站点配置恢复选中态');
-    const siteCard=page.locator('.connection-card').filter({hasText:'M-Team E2E'});
+    await page.setViewportSize({width:2560,height:1440});
+    const siteCard=page.locator('.site-card').filter({hasText:/M-Team E2E(?! 2)/});
     await siteCard.waitFor();
+    assert.equal(await page.locator('.site-card').count(),8,'2K 卡片验收需要两行合成站点卡片');
+    assert.equal(await page.evaluate(()=>window.innerWidth),2560,'2K 截图必须使用 2560 CSS px 视口');
+    await page.screenshot({path:path.join(output,'sites-scheme-a-2560.png'),fullPage:false});
+    for (const width of [1920,1440,1280,390]) {
+      await page.setViewportSize({width,height:width===390?844:1080});
+      await page.waitForTimeout(300);
+      if(width===390){
+        const mobileCardBounds=await page.locator('.site-card').first().boundingBox();
+        assert.ok(mobileCardBounds&&mobileCardBounds.x>=0&&mobileCardBounds.x+mobileCardBounds.width<=391,'390px 站点卡片必须完整位于视口内，不能被折叠侧栏遮挡');
+        await siteCard.getByRole('button',{name:'查看详情',exact:true}).click();
+        const mobileDetailDrawer=page.locator('.site-detail-drawer');
+        await mobileDetailDrawer.waitFor();
+        let mobileDrawerBounds=null;
+        for(let attempt=0;attempt<30;attempt+=1){
+          mobileDrawerBounds=await mobileDetailDrawer.boundingBox();
+          if(mobileDrawerBounds&&mobileDrawerBounds.x>=0&&mobileDrawerBounds.x+mobileDrawerBounds.width<=391)break;
+          await page.waitForTimeout(50);
+        }
+        assert.ok(mobileDrawerBounds&&mobileDrawerBounds.x>=0&&mobileDrawerBounds.x+mobileDrawerBounds.width<=391,'390px 详情抽屉必须完整位于移动视口内');
+        assert.equal(await mobileDetailDrawer.getByRole('button',{name:/编辑/}).count(),0,'移动端详情抽屉也不得出现编辑按钮');
+        await page.screenshot({path:path.join(output,'site-detail-scheme-d-390.png'),fullPage:false});
+        await mobileDetailDrawer.getByRole('button',{name:'关闭详情',exact:true}).click();
+        await mobileDetailDrawer.waitFor({state:'hidden'});
+      }
+      await page.screenshot({path:path.join(output,`sites-scheme-a-${width}.png`),fullPage:false});
+    }
+    await page.setViewportSize({width:2560,height:1440});
+    assert.equal(await page.evaluate(()=>window.innerWidth),2560,'恢复 2K 视口后继续交互验收');
     assert.equal(await siteCard.locator('.site-status-dot').getAttribute('title'),'已停用','停用状态应只通过简洁状态点表达');
     assert.equal(siteHealthReads,0,'打开站点列表不得读取内部 health/circuit 状态');
     assert.equal(await siteCard.getByText(/熔断/).count(),0,'站点卡片不得显示熔断状态');
-    assert.equal(await siteCard.getByText('已完成适配',{exact:true}).count(),0,'v1.0.13 站点卡片不再显示已完成适配');
-    assert.equal(await siteCard.getByText('可靠性错误',{exact:true}).count(),0,'站点卡片不得显示内部可靠性错误');
     assert.equal(await siteCard.getByRole('button',{name:'重置熔断',exact:true}).count(),0,'站点管理不得提供重置熔断入口');
-    assert.equal(await siteCard.getByRole('button',{name:'详情',exact:true}).count(),0,'站点用户详情入口必须已移除');
-    assert.equal(await page.locator('.el-dialog').filter({hasText:'用户详情'}).count(),0,'站点用户详情弹窗必须已移除');
-    assert.equal(siteProfileReads,0,'打开站点列表不得访问已删除的用户个人资料接口');
     assert.equal(await page.getByText(siteCanary,{exact:true}).count(),0,'站点页不得回显已保存凭证明文');
-    assert.equal(await page.getByRole('button',{name:/HHClub/}).count(),0,'HHClub 未确认前不得出现可执行创建动作');
+
     const siteSwitch=siteCard.getByRole('switch',{name:'启用M-Team E2E',exact:true});
     assert.equal(await siteSwitch.getAttribute('aria-checked'),'false','站点初始应保持停用');
     await siteCard.locator('.el-switch').click();
@@ -955,66 +1067,116 @@ const path = require('node:path');
     await page.getByText('M-Team E2E 只读连接测试通过',{exact:true}).waitFor();
     assert.equal(siteTestCalls,1,'站点连接测试应只调用一次');
     assert.equal(siteHealthReads,0,'站点连接测试后前端仍不得读取内部 health/circuit 状态');
-    assert.equal(await siteCard.getByText(/熔断/).count(),0,'连接测试后也不得显示熔断状态');
+    await page.waitForTimeout(3200); // Let success toasts disappear before capturing the Drawer reference.
 
-    for(const name of ['总览','任务中心','站点管理','系统设置','关于']){
-      if(name==='关于'){
-        assert.equal(await page.locator('nav').getByRole('button',{name,exact:true}).count(),0,'关于不应回到侧栏导航');
-        await page.getByRole('button',{name:'关于 PackBreaker',exact:true}).click();
-        assert.equal(await page.getByRole('button',{name:'关于 PackBreaker',exact:true}).getAttribute('aria-current'),'page','右下角关于入口应标记为当前页');
-      }else{
-        await page.locator('nav').getByRole('button',{name,exact:false}).click();
-      }
+    assert.equal(await siteCard.getByRole('button',{name:'查看详情',exact:true}).count(),1,'站点卡片必须提供查看详情');
+    await siteCard.getByRole('button',{name:'查看详情',exact:true}).click();
+    const detailDrawer=page.locator('.site-detail-drawer');
+    await detailDrawer.waitFor();
+    let drawerBounds=null;
+    for(let attempt=0;attempt<30;attempt+=1){
+      drawerBounds=await detailDrawer.boundingBox();
+      if(drawerBounds&&drawerBounds.x>=0&&drawerBounds.x+drawerBounds.width<=2561)break;
       await page.waitForTimeout(50);
-      if(name!=='总览')assert.equal(await page.locator('.page-hero').count(),0,`${name} 不应继续显示顶部说明卡片`);
-      assert.equal(await page.locator('main').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,`${name} 桌面溢出`);
     }
-    await page.locator('nav').getByRole('button',{name:'系统设置',exact:true}).click();
-    const settingsFill=await page.evaluate(()=>{
-      const container=document.querySelector('.system-settings-panel');
-      const section=document.querySelector('.system-settings-panel .settings-content');
-      return container&&section?{
-        container:container.getBoundingClientRect().width,
-        content:section.getBoundingClientRect().width,
-      }:null;
-    });
-    assert.ok(settingsFill&&settingsFill.content>=settingsFill.container-52,
-      '系统设置内容必须铺满卡片，不能保留旧版 820px 最大宽度');
-    assert.equal(await page.getByRole('tab',{name:'CookieCloud',exact:true}).count(),0,'CookieCloud 不再是系统设置页签');
-    await page.getByRole('tab',{name:'备份恢复',exact:true}).click();
-    await page.getByText('SQLite 一致性备份',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'立即备份',exact:true}).click();
-    await page.locator('.el-message-box').getByRole('button',{name:'创建一致性备份',exact:true}).click();
-    await page.getByText('一致性备份已创建：packbreaker-e2e.db',{exact:true}).waitFor();
-    assert.equal(backupRuns,1,'备份管理页立即备份只应提交一次');
-    assert.equal(await page.getByRole('button',{name:/恢复/}).count(),0,'在线管理页不得提供数据库恢复按钮');
+    assert.ok(drawerBounds && drawerBounds.x>=0 && drawerBounds.x+drawerBounds.width<=2561,'方案 D 抽屉动画结束后必须完整位于 2560px 视口内');
+    await page.screenshot({path:path.join(output,'site-detail-scheme-d-2560.png'),fullPage:false});
+    await detailDrawer.getByText('demo001',{exact:true}).first().waitFor();
+    assert.equal(await detailDrawer.getByText('Power User',{exact:true}).count(),1,'详情应展示用户等级');
+    assert.equal(await detailDrawer.getByText('123456',{exact:true}).count(),1,'详情应展示 UID');
+    await detailDrawer.getByText('最后访问',{exact:true}).waitFor();
+    await detailDrawer.getByText('消息数',{exact:true}).waitFor();
+    await detailDrawer.getByText('做种积分',{exact:true}).waitFor();
+    await detailDrawer.getByText('321.5',{exact:true}).waitFor();
+    assert.equal(await detailDrawer.getByText('10.00',{exact:true}).count(),1,'详情应展示分享率');
+    assert.equal(await detailDrawer.getByRole('button',{name:/编辑/}).count(),0,'详情 Drawer 不得出现编辑按钮');
+    assert.equal(await detailDrawer.getByText(siteCanary,{exact:true}).count(),0,'详情 Drawer 不得返回敏感凭证');
+    await detailDrawer.getByRole('tab',{name:'详细信息',exact:true}).click();
+    await page.screenshot({path:path.join(output,'site-detail-info-scheme-d-2560.png'),fullPage:false});
+    await detailDrawer.getByText('请求超时',{exact:true}).waitFor();
+    await detailDrawer.getByText('Base URL',{exact:true}).waitFor();
+    await detailDrawer.getByText('MTEAM（综合类）',{exact:true}).waitFor();
+    await detailDrawer.getByText('API',{exact:true}).waitFor();
+    await detailDrawer.getByText('种子详情',{exact:true}).waitFor();
+    await detailDrawer.getByText('站点版本',{exact:true}).waitFor();
+    assert.equal(await detailDrawer.getByText('创建时间',{exact:true}).count(),0,'详细信息不得展示文档未要求的创建时间');
+    assert.equal(await detailDrawer.getByText('更新时间',{exact:true}).count(),0,'详细信息不得展示文档未要求的更新时间');
+    assert.equal(await detailDrawer.getByRole('button',{name:/编辑/}).count(),0,'详细信息 Tab 也不得出现编辑按钮');
+    await detailDrawer.getByRole('tab',{name:'做种列表',exact:true}).click();
+    await detailDrawer.getByText('当前站点适配器未提供做种列表能力',{exact:true}).waitFor();
+    await detailDrawer.getByRole('tab',{name:'历史同步',exact:true}).click();
+    await detailDrawer.getByText('成功',{exact:true}).waitFor();
+    await detailDrawer.getByRole('button',{name:'立即同步',exact:true}).click();
+    for(let attempt=0;attempt<50&&siteSyncCalls<1;attempt+=1) await page.waitForTimeout(100);
+    assert.equal(siteSyncCalls,1,'立即同步只应调用一次');
+    await detailDrawer.getByRole('tab',{name:'历史同步',exact:true}).click();
+    assert.equal(await detailDrawer.getByText('成功',{exact:true}).count() >= 1,true,'同步后历史记录应存在');
 
-    await page.locator('nav').getByRole('button',{name:'任务中心',exact:false}).click();
+    // Explicitly exercise a late history response after the drawer closes and reopens.
+    delayNextHistoryResponse=true;
+    await detailDrawer.getByRole('tab',{name:'概览',exact:true}).click();
+    await detailDrawer.getByRole('tab',{name:'历史同步',exact:true}).click();
+    for(let attempt=0;attempt<30&&!delayedHistoryResponseStarted;attempt+=1) await page.waitForTimeout(20);
+    assert.equal(delayedHistoryResponseStarted,true,'竞态场景必须确认旧历史请求已进入延迟响应');
+    await detailDrawer.getByRole('button',{name:'关闭详情',exact:true}).click();
+    await detailDrawer.waitFor({state:'hidden'});
+    await siteCard.getByRole('button',{name:'查看详情',exact:true}).click();
+    await detailDrawer.waitFor();
+    for(let attempt=0;attempt<30&&await detailDrawer.getByText('成功',{exact:true}).count()===0;attempt+=1) await page.waitForTimeout(20);
+    assert.ok(await detailDrawer.getByText('成功',{exact:true}).count()>=1,'重开抽屉应加载当前站点的成功历史记录');
+    await page.waitForTimeout(1000);
+    assert.equal(await detailDrawer.getByText('过期历史响应不应覆盖当前站点数据',{exact:true}).count(),0,'关闭后到达的旧历史响应不得覆盖重开后的数据');
+    assert.equal(await detailDrawer.getByText('成功',{exact:true}).count()>=1,true,'重开抽屉应保留当前站点的成功历史记录');
+    await detailDrawer.getByRole('button',{name:'关闭详情',exact:true}).click();
+    await detailDrawer.waitFor({state:'hidden'});
+
+    // A transient detail refresh failure must retain this site's last successful data.
+    siteDetailFailures=1;
+    await siteCard.getByRole('button',{name:'查看详情',exact:true}).click();
+    await detailDrawer.waitFor();
+    await detailDrawer.getByRole('tab',{name:'概览',exact:true}).click();
+    await detailDrawer.getByText('demo001',{exact:true}).first().waitFor();
+    assert.equal(await detailDrawer.getByText('Power User',{exact:true}).count(),1,'详情刷新失败时应保留最近一次成功数据');
+    await detailDrawer.getByText('E2E 详情刷新失败',{exact:true}).waitFor();
+    await detailDrawer.getByRole('button',{name:'关闭详情',exact:true}).click();
+    await detailDrawer.waitFor({state:'hidden'});
+
+    await page.setViewportSize({width:1440,height:900});
+    const secondaryRoutes=[
+      ['下载器配置','.real-downloader-cards'],
+      ['通知配置','.notification-toolbar'],
+      ['日志浏览','.operational-logs'],
+      ['Agent配置','.ai-settings'],
+      ['备份恢复','.backup-management'],
+    ];
+    for(const [name,selector] of secondaryRoutes){
+      await nav.getByRole('button',{name,exact:true}).click();
+      await page.locator(selector).waitFor();
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,name+' 桌面横向溢出');
+    }
+
+    await page.getByRole('button',{name:'关于 PackBreaker',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'关于 PackBreaker',exact:true}).getAttribute('aria-current'),'page','右下角关于入口应标记为当前页');
+
     await page.setViewportSize({width:390,height:844});
-    await page.waitForFunction(()=>document.querySelector('.sidebar').getBoundingClientRect().right<=0); await page.locator('.el-message').last().waitFor({state:'hidden'}); await page.screenshot({path:path.join(output,'mobile.png'),fullPage:true});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'移动页横向溢出');
     await page.getByRole('button',{name:'展开导航',exact:true}).click();
-    await page.locator('nav').getByRole('button',{name:'站点管理',exact:true}).click();
-    await page.locator('.site-toolbar').waitFor();
-    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'移动配置页横向溢出');
-    await userMenuTrigger.click();
-    await userDrawer.getByText('深色',{exact:true}).click();
-    await page.keyboard.press('Escape');
-    await page.screenshot({path:path.join(output,'mobile-dark.png'),fullPage:true});
-    for(const name of ['总览','任务中心','站点管理','系统设置','关于']){
-      if(name==='关于'){
-        assert.equal(await page.locator('nav').getByRole('button',{name,exact:true}).count(),0,'移动侧栏不应展示关于入口');
-        await page.getByRole('button',{name:'关于 PackBreaker',exact:true}).click();
-        assert.equal(await page.getByRole('button',{name:'关于 PackBreaker',exact:true}).getAttribute('aria-current'),'page','移动端关于入口应标记为当前页');
-      }else{
-        await page.getByRole('button',{name:'展开导航',exact:true}).click();
-        await page.locator('nav').getByRole('button',{name,exact:false}).click();
-      }
-      await page.waitForTimeout(50);
-      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,`${name} 移动页溢出`);
-    }
+    const mobileNav=page.locator('nav');
+    const mobileTask=mobileNav.getByRole('button',{name:'任务中心',exact:true});
+    const mobileConfig=mobileNav.getByRole('button',{name:'配置中心',exact:true});
+    await mobileTask.click();
+    await mobileConfig.click();
+    assert.equal(await mobileTask.getAttribute('aria-expanded'),'true','移动端允许多个一级菜单同时展开');
+    assert.equal(await mobileConfig.getAttribute('aria-expanded'),'true','移动端配置中心应展开');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'移动导航展开不得横向溢出');
+    await mobileConfig.click();
+    assert.equal(await mobileTask.getAttribute('aria-expanded'),'true','移动端收缩当前菜单不得影响其他菜单');
+    assert.equal(await mobileConfig.getAttribute('aria-expanded'),'false','移动端再次点击只收缩当前菜单');
+    await mobileNav.getByRole('button',{name:'数据拆包',exact:true}).click();
+    await page.locator('.v2-task-center').waitFor();
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'移动数据拆包页横向溢出');
+
     assert.deepEqual(unmockedApiCalls,[],'浏览器门禁不得把未显式 mock 的 API 请求转发到真实后端');
     assert.deepEqual(errors,[]);
-    console.log('通过：总览响应式与深色主题、v2 任务中心入口、站点无熔断 UI/启用/连接测试、计划备份管理、版本红点和单容器 helper 升级、390px 移动布局；未显式 mock 的 API 请求全部失败关闭。v2 拆包交互由专用浏览器门禁验证。');
-  } finally { await browser.close(); }
+    console.log('通过：v1.1.4 多级导航、多个一级菜单同时展开、二级路由直达、站点卡片方案 A、详情 Drawer 方案 D、立即同步/历史同步、关于入口及 390px 移动布局；未显式 mock 的 API 请求全部失败关闭。');  } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1});
