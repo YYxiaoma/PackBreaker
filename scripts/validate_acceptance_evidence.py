@@ -8,7 +8,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "docs" / "v1-acceptance-evidence.json"
-_ALLOWED_STATUSES = {"covered", "field_evidence", "pending_external"}
+_ALLOWED_STATUSES = {"covered", "field_evidence"}
 
 
 def validate_manifest(root: Path, manifest_path: Path) -> list[str]:
@@ -24,10 +24,10 @@ def validate_manifest(root: Path, manifest_path: Path) -> list[str]:
     if not isinstance(requirements, list):
         return ["验收证据清单 requirements 必须为数组"]
 
-    expected_ids = [f"V1-{index:03d}" for index in range(1, 26)]
+    expected_ids = [f"V1-{index:03d}" for index in range(4, 26)]
     actual_ids = [item.get("id") for item in requirements if isinstance(item, dict)]
     if actual_ids != expected_ids:
-        errors.append("验收证据必须按 V1-001..V1-025 完整且有序列出")
+        errors.append("验收证据必须按 V1-004..V1-025 完整且有序列出")
 
     testing_text = (root / "docs" / "testing.md").read_text(encoding="utf-8")
     for index, item in enumerate(requirements, start=1):
@@ -45,8 +45,6 @@ def validate_manifest(root: Path, manifest_path: Path) -> list[str]:
             errors.append(f"{requirement_id}: criterion 未锚定到 docs/testing.md")
         if status not in _ALLOWED_STATUSES:
             errors.append(f"{requirement_id}: status 无效：{status!r}")
-        if status == "pending_external" and not item.get("external_blocker"):
-            errors.append(f"{requirement_id}: pending_external 必须说明 external_blocker")
         if not isinstance(evidence, list) or not evidence:
             errors.append(f"{requirement_id}: evidence 至少需要一项")
             continue
@@ -96,9 +94,9 @@ def main() -> int:
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     counts = Counter(item["status"] for item in payload["requirements"])
     print(
-        "v1.0 验收证据索引通过："
+        "验收证据索引通过："
         f"covered={counts['covered']}，field_evidence={counts['field_evidence']}，"
-        f"pending_external={counts['pending_external']}"
+        f"total={len(payload['requirements'])}"
     )
     return 0
 

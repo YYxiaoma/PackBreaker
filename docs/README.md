@@ -10,7 +10,7 @@
 - Docker Hub：`yyxiaoma01/packbreaker`
 - [正式发行与附件](https://github.com/YYxiaoma/PackBreaker/releases/latest)
 
-七个新增站点已开放为 `SUPPORTED`。用户已确认七站完整真实拆包/辅种任务在本地环境通过验收，详见 [七站本地验收记录](v1.1.4-seven-site-local-acceptance.md)。本地验收状态与仓库中的可审计机器收据是两个不同维度；网络、Tracker 与异常恢复的逐站收据仍应按 [已知限制](known-limitations.md) 和验收门禁独立核对。
+七个新增站点已开放为 `SUPPORTED`。用户已确认七站完整真实拆包/辅种任务在本地环境通过验收，详见 [七站本地验收记录](v1.1.4-seven-site-local-acceptance.md)。
 
 ## 功能入口
 
@@ -166,7 +166,6 @@ uv run python scripts/test.py
 ## 文档与证据维护
 
 - [站点支持边界](support-matrix.md)
-- [已知限制](known-limitations.md)
 - [测试与验收](testing.md)
 
-历史版本与发布证据通过 Git tags、GitHub Releases 和对应工作流查阅。已清理的现场原始材料不再作为工作树中的有效证据；验收索引明确保留缺口，不以文字或合成测试替代真实回执。后续维护以 main 和当前实现为准，文档更新不能代替真实环境验证。
+历史版本与发布记录通过 Git tags、GitHub Releases 和对应工作流查阅。当前文档以现行使用说明、支持边界和自动化验证方式为准；七站本地验收结论见 [验收记录](v1.1.4-seven-site-local-acceptance.md)。

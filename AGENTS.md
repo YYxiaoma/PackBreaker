@@ -22,7 +22,7 @@
 | 下载器与路径映射 | `backend/app/api/downloaders.py`、下载器适配器、`*downloader*.py` |
 | 运维、通知与 AI | `backend/app/api/system.py`、`notifications.py`、`ai_*.py` 及对应前端组件 |
 | API、数据库与 UI | `backend/app/api/`、`backend/migrations/`、`frontend/src/api/`、`frontend/src/components/` |
-| 使用和开发说明 | `docs/README.md`；测试查 `docs/testing.md`，支持边界查 `docs/support-matrix.md` 和 `docs/known-limitations.md` |
+| 使用和开发说明 | `docs/README.md`；测试查 `docs/testing.md`，支持边界查 `docs/support-matrix.md` |
 | 发布与历史证据 | `.github/workflows/`、`release-baseline.json`、Git tags 与 GitHub Releases；只在任务涉及交付或证据时读取 |
 
 业务规则和安全判定放在 domain/application 层，API 保持契约与鉴权边界，适配器处理协议差异。API 变更同步 OpenAPI、生成类型、调用处及相关测试；数据库变更同步 ORM、迁移和序列化。UI 变更核对桌面/窄屏、明暗主题、加载/空/错误状态及实际操作链，不恢复已移除的旧入口。

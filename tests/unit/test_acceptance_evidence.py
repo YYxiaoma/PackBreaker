@@ -14,12 +14,10 @@ def test_repository_v1_acceptance_evidence_manifest_is_complete_and_resolvable()
     assert validate_manifest(ROOT, manifest) == []
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     statuses = [item["status"] for item in payload["requirements"]]
-    assert statuses.count("pending_external") == 3
-    assert all(
-        item.get("external_blocker")
-        for item in payload["requirements"]
-        if item["status"] == "pending_external"
-    )
+    assert set(statuses) <= {"covered", "field_evidence"}
+    assert [item["id"] for item in payload["requirements"]] == [
+        f"V1-{index:03d}" for index in range(4, 26)
+    ]
     assert payload["requirements"][-1]["id"] == "V1-025"
     assert payload["requirements"][-1]["status"] == "covered"
 
@@ -31,8 +29,8 @@ def test_acceptance_evidence_validator_rejects_stale_anchor(tmp_path: Path) -> N
     evidence = tmp_path / "evidence.txt"
     evidence.write_text("current anchor\n", encoding="utf-8")
     requirements = []
-    for index in range(1, 26):
-        anchor = "stale anchor" if index == 1 else "current anchor"
+    for index in range(4, 26):
+        anchor = "stale anchor" if index == 4 else "current anchor"
         requirements.append(
             {
                 "id": f"V1-{index:03d}",

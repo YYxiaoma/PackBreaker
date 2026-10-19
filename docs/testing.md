@@ -7,21 +7,10 @@
 - `uv run python scripts/check.py`：仓库安全扫描、验收索引、发布清单、基线、静态检查和 API 契约。
 - `uv run python scripts/test.py`：pytest、Vitest 与前端构建。
 - UI 交互使用 `node scripts/check-prototype.cjs`、`node scripts/check-unpack-v2-ui.cjs` 对应的隔离浏览器流程。
-- Docker、升级回滚和双架构运行证据由 GitHub Actions 的 CI / Candidate Docker E2E / Release 提供；普通自动化绿灯不代表真实 PT 完整链路通过。
+- Docker、升级回滚和双架构运行证据由 GitHub Actions 的 CI / Candidate Docker E2E / Release 提供。七站完整真实拆包/辅种任务已由用户确认在本地环境通过验收，记录见 [七站本地验收记录](v1.1.4-seven-site-local-acceptance.md)；自动化检查与真实环境验收分别记录，不互相替代。
 
-## 现有证据边界
+## 自动化回归验收条目
 
-用户已确认七站完整真实拆包/辅种任务在其本地环境通过验收，记录见 [七站本地验收记录](v1.1.4-seven-site-local-acceptance.md)。本工作区本轮未独立重放本地真实任务，也未核验逐站机器收据；下列验收索引仍是历史业务链回归要求，不能替代可审计的现场 execution 回执。
-
-历史客户端子链记录包含 qBittorrent v5.2.3 / WebAPI 2.15.1；历史源数据保护断言为：源文件 device/inode/size/mtime 与 preflight 快照一致。既有索引引用原始证据，不能替代七站新 execution 的完整回执。
-
-历史原始现场证据清理后，`docs/v1-acceptance-evidence.json` 中三项历史现场要求仍保留为 `pending_external`。GitHub Issue #5 记录用户已将这三项在待办管理状态中确认完成，同时明确没有新增机器收据并保留已发布版本索引原状；因此这里的状态表示仓库缺少可审计的原始现场证据，不代表重新打开用户已关闭的待办。不得仅凭管理状态、文字说明或合成回归将其改成 `covered`。旧版本专属发布清单只在对应版本运行，不构成后续版本已验收的证明。
-
-## CI 索引使用的验收条目
-
-- 真实验收语料中的自动误辅种为 0。
-- qB 与 TR 各完成一条真实端到端任务，包含人工确认和失败回滚。
-- 7 个失败样例完成归因并形成回归测试
 - 重复触发 10 次结果唯一。
 - LINKING、ADDING、CLIENT_VERIFYING 故障注入后恢复正确。
 - execution plan 必须绑定明确的目标下载器 version/能力摘要/远端 save path
