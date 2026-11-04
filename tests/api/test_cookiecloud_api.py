@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -43,6 +44,23 @@ def _login(client: TestClient) -> dict[str, str]:
     csrf = client.cookies.get(CSRF_COOKIE)
     assert csrf is not None
     return {"X-CSRF-Token": csrf}
+
+
+def _wait_for_cookiecloud_profile_syncs(
+    client: TestClient,
+    *,
+    timeout_seconds: float = 10.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        response = client.get("/api/v1/cookiecloud/profile-sync-status")
+        assert response.status_code == 200, response.text
+        if response.json()["pending_count"] == 0:
+            return
+        time.sleep(0.01)
+    status = client.get("/api/v1/cookiecloud/profile-sync-status")
+    assert status.status_code == 200, status.text
+    assert status.json()["pending_count"] == 0, status.json()
 
 
 def _fixed_encrypt(uuid: str, password: str, payload: Mapping[str, object]) -> str:
@@ -560,6 +578,7 @@ def test_cookiecloud_sync_imports_missing_supported_cookie_sites_without_api_key
         app.state.site_service.sync_user_profile = AsyncMock(return_value=None)
         synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
         assert synced.status_code == 200
+        _wait_for_cookiecloud_profile_syncs(client)
         report = synced.json()
         expected_cookies = sum(
             profile.credential_kind is SiteCredentialKind.COOKIE for profile in profiles
@@ -673,6 +692,7 @@ def test_cookiecloud_sync_seven_supported_sites_are_encrypted_and_manual_enable(
         app.state.site_service.sync_user_profile = AsyncMock(return_value=None)
         synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
         assert synced.status_code == 200
+        _wait_for_cookiecloud_profile_syncs(client)
         summary = synced.json()
         assert summary["created_sites"] == len(kinds)
         assert summary["matched_sites"] == len(kinds)
