@@ -209,7 +209,11 @@
         },
         {
           "path": "scripts/check-unpack-v2-ui.cjs",
-          "contains": "保存并执行"
+          "contains": "name: \"保存任务\", exact: true"
+        },
+        {
+          "path": "scripts/check-unpack-v2-ui.cjs",
+          "contains": "name: \"执行\", exact: false"
         }
       ]
     },

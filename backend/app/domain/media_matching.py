@@ -75,6 +75,22 @@ _ABS_RE = re.compile(r"(?<![a-z0-9])abs(?:olute)?[ ._-]*(\d{1,4})(?!\d)", re.IGN
 _SPECIALS_RE = re.compile(r"(?<![a-z0-9])specials?(?![a-z0-9])", re.IGNORECASE)
 _IMDB_RE = re.compile(r"(?<![a-z0-9])(tt\d{5,10})(?!\d)", re.IGNORECASE)
 _DOUBAN_RE = re.compile(r"(?:douban|豆瓣)[ :._-]*(\d{3,12})", re.IGNORECASE)
+_RELEASE_GROUP_RE = re.compile(r"-([a-z0-9][a-z0-9@￡]{1,32})$", re.IGNORECASE)
+_RELEASE_GROUP_WATERMARK_RE = re.compile(r"￡([a-z0-9]+@[a-z0-9]{2,24})$", re.IGNORECASE)
+_RELEASE_GROUP_KNOWN_SUFFIX_RE = re.compile(r"(?:^|[ ._])((?:frds|greenotea))$", re.IGNORECASE)
+_DUPLICATE_COPY_SUFFIX_RE = re.compile(r"\s+\(\d+\)$")
+_TRAILING_CONTAINER_TOKEN_RE = re.compile(r"\s+(?:mkv|mp4|m2ts|avi|mov|webm|ts)$", re.IGNORECASE)
+_NON_TITLE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?<![a-z0-9])(?:8|10|12)[ ._-]*bit(?![a-z0-9])", re.I),
+    re.compile(r"(?<![a-z0-9])\d+[ ._-]*audio(?![a-z0-9])", re.I),
+    re.compile(r"(?<![a-z0-9])x?(?:2[ ._-]*0|5[ ._-]*1|7[ ._-]*1)(?:[ ._-]*4)?(?![a-z0-9])", re.I),
+    re.compile(r"(?<![a-z0-9])\d+in\d+(?![a-z0-9])", re.I),
+    re.compile(r"(?:翡翠台源码|翡翠台|源码|4k修复版|修复版|高清版)", re.I),
+    re.compile(
+        r"(?<![a-z0-9])(?:unrated|theatrical|limited|proper|repack|internal|hybrid|uhd|muhd|mnhd)(?![a-z0-9])",
+        re.I,
+    ),
+)
 
 _KNOWN_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("resolution", re.compile(r"(?<![a-z0-9])(?:2160p|4k)(?![a-z0-9])", re.I), "2160p"),
@@ -84,7 +100,7 @@ _KNOWN_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("release_source", re.compile(r"(?<![a-z0-9])web[ ._-]*rip(?![a-z0-9])", re.I), "webrip"),
     ("release_source", re.compile(r"(?<![a-z0-9])blu[ ._-]*ray(?![a-z0-9])", re.I), "bluray"),
     ("release_source", re.compile(r"(?<![a-z0-9])remux(?![a-z0-9])", re.I), "remux"),
-    ("release_source", re.compile(r"(?<![a-z0-9])hdtv(?![a-z0-9])", re.I), "hdtv"),
+    ("release_source", re.compile(r"(?<![a-z0-9])(?:hdtv|hdctv)(?![a-z0-9])", re.I), "hdtv"),
     ("codec", re.compile(r"(?<![a-z0-9])(?:x265|h[ ._-]*265|hevc)(?![a-z0-9])", re.I), "hevc"),
     ("codec", re.compile(r"(?<![a-z0-9])(?:x264|h[ ._-]*264|avc)(?![a-z0-9])", re.I), "avc"),
     ("codec", re.compile(r"(?<![a-z0-9])av1(?![a-z0-9])", re.I), "av1"),
@@ -96,6 +112,10 @@ _KNOWN_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ("hdr", re.compile(r"(?<![a-z0-9])hdr10[ ._-]*\+(?![a-z0-9])", re.I), "hdr10+"),
     ("hdr", re.compile(r"(?<![a-z0-9])hdr10(?![a-z0-9])", re.I), "hdr10"),
     ("hdr", re.compile(r"(?<![a-z0-9])hdr(?![a-z0-9])", re.I), "hdr"),
+    ("audio", re.compile(r"(?<![a-z0-9])ac3(?![a-z0-9])", re.I), "ac3"),
+    ("audio", re.compile(r"(?<![a-z0-9])aac(?![a-z0-9])", re.I), "aac"),
+    ("audio", re.compile(r"(?<![a-z0-9])flac(?![a-z0-9])", re.I), "flac"),
+    ("audio", re.compile(r"(?<![a-z0-9])lpcm(?![a-z0-9])", re.I), "lpcm"),
     ("audio", re.compile(r"(?<![a-z0-9])atmos(?![a-z0-9])", re.I), "atmos"),
     ("audio", re.compile(r"(?<![a-z0-9])true[ ._-]*hd(?![a-z0-9])", re.I), "truehd"),
     ("audio", re.compile(r"(?<![a-z0-9])dts[ ._-]*hd(?:[ ._-]*ma)?(?![a-z0-9])", re.I), "dts-hd"),
@@ -143,8 +163,25 @@ def parse_media_name(
     """从发布名提取明确 token；不猜测裸集数，也不按任意分隔符截断标题。"""
 
     working = normalize_text(raw_name)
+    # Duplicate download copies and plain container labels are not part of the
+    # movie identity, and can otherwise hide a valid trailing release-group tag.
+    working = _DUPLICATE_COPY_SUFFIX_RE.sub("", working)
+    working = _TRAILING_CONTAINER_TOKEN_RE.sub("", working)
     values: dict[str, str] = {}
     external_ids: list[ExternalMediaId] = []
+    release_group_match = (
+        _RELEASE_GROUP_WATERMARK_RE.search(working)
+        or _RELEASE_GROUP_RE.search(working)
+        or _RELEASE_GROUP_KNOWN_SUFFIX_RE.search(working)
+    )
+    inferred_release_group: str | None = None
+    if release_group_match is not None and any(
+        pattern.search(working[: release_group_match.start()]) for _, pattern, _ in _KNOWN_PATTERNS
+    ):
+        # Some trackers put an uploader watermark directly before @FRDS, while
+        # others use the ordinary -FRDS suffix. Normalize both to the same tag.
+        inferred_release_group = release_group_match.group(1).lstrip("￡")
+        working = _blank_span(working, release_group_match.span())
 
     imdb = _IMDB_RE.search(working)
     if imdb is not None:
@@ -171,6 +208,8 @@ def parse_media_name(
             continue
         values[field] = canonical
         working = _blank_span(working, match.span())
+    for pattern in _NON_TITLE_PATTERNS:
+        working = pattern.sub(lambda match: " " * len(match.group(0)), working)
 
     alias_tokens = tuple(tokens for alias in aliases if (tokens := tokenize_title(alias)))
     title_tokens = tuple(_TOKEN_RE.findall(working))
@@ -179,7 +218,7 @@ def parse_media_name(
     if year_match is not None:
         before_year = tuple(_TOKEN_RE.findall(normalize_text(raw_name[: year_match.start()])))
         latin_title = tuple(token for token in before_year if token.isascii() and token.isalnum())
-        if 2 <= len(latin_title) <= 12 and latin_title not in alias_tokens:
+        if 1 <= len(latin_title) <= 12 and latin_title not in alias_tokens:
             alias_tokens = (*alias_tokens, latin_title)
     # Bilingual movie filenames often start with an official Chinese title
     # followed by the English release title and technical release metadata.
@@ -202,7 +241,13 @@ def parse_media_name(
         hdr=values.get("hdr"),
         audio=values.get("audio"),
         language=normalize_text(language) if language else values.get("language"),
-        release_group=normalize_text(release_group) if release_group else None,
+        release_group=(
+            normalize_text(release_group)
+            if release_group
+            else normalize_text(inferred_release_group)
+            if inferred_release_group
+            else None
+        ),
         version=values.get("version"),
         external_ids=tuple(sorted(external_ids, key=lambda item: (item.namespace, item.value))),
         total_size=total_size,

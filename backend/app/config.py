@@ -20,6 +20,7 @@ class AppSettings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     config_dir: Path = Path("/config")
     data_dir: Path = Path("/data")
+    unpack_template_mapping_root: Path | None = None
     frontend_dir: Path | None = None
     secret_key_file: Path | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
@@ -41,7 +42,12 @@ class AppSettings(BaseSettings):
     unpack_discovery_batch_size: int = Field(default=100, ge=1, le=500)
     unpack_match_batch_size: int = Field(default=20, ge=1, le=200)
     unpack_match_site_concurrency: int = Field(default=4, ge=1, le=32)
-    unpack_match_max_queries_per_site: int = Field(default=4, ge=1, le=8)
+    unpack_match_max_queries_per_site: int = Field(default=8, ge=1, le=8)
+    unpack_match_max_pages_per_query: int = Field(default=3, ge=1, le=5)
+    unpack_match_extra_exclude_names: str = (
+        "sp.,featurette,behind the scenes,making of,"
+        "deleted scene,short film,bonus feature,interview"
+    )
     unpack_match_site_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
     unpack_match_candidate_limit: int = Field(default=50, ge=1, le=500)
     unpack_content_verify_batch_size: int = Field(default=5, ge=1, le=100)
@@ -72,7 +78,7 @@ class AppSettings(BaseSettings):
             raise ValueError("启动目录必须使用绝对路径")
         return value
 
-    @field_validator("secret_key_file", "frontend_dir")
+    @field_validator("secret_key_file", "frontend_dir", "unpack_template_mapping_root")
     @classmethod
     def require_absolute_optional_path(cls, value: Path | None) -> Path | None:
         if value is not None and not value.is_absolute():

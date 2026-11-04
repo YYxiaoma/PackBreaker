@@ -6,6 +6,10 @@ export type CookieCloudSettingUpdate = components['schemas']['CookieCloudSetting
 export type CookieCloudProbe = components['schemas']['CookieCloudProbeResponse'];
 export type CookieCloudSyncReport = components['schemas']['CookieCloudSyncResponse'];
 export type CookieCloudCronPreview = components['schemas']['CookieCloudCronPreviewResponse'];
+export interface CookieCloudProfileSyncStatus {
+  pending_count: number;
+  max_concurrency: number;
+}
 
 export async function getCookieCloudSettings(): Promise<CookieCloudSettings> {
   try {
@@ -39,9 +43,43 @@ export async function testCookieCloud(): Promise<CookieCloudProbe> {
   }
 }
 
+export type CookieCloudDraftProbe = Omit<CookieCloudProbe, 'version'>;
+
+export interface CookieCloudDraftProbeInput {
+  server_url: string;
+  uuid: string;
+  password?: string;
+  request_timeout_seconds: number;
+}
+
+export async function testCookieCloudDraft(
+  payload: CookieCloudDraftProbeInput,
+): Promise<CookieCloudDraftProbe> {
+  try {
+    const response = await apiClient.post<CookieCloudDraftProbe>(
+      '/cookiecloud/test-draft',
+      payload,
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
 export async function syncCookieCloud(): Promise<CookieCloudSyncReport> {
   try {
     const response = await apiClient.post<CookieCloudSyncReport>('/cookiecloud/sync');
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function getCookieCloudProfileSyncStatus(): Promise<CookieCloudProfileSyncStatus> {
+  try {
+    const response = await apiClient.get<CookieCloudProfileSyncStatus>(
+      '/cookiecloud/profile-sync-status',
+    );
     return response.data;
   } catch (error) {
     throw toApiProblem(error);

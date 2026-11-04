@@ -37,6 +37,7 @@ from backend.app.application.movie_dedup_driver import MovieDedupDriver
 from backend.app.application.notification_driver import NotificationDriver
 from backend.app.application.notifications import NotificationService
 from backend.app.application.secrets import SecretStore
+from backend.app.application.site_statistics_driver import SiteStatisticsDriver
 from backend.app.application.sites import SiteService
 from backend.app.application.system_health import SystemResourceSampler
 from backend.app.application.system_upgrades import SystemUpgradeService
@@ -51,11 +52,15 @@ from backend.app.application.unpack_driver import UnpackDriver
 from backend.app.application.unpack_execution_plans import UnpackExecutionPlanService
 from backend.app.application.unpack_executions import UnpackExecutionQueryService
 from backend.app.application.unpack_item_actions import UnpackItemActionService
+from backend.app.application.unpack_manual_candidates import UnpackManualCandidateService
+from backend.app.application.unpack_manual_torrents import ManualTorrentStore
 from backend.app.application.unpack_matching import UnpackMatchCoordinator
 from backend.app.application.unpack_materialization import UnpackMaterializationService
 from backend.app.application.unpack_monitor import UnpackMonitorService
 from backend.app.application.unpack_seeding import UnpackSeedingService
 from backend.app.application.unpack_source_scans import UnpackSourceScanService
+from backend.app.application.unpack_template_driver import UnpackTemplateImportDriver
+from backend.app.application.unpack_templates import UnpackTemplateService
 from backend.app.config import AppSettings
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
@@ -174,6 +179,9 @@ def _attach_frontend(app: FastAPI, settings: AppSettings) -> None:
         raise ValueError("前端静态目录必须包含 index.html 与 assets 目录")
 
     app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+    icons_dir = frontend_dir / "icons"
+    if icons_dir.is_dir():
+        app.mount("/icons", StaticFiles(directory=icons_dir), name="frontend-icons")
 
     @app.get("/", include_in_schema=False)
     async def frontend_index() -> FileResponse:
@@ -271,11 +279,41 @@ def create_app(
             acceptance_scope=acceptance_scope,
         )
         app.state.site_service = site_service
+        unpack_template_service = UnpackTemplateService(
+            resolved_runtime.session_factory,
+            data_dir=resolved_settings.data_dir,
+            mapping_root=resolved_settings.unpack_template_mapping_root,
+        )
+        app.state.unpack_template_service = unpack_template_service
+        unpack_template_import_driver = UnpackTemplateImportDriver(
+            unpack_template_service,
+            site_service,
+        )
+        app.state.unpack_template_import_driver = unpack_template_import_driver
+        site_statistics_driver = SiteStatisticsDriver(
+            site_service,
+            timezone=resolved_settings.timezone,
+        )
+        app.state.site_statistics_driver = site_statistics_driver
+        manual_torrent_store = ManualTorrentStore(resolved_settings.data_dir)
+        unpack_manual_candidate_service = UnpackManualCandidateService(
+            resolved_runtime.session_factory,
+            site_service,
+            manual_torrent_store,
+            fetch_timeout_seconds=resolved_settings.unpack_content_fetch_timeout_seconds,
+        )
+        app.state.unpack_manual_candidate_service = unpack_manual_candidate_service
         unpack_match_coordinator = UnpackMatchCoordinator(
             resolved_runtime.session_factory,
             site_service,
             max_site_concurrency=resolved_settings.unpack_match_site_concurrency,
             max_queries_per_site=resolved_settings.unpack_match_max_queries_per_site,
+            max_pages_per_query=resolved_settings.unpack_match_max_pages_per_query,
+            extra_exclude_names=tuple(
+                value.strip().casefold()
+                for value in resolved_settings.unpack_match_extra_exclude_names.split(",")
+                if value.strip()
+            ),
             site_timeout_seconds=resolved_settings.unpack_match_site_timeout_seconds,
             max_candidates_per_item=resolved_settings.unpack_match_candidate_limit,
         )
@@ -285,6 +323,7 @@ def create_app(
             site_service,
             path_scope=path_scope,
             fetch_timeout_seconds=resolved_settings.unpack_content_fetch_timeout_seconds,
+            manual_torrent_store=manual_torrent_store,
         )
         app.state.unpack_content_verification_service = unpack_content_verification_service
         unpack_auxiliary_service = UnpackAuxiliaryStagingService(
@@ -293,6 +332,7 @@ def create_app(
             downloader_service,
             path_scope=path_scope,
             fetch_timeout_seconds=resolved_settings.unpack_auxiliary_fetch_timeout_seconds,
+            manual_torrent_store=manual_torrent_store,
         )
         app.state.unpack_auxiliary_service = unpack_auxiliary_service
         unpack_execution_plan_service = UnpackExecutionPlanService(
@@ -301,6 +341,7 @@ def create_app(
             downloader_service,
             path_scope=path_scope,
             fetch_timeout_seconds=resolved_settings.unpack_content_fetch_timeout_seconds,
+            manual_torrent_store=manual_torrent_store,
         )
         app.state.unpack_execution_plan_service = unpack_execution_plan_service
         unpack_materialization_service = UnpackMaterializationService(
@@ -315,6 +356,7 @@ def create_app(
             downloader_service,
             path_scope=path_scope,
             fetch_timeout_seconds=resolved_settings.unpack_content_fetch_timeout_seconds,
+            manual_torrent_store=manual_torrent_store,
         )
         app.state.unpack_seeding_service = unpack_seeding_service
         cookiecloud_service = CookieCloudService(
@@ -415,6 +457,8 @@ def create_app(
         )
         app.state.ai_telegram_driver = ai_telegram_driver
         cookiecloud_driver.start()
+        site_statistics_driver.start()
+        unpack_template_import_driver.start()
         backup_driver.start()
         ai_telegram_driver.start()
         resource_sampler = SystemResourceSampler()
@@ -426,6 +470,8 @@ def create_app(
             await resource_sampler.stop()
             await ai_telegram_driver.stop()
             await backup_driver.stop()
+            await site_statistics_driver.stop()
+            await unpack_template_import_driver.stop()
             await cookiecloud_driver.stop()
             await notification_driver.stop()
             await movie_dedup_driver.stop()

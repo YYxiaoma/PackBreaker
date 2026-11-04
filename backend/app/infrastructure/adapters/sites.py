@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, cast
 from urllib.parse import urljoin, urlsplit
 
@@ -285,7 +285,7 @@ class MTeamAdapter:
             downloaded_bytes=downloaded,
             ratio=ratio,
             torrents_posted=_first_nonnegative_int(
-                sources, "torrentCount", "torrents", "publishedCount"
+                sources, "torrentCount", "torrents", "publishedCount", "uploadCount"
             ),
             seeding_count=_first_nonnegative_int(sources, "seeding", "seedingCount", "seedCount"),
             seeding_size_bytes=_first_nonnegative_int(
@@ -309,18 +309,34 @@ class MTeamAdapter:
                 sources, "messageCount", "unreadMessages", "unreadMessageCount"
             ),
         )
-        if (
-            profile.username is not None
-            and profile.seeding_count is None
-            and profile.seeding_size_bytes is None
+        if profile.username is not None and (
+            profile.torrents_posted is None
+            or (profile.seeding_count is None and profile.seeding_size_bytes is None)
         ):
+            # PT-Depiler reads all three values from myPeerStatistics. The
+            # profile endpoint can already contain seeding fields while the
+            # publication count remains absent, so request this endpoint when
+            # any required statistic is missing and preserve fields already read.
             try:
                 peer_data = await self._post_api("/api/tracker/myPeerStatistics")
                 if isinstance(peer_data, Mapping):
                     profile = replace(
                         profile,
-                        seeding_count=_optional_nonnegative_int(peer_data.get("seederCount")),
-                        seeding_size_bytes=_optional_nonnegative_int(peer_data.get("seederSize")),
+                        torrents_posted=(
+                            profile.torrents_posted
+                            if profile.torrents_posted is not None
+                            else _optional_nonnegative_int(peer_data.get("uploadCount"))
+                        ),
+                        seeding_count=(
+                            profile.seeding_count
+                            if profile.seeding_count is not None
+                            else _optional_nonnegative_int(peer_data.get("seederCount"))
+                        ),
+                        seeding_size_bytes=(
+                            profile.seeding_size_bytes
+                            if profile.seeding_size_bytes is not None
+                            else _optional_nonnegative_int(peer_data.get("seederSize"))
+                        ),
                     )
             except SiteAdapterError:
                 pass
@@ -785,14 +801,46 @@ def _first_nonnegative_float(
 
 
 def _optional_aware_datetime(value: object) -> datetime | None:
+    # M-Team's PT-Depiler definition parses createdDate/lastBrowse with the
+    # site's +0800 timezone. API responses can contain ISO strings without an
+    # offset or Unix timestamps; normalize these documented profile values
+    # rather than silently dropping them from the overview/detail response.
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if not 0 <= timestamp < 4_102_444_800_000:
+            return None
+        if timestamp >= 100_000_000_000:
+            timestamp /= 1000
+        try:
+            return datetime.fromtimestamp(timestamp, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
     if not isinstance(value, str):
         return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.isascii() and normalized.isdecimal():
+        try:
+            timestamp = int(normalized)
+        except ValueError:
+            return None
+        if timestamp >= 100_000_000_000:
+            timestamp /= 1000
+        if not 0 <= timestamp < 4_102_444_800:
+            return None
+        try:
+            return datetime.fromtimestamp(timestamp, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
     try:
-        parsed = datetime.fromisoformat(value.strip())
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
     except ValueError:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=8)))
     return parsed
 
 

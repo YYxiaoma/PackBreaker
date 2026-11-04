@@ -194,6 +194,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/cookiecloud/profile-sync-status': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Cookiecloud Profile Sync Status */
+    get: operations['cookiecloud_profile_sync_status_api_v1_cookiecloud_profile_sync_status_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/cookiecloud/sync': {
     parameters: {
       query?: never;
@@ -222,6 +239,23 @@ export interface paths {
     put?: never;
     /** Test Cookiecloud */
     post: operations['test_cookiecloud_api_v1_cookiecloud_test_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/cookiecloud/test-draft': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Test Cookiecloud Draft */
+    post: operations['test_cookiecloud_draft_api_v1_cookiecloud_test_draft_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1286,6 +1320,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/unpack/items/{item_id}/manual-candidate-preview': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Preview Manual Unpack Candidate */
+    post: operations['preview_manual_unpack_candidate_api_v1_unpack_items__item_id__manual_candidate_preview_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/unpack/items/{item_id}/manual-candidates': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Add Manual Unpack Candidate */
+    post: operations['add_manual_unpack_candidate_api_v1_unpack_items__item_id__manual_candidates_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/unpack/items/{item_id}/review': {
     parameters: {
       query?: never;
@@ -1380,6 +1448,57 @@ export interface paths {
     };
     /** Get Unpack Source Scan Selection Summary */
     get: operations['get_unpack_source_scan_selection_summary_api_v1_unpack_source_scans__scan_id__selection_summary_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/unpack/templates': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Unpack Templates */
+    get: operations['list_unpack_templates_api_v1_unpack_templates_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/unpack/templates/import': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Create Unpack Template Import */
+    post: operations['create_unpack_template_import_api_v1_unpack_templates_import_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/unpack/templates/import-jobs/{job_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Unpack Template Import Job */
+    get: operations['get_unpack_template_import_job_api_v1_unpack_templates_import_jobs__job_id__get'];
     put?: never;
     post?: never;
     delete?: never;
@@ -1718,6 +1837,46 @@ export interface components {
      * @enum {string}
      */
     CookieCloudCryptoType: 'legacy' | 'aes-128-cbc-fixed';
+    /** CookieCloudDraftProbeRequest */
+    CookieCloudDraftProbeRequest: {
+      /** Password */
+      password?: string | null;
+      /**
+       * Request Timeout Seconds
+       * @default 15
+       */
+      request_timeout_seconds: number;
+      /**
+       * Server Url
+       * @default
+       */
+      server_url: string;
+      /**
+       * Uuid
+       * @default
+       */
+      uuid: string;
+    };
+    /** CookieCloudDraftProbeResponse */
+    CookieCloudDraftProbeResponse: {
+      /** Cookie Count */
+      cookie_count: number;
+      crypto_type: components['schemas']['CookieCloudCryptoType'];
+      /** Domain Count */
+      domain_count: number;
+      /**
+       * Status
+       * @constant
+       */
+      status: 'ok';
+      /**
+       * Tested At
+       * Format: date-time
+       */
+      tested_at: string;
+      /** Update Time */
+      update_time: string | null;
+    };
     /** CookieCloudProbeResponse */
     CookieCloudProbeResponse: {
       /** Cookie Count */
@@ -1739,6 +1898,13 @@ export interface components {
       update_time: string | null;
       /** Version */
       version: number;
+    };
+    /** CookieCloudProfileSyncStatusResponse */
+    CookieCloudProfileSyncStatusResponse: {
+      /** Max Concurrency */
+      max_concurrency: number;
+      /** Pending Count */
+      pending_count: number;
     };
     /** CookieCloudSettingResponse */
     CookieCloudSettingResponse: {
@@ -1840,6 +2006,8 @@ export interface components {
        */
       created_sites: number;
       crypto_type: components['schemas']['CookieCloudCryptoType'];
+      /** Discovered Sites */
+      discovered_sites: number;
       /** Eligible Sites */
       eligible_sites: number;
       /** Matched Sites */
@@ -1855,6 +2023,10 @@ export interface components {
        * @constant
        */
       status: 'ok';
+      /** Sync Failed Sites */
+      sync_failed_sites: number;
+      /** Sync Success Sites */
+      sync_success_sites: number;
       /**
        * Synced At
        * Format: date-time
@@ -1984,6 +2156,95 @@ export interface components {
       must_change_password: boolean;
       /** Username */
       username: string;
+    };
+    /** ManualCandidateAddResponse */
+    ManualCandidateAddResponse: {
+      /** Candidate Id */
+      candidate_id: string;
+      /** Candidate Key */
+      candidate_key: string;
+      /** Generation */
+      generation: number;
+      /** Item Version */
+      item_version: number;
+    };
+    /** ManualCandidateInputRequest */
+    ManualCandidateInputRequest: {
+      /** Expected Generation */
+      expected_generation: number;
+      /** Expected Item Version */
+      expected_item_version: number;
+      /** Expected Metainfo Digest */
+      expected_metainfo_digest?: string | null;
+      /** Expected Payload Sha256 */
+      expected_payload_sha256?: string | null;
+      /** Site Id */
+      site_id: string;
+      /** Source Url */
+      source_url?: string | null;
+      /** Torrent File Base64 */
+      torrent_file_base64?: string | null;
+      /** Torrent File Name */
+      torrent_file_name?: string | null;
+    };
+    /** ManualCandidatePreviewResponse */
+    ManualCandidatePreviewResponse: {
+      /** Candidate Key */
+      candidate_key: string;
+      /** Candidate Title */
+      candidate_title: string;
+      /** Douban Id */
+      douban_id: string | null;
+      /** Evidence */
+      evidence: {
+        [key: string]: unknown;
+      };
+      /** File Count */
+      file_count: number;
+      /** Files */
+      files: components['schemas']['ManualTorrentFileResponse'][];
+      /** Hard Conflicts */
+      hard_conflicts: string[];
+      /** Imdb Id */
+      imdb_id: string | null;
+      /** Metainfo Digest */
+      metainfo_digest: string;
+      /** Payload Sha256 */
+      payload_sha256: string;
+      /** Score Bps */
+      score_bps: number;
+      /** Seeders */
+      seeders: number | null;
+      /** Site Id */
+      site_id: string;
+      /** Site Name */
+      site_name: string;
+      /**
+       * Source Kind
+       * @enum {string}
+       */
+      source_kind: 'URL' | 'FILE';
+      /** Source Size Bytes */
+      source_size_bytes: number;
+      /** Source Title */
+      source_title: string;
+      /** Torrent Kind */
+      torrent_kind: string;
+      /** Torrent Name */
+      torrent_name: string;
+      /** Total Size Bytes */
+      total_size_bytes: number;
+      /** V1 Info Hash */
+      v1_info_hash: string | null;
+      /** V2 Info Hash */
+      v2_info_hash: string | null;
+    };
+    /** ManualTorrentFileResponse */
+    ManualTorrentFileResponse: {
+      /** Path */
+      path: string;
+      /** Size Bytes */
+      size_bytes: number;
     };
     /**
      * MovieDedupCrossFilesystemPolicy
@@ -2418,6 +2679,16 @@ export interface components {
       /** Request Timeout Seconds */
       request_timeout_seconds?: number | null;
       /**
+       * Risk Control Limit
+       * @default 3
+       */
+      risk_control_limit: number;
+      /**
+       * Risk Retry Interval Seconds
+       * @default 60
+       */
+      risk_retry_interval_seconds: number;
+      /**
        * Search Interval Seconds
        * @default 0
        */
@@ -2579,6 +2850,10 @@ export interface components {
       proxy?: components['schemas']['SiteProxyPatchInput'] | null;
       /** Request Timeout Seconds */
       request_timeout_seconds?: number | null;
+      /** Risk Control Limit */
+      risk_control_limit?: number | null;
+      /** Risk Retry Interval Seconds */
+      risk_retry_interval_seconds?: number | null;
       /** Search Interval Seconds */
       search_interval_seconds?: number | null;
       type?: components['schemas']['SiteKind'] | null;
@@ -2797,10 +3072,16 @@ export interface components {
       downloaded_bytes: number | null;
       /** Fetched At */
       fetched_at: string | null;
+      /** Join Time */
+      join_time: string | null;
+      /** Last Access At */
+      last_access_at: string | null;
       /** Ratio */
       ratio: number | null;
       /** Seeding Count */
       seeding_count: number | null;
+      /** Torrents Posted */
+      torrents_posted: number | null;
       /** Uploaded Bytes */
       uploaded_bytes: number | null;
       /** User Level */
@@ -2849,6 +3130,12 @@ export interface components {
       proxy_username: string | null;
       /** Request Timeout Seconds */
       request_timeout_seconds: number;
+      /** Risk Control Limit */
+      risk_control_limit: number;
+      /** Risk Disabled At */
+      risk_disabled_at: string | null;
+      /** Risk Retry Interval Seconds */
+      risk_retry_interval_seconds: number;
       /** Search Interval Seconds */
       search_interval_seconds: number;
       support_status: components['schemas']['SiteSupportStatus'];
@@ -2983,6 +3270,11 @@ export interface components {
     /** UnpackDefinitionCreateRequest */
     UnpackDefinitionCreateRequest: {
       /**
+       * Auto Match Enabled
+       * @default true
+       */
+      auto_match_enabled: boolean;
+      /**
        * Auto Match Threshold Bps
        * @default 10000
        */
@@ -3020,6 +3312,11 @@ export interface components {
       source_kind: components['schemas']['UnpackSourceKind'];
       /** Source Scan Id */
       source_scan_id?: string | null;
+      task_kind?: components['schemas']['UnpackTaskKind'] | null;
+      /** Template Id */
+      template_id?: string | null;
+      /** Template Version */
+      template_version?: number | null;
       /** Timezone */
       timezone?: string | null;
       trigger_kind: components['schemas']['UnpackTriggerKind'];
@@ -3031,6 +3328,8 @@ export interface components {
     };
     /** UnpackDefinitionResponse */
     UnpackDefinitionResponse: {
+      /** Auto Match Enabled */
+      auto_match_enabled: boolean;
       /** Auto Match Threshold Bps */
       auto_match_threshold_bps: number;
       /**
@@ -3071,6 +3370,11 @@ export interface components {
       };
       source_kind: components['schemas']['UnpackSourceKind'];
       status: components['schemas']['UnpackDefinitionStatus'];
+      task_kind: components['schemas']['UnpackTaskKind'];
+      /** Template Id */
+      template_id: string | null;
+      /** Template Version */
+      template_version: number | null;
       /** Timezone */
       timezone: string | null;
       trigger_kind: components['schemas']['UnpackTriggerKind'];
@@ -3115,6 +3419,8 @@ export interface components {
       execution_id: string;
       /** Has External Operations */
       has_external_operations: boolean;
+      /** Highest Candidate Score Bps */
+      highest_candidate_score_bps: number | null;
       /** Id */
       id: string;
       /** Last Error Code */
@@ -3432,20 +3738,24 @@ export interface components {
        */
       updated_at: string;
     };
-    /** UnpackRetryFailedMatchesRequest */
-    UnpackRetryFailedMatchesRequest: {
+    /** UnpackRetryEligibleItemsRequest */
+    UnpackRetryEligibleItemsRequest: {
       /**
        * Action
        * @constant
        */
-      action: 'retry_failed_matches';
+      action: 'retry_eligible_items';
+      /** Item Statuses */
+      item_statuses: components['schemas']['UnpackItemStatus'][];
     };
-    /** UnpackRetryFailedMatchesResponse */
-    UnpackRetryFailedMatchesResponse: {
+    /** UnpackRetryEligibleItemsResponse */
+    UnpackRetryEligibleItemsResponse: {
       /** Execution Id */
       execution_id: string;
       /** Retried Count */
       retried_count: number;
+      /** Skipped Unsafe Count */
+      skipped_unsafe_count: number;
     };
     /**
      * UnpackReviewDecision
@@ -3553,6 +3863,125 @@ export interface components {
       discovered_count: number;
       /** Selected Count */
       selected_count: number;
+    };
+    /**
+     * UnpackTaskKind
+     * @enum {string}
+     */
+    UnpackTaskKind: 'MANUAL' | 'MONITOR' | 'TEMPLATE';
+    /** UnpackTemplateImportJobResponse */
+    UnpackTemplateImportJobResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Errors */
+      errors: {
+        [key: string]: unknown;
+      }[];
+      /** Failure Count */
+      failure_count: number;
+      /** Id */
+      id: string;
+      /** Processed Count */
+      processed_count: number;
+      /** Status */
+      status: string;
+      /** Success Count */
+      success_count: number;
+      /** Template Id */
+      template_id: string;
+      /** Template Version */
+      template_version: number;
+      /** Total Count */
+      total_count: number;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
+    /** UnpackTemplateImportRequest */
+    UnpackTemplateImportRequest: {
+      /** Description */
+      description?: string | null;
+      /** Name */
+      name?: string | null;
+      /** Seed Mappings */
+      seed_mappings?: components['schemas']['UnpackTemplateSeedMappingRequest'][];
+      /** Site Id */
+      site_id: string;
+      /** Source Label */
+      source_label?: string | null;
+      /** Template Id */
+      template_id?: string | null;
+      /** Torrent Ids */
+      torrent_ids: string[];
+    };
+    /** UnpackTemplateListResponse */
+    UnpackTemplateListResponse: {
+      /** Items */
+      items: components['schemas']['UnpackTemplateResponse'][];
+    };
+    /** UnpackTemplateResponse */
+    UnpackTemplateResponse: {
+      /** Content Digest */
+      content_digest: string;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /** Current Version */
+      current_version: number;
+      /** Description */
+      description: string | null;
+      /** Expected Seed Count */
+      expected_seed_count: number;
+      /** Id */
+      id: string;
+      /** Mapped Media Count */
+      mapped_media_count: number;
+      /** Name */
+      name: string;
+      /** Seed Count */
+      seed_count: number;
+      /** Site Ids */
+      site_ids: string[];
+      /** Site Keys */
+      site_keys: string[];
+      /** Source Provenance */
+      source_provenance: {
+        [key: string]: unknown;
+      };
+      /** Status */
+      status: string;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
+    /** UnpackTemplateSeedMappingRequest */
+    UnpackTemplateSeedMappingRequest: {
+      /** Collection Root Name */
+      collection_root_name: string;
+      /**
+       * Confidence Bps
+       * @default 0
+       */
+      confidence_bps: number;
+      /** Media Title */
+      media_title: string;
+      /** Relative Directory */
+      relative_directory: string;
+      /** Relative File Name */
+      relative_file_name?: string | null;
+      /** Source Execution Id */
+      source_execution_id?: string | null;
+      /** Torrent Id */
+      torrent_id: string;
     };
     /** UnpackTreeEntryResponse */
     UnpackTreeEntryResponse: {
@@ -4126,6 +4555,37 @@ export interface operations {
       };
     };
   };
+  cookiecloud_profile_sync_status_api_v1_cookiecloud_profile_sync_status_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CookieCloudProfileSyncStatusResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   sync_cookiecloud_api_v1_cookiecloud_sync_post: {
     parameters: {
       query?: never;
@@ -4181,6 +4641,44 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['CookieCloudProbeResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  test_cookiecloud_draft_api_v1_cookiecloud_test_draft_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CookieCloudDraftProbeRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CookieCloudDraftProbeResponse'];
         };
       };
       /** @description Validation Error */
@@ -5805,7 +6303,9 @@ export interface operations {
   };
   sync_site_user_profile_api_v1_sites__site_id__sync_post: {
     parameters: {
-      query?: never;
+      query?: {
+        force_retry?: boolean;
+      };
       header?: {
         'X-CSRF-Token'?: string | null;
       };
@@ -6597,7 +7097,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['UnpackRetryFailedMatchesRequest'];
+        'application/json': components['schemas']['UnpackRetryEligibleItemsRequest'];
       };
     };
     responses: {
@@ -6607,7 +7107,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          'application/json': components['schemas']['UnpackRetryFailedMatchesResponse'];
+          'application/json': components['schemas']['UnpackRetryEligibleItemsResponse'];
         };
       };
       /** @description Validation Error */
@@ -6834,6 +7334,86 @@ export interface operations {
       };
     };
   };
+  preview_manual_unpack_candidate_api_v1_unpack_items__item_id__manual_candidate_preview_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        item_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ManualCandidateInputRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ManualCandidatePreviewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  add_manual_unpack_candidate_api_v1_unpack_items__item_id__manual_candidates_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        item_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ManualCandidateInputRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ManualCandidateAddResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   review_unpack_item_api_v1_unpack_items__item_id__review_put: {
     parameters: {
       query?: never;
@@ -7047,6 +7627,108 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['UnpackSourceScanSelectionSummaryResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_unpack_templates_api_v1_unpack_templates_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackTemplateListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  create_unpack_template_import_api_v1_unpack_templates_import_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UnpackTemplateImportRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackTemplateImportJobResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_unpack_template_import_job_api_v1_unpack_templates_import_jobs__job_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        job_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackTemplateImportJobResponse'];
         };
       };
       /** @description Validation Error */

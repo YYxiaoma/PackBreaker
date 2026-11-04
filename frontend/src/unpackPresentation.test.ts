@@ -4,17 +4,57 @@ import {
   unpackDefinitionStatusLabel,
   unpackExecutionStatusLabel,
   unpackItemExternalRiskLabel,
+  unpackItemRetryAvailability,
+  unpackErrorLabel,
+  unpackExecutionStageLabel,
+  unpackOperationTypeLabel,
+  unpackOperationStatusLabel,
+  unpackRecordedStateLabel,
   unpackReconciliationGuidance,
   unpackItemStatusLabel,
   unpackItemStatusSummary,
   unpackPlanStatusLabel,
   unpackPlanBlockReasonLabel,
+  unpackProgressCount,
   unpackProgressPercent,
   unpackSourceKindLabel,
   unpackTriggerLabel,
 } from './unpackPresentation';
 
 describe('unpack presentation', () => {
+  it('uses plain Chinese descriptions for previously obscure execution errors and history', () => {
+    expect(unpackErrorLabel('UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE', 'skip checking')).toContain(
+      '下载器',
+    );
+    expect(unpackErrorLabel('UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE', 'skip checking')).not.toContain(
+      'skip checking',
+    );
+    expect(unpackErrorLabel('SITE_INVALID_RESPONSE', '最终辅种获取 torrent 失败')).toContain(
+      '种子信息',
+    );
+    expect(unpackExecutionStageLabel('FILES_MATERIALIZED')).toContain('文件');
+    expect(unpackOperationTypeLabel('UNPACK_EXEC_MATERIALIZE_HARDLINK')).toContain('硬链接');
+    expect(unpackOperationStatusLabel('APPLIED')).toBe('已记录成功');
+    expect(unpackRecordedStateLabel(null, 'regular')).toBe('文件');
+  });
+
+  it('offers retry for execution errors but requires reconciliation for unknown side effects', () => {
+    const item = {
+      status: 'EXECUTION_ERROR' as const,
+      has_external_operations: true,
+      last_error_code: 'SITE_INVALID_RESPONSE',
+    };
+    expect(unpackItemRetryAvailability(item)).toBe('resume');
+    expect(unpackItemRetryAvailability({ ...item, has_external_operations: false })).toBe('match');
+    expect(
+      unpackItemRetryAvailability({
+        ...item,
+        last_error_code: 'UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT',
+      }),
+    ).toBe('reconcile');
+    expect(unpackItemRetryAvailability({ ...item, status: 'COMPLETED' })).toBe('none');
+  });
+
   it('translates every user-visible definition status', () => {
     expect(unpackDefinitionStatusLabel('PENDING_EXECUTION')).toBe('待执行');
     expect(unpackDefinitionStatusLabel('ENABLED')).toBe('已启用');
@@ -30,6 +70,33 @@ describe('unpack presentation', () => {
     expect(unpackItemStatusLabel('EXECUTION_ERROR')).toBe('执行错误');
   });
 
+  it('counts automatic matches as progress and caps progress at the execution total', () => {
+    const progressed = unpackProgressCount(519, {
+      matchedAutoCount: 305,
+      noMatchCount: 151,
+      reviewCount: 58,
+      contentVerifiedCount: 0,
+      contentMismatchCount: 0,
+      timeoutCount: 0,
+      errorCount: 5,
+      completedCount: 0,
+    });
+    expect(progressed).toBe(519);
+    expect(unpackProgressPercent(519, progressed)).toBe(100);
+    expect(
+      unpackProgressCount(4, {
+        matchedAutoCount: 2,
+        noMatchCount: 1,
+        reviewCount: 1,
+        contentVerifiedCount: 0,
+        contentMismatchCount: 0,
+        timeoutCount: 0,
+        errorCount: 1,
+        completedCount: 0,
+      }),
+    ).toBe(4);
+  });
+
   it('does not misrepresent blocked frozen plans as ready or live-verified', () => {
     expect(unpackItemStatusLabel('PLAN_PENDING')).toBe('执行计划待处理');
     expect(
@@ -41,8 +108,8 @@ describe('unpack presentation', () => {
     expect(unpackItemStatusSummary({ status: 'PLAN_PENDING', last_error_code: null })).toBe(
       '执行计划待处理',
     );
-    expect(unpackPlanStatusLabel('BLOCKED')).toContain('阻断');
-    expect(unpackPlanStatusLabel('READY')).toContain('未实时复核');
+    expect(unpackPlanStatusLabel('BLOCKED')).toContain('问题');
+    expect(unpackPlanStatusLabel('READY')).toContain('未复查');
     expect(unpackPlanStatusLabel('INVALID')).toContain('无效');
     expect(unpackPlanBlockReasonLabel('TARGET_PARENT_UNSAFE')).toContain('目标目录');
     expect(unpackPlanBlockReasonLabel('untrusted-raw-text')).toBe('其他安全阻断');
@@ -93,8 +160,9 @@ describe('unpack presentation', () => {
       },
       { status: 'MATCHED', error_code: null },
     );
-    expect(steps.join(' ')).toContain('不代表对账完成');
-    expect(steps.join(' ')).toContain('截断');
+    expect(steps.join(' ')).toContain('还不能保证磁盘文件完整');
+    expect(steps.join(' ')).toContain('不能直接解除风险限制');
+    expect(steps.join(' ')).toContain('只展示了一部分');
     expect(steps.join(' ')).toContain('人工核对');
   });
 
@@ -134,5 +202,9 @@ describe('unpack presentation', () => {
     expect(unpackSourceKindLabel('DOWNLOADER')).toBe('下载器');
     expect(unpackProgressPercent(10, 3)).toBe(30);
     expect(unpackProgressPercent(0, 0)).toBe(0);
+  });
+  it('explains automatic site risk cooldown in plain Chinese', () => {
+    expect(unpackErrorLabel('SITE_RISK_CONTROL_LIMIT_REACHED', null)).toContain('自动停用');
+    expect(unpackErrorLabel('SITE_RISK_CONTROL_COOLDOWN', null)).toContain('延后重试');
   });
 });

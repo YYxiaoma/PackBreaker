@@ -5,6 +5,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx2
 from cryptography.hazmat.primitives import padding
@@ -82,6 +83,15 @@ def test_cookiecloud_cron_preview_validates_and_returns_next_runs(tmp_path: Path
         )
         assert invalid.status_code == 422
         assert invalid.json()["code"] == "COOKIECLOUD_CRON_INVALID"
+
+
+def test_cookiecloud_profile_sync_status_reports_bounded_concurrency(tmp_path: Path) -> None:
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        _login(client)
+        response = client.get("/api/v1/cookiecloud/profile-sync-status")
+        assert response.status_code == 200
+        assert response.json() == {"pending_count": 0, "max_concurrency": 4}
 
 
 def test_cookiecloud_config_encrypts_password_and_never_echoes_it(tmp_path: Path) -> None:
@@ -191,6 +201,92 @@ def test_cookiecloud_saved_probe_uses_get_uuid_and_local_decryption(tmp_path: Pa
         refreshed = client.get("/api/v1/cookiecloud/config")
         assert refreshed.json()["connection_status"] == "OK"
         assert refreshed.json()["last_test_at"] is not None
+
+
+def test_cookiecloud_draft_probe_tests_unsaved_values_without_persisting_them(
+    tmp_path: Path,
+) -> None:
+    draft_uuid = "unsaved-draft-uuid"
+    draft_password = "unsaved-draft-password"
+    encrypted = _fixed_encrypt(
+        draft_uuid,
+        draft_password,
+        {
+            "cookie_data": {
+                ".draft.example.test": [
+                    {
+                        "name": "session",
+                        "value": "draft-cookie-value",
+                        "domain": ".draft.example.test",
+                        "path": "/",
+                    }
+                ]
+            },
+            "local_storage_data": {},
+        },
+    )
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        assert str(request.url) == "https://draft-cookie.example.test/get/unsaved-draft-uuid"
+        assert draft_password not in str(request.url)
+        return httpx2.Response(
+            200,
+            json={"encrypted": encrypted, "crypto_type": "aes-128-cbc-fixed"},
+        )
+
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        before = client.get("/api/v1/cookiecloud/config").json()
+        app.state.cookiecloud_service = CookieCloudService(
+            app.state.runtime.session_factory,
+            app.state.secret_store,
+            client=CookieCloudClient(transport=httpx2.MockTransport(handler)),
+        )
+
+        tested = client.post(
+            "/api/v1/cookiecloud/test-draft",
+            headers=headers,
+            json={
+                "server_url": "https://draft-cookie.example.test",
+                "uuid": draft_uuid,
+                "password": draft_password,
+                "request_timeout_seconds": 9,
+            },
+        )
+        assert tested.status_code == 200
+        result = tested.json()
+        assert result["status"] == "ok"
+        assert result["domain_count"] == 1
+        assert result["cookie_count"] == 1
+        assert "version" not in result
+        assert draft_password not in tested.text
+        assert "draft-cookie-value" not in tested.text
+        assert encrypted not in tested.text
+        assert len(requests) == 1
+
+        after = client.get("/api/v1/cookiecloud/config").json()
+        assert after["server_url"] == before["server_url"]
+        assert after["uuid"] == before["uuid"]
+        assert after["password_configured"] is before["password_configured"]
+        assert after["version"] == before["version"]
+        assert after["connection_status"] == before["connection_status"]
+        assert after["last_test_at"] == before["last_test_at"]
+
+        missing_password = client.post(
+            "/api/v1/cookiecloud/test-draft",
+            headers=headers,
+            json={
+                "server_url": "https://draft-cookie.example.test",
+                "uuid": draft_uuid,
+                "request_timeout_seconds": 9,
+            },
+        )
+        assert missing_password.status_code == 422
+        assert missing_password.json()["code"] == "COOKIECLOUD_CONFIG_INVALID"
+        assert draft_password not in missing_password.text
 
 
 def test_cookiecloud_wrong_password_error_does_not_leak_secrets(tmp_path: Path) -> None:
@@ -354,6 +450,9 @@ def test_cookiecloud_sync_updates_cookie_sites_and_preserves_rousi_api_key(tmp_p
         assert report["updated_sites"] == 2
         assert report["unchanged_sites"] == 0
         assert report["unmatched_domains"] == 1
+        assert report["discovered_sites"] == 2
+        assert report["sync_success_sites"] == 2
+        assert report["sync_failed_sites"] == 0
         assert "cookiecloud-keepfrds" not in synced.text
         assert "cookiecloud-rousi" not in synced.text
 
@@ -455,6 +554,10 @@ def test_cookiecloud_sync_imports_missing_supported_cookie_sites_without_api_key
             client=CookieCloudClient(transport=transport),
             site_service=app.state.site_service,
         )
+        app.state.site_service.test_connection = AsyncMock(
+            return_value={"status": "ok", "capabilities": {}}
+        )
+        app.state.site_service.sync_user_profile = AsyncMock(return_value=None)
         synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
         assert synced.status_code == 200
         report = synced.json()
@@ -465,6 +568,11 @@ def test_cookiecloud_sync_imports_missing_supported_cookie_sites_without_api_key
         assert report["updated_sites"] == expected_cookies
         assert sorted(report["skipped_api_key_sites"]) == ["M-TEAM", "Rousi Pro"]
         assert report["matched_sites"] == expected_cookies
+        assert report["discovered_sites"] == len(profiles)
+        assert report["sync_success_sites"] == expected_cookies
+        assert report["sync_failed_sites"] == len(profiles) - expected_cookies
+        assert app.state.site_service.test_connection.await_count == expected_cookies
+        assert app.state.site_service.sync_user_profile.await_count == expected_cookies
         imported = client.get("/api/v1/sites").json()["items"]
         assert len(imported) == expected_cookies + 1
         assert all(not row["enabled"] for row in imported)
@@ -477,6 +585,7 @@ def test_cookiecloud_sync_imports_missing_supported_cookie_sites_without_api_key
         assert repeated.json()["created_sites"] == 0
         assert repeated.json()["updated_sites"] == 0
         assert repeated.json()["unchanged_sites"] == expected_cookies
+        assert app.state.site_service.sync_user_profile.await_count == expected_cookies
 
 
 def test_cookiecloud_sync_seven_supported_sites_are_encrypted_and_manual_enable(
@@ -558,13 +667,22 @@ def test_cookiecloud_sync_seven_supported_sites_are_encrypted_and_manual_enable(
             site_service=app.state.site_service,
         )
 
+        app.state.site_service.test_connection = AsyncMock(
+            return_value={"status": "ok", "capabilities": {}}
+        )
+        app.state.site_service.sync_user_profile = AsyncMock(return_value=None)
         synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
         assert synced.status_code == 200
         summary = synced.json()
         assert summary["created_sites"] == len(kinds)
         assert summary["matched_sites"] == len(kinds)
+        assert app.state.site_service.test_connection.await_count == len(kinds)
+        assert app.state.site_service.sync_user_profile.await_count == len(kinds)
         assert summary["updated_sites"] == len(kinds)
         assert summary["unmatched_domains"] == 1
+        assert summary["discovered_sites"] == len(kinds)
+        assert summary["sync_success_sites"] == len(kinds)
+        assert summary["sync_failed_sites"] == 0
         assert len(requests) == 1
         for kind in kinds:
             assert "PRIVATE_SYNTHETIC_" + kind.value not in synced.text
@@ -663,6 +781,9 @@ def test_cookiecloud_mteam_sibling_domain_imports_disabled_placeholder_only(tmp_
         assert synced.json()["created_sites"] == 1
         assert synced.json()["updated_sites"] == 0
         assert synced.json()["matched_sites"] == 0
+        assert synced.json()["discovered_sites"] == 1
+        assert synced.json()["sync_success_sites"] == 0
+        assert synced.json()["sync_failed_sites"] == 1
         assert synced.json()["skipped_api_key_sites"] == ["M-TEAM"]
         assert "SECRET_BROWSER_COOKIE_DO_NOT_PROMOTE" not in synced.text
         sites = client.get("/api/v1/sites").json()["items"]

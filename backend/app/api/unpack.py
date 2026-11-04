@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import binascii
+from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any, Literal, cast
 
@@ -10,10 +13,13 @@ from backend.app.api.dependencies import (
     AccessPrincipal,
     require_admin_csrf_principal,
     require_admin_principal,
+    site_service,
     unpack_definition_service,
     unpack_execution_query_service,
     unpack_item_action_service,
+    unpack_manual_candidate_service,
     unpack_source_scan_service,
+    unpack_template_service,
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.unpack_definitions import (
@@ -27,11 +33,15 @@ from backend.app.application.unpack_executions import (
     UnpackMatchCandidateList,
     UnpackMatchCandidateView,
 )
+from backend.app.application.unpack_manual_torrents import MAX_MANUAL_TORRENT_BYTES
 from backend.app.application.unpack_seeding import UnpackSeedingService
 from backend.app.application.unpack_source_scans import (
     UnpackSourceScanItemView,
     UnpackSourceScanView,
     UnpackTreeEntryView,
+)
+from backend.app.application.unpack_templates import (
+    UnpackTemplateImportJobView,
 )
 from backend.app.domain.unpack import (
     UnpackDefinitionStatus,
@@ -40,6 +50,7 @@ from backend.app.domain.unpack import (
     UnpackItemStatus,
     UnpackReviewDecision,
     UnpackSourceKind,
+    UnpackTaskKind,
     UnpackTriggerKind,
 )
 
@@ -107,6 +118,9 @@ class UnpackSourceScanSelectionSummaryResponse(BaseModel):
 class UnpackDefinitionCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     trigger_kind: UnpackTriggerKind
+    task_kind: UnpackTaskKind | None = None
+    template_id: str | None = Field(default=None, max_length=36)
+    template_version: int | None = Field(default=None, ge=1)
     source_kind: UnpackSourceKind
     execution_scope_kind: UnpackExecutionScopeKind = UnpackExecutionScopeKind.ALL_MATCHING_MEDIA
     source_config: dict[str, Any]
@@ -116,9 +130,67 @@ class UnpackDefinitionCreateRequest(BaseModel):
     retry_enabled: bool = True
     max_retries: int = Field(default=3, ge=0, le=10)
     auto_match_threshold_bps: int = Field(default=10_000, ge=0, le=10_000)
+    auto_match_enabled: bool = True
     cron_expression: str | None = Field(default=None, max_length=160)
     timezone: str | None = Field(default=None, max_length=64)
     source_scan_id: str | None = Field(default=None, max_length=36)
+
+
+class UnpackTemplateResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None
+    current_version: int
+    status: str
+    expected_seed_count: int
+    seed_count: int
+    mapped_media_count: int
+    site_keys: list[str]
+    site_ids: list[str]
+    content_digest: str
+    source_provenance: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class UnpackTemplateListResponse(BaseModel):
+    items: list[UnpackTemplateResponse]
+
+
+class UnpackTemplateSeedMappingRequest(BaseModel):
+    torrent_id: str = Field(min_length=1, max_length=255)
+    collection_root_name: str = Field(min_length=1, max_length=255)
+    relative_directory: str = Field(min_length=1, max_length=1024)
+    relative_file_name: str | None = Field(default=None, max_length=255)
+    media_title: str = Field(min_length=1, max_length=512)
+    confidence_bps: int = Field(default=0, ge=0, le=10_000)
+    source_execution_id: str | None = Field(default=None, max_length=36)
+
+
+class UnpackTemplateImportRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+    template_id: str | None = Field(default=None, max_length=36)
+    site_id: str = Field(min_length=1, max_length=36)
+    torrent_ids: list[str] = Field(min_length=1, max_length=1000)
+    source_label: str | None = Field(default=None, max_length=200)
+    seed_mappings: list[UnpackTemplateSeedMappingRequest] = Field(
+        default_factory=list, max_length=5000
+    )
+
+
+class UnpackTemplateImportJobResponse(BaseModel):
+    id: str
+    template_id: str
+    template_version: int
+    status: str
+    total_count: int
+    processed_count: int
+    success_count: int
+    failure_count: int
+    errors: list[dict[str, Any]]
+    created_at: datetime
+    updated_at: datetime
 
 
 class UnpackDefinitionResponse(BaseModel):
@@ -127,6 +199,9 @@ class UnpackDefinitionResponse(BaseModel):
     id: str
     name: str
     trigger_kind: UnpackTriggerKind
+    task_kind: UnpackTaskKind
+    template_id: str | None
+    template_version: int | None
     status: UnpackDefinitionStatus
     source_kind: UnpackSourceKind
     execution_scope_kind: UnpackExecutionScopeKind
@@ -137,6 +212,7 @@ class UnpackDefinitionResponse(BaseModel):
     retry_enabled: bool
     max_retries: int
     auto_match_threshold_bps: int
+    auto_match_enabled: bool
     cron_expression: str | None
     timezone: str | None
     next_run_at: datetime | None
@@ -160,13 +236,15 @@ class UnpackDefinitionActionResponse(BaseModel):
     execution_id: str | None
 
 
-class UnpackRetryFailedMatchesRequest(BaseModel):
-    action: Literal["retry_failed_matches"]
+class UnpackRetryEligibleItemsRequest(BaseModel):
+    action: Literal["retry_eligible_items"]
+    item_statuses: list[UnpackItemStatus] = Field(min_length=1, max_length=8)
 
 
-class UnpackRetryFailedMatchesResponse(BaseModel):
+class UnpackRetryEligibleItemsResponse(BaseModel):
     execution_id: str
     retried_count: int
+    skipped_unsafe_count: int
 
 
 class UnpackExecutionResponse(BaseModel):
@@ -206,6 +284,7 @@ class UnpackExecutionItemResponse(BaseModel):
     selected_candidate_id: str | None
     match_origin: str | None
     candidate_generation: int
+    highest_candidate_score_bps: int | None
     retry_count: int
     content_verification_level: str | None
     torrent_metainfo_digest: str | None
@@ -302,6 +381,57 @@ class UnpackMatchCandidateListResponse(BaseModel):
     candidates: list[UnpackMatchCandidateResponse]
 
 
+class ManualTorrentFileResponse(BaseModel):
+    path: str
+    size_bytes: int
+
+
+class ManualCandidatePreviewResponse(BaseModel):
+    site_id: str
+    site_name: str
+    source_kind: Literal["URL", "FILE"]
+    source_title: str
+    source_size_bytes: int
+    candidate_key: str
+    candidate_title: str
+    torrent_name: str
+    torrent_kind: str
+    v1_info_hash: str | None
+    v2_info_hash: str | None
+    metainfo_digest: str
+    payload_sha256: str
+    total_size_bytes: int
+    file_count: int
+    files: list[ManualTorrentFileResponse]
+    score_bps: int
+    evidence: dict[str, Any]
+    hard_conflicts: list[str]
+    seeders: int | None
+    imdb_id: str | None
+    douban_id: str | None
+
+
+class ManualCandidateAddResponse(BaseModel):
+    candidate_id: str
+    candidate_key: str
+    generation: int
+    item_version: int
+
+
+class ManualCandidateInputRequest(BaseModel):
+    site_id: str = Field(min_length=1, max_length=36)
+    expected_generation: int = Field(ge=0)
+    expected_item_version: int = Field(ge=1)
+    source_url: str | None = Field(default=None, max_length=4096)
+    torrent_file_base64: str | None = Field(
+        default=None,
+        max_length=((MAX_MANUAL_TORRENT_BYTES + 2) // 3) * 4,
+    )
+    torrent_file_name: str | None = Field(default=None, max_length=255)
+    expected_metainfo_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    expected_payload_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+
+
 class UnpackReviewRequest(BaseModel):
     decision: UnpackReviewDecision
     candidate_id: str | None = Field(default=None, max_length=36)
@@ -368,6 +498,9 @@ def _definition_response(view: UnpackDefinitionView) -> UnpackDefinitionResponse
         id=view.id,
         name=view.name,
         trigger_kind=view.trigger_kind,
+        task_kind=view.task_kind,
+        template_id=view.template_id,
+        template_version=view.template_version,
         status=view.status,
         source_kind=view.source_kind,
         execution_scope_kind=view.execution_scope_kind,
@@ -378,6 +511,7 @@ def _definition_response(view: UnpackDefinitionView) -> UnpackDefinitionResponse
         retry_enabled=view.retry_enabled,
         max_retries=view.max_retries,
         auto_match_threshold_bps=view.auto_match_threshold_bps,
+        auto_match_enabled=view.auto_match_enabled,
         cron_expression=view.cron_expression,
         timezone=view.timezone,
         next_run_at=view.next_run_at,
@@ -425,6 +559,7 @@ def _execution_item_response(view: UnpackExecutionItemView) -> UnpackExecutionIt
         selected_candidate_id=view.selected_candidate_id,
         match_origin=view.match_origin,
         candidate_generation=view.candidate_generation,
+        highest_candidate_score_bps=view.highest_candidate_score_bps,
         retry_count=view.retry_count,
         content_verification_level=view.content_verification_level,
         torrent_metainfo_digest=view.torrent_metainfo_digest,
@@ -522,6 +657,88 @@ def _required_item_version(value: str | None) -> int:
             detail="If-Match 必须是正整数版本号",
         )
     return version
+
+
+@router.get("/unpack/templates", response_model=UnpackTemplateListResponse)
+def list_unpack_templates(
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(READ_ACCESS)],
+) -> UnpackTemplateListResponse:
+    service = unpack_template_service(request)
+    return UnpackTemplateListResponse(
+        items=[
+            UnpackTemplateResponse(
+                id=item.id,
+                name=item.name,
+                description=item.description,
+                current_version=item.current_version,
+                status=item.status,
+                expected_seed_count=item.expected_seed_count,
+                seed_count=item.seed_count,
+                mapped_media_count=item.mapped_media_count,
+                site_keys=list(item.site_keys),
+                site_ids=list(item.site_ids),
+                content_digest=item.content_digest,
+                source_provenance=item.source_provenance,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+            for item in service.list_templates(site_service(request))
+        ]
+    )
+
+
+@router.post(
+    "/unpack/templates/import",
+    response_model=UnpackTemplateImportJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_unpack_template_import(
+    payload: UnpackTemplateImportRequest,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+) -> UnpackTemplateImportJobResponse:
+    job = unpack_template_service(request).create_import_job(
+        site_service=site_service(request),
+        site_config_id=payload.site_id,
+        torrent_ids=tuple(payload.torrent_ids),
+        name=payload.name,
+        description=payload.description,
+        template_id=payload.template_id,
+        source_label=payload.source_label,
+        seed_mappings=tuple(item.model_dump() for item in payload.seed_mappings),
+    )
+    return _template_import_job_response(job)
+
+
+@router.get(
+    "/unpack/templates/import-jobs/{job_id}",
+    response_model=UnpackTemplateImportJobResponse,
+)
+def get_unpack_template_import_job(
+    job_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(READ_ACCESS)],
+) -> UnpackTemplateImportJobResponse:
+    return _template_import_job_response(unpack_template_service(request).get_import_job(job_id))
+
+
+def _template_import_job_response(
+    view: UnpackTemplateImportJobView,
+) -> UnpackTemplateImportJobResponse:
+    return UnpackTemplateImportJobResponse(
+        id=view.id,
+        template_id=view.template_id,
+        template_version=view.template_version,
+        status=view.status,
+        total_count=view.total_count,
+        processed_count=view.processed_count,
+        success_count=view.success_count,
+        failure_count=view.failure_count,
+        errors=list(view.errors),
+        created_at=view.created_at,
+        updated_at=view.updated_at,
+    )
 
 
 @router.get("/files/tree/roots", response_model=UnpackTreeRootsResponse)
@@ -659,22 +876,44 @@ async def create_unpack_definition(
     request: Request,
     _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
 ) -> UnpackDefinitionResponse:
+    source_config = dict(payload.source_config)
+    frozen_downloader_sources: tuple[dict[str, Any], ...] = ()
+    if (
+        payload.task_kind is UnpackTaskKind.TEMPLATE
+        and payload.source_kind is UnpackSourceKind.DOWNLOADER
+    ):
+        source_config.pop("_frozen_downloader_sources", None)
+        frozen_downloader_sources = tuple(
+            await request.app.state.unpack_monitor_service.freeze_downloader_sources(source_config)
+        )
+        if not frozen_downloader_sources:
+            raise ApplicationError(
+                code="UNPACK_TEMPLATE_SOURCE_NOT_FOUND",
+                status=422,
+                title="模板拆包来源无效",
+                detail="所选下载器中没有找到已完成且符合条件的种子，请重新选择来源种子",
+            )
     view = unpack_definition_service(request).create(
         UnpackDefinitionCreate(
             name=payload.name,
             trigger_kind=payload.trigger_kind,
+            task_kind=payload.task_kind,
+            template_id=payload.template_id,
+            template_version=payload.template_version,
             source_kind=payload.source_kind,
             execution_scope_kind=payload.execution_scope_kind,
-            source_config=payload.source_config,
+            source_config=source_config,
             file_filter=payload.file_filter,
             site_ids=tuple(payload.site_ids),
             output_config=payload.output_config,
             retry_enabled=payload.retry_enabled,
             max_retries=payload.max_retries,
             auto_match_threshold_bps=payload.auto_match_threshold_bps,
+            auto_match_enabled=payload.auto_match_enabled,
             cron_expression=payload.cron_expression,
             timezone=payload.timezone,
             source_scan_id=payload.source_scan_id,
+            frozen_downloader_sources=frozen_downloader_sources,
         )
     )
     return _definition_response(view)
@@ -713,23 +952,45 @@ async def update_unpack_definition(
     _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
     if_match: Annotated[str | None, Header(alias="If-Match")] = None,
 ) -> UnpackDefinitionResponse:
+    source_config = dict(payload.source_config)
+    frozen_downloader_sources: tuple[dict[str, Any], ...] = ()
+    if (
+        payload.task_kind is UnpackTaskKind.TEMPLATE
+        and payload.source_kind is UnpackSourceKind.DOWNLOADER
+    ):
+        source_config.pop("_frozen_downloader_sources", None)
+        frozen_downloader_sources = tuple(
+            await request.app.state.unpack_monitor_service.freeze_downloader_sources(source_config)
+        )
+        if not frozen_downloader_sources:
+            raise ApplicationError(
+                code="UNPACK_TEMPLATE_SOURCE_NOT_FOUND",
+                status=422,
+                title="模板拆包来源无效",
+                detail="所选下载器中没有找到已完成且符合条件的种子，请重新选择来源种子",
+            )
     view = unpack_definition_service(request).update(
         definition_id,
         UnpackDefinitionCreate(
             name=payload.name,
             trigger_kind=payload.trigger_kind,
+            task_kind=payload.task_kind,
+            template_id=payload.template_id,
+            template_version=payload.template_version,
             source_kind=payload.source_kind,
             execution_scope_kind=payload.execution_scope_kind,
-            source_config=payload.source_config,
+            source_config=source_config,
             file_filter=payload.file_filter,
             site_ids=tuple(payload.site_ids),
             output_config=payload.output_config,
             retry_enabled=payload.retry_enabled,
             max_retries=payload.max_retries,
             auto_match_threshold_bps=payload.auto_match_threshold_bps,
+            auto_match_enabled=payload.auto_match_enabled,
             cron_expression=payload.cron_expression,
             timezone=payload.timezone,
             source_scan_id=payload.source_scan_id,
+            frozen_downloader_sources=frozen_downloader_sources,
         ),
         expected_version=_required_definition_version(if_match),
     )
@@ -788,21 +1049,27 @@ async def list_unpack_executions(
 
 @router.post(
     "/unpack/executions/{execution_id}/actions",
-    response_model=UnpackRetryFailedMatchesResponse,
+    response_model=UnpackRetryEligibleItemsResponse,
 )
 async def act_on_unpack_execution(
     execution_id: str,
-    payload: UnpackRetryFailedMatchesRequest,
+    payload: UnpackRetryEligibleItemsRequest,
     request: Request,
     _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
     if_match: Annotated[str | None, Header(alias="If-Match")] = None,
-) -> UnpackRetryFailedMatchesResponse:
-    if payload.action != "retry_failed_matches":
+) -> UnpackRetryEligibleItemsResponse:
+    if payload.action != "retry_eligible_items":
         raise AssertionError("Pydantic 已限制 action")
-    count = unpack_item_action_service(request).retry_failed_matches(
-        execution_id, expected_execution_version=_required_definition_version(if_match)
+    result = unpack_item_action_service(request).retry_eligible_items(
+        execution_id,
+        expected_execution_version=_required_definition_version(if_match),
+        selected_statuses=tuple(payload.item_statuses),
     )
-    return UnpackRetryFailedMatchesResponse(execution_id=execution_id, retried_count=count)
+    return UnpackRetryEligibleItemsResponse(
+        execution_id=result.execution_id,
+        retried_count=result.retried_count,
+        skipped_unsafe_count=result.skipped_unsafe_count,
+    )
 
 
 @router.get(
@@ -905,6 +1172,106 @@ async def list_unpack_item_candidates(
     return _candidate_list_response(
         unpack_execution_query_service(request).list_candidates(item_id)
     )
+
+
+@router.post(
+    "/unpack/items/{item_id}/manual-candidate-preview",
+    response_model=ManualCandidatePreviewResponse,
+)
+async def preview_manual_unpack_candidate(
+    item_id: str,
+    payload: ManualCandidateInputRequest,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+) -> ManualCandidatePreviewResponse:
+    content = _decode_manual_torrent_upload(payload)
+    result = await unpack_manual_candidate_service(request).preview(
+        item_id,
+        site_id=payload.site_id,
+        expected_generation=payload.expected_generation,
+        expected_item_version=payload.expected_item_version,
+        source_url=payload.source_url,
+        torrent_content=content,
+    )
+    return ManualCandidatePreviewResponse(**asdict(result))
+
+
+@router.post(
+    "/unpack/items/{item_id}/manual-candidates",
+    response_model=ManualCandidateAddResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_manual_unpack_candidate(
+    item_id: str,
+    payload: ManualCandidateInputRequest,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+) -> ManualCandidateAddResponse:
+    content = _decode_manual_torrent_upload(payload)
+    if payload.expected_metainfo_digest is None or payload.expected_payload_sha256 is None:
+        raise ApplicationError(
+            code="UNPACK_MANUAL_CANDIDATE_DIGEST_REQUIRED",
+            status=422,
+            title="缺少种子预览摘要",
+            detail="请先预览种子，并基于预览结果确认添加",
+        )
+    result = await unpack_manual_candidate_service(request).add(
+        item_id,
+        site_id=payload.site_id,
+        expected_generation=payload.expected_generation,
+        expected_item_version=payload.expected_item_version,
+        expected_metainfo_digest=payload.expected_metainfo_digest,
+        expected_payload_sha256=payload.expected_payload_sha256,
+        source_url=payload.source_url,
+        torrent_content=content,
+    )
+    return ManualCandidateAddResponse(**asdict(result))
+
+
+def _decode_manual_torrent_upload(payload: ManualCandidateInputRequest) -> bytes | None:
+    encoded = payload.torrent_file_base64
+    if encoded is None:
+        if payload.torrent_file_name is not None:
+            raise ApplicationError(
+                code="UNPACK_MANUAL_TORRENT_INVALID",
+                status=422,
+                title="种子文件无效",
+                detail="未收到种子文件内容，请重新选择文件",
+            )
+        return None
+    if not payload.torrent_file_name or not payload.torrent_file_name.casefold().endswith(
+        ".torrent"
+    ):
+        raise ApplicationError(
+            code="UNPACK_MANUAL_TORRENT_INVALID",
+            status=422,
+            title="种子文件无效",
+            detail="请上传 .torrent 文件",
+        )
+    if len(encoded) > ((MAX_MANUAL_TORRENT_BYTES + 2) // 3) * 4:
+        raise ApplicationError(
+            code="UNPACK_MANUAL_TORRENT_TOO_LARGE",
+            status=413,
+            title="种子文件过大",
+            detail="手动上传的 .torrent 文件不能超过 32 MiB",
+        )
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ApplicationError(
+            code="UNPACK_MANUAL_TORRENT_INVALID",
+            status=422,
+            title="种子文件无效",
+            detail="上传的种子文件编码无效，请重新选择文件",
+        ) from exc
+    if not content or len(content) > MAX_MANUAL_TORRENT_BYTES:
+        raise ApplicationError(
+            code="UNPACK_MANUAL_TORRENT_TOO_LARGE",
+            status=413,
+            title="种子文件无效或过大",
+            detail="种子文件为空或超过 32 MiB 限制",
+        )
+    return content
 
 
 @router.put(

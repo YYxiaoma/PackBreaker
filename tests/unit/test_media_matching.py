@@ -75,3 +75,52 @@ def test_file_token_signature_canonicalizes_known_release_variants() -> None:
     right = media_file_token_signature("movie.4K.webdl.HEVC.mkv")
 
     assert left == right
+
+
+def test_technical_release_metadata_and_group_are_not_treated_as_title_tokens() -> None:
+    source = parse_media_name(
+        "Leon.1994.Extended.Remastered.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS",
+        aliases=("这个杀手不太冷",),
+    )
+    candidate = parse_media_name(
+        "这个杀手不太冷 1994 Leon The Professional 1994 "
+        "2in1 2160p UHD Blu-ray HEVC Atmos TrueHD 7.1-CrsS"
+    )
+
+    assert source.title_tokens == ("leon", "extended", "remastered")
+    assert ("leon",) in source.alias_tokens
+    assert source.release_group == "frds"
+    assert candidate.release_group == "crss"
+    assert not {"10bit", "2audio", "mnhd", "frds"} & set(source.title_tokens)
+    assert not {"2in1", "uhd", "crss"} & set(candidate.title_tokens)
+
+
+def test_audio_channel_counts_and_broadcast_tags_are_not_title_tokens() -> None:
+    mad_max = parse_media_name("Mad.Max.2.1981.1080p.BluRay.DTS-HD.MA.5.1.x265.10bit.MNHD-FRDS")
+    comedy_king = parse_media_name("喜剧之王.1999.1080i.AC3-2Audio.x5.1-H264_HDCTV_翡翠台源码")
+
+    assert mad_max.title_tokens == ("mad", "max", "2")
+    assert comedy_king.title_tokens == ("喜剧之王",)
+    assert comedy_king.year == 1999
+    assert comedy_king.audio == "ac3"
+    assert comedy_king.release_source == "hdtv"
+
+
+def test_release_group_recognizes_watermarks_duplicate_suffixes_and_containers() -> None:
+    watermark = parse_media_name("Movie.2024.1080p.WEB-DL.x265.10bit.AC3￡cXcY@FRDS")
+    audio_watermark = parse_media_name(
+        "Slumdog.Millionaire.2008.1080p.Blu-ray.x265.10bit.DTS-HD￡cXcY@FRDS"
+    )
+    plain_suffix = parse_media_name("Devils.on.the.Doorstep.2000.DVDrip.720p.x265.10bit.FRDS")
+    duplicate_copy = parse_media_name("Aladdin.1992.BluRay.1080p.x265.10bit.4Audios.MNHD-FRDS (1)")
+    container_label = parse_media_name("Kill Bill Vol 1 2003 BluRay 1080p x265.10bit MNHD-FRDS mkv")
+    uploader_suffix = parse_media_name("Detachment.2011.Blu-Ray.1080p.AC3.x265.10bit-Yumi@FRDS")
+    greenotea = parse_media_name("A.Better.Tomorrow.1986.1080p.x265.GREENOTEA")
+
+    assert watermark.release_group == "cxcy@frds"
+    assert audio_watermark.release_group == "cxcy@frds"
+    assert plain_suffix.release_group == "frds"
+    assert duplicate_copy.release_group == "frds"
+    assert container_label.release_group == "frds"
+    assert uploader_suffix.release_group == "yumi@frds"
+    assert greenotea.release_group == "greenotea"

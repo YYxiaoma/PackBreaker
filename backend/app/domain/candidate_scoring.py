@@ -6,7 +6,7 @@ from math import isfinite
 
 from backend.app.domain.media_matching import MediaDescriptor, MediaFileSummary, normalize_text
 
-SCORING_ALGORITHM_VERSION = "packbreaker-candidate-score-v1"
+SCORING_ALGORITHM_VERSION = "packbreaker-candidate-score-v3"
 MIN_SEARCH_TITLE_DICE = 0.5
 
 
@@ -28,7 +28,7 @@ class HardConflict(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ScoringConfig:
-    version: str = "initial-100-v1"
+    version: str = "source-known-size-penalty-v3"
     size_tolerance_ratio: float = 0.05
 
     def __post_init__(self) -> None:
@@ -42,6 +42,9 @@ class DimensionScore:
     earned: float
     maximum: int
     evidence: str
+    # Score denominator and evidence coverage are distinct: a source-known but
+    # candidate-missing size is a zero-point comparison, not available evidence.
+    coverage_maximum: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +81,13 @@ def score_candidate(
         _score_file_list(source.files, candidate.files),
         _score_release_group(source, candidate),
     )
-    score = 0.0 if conflicts else round(sum(item.earned for item in dimensions), 4)
+    available_weight = sum(item.maximum for item in dimensions)
+    earned_weight = sum(item.earned for item in dimensions)
+    score = (
+        0.0
+        if conflicts or available_weight <= 0
+        else round(earned_weight * 100 / available_weight, 4)
+    )
     return CandidateScore(
         score=score,
         rejected=bool(conflicts),
@@ -113,7 +122,23 @@ def candidate_search_relevant(source: MediaDescriptor, candidate: MediaDescripto
     candidate_ids = {(item.namespace, item.value) for item in candidate.external_ids}
     if source_ids and candidate_ids and source_ids & candidate_ids:
         return True
-    return _title_similarity(source, candidate) >= MIN_SEARCH_TITLE_DICE
+    if _title_similarity(source, candidate) >= MIN_SEARCH_TITLE_DICE:
+        return True
+
+    # One-word film titles (e.g. Leon, Jaws, M) are common. Dice similarity
+    # penalizes a valid short title against a longer localized/release title,
+    # so accept an exact token plus exact year as review-worthy evidence.
+    if source.year is not None and candidate.year == source.year:
+        single_word_titles = {
+            tokens[0]
+            for tokens in (source.title_tokens, *source.alias_tokens)
+            if len(tokens) == 1 and tokens[0].isascii()
+        }
+        candidate_tokens = set(candidate.title_tokens)
+        candidate_tokens.update(token for alias in candidate.alias_tokens for token in alias)
+        if single_word_titles & candidate_tokens:
+            return True
+    return False
 
 
 def _hard_conflicts(
@@ -138,12 +163,19 @@ def _hard_conflicts(
 def _score_external_ids(source: MediaDescriptor, candidate: MediaDescriptor) -> DimensionScore:
     left = {(item.namespace, item.value) for item in source.external_ids}
     right = {(item.namespace, item.value) for item in candidate.external_ids}
-    earned = 25.0 if left and right and left & right else 0.0
+    if not left or not right:
+        return DimensionScore(
+            ScoreDimension.EXTERNAL_ID,
+            0.0,
+            0,
+            "外部媒体 ID 至少一侧缺失，未计入匹配度",
+        )
+    earned = 25.0 if left & right else 0.0
     return DimensionScore(
         ScoreDimension.EXTERNAL_ID,
         earned,
         25,
-        "存在相同外部媒体 ID" if earned else "无共同外部媒体 ID",
+        "存在相同外部媒体 ID" if earned else "两侧均有外部媒体 ID，但没有共同 ID",
     )
 
 
@@ -169,7 +201,14 @@ def _score_year_episode(source: MediaDescriptor, candidate: MediaDescriptor) -> 
         comparisons.append(source.year == candidate.year)
     if source.episode is not None and candidate.episode is not None:
         comparisons.append(source.episode == candidate.episode)
-    ratio = sum(comparisons) / len(comparisons) if comparisons else 0.0
+    if not comparisons:
+        return DimensionScore(
+            ScoreDimension.YEAR_EPISODE,
+            0.0,
+            0,
+            "没有可比较的年份/季集字段，未计入匹配度",
+        )
+    ratio = sum(comparisons) / len(comparisons)
     return DimensionScore(
         ScoreDimension.YEAR_EPISODE,
         round(15 * ratio, 4),
@@ -187,7 +226,14 @@ def _score_release_attributes(
         for field in fields
         if getattr(source, field) is not None and getattr(candidate, field) is not None
     ]
-    ratio = sum(comparisons) / len(comparisons) if comparisons else 0.0
+    if not comparisons:
+        return DimensionScore(
+            ScoreDimension.RELEASE_ATTRIBUTES,
+            0.0,
+            0,
+            "没有可比较的发布属性，未计入匹配度",
+        )
+    ratio = sum(comparisons) / len(comparisons)
     return DimensionScore(
         ScoreDimension.RELEASE_ATTRIBUTES,
         round(15 * ratio, 4),
@@ -201,8 +247,21 @@ def _score_total_size(
     candidate: MediaDescriptor,
     config: ScoringConfig,
 ) -> DimensionScore:
-    if source.total_size is None or candidate.total_size is None:
-        return DimensionScore(ScoreDimension.TOTAL_SIZE, 0.0, 10, "缺少可比较总大小")
+    if source.total_size is None:
+        return DimensionScore(
+            ScoreDimension.TOTAL_SIZE,
+            0.0,
+            0,
+            "源影片大小缺失，无法比较，未计入匹配度",
+        )
+    if candidate.total_size is None:
+        return DimensionScore(
+            ScoreDimension.TOTAL_SIZE,
+            0.0,
+            10,
+            "候选种子未提供可比较的影片大小，按未验证项计零分",
+            coverage_maximum=0,
+        )
     denominator = max(source.total_size, candidate.total_size)
     if denominator == 0:
         earned = 10.0 if source.total_size == candidate.total_size else 0.0
@@ -221,7 +280,12 @@ def _score_file_list(
     source: tuple[MediaFileSummary, ...], candidate: tuple[MediaFileSummary, ...]
 ) -> DimensionScore:
     if not source or not candidate:
-        return DimensionScore(ScoreDimension.FILE_LIST, 0.0, 10, "缺少文件列表摘要")
+        return DimensionScore(
+            ScoreDimension.FILE_LIST,
+            0.0,
+            0,
+            "缺少文件列表摘要，未计入匹配度",
+        )
     count_score = 2.0 if len(source) == len(candidate) else 0.0
     left = {_file_signature(item) for item in source}
     right = {_file_signature(item) for item in candidate}
@@ -236,7 +300,12 @@ def _score_file_list(
 
 def _score_release_group(source: MediaDescriptor, candidate: MediaDescriptor) -> DimensionScore:
     if source.release_group is None or candidate.release_group is None:
-        return DimensionScore(ScoreDimension.RELEASE_GROUP, 5.0, 5, "制作组缺失按中性处理")
+        return DimensionScore(
+            ScoreDimension.RELEASE_GROUP,
+            0.0,
+            0,
+            "制作组至少一侧未识别，未计入匹配度",
+        )
     earned = 5.0 if source.release_group == candidate.release_group else 0.0
     return DimensionScore(
         ScoreDimension.RELEASE_GROUP,

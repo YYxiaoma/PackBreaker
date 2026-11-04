@@ -132,6 +132,8 @@ def _fixture(
     tmp_path: Path,
     *,
     downloader_kind: str = "qb",
+    target_category: str | None = None,
+    target_tags: tuple[str, ...] = (),
 ) -> tuple[
     UnpackExecutionPlanService,
     sessionmaker[Session],
@@ -176,6 +178,8 @@ def _fixture(
                     "storage_mode": "HARDLINK",
                     "conflict_policy": "VERIFY_REUSE_OR_STOP",
                     "target_downloader_id": "downloader-target",
+                    "target_category": target_category,
+                    "target_tags": list(target_tags),
                 },
                 retry_enabled=True,
                 max_retries=3,
@@ -198,6 +202,8 @@ def _fixture(
                         "storage_mode": "HARDLINK",
                         "conflict_policy": "VERIFY_REUSE_OR_STOP",
                         "target_downloader_id": "downloader-target",
+                        "target_category": target_category,
+                        "target_tags": list(target_tags),
                     },
                 },
                 discovery_complete=True,
@@ -389,7 +395,11 @@ def test_planner_site_fetch_stale_error_must_not_fail_newer_candidate(
 def test_planner_freezes_verified_mapping_and_qb_hardlink_can_skip_client_check(
     tmp_path: Path,
 ) -> None:
-    service, factory, source, output, site = _fixture(tmp_path)
+    service, factory, source, output, site = _fixture(
+        tmp_path,
+        target_category="Movie Library",
+        target_tags=("4K", "seed"),
+    )
 
     report = asyncio.run(service.plan_next_batch("execution-1"))
 
@@ -407,6 +417,8 @@ def test_planner_freezes_verified_mapping_and_qb_hardlink_can_skip_client_check(
         assert plan.item_version_before == 4
         assert plan.output_directory == output.as_posix()
         assert plan.target_remote_save_path == "/downloads/seeding"
+        assert plan.target_category == "Movie Library"
+        assert plan.target_tags == ("4K", "seed")
         assert plan.client_check_required is False
         assert len(plan.actions) == 1
         action = plan.actions[0]

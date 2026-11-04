@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,6 +38,7 @@ from backend.app.infrastructure.persistence.cookiecloud_repositories import (
 from backend.app.infrastructure.persistence.models import CookieCloudSetting
 
 _PASSWORD_SECRET_KIND = "COOKIECLOUD_PASSWORD"
+_PROFILE_SYNC_CONCURRENCY = 4
 _logger = logging.getLogger("packbreaker.cookiecloud_sync")
 
 
@@ -98,6 +100,9 @@ class CookieCloudSyncView:
     updated_sites: int
     unchanged_sites: int
     unmatched_domains: int
+    discovered_sites: int
+    sync_success_sites: int
+    sync_failed_sites: int
     update_time: str | None
     created_sites: int = 0
     skipped_api_key_sites: tuple[str, ...] = ()
@@ -116,6 +121,137 @@ class CookieCloudService:
         self._secret_store = secret_store
         self._client = client or CookieCloudClient()
         self._site_service = site_service
+        self._profile_sync_queue: list[tuple[str, bool, bool]] = []
+        self._profile_sync_enqueued: set[str] = set()
+        self._profile_sync_running: set[str] = set()
+        self._profile_sync_rerun: dict[str, tuple[bool, bool]] = {}
+        self._profile_sync_task: asyncio.Task[None] | None = None
+
+    def _enqueue_site_profile_syncs(self, jobs: list[tuple[str, bool, bool]]) -> None:
+        for site_id, needs_connection_test, sync_profile in jobs:
+            if site_id in self._profile_sync_running:
+                # A credential refresh may overlap an in-flight job. Merge the follow-up
+                # connection test and profile-sync flags without losing either request.
+                previous = self._profile_sync_rerun.get(site_id, (False, False))
+                self._profile_sync_rerun[site_id] = (
+                    previous[0] or needs_connection_test,
+                    previous[1] or sync_profile,
+                )
+                continue
+            if site_id in self._profile_sync_enqueued:
+                # Merge requests while queued; a routine CookieCloud refresh may request
+                # a connection test without re-triggering site statistics.
+                for index, (queued_site_id, queued_needs_test, queued_sync_profile) in enumerate(
+                    self._profile_sync_queue
+                ):
+                    if queued_site_id == site_id:
+                        self._profile_sync_queue[index] = (
+                            site_id,
+                            queued_needs_test or needs_connection_test,
+                            queued_sync_profile or sync_profile,
+                        )
+                        break
+                else:
+                    # Defensive recovery if a job is marked enqueued but is neither
+                    # waiting nor in a running batch.
+                    rerun = self._profile_sync_rerun.pop(site_id, None)
+                    self._profile_sync_queue.append(
+                        (
+                            site_id,
+                            needs_connection_test or (rerun[0] if rerun else False),
+                            sync_profile or (rerun[1] if rerun else False),
+                        )
+                    )
+                continue
+            self._profile_sync_enqueued.add(site_id)
+            self._profile_sync_queue.append((site_id, needs_connection_test, sync_profile))
+        if not self._profile_sync_queue:
+            return
+        if self._profile_sync_task is None or self._profile_sync_task.done():
+            self._profile_sync_task = asyncio.create_task(
+                self._drain_site_profile_sync_queue(),
+                name="packbreaker-cookiecloud-site-profile-sync",
+            )
+
+    async def _sync_site_profile_job(
+        self,
+        site_id: str,
+        needs_connection_test: bool,
+        sync_profile: bool,
+    ) -> None:
+        site_service = self._site_service
+        cancelled = False
+        try:
+            if site_service is None:
+                return
+            if needs_connection_test:
+                await site_service.test_connection(site_id)
+            if sync_profile:
+                await site_service.sync_user_profile(site_id)
+        except asyncio.CancelledError:
+            # Keep the job eligible for a later drain if the worker is cancelled.
+            cancelled = True
+            raise
+        except ApplicationError as exc:
+            _logger.warning(
+                "CookieCloud 后台站点处理失败 site_id=%s error_code=%s",
+                site_id,
+                exc.code,
+            )
+        except Exception as exc:
+            _logger.warning(
+                "CookieCloud 后台站点处理失败 site_id=%s error_type=%s",
+                site_id,
+                type(exc).__name__,
+            )
+        finally:
+            self._profile_sync_running.discard(site_id)
+            rerun = self._profile_sync_rerun.pop(site_id, None)
+            if cancelled:
+                # Retry the interrupted operation and merge any newer request.
+                next_needs_test = needs_connection_test or (rerun[0] if rerun else False)
+                next_sync_profile = sync_profile or (rerun[1] if rerun else False)
+                self._profile_sync_queue.insert(0, (site_id, next_needs_test, next_sync_profile))
+                self._profile_sync_enqueued.add(site_id)
+            elif rerun is not None:
+                self._profile_sync_queue.append((site_id, rerun[0], rerun[1]))
+                self._profile_sync_enqueued.add(site_id)
+            else:
+                self._profile_sync_enqueued.discard(site_id)
+
+    async def _drain_site_profile_sync_queue(self) -> None:
+        if self._site_service is None:
+            self._profile_sync_queue.clear()
+            self._profile_sync_enqueued.clear()
+            self._profile_sync_running.clear()
+            self._profile_sync_rerun.clear()
+            return
+        # Site requests are async I/O. Bound concurrency so one slow tracker cannot
+        # hold up every other site's initial profile fetch.
+        while self._profile_sync_queue:
+            batch = self._profile_sync_queue[:_PROFILE_SYNC_CONCURRENCY]
+            del self._profile_sync_queue[: len(batch)]
+            self._profile_sync_running.update(site_id for site_id, _, _ in batch)
+            await asyncio.gather(
+                *(
+                    self._sync_site_profile_job(site_id, needs_test, sync_profile)
+                    for site_id, needs_test, sync_profile in batch
+                ),
+                return_exceptions=True,
+            )
+
+    async def wait_for_profile_syncs(self) -> None:
+        """Wait for the in-process profile queue; primarily useful for deterministic tests."""
+        task = self._profile_sync_task
+        if task is not None:
+            await task
+
+    def profile_sync_status(self) -> dict[str, int]:
+        """Return queue state without exposing site credentials or profile data."""
+        return {
+            "pending_count": len(self._profile_sync_enqueued),
+            "max_concurrency": _PROFILE_SYNC_CONCURRENCY,
+        }
 
     def ensure_default(self) -> CookieCloudSettingView:
         with self._session_factory() as session:
@@ -195,6 +331,58 @@ class CookieCloudService:
             session.commit()
             session.refresh(record)
             return self._view(record)
+
+    async def probe_draft(
+        self,
+        *,
+        server_url: str,
+        uuid: str,
+        password: str | None,
+        request_timeout_seconds: int,
+    ) -> CookieCloudProbeView:
+        """Probe submitted CookieCloud settings without persisting the draft or test result."""
+        normalized_server_url = self._normalize_server_url(server_url)
+        normalized_uuid = self._normalize_uuid(uuid)
+        self._validate_runtime(request_timeout_seconds)
+        if not normalized_server_url or not normalized_uuid:
+            raise self._invalid("测试 CookieCloud 前必须填写服务器地址和 UUID")
+
+        if password is None:
+            with self._session_factory() as session:
+                record = CookieCloudSettingRepository(session).get()
+                secret_id = record.password_secret_id if record is not None else None
+            if secret_id is None:
+                raise self._invalid("请填写 CookieCloud 密码后测试连接")
+            password_value = self._load_password(secret_id)
+        else:
+            normalized_password = self._normalize_password(password)
+            if normalized_password is None:
+                raise self._invalid("请填写 CookieCloud 密码后测试连接")
+            password_value = normalized_password
+
+        tested_at = datetime.now(UTC)
+        try:
+            envelope = await self._client.fetch(
+                server_url=normalized_server_url,
+                uuid=normalized_uuid,
+                timeout_seconds=request_timeout_seconds,
+            )
+            payload = decrypt_cookiecloud_payload(
+                uuid=normalized_uuid,
+                password=password_value,
+                encrypted=envelope.encrypted,
+                crypto_type=envelope.crypto_type,
+            )
+        except CookieCloudError as exc:
+            raise self._map_error(exc) from None
+
+        return CookieCloudProbeView(
+            tested_at=tested_at,
+            crypto_type=envelope.crypto_type,
+            domain_count=len(payload.cookie_data),
+            cookie_count=sum(len(items) for items in payload.cookie_data.values()),
+            update_time=payload.update_time,
+        )
 
     async def probe_saved(self) -> tuple[CookieCloudSettingView, CookieCloudProbeView]:
         with self._session_factory() as session:
@@ -286,21 +474,21 @@ class CookieCloudService:
             configured_kinds = {site.type for site in sites}
             created_sites = 0
             created_cookie_sites = 0
+            created_cookie_site_ids: set[str] = set()
             skipped_api_key_sites: list[str] = []
             # Match only the fixed, reviewed PackBreaker profile registry.
             # Do not automatically create or overwrite API key credentials:
             # CookieCloud contains cookies, not API keys.
+            discovered_site_kinds: set[SiteKind] = set()
             for profile in site_profiles():
-                if profile.kind in configured_kinds:
-                    continue
                 host = urlsplit(profile.base_url).hostname
                 if not host:
                     continue
                 header = cookie_header_for_host(payload, host)
                 # M-TEAM's API host is kp.m-team.cc, while browser cookies
                 # may have been exported for a sibling *.m-team.cc domain.
-                # Detect that verified domain family for a site *placeholder*
-                # only. Never reuse the browser Cookie as an API token.
+                # Detect that verified domain family for discovery and for a
+                # disabled placeholder only. Never reuse the browser Cookie as an API token.
                 mteam_cookie_present = profile.kind is SiteKind.MTEAM and any(
                     cookie_domain_matches_host("m-team.cc", cookie.domain or domain)
                     for domain, cookies in payload.cookie_data.items()
@@ -308,6 +496,9 @@ class CookieCloudService:
                     if not cookie.expired
                 )
                 if header is None and not mteam_cookie_present:
+                    continue
+                discovered_site_kinds.add(profile.kind)
+                if profile.kind in configured_kinds:
                     continue
                 if profile.credential_kind is not SiteCredentialKind.COOKIE:
                     skipped_api_key_sites.append(profile.display_name)
@@ -323,7 +514,7 @@ class CookieCloudService:
                         )
                         created_sites += 1
                     continue
-                self._site_service.create(
+                created_site = self._site_service.create(
                     name=profile.display_name,
                     kind=profile.kind,
                     credential_kind=SiteCredentialKind.COOKIE,
@@ -333,6 +524,7 @@ class CookieCloudService:
                 )
                 created_sites += 1
                 created_cookie_sites += 1
+                created_cookie_site_ids.add(created_site.id)
             sites = self._site_service.list_sites()
             targets: dict[str, tuple[Literal["PRIMARY", "DOWNLOAD"], str]] = {}
             target_hosts: list[str] = []
@@ -368,8 +560,42 @@ class CookieCloudService:
                     unmatched_domains += 1
             source_domains = len(payload.cookie_data)
             source_cookies = sum(len(items) for items in payload.cookie_data.values())
+            site_versions_before_sync = {site.id: site.version for site in sites}
             updated_sites = self._site_service.sync_cookiecloud_credentials(targets)
             unchanged_sites = max(0, len(targets) - updated_sites - created_cookie_sites)
+            profile_sync_jobs: list[tuple[str, bool, bool]] = []
+            site_by_id = {site.id: site for site in self._site_service.list_sites()}
+            successful_site_kinds = {
+                site_by_id[site_id].type for site_id in targets if site_id in site_by_id
+            }
+            discovered_sites = len(discovered_site_kinds)
+            sync_success_sites = len(discovered_site_kinds & successful_site_kinds)
+            sync_failed_sites = max(0, discovered_sites - sync_success_sites)
+            for site_id, (target, _raw_cookie) in targets.items():
+                target_site = site_by_id.get(site_id)
+                if target_site is None or not target_site.credential_configured:
+                    continue
+                connection_status = getattr(
+                    target_site.connection_status, "value", target_site.connection_status
+                )
+                needs_connection_test = (
+                    connection_status != "OK" or target_site.last_test_at is None
+                )
+                primary_credential_changed = (
+                    target == "PRIMARY"
+                    and target_site.version != site_versions_before_sync.get(site_id)
+                )
+                # Statistics are fetched on the first CookieCloud import only. Later
+                # CookieCloud runs may still test newly changed/untested credentials.
+                sync_profile = site_id in created_cookie_site_ids
+                if needs_connection_test or primary_credential_changed or sync_profile:
+                    profile_sync_jobs.append(
+                        (
+                            site_id,
+                            needs_connection_test or primary_credential_changed or sync_profile,
+                            sync_profile,
+                        )
+                    )
         except CookieCloudError as exc:
             self._store_sync_failure(
                 expected_version=version,
@@ -396,6 +622,7 @@ class CookieCloudService:
             unchanged_sites=unchanged_sites,
             unmatched_domains=unmatched_domains,
         )
+        self._enqueue_site_profile_syncs(profile_sync_jobs)
         _logger.info(
             "CookieCloud 同步诊断：源域名=%d，Cookie数量=%d，候选站点=%d，匹配站点=%d，"
             "新增=%d，更新=%d，未变化=%d，需独立API Key=%d，未匹配域名=%d",
@@ -421,6 +648,9 @@ class CookieCloudService:
                 updated_sites=updated_sites + created_cookie_sites,
                 unchanged_sites=unchanged_sites,
                 unmatched_domains=unmatched_domains,
+                discovered_sites=discovered_sites,
+                sync_success_sites=sync_success_sites,
+                sync_failed_sites=sync_failed_sites,
                 update_time=payload.update_time,
                 created_sites=created_sites,
                 skipped_api_key_sites=tuple(skipped_api_key_sites),

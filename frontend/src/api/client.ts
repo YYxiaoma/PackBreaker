@@ -27,7 +27,8 @@ export class ApiProblem extends Error {
 
 export const apiClient = axios.create({
   baseURL: '/api/v1',
-  timeout: 15_000,
+  timeout: 60_000,
+  transitional: { clarifyTimeoutError: true },
   withCredentials: true,
   xsrfCookieName: 'packbreaker_csrf',
   xsrfHeaderName: 'X-CSRF-Token',
@@ -57,6 +58,11 @@ apiClient.interceptors.response.use(
 
 export function toApiProblem(error: unknown): ApiProblem {
   if (axios.isAxiosError(error)) {
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      return new ApiProblem('接口请求超时，请稍后重试', {
+        code: 'API_REQUEST_TIMEOUT',
+      });
+    }
     const status = error.response?.status;
     const payload = error.response?.data;
     if (isProblemDetails(payload)) {

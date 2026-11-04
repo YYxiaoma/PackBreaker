@@ -31,6 +31,9 @@ const site: Site = {
   download_credential_configured: false,
   request_timeout_seconds: 15,
   search_interval_seconds: 0,
+  risk_control_limit: 3,
+  risk_retry_interval_seconds: 60,
+  risk_disabled_at: null,
   user_agent: null,
   browser_emulation_enabled: false,
   proxy_enabled: false,
@@ -55,8 +58,22 @@ beforeEach(() => {
 });
 
 describe('站点 store', () => {
-  it('启用时使用当前 version，并只采用服务端返回状态', async () => {
-    vi.mocked(listSites).mockResolvedValue([site]);
+  it('启用时使用当前 version，并保留动作响应未返回的站点统计摘要', async () => {
+    const userSummary = {
+      username: 'test-user',
+      user_level: 'PowerUser',
+      uploaded_bytes: 1234,
+      downloaded_bytes: 567,
+      ratio: 2.17,
+      torrents_posted: 8,
+      seeding_count: 12,
+      join_time: '2026-09-13T00:00:00Z',
+      last_access_at: '2026-10-20T02:00:00Z',
+      fetched_at: '2026-10-20T02:01:00Z',
+    };
+    const siteWithSummary = { ...site, user_summary: userSummary };
+    vi.mocked(listSites).mockResolvedValue([siteWithSummary]);
+    // The action endpoint intentionally returns config state without user_summary.
     vi.mocked(setSiteEnabled).mockResolvedValue({ ...site, enabled: true, version: 5 });
     const store = useSiteStore();
     await store.refresh();
@@ -66,6 +83,7 @@ describe('站点 store', () => {
     expect(setSiteEnabled).toHaveBeenCalledWith(site.id, 4, true);
     expect(store.items[0]?.enabled).toBe(true);
     expect(store.items[0]?.version).toBe(5);
+    expect(store.items[0]?.user_summary).toEqual(userSummary);
   });
 
   it('刷新只读取站点与 profile，不维护前端熔断健康缓存', async () => {

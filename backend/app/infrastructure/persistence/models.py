@@ -61,6 +61,7 @@ from backend.app.domain.unpack import (
     UnpackItemStatus,
     UnpackReviewDecision,
     UnpackSourceKind,
+    UnpackTaskKind,
     UnpackTriggerKind,
 )
 from backend.app.domain.verification import DownloaderKind
@@ -103,6 +104,7 @@ _TASK_EXECUTION_PHASE_SQL = ", ".join(f"'{value.value}'" for value in TaskExecut
 _TASK_APPROVAL_STATE_SQL = ", ".join(f"'{value.value}'" for value in TaskApprovalState)
 _TASK_APPROVAL_SOURCE_SQL = ", ".join(f"'{value.value}'" for value in TaskApprovalDecisionSource)
 _UNPACK_TRIGGER_KIND_SQL = ", ".join(f"'{value.value}'" for value in UnpackTriggerKind)
+_UNPACK_TASK_KIND_SQL = ", ".join(f"'{value.value}'" for value in UnpackTaskKind)
 _UNPACK_DEFINITION_STATUS_SQL = ", ".join(f"'{value.value}'" for value in UnpackDefinitionStatus)
 _UNPACK_SOURCE_KIND_SQL = ", ".join(f"'{value.value}'" for value in UnpackSourceKind)
 _UNPACK_SCOPE_KIND_SQL = ", ".join(f"'{value.value}'" for value in UnpackExecutionScopeKind)
@@ -458,6 +460,9 @@ class Site(Base):
     download_secret_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     request_timeout_seconds: Mapped[int] = mapped_column(nullable=False, default=15)
     search_interval_seconds: Mapped[int] = mapped_column(nullable=False, default=0)
+    risk_control_limit: Mapped[int] = mapped_column(nullable=False, default=3)
+    risk_retry_interval_seconds: Mapped[int] = mapped_column(nullable=False, default=60)
+    risk_disabled_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
     browser_emulation_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     proxy_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -472,6 +477,33 @@ class Site(Base):
     last_test_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class SiteRiskEvent(Base):
+    """Explicit anti-abuse/rate-limit responses observed during one unpack execution."""
+
+    __tablename__ = "site_risk_event"
+    __table_args__ = (
+        Index(
+            "ix_site_risk_event_execution_site_time",
+            "execution_id",
+            "site_id",
+            "occurred_at",
+        ),
+        Index("ix_site_risk_event_occurred_at", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    site_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("site.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_execution.id", ondelete="CASCADE"), nullable=False
+    )
+    item_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    error_code: Mapped[str] = mapped_column(String(96), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    threshold_reached: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class SiteUserProfileSnapshot(Base):
@@ -767,10 +799,196 @@ class TaskExecutionEvent(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class UnpackTemplate(Base):
+    __tablename__ = "unpack_template"
+    __table_args__ = (
+        UniqueConstraint("name", name="name"),
+        Index("ix_unpack_template_updated", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_version: Mapped[int] = mapped_column(nullable=False, default=1)
+    source_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackTemplateVersion(Base):
+    __tablename__ = "unpack_template_version"
+    __table_args__ = (
+        UniqueConstraint("template_id", "version", name="template_version"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("expected_seed_count >= 0", name="expected_seed_count"),
+        CheckConstraint("seed_count >= 0", name="seed_count"),
+        CheckConstraint("status IN ('IMPORTING', 'READY', 'INCOMPLETE')", name="status"),
+        Index("ix_unpack_template_version_status", "template_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    template_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_template.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    schema_version: Mapped[int] = mapped_column(nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="IMPORTING")
+    expected_seed_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    seed_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    site_keys: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    source_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackTorrentMetadata(Base):
+    __tablename__ = "unpack_torrent_metadata"
+    __table_args__ = (
+        UniqueConstraint("site_key", "remote_torrent_id", name="site_remote_id"),
+        CheckConstraint(
+            "verification_status IN ('DETAILS_VERIFIED', 'STALE', 'INVALID')",
+            name="verification_status",
+        ),
+        Index("ix_unpack_torrent_metadata_digest", "metadata_digest"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    site_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    remote_torrent_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    descriptor: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    total_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    file_summary: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    external_ids: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False, default=list)
+    info_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    metadata_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    verification_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="DETAILS_VERIFIED"
+    )
+    source_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackTemplateSeed(Base):
+    __tablename__ = "unpack_template_seed"
+    __table_args__ = (
+        UniqueConstraint("template_version_id", "metadata_id", name="template_metadata"),
+        Index("ix_unpack_template_seed_version_order", "template_version_id", "sort_order"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    template_version_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_template_version.id", ondelete="CASCADE"), nullable=False
+    )
+    metadata_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_torrent_metadata.id", ondelete="RESTRICT"), nullable=False
+    )
+    mapping_rules: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    sort_order: Mapped[int] = mapped_column(nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackTemplateMatchAcceptance(Base):
+    """Explicitly accepted prior template matches reusable for unchanged source files."""
+
+    __tablename__ = "unpack_template_match_acceptance"
+    __table_args__ = (
+        UniqueConstraint(
+            "template_id",
+            "site_config_id",
+            "collection_root_name",
+            "source_relative_path",
+            name="uq_unpack_template_match_acceptance_source",
+        ),
+        CheckConstraint("accepted_score_bps = 10000", name="accepted_score"),
+        Index(
+            "ix_unpack_template_match_acceptance_candidate",
+            "template_id",
+            "site_config_id",
+            "candidate_remote_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    template_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_template.id", ondelete="CASCADE"), nullable=False
+    )
+    site_config_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("site.id", ondelete="RESTRICT"), nullable=False
+    )
+    site_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    collection_root_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    source_device: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_inode: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_mtime_ns: Mapped[str] = mapped_column(String(32), nullable=False)
+    candidate_remote_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    candidate_title: Mapped[str] = mapped_column(Text, nullable=False)
+    source_execution_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_item_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_candidate_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_template_version: Mapped[int] = mapped_column(nullable=False)
+    accepted_score_bps: Mapped[int] = mapped_column(nullable=False, default=10_000)
+    acceptance_kind: Mapped[str] = mapped_column(
+        String(48), nullable=False, default="USER_CONFIRMED_PREVIOUS_100_PERCENT"
+    )
+    candidate_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    accepted_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackTemplateImportJob(Base):
+    __tablename__ = "unpack_template_import_job"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS')",
+            name="status",
+        ),
+        CheckConstraint("next_index >= 0", name="next_index"),
+        CheckConstraint("success_count >= 0", name="success_count"),
+        CheckConstraint("failure_count >= 0", name="failure_count"),
+        Index("ix_unpack_template_import_job_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    template_version_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("unpack_template_version.id", ondelete="CASCADE"), nullable=False
+    )
+    site_config_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("site.id", ondelete="RESTRICT"), nullable=False
+    )
+    site_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    torrent_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    seed_mappings: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    next_index: Mapped[int] = mapped_column(nullable=False, default=0)
+    success_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    failure_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    errors: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="PENDING")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class UnpackDefinition(Base):
     __tablename__ = "unpack_definition"
     __table_args__ = (
         CheckConstraint(f"trigger_kind IN ({_UNPACK_TRIGGER_KIND_SQL})", name="trigger_kind"),
+        CheckConstraint(f"task_kind IN ({_UNPACK_TASK_KIND_SQL})", name="task_kind"),
+        CheckConstraint(
+            "(task_kind = 'MONITOR' AND trigger_kind = 'MONITOR') OR "
+            "(task_kind IN ('MANUAL', 'TEMPLATE') AND trigger_kind = 'MANUAL')",
+            name="task_trigger_consistency",
+        ),
+        CheckConstraint(
+            "(task_kind = 'TEMPLATE' AND template_id IS NOT NULL "
+            "AND template_version IS NOT NULL) OR "
+            "(task_kind != 'TEMPLATE' AND template_id IS NULL AND template_version IS NULL)",
+            name="template_reference",
+        ),
         CheckConstraint(f"status IN ({_UNPACK_DEFINITION_STATUS_SQL})", name="status"),
         CheckConstraint(f"source_kind IN ({_UNPACK_SOURCE_KIND_SQL})", name="source_kind"),
         CheckConstraint(
@@ -782,7 +1000,7 @@ class UnpackDefinition(Base):
         ),
         CheckConstraint("version >= 1", name="version_positive"),
         CheckConstraint(
-            "(trigger_kind = 'MONITOR') OR source_kind = 'DIRECTORY'",
+            "(task_kind = 'TEMPLATE') OR (trigger_kind = 'MONITOR') OR source_kind = 'DIRECTORY'",
             name="manual_directory_only",
         ),
         CheckConstraint(
@@ -798,8 +1016,15 @@ class UnpackDefinition(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     trigger_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    task_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=UnpackTaskKind.MANUAL.value, server_default="MANUAL"
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     source_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    template_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("unpack_template.id", ondelete="RESTRICT"), nullable=True
+    )
+    template_version: Mapped[int | None] = mapped_column(nullable=True)
     execution_scope_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     source_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     file_filter: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
@@ -808,6 +1033,12 @@ class UnpackDefinition(Base):
     retry_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     max_retries: Mapped[int] = mapped_column(nullable=False, default=3)
     auto_match_threshold_bps: Mapped[int] = mapped_column(nullable=False, default=10000)
+    auto_match_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="1",
+    )
     cron_expression: Mapped[str | None] = mapped_column(String(160), nullable=True)
     timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -1076,6 +1307,27 @@ class UnpackExternalOperationJournal(Base):
     last_error_code: Mapped[str | None] = mapped_column(String(96), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class UnpackDeletedItemAudit(Base):
+    """Retained, immutable history of external effects for deleted unpack records.
+
+    No foreign keys: task/item deletion must not cascade away this evidence.
+    Records are written in the same transaction as the deletion.
+    """
+
+    __tablename__ = "unpack_deleted_item_audit"
+    __table_args__ = (
+        Index("ix_unpack_deleted_audit_definition_deleted", "definition_id", "deleted_at"),
+        Index("ix_unpack_deleted_audit_item", "item_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    definition_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    execution_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    deleted_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
 class MovieDedupJob(Base):

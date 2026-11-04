@@ -11,6 +11,56 @@ export type UnpackSourceScanSelectionSummary =
   components['schemas']['UnpackSourceScanSelectionSummaryResponse'];
 export type UnpackDefinitionCreate = components['schemas']['UnpackDefinitionCreateRequest'];
 export type UnpackDefinition = components['schemas']['UnpackDefinitionResponse'];
+
+export interface UnpackTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  current_version: number;
+  status: 'IMPORTING' | 'READY' | 'INCOMPLETE' | string;
+  expected_seed_count: number;
+  seed_count: number;
+  mapped_media_count: number;
+  site_keys: string[];
+  site_ids: string[];
+  content_digest: string;
+  source_provenance: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UnpackTemplateSeedMapping {
+  torrent_id: string;
+  collection_root_name: string;
+  relative_directory: string;
+  media_title: string;
+  confidence_bps?: number;
+  source_execution_id?: string | null;
+}
+
+export interface UnpackTemplateImportRequest {
+  name?: string | null;
+  description?: string | null;
+  template_id?: string | null;
+  site_id: string;
+  torrent_ids: string[];
+  source_label?: string | null;
+  seed_mappings?: UnpackTemplateSeedMapping[];
+}
+
+export interface UnpackTemplateImportJob {
+  id: string;
+  template_id: string;
+  template_version: number;
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'COMPLETED_WITH_ERRORS' | string;
+  total_count: number;
+  processed_count: number;
+  success_count: number;
+  failure_count: number;
+  errors: Array<{ torrent_id: string; code: string; message: string }>;
+  created_at: string;
+  updated_at: string;
+}
 export type UnpackDefinitionActionResult = components['schemas']['UnpackDefinitionActionResponse'];
 export type UnpackExecution = components['schemas']['UnpackExecutionResponse'];
 export type UnpackExecutionItem = components['schemas']['UnpackExecutionItemResponse'];
@@ -55,6 +105,42 @@ export type UnpackExecutionStatus = components['schemas']['UnpackExecutionStatus
 export type UnpackItemStatus = components['schemas']['UnpackItemStatus'];
 export type UnpackMatchCandidate = components['schemas']['UnpackMatchCandidateResponse'];
 export type UnpackMatchCandidateList = components['schemas']['UnpackMatchCandidateListResponse'];
+export type ManualCandidatePreview = components['schemas']['ManualCandidatePreviewResponse'];
+export type ManualCandidateAddResult = components['schemas']['ManualCandidateAddResponse'];
+
+export interface ManualCandidateInput {
+  siteId: string;
+  generation: number;
+  itemVersion: number;
+  sourceUrl?: string;
+  file?: File;
+}
+
+async function manualCandidateRequestBody(
+  payload: ManualCandidateInput,
+  metainfoDigest?: string,
+  payloadSha256?: string,
+): Promise<Record<string, string | number>> {
+  const body: Record<string, string | number> = {
+    site_id: payload.siteId,
+    expected_generation: payload.generation,
+    expected_item_version: payload.itemVersion,
+  };
+  if (payload.sourceUrl?.trim()) body.source_url = payload.sourceUrl.trim();
+  if (payload.file) {
+    const bytes = new Uint8Array(await payload.file.arrayBuffer());
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    body.torrent_file_base64 = btoa(binary);
+    body.torrent_file_name = payload.file.name;
+  }
+  if (metainfoDigest) body.expected_metainfo_digest = metainfoDigest;
+  if (payloadSha256) body.expected_payload_sha256 = payloadSha256;
+  return body;
+}
 export type UnpackReviewRequest = components['schemas']['UnpackReviewRequest'];
 export type UnpackReviewResponse = components['schemas']['UnpackReviewResponse'];
 export type UnpackItemActionResponse = components['schemas']['UnpackItemActionResponse'];
@@ -169,6 +255,40 @@ export async function getUnpackSourceScanSelectionSummary(
   }
 }
 
+export async function listUnpackTemplates(): Promise<UnpackTemplate[]> {
+  try {
+    const response = await apiClient.get<{ items: UnpackTemplate[] }>('/unpack/templates');
+    return response.data.items;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function createUnpackTemplateImport(
+  payload: UnpackTemplateImportRequest,
+): Promise<UnpackTemplateImportJob> {
+  try {
+    const response = await apiClient.post<UnpackTemplateImportJob>(
+      '/unpack/templates/import',
+      payload,
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function getUnpackTemplateImportJob(jobId: string): Promise<UnpackTemplateImportJob> {
+  try {
+    const response = await apiClient.get<UnpackTemplateImportJob>(
+      `/unpack/templates/import-jobs/${requiredId(jobId, 'jobId')}`,
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
 export async function createUnpackDefinition(
   payload: UnpackDefinitionCreate,
 ): Promise<UnpackDefinition> {
@@ -207,14 +327,19 @@ export async function deleteUnpackDefinition(definitionId: string, version: numb
   }
 }
 
-export async function retryUnpackFailedMatches(
+export async function retryUnpackExecutionItems(
   executionId: string,
   version: number,
-): Promise<{ execution_id: string; retried_count: number }> {
+  itemStatuses: UnpackItemStatus[],
+): Promise<{ execution_id: string; retried_count: number; skipped_unsafe_count: number }> {
   try {
-    const response = await apiClient.post<{ execution_id: string; retried_count: number }>(
+    const response = await apiClient.post<{
+      execution_id: string;
+      retried_count: number;
+      skipped_unsafe_count: number;
+    }>(
       `/unpack/executions/${requiredId(executionId, 'executionId')}/actions`,
-      { action: 'retry_failed_matches' },
+      { action: 'retry_eligible_items', item_statuses: itemStatuses },
       { headers: { 'If-Match': String(version) } },
     );
     return response.data;
@@ -222,7 +347,6 @@ export async function retryUnpackFailedMatches(
     throw toApiProblem(error);
   }
 }
-
 export async function listUnpackDefinitions(): Promise<UnpackDefinition[]> {
   try {
     const response = await apiClient.get<{ items: UnpackDefinition[] }>('/unpack/definitions');
@@ -344,6 +468,40 @@ export async function listUnpackItemCandidates(itemId: string): Promise<UnpackMa
   try {
     const response = await apiClient.get<UnpackMatchCandidateList>(
       `/unpack/items/${requiredId(itemId, 'itemId')}/candidates`,
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function previewManualUnpackCandidate(
+  itemId: string,
+  payload: ManualCandidateInput,
+): Promise<ManualCandidatePreview> {
+  try {
+    const response = await apiClient.post<ManualCandidatePreview>(
+      `/unpack/items/${requiredId(itemId, 'itemId')}/manual-candidate-preview`,
+      await manualCandidateRequestBody(payload),
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function addManualUnpackCandidate(
+  itemId: string,
+  payload: ManualCandidateInput,
+  metainfoDigest: string,
+  payloadSha256: string,
+): Promise<ManualCandidateAddResult> {
+  if (!/^[0-9a-f]{64}$/i.test(metainfoDigest)) throw new Error('种子元信息摘要无效，请重新预览');
+  if (!/^[0-9a-f]{64}$/i.test(payloadSha256)) throw new Error('种子文件摘要无效，请重新预览');
+  try {
+    const response = await apiClient.post<ManualCandidateAddResult>(
+      `/unpack/items/${requiredId(itemId, 'itemId')}/manual-candidates`,
+      await manualCandidateRequestBody(payload, metainfoDigest, payloadSha256),
     );
     return response.data;
   } catch (error) {

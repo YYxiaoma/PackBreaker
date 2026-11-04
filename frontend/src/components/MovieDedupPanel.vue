@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { Plus, RefreshCw, Search } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 import { toApiProblem } from '../api/client';
@@ -38,6 +39,12 @@ interface Draft {
 const jobs = ref<MovieDedupJob[]>([]);
 const loading = ref(false);
 const saving = ref(false);
+const modeFilter = ref('');
+const statusFilter = ref('');
+const keyword = ref('');
+const appliedModeFilter = ref('');
+const appliedStatusFilter = ref('');
+const appliedKeyword = ref('');
 const starting = ref<Record<string, boolean>>({});
 const createVisible = ref(false);
 const precheckLoading = ref(false);
@@ -74,6 +81,18 @@ const executablePairs = computed(() =>
 const selectedPairs = computed(() =>
   pairs.value.filter((item) => selectedPairIds.value.includes(item.id)),
 );
+
+const visibleJobs = computed(() => {
+  const query = appliedKeyword.value.trim().toLocaleLowerCase();
+  return jobs.value.filter((job) => {
+    if (appliedModeFilter.value && job.mode !== appliedModeFilter.value) return false;
+    if (appliedStatusFilter.value && job.status !== appliedStatusFilter.value) return false;
+    if (!query) return true;
+    return [job.name, job.source_root, job.target_root].some((value) =>
+      value.toLocaleLowerCase().includes(query),
+    );
+  });
+});
 
 function freshDraft(): Draft {
   return {
@@ -113,6 +132,12 @@ async function refresh(): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+function searchFilters(): void {
+  appliedModeFilter.value = modeFilter.value;
+  appliedStatusFilter.value = statusFilter.value;
+  appliedKeyword.value = keyword.value;
 }
 
 function openCreate(): void {
@@ -523,19 +548,63 @@ defineExpose({ openCreate, refresh });
 
 <template>
   <div class="movie-dedup-panel">
-    <div class="table-card" v-loading="loading">
-      <div class="table-card-head">
-        <div class="table-card-title">
-          <b>影片去重</b>
-          <span>{{ jobs.length }} 个任务</span>
-        </div>
-        <div class="table-card-actions">
-          <small>最终自动替换必须完整 SHA-256 一致；默认优先硬链接，跨文件系统不会静默降级。</small>
-          <el-button type="primary" @click="openCreate()">新增影片去重任务</el-button>
-        </div>
+    <div class="dedup-toolbar">
+      <div class="dedup-toolbar-title">
+        <h2>数据去重</h2>
       </div>
-      <el-empty v-if="!loading && !jobs.length" description="暂无影片去重任务" />
-      <el-table v-else :data="jobs" class="movie-job-table">
+    </div>
+    <div class="dedup-filter-toolbar">
+      <div class="filters">
+        <el-select
+          v-model="modeFilter"
+          clearable
+          placeholder="全部方式"
+          style="width: 140px"
+          @change="searchFilters"
+        >
+          <el-option label="自动选择" value="AUTO" />
+          <el-option label="硬链接" value="HARDLINK" />
+          <el-option label="软链接" value="SYMLINK" />
+          <el-option label="仅扫描" value="SCAN_ONLY" />
+        </el-select>
+        <el-select
+          v-model="statusFilter"
+          clearable
+          placeholder="全部状态"
+          style="width: 140px"
+          @change="searchFilters"
+        >
+          <el-option label="等待执行" value="PENDING" />
+          <el-option label="运行中" value="RUNNING" />
+          <el-option label="待审核" value="REVIEW_REQUIRED" />
+          <el-option label="已完成" value="COMPLETED" />
+          <el-option label="部分失败" value="PARTIAL_FAILED" />
+          <el-option label="失败" value="FAILED" />
+          <el-option label="已取消" value="CANCELLED" />
+          <el-option label="需要恢复" value="RECOVERY_REQUIRED" />
+        </el-select>
+        <el-input
+          v-model="keyword"
+          clearable
+          placeholder="搜索任务名称 / 目录"
+          style="width: 230px"
+          @keydown.enter.prevent="searchFilters"
+          @clear="searchFilters"
+        >
+          <template #prefix><Search :size="14" /></template>
+        </el-input>
+      </div>
+      <div class="table-card-actions">
+        <el-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</el-button>
+        <el-button type="primary" @click="openCreate()"><Plus :size="15" />新增任务</el-button>
+      </div>
+    </div>
+    <div class="table-card" v-loading="loading">
+      <el-empty
+        v-if="!loading && !visibleJobs.length"
+        :description="jobs.length ? '没有符合条件的数据去重任务' : '暂无数据去重任务'"
+      />
+      <el-table v-else :data="visibleJobs" class="movie-job-table">
         <el-table-column label="任务名称" min-width="180" show-overflow-tooltip>
           <template #default="scope">
             <div class="primary-cell">
@@ -613,7 +682,7 @@ defineExpose({ openCreate, refresh });
 
     <el-dialog
       v-model="createVisible"
-      title="新增影片去重任务"
+      title="新增数据去重任务"
       width="min(820px, 94vw)"
       destroy-on-close
     >
@@ -874,26 +943,57 @@ defineExpose({ openCreate, refresh });
   background: var(--surface);
   overflow: hidden;
 }
-.table-card-head {
+.dedup-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  margin-bottom: 4px;
 }
-.table-card-head > div {
+.dedup-toolbar-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.dedup-toolbar h2 {
+  margin: 0;
+  font-size: 19px;
+}
+.dedup-filter-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.dedup-filter-toolbar > div {
   display: flex;
   gap: 8px;
-  align-items: baseline;
+  align-items: center;
 }
-.table-card-head > .table-card-actions {
+.dedup-filter-toolbar > .filters {
+  flex: 1 1 600px;
+  min-width: 0;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.dedup-filter-toolbar > .table-card-actions {
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
-.table-card-head span,
-.table-card-head small,
+.dedup-filter-toolbar span,
+.dedup-filter-toolbar small,
 .hint,
 .primary-cell small,
 .summary-grid small,
@@ -1008,10 +1108,20 @@ defineExpose({ openCreate, refresh });
   .pair-detail {
     grid-template-columns: 1fr;
   }
-  .table-card-head,
+  .dedup-filter-toolbar,
   .pair-actions {
-    align-items: flex-start;
+    align-items: stretch;
     flex-direction: column;
+  }
+  .dedup-filter-toolbar > .filters,
+  .dedup-filter-toolbar > .table-card-actions {
+    width: 100%;
+    flex: 1 1 auto;
+    justify-content: flex-start;
+  }
+  .dedup-filter-toolbar > .filters > *,
+  .dedup-filter-toolbar > .table-card-actions > * {
+    max-width: 100%;
   }
 }
 </style>

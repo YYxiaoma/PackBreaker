@@ -16,6 +16,10 @@ from backend.app.application.downloaders import (
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.unpack_existing_reuse import verify_existing_reuse
+from backend.app.application.unpack_manual_torrents import (
+    ManualTorrentStore,
+    ManualTorrentStoreError,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.execution_plan import ExecutionPlanBlockReason
 from backend.app.domain.task_definition import TaskConflictPolicy, TaskStorageMode
@@ -78,10 +82,13 @@ class _PlanContext:
     site_config_version: int
     adapter_site_id: str
     torrent_id: str
+    manual_torrent_storage_key: str | None
     output_directory: str
     storage_mode: TaskStorageMode
     conflict_policy: TaskConflictPolicy
     target_downloader_id: str
+    target_category: str | None
+    target_tags: tuple[str, ...]
     mapping_evidence: tuple[dict[str, Any], ...]
 
 
@@ -101,6 +108,7 @@ class UnpackExecutionPlanService:
         *,
         path_scope: AuthorizedPathScope,
         fetch_timeout_seconds: float = 30.0,
+        manual_torrent_store: ManualTorrentStore | None = None,
     ) -> None:
         if fetch_timeout_seconds <= 0:
             raise ValueError("执行计划 torrent 获取超时必须大于 0")
@@ -110,6 +118,7 @@ class UnpackExecutionPlanService:
         self._path_scope = path_scope
         self._filesystem = SafeFilesystemGateway(path_scope.legacy_data_root, path_scope=path_scope)
         self._fetch_timeout_seconds = fetch_timeout_seconds
+        self._manual_torrent_store = manual_torrent_store
 
     def list_plannable_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
         if limit < 1 or limit > 500:
@@ -216,6 +225,30 @@ class UnpackExecutionPlanService:
             storage_mode = output.get("storage_mode")
             conflict_policy = output.get("conflict_policy")
             target_downloader_id = output.get("target_downloader_id")
+            raw_target_category = output.get("target_category")
+            raw_target_tags = output.get("target_tags", [])
+            if (
+                (raw_target_category is not None and not isinstance(raw_target_category, str))
+                or not isinstance(raw_target_tags, list)
+                or any(not isinstance(value, str) for value in raw_target_tags)
+            ):
+                raise self._conflict("execution 目标下载器分类或标签快照无效")
+            target_category = (
+                (raw_target_category.strip() or None)
+                if isinstance(raw_target_category, str)
+                else None
+            )
+            target_tags = tuple(
+                dict.fromkeys(value.strip() for value in raw_target_tags if value.strip())
+            )
+            if len(target_tags) > 100 or any(
+                len(value) > 128 or "\x00" in value for value in target_tags
+            ):
+                raise self._conflict("execution 目标下载器标签快照超出限制")
+            if target_category is not None and (
+                len(target_category) > 128 or "\x00" in target_category
+            ):
+                raise self._conflict("execution 目标下载器分类快照超出限制")
             if (
                 not isinstance(output_directory, str)
                 or not output_directory
@@ -250,6 +283,7 @@ class UnpackExecutionPlanService:
             version = raw_ref.get("site_config_version")
             adapter_site_id = raw_ref.get("adapter_site_id")
             torrent_id = raw_ref.get("torrent_id")
+            manual_torrent_storage_key = raw_ref.get("manual_torrent_storage_key")
             if (
                 raw_ref.get("site_config_id") != candidate.site_id
                 or torrent_id != candidate.candidate_key
@@ -260,6 +294,10 @@ class UnpackExecutionPlanService:
                 or not adapter_site_id
                 or not isinstance(torrent_id, str)
                 or not torrent_id
+                or (
+                    manual_torrent_storage_key is not None
+                    and not ManualTorrentStore.is_valid_key(manual_torrent_storage_key)
+                )
             ):
                 raise self._conflict("候选缺少安全站点引用")
 
@@ -285,10 +323,13 @@ class UnpackExecutionPlanService:
                 site_config_version=version,
                 adapter_site_id=adapter_site_id,
                 torrent_id=torrent_id,
+                manual_torrent_storage_key=manual_torrent_storage_key,
                 output_directory=output_directory,
                 storage_mode=storage,
                 conflict_policy=conflict,
                 target_downloader_id=target_downloader_id,
+                target_category=target_category,
+                target_tags=target_tags,
                 mapping_evidence=tuple(dict(entry) for entry in raw_mappings),
             )
 
@@ -310,11 +351,25 @@ class UnpackExecutionPlanService:
             or site.site_id != context.adapter_site_id
         ):
             raise self._conflict("候选站点配置已变化，请重新匹配")
-        async with asyncio.timeout(self._fetch_timeout_seconds):
-            payload = await site.adapter.fetch_torrent(context.torrent_id)
-        if payload.site_id != context.adapter_site_id or payload.torrent_id != context.torrent_id:
-            raise self._conflict("重新获取的 torrent 身份与候选不一致")
-        meta = parse_torrent(payload.content)
+        if context.manual_torrent_storage_key is not None:
+            if self._manual_torrent_store is None:
+                raise self._conflict("手动种子文件存储当前不可用")
+            try:
+                torrent_content = self._manual_torrent_store.load(
+                    context.manual_torrent_storage_key
+                )
+            except ManualTorrentStoreError as exc:
+                raise self._conflict("已确认的手动种子文件不存在或完整性校验失败") from exc
+        else:
+            async with asyncio.timeout(self._fetch_timeout_seconds):
+                payload = await site.adapter.fetch_torrent(context.torrent_id)
+            if (
+                payload.site_id != context.adapter_site_id
+                or payload.torrent_id != context.torrent_id
+            ):
+                raise self._conflict("重新获取的 torrent 身份与候选不一致")
+            torrent_content = payload.content
+        meta = parse_torrent(torrent_content)
         if meta.metainfo_digest != context.metainfo_digest:
             raise ApplicationError(
                 code="UNPACK_PLAN_TORRENT_CHANGED",
@@ -372,6 +427,8 @@ class UnpackExecutionPlanService:
             target_downloader_version=binding.downloader_version,
             target_downloader_binding_digest=binding.binding_digest,
             target_remote_save_path=remote_save_path,
+            target_category=context.target_category,
+            target_tags=context.target_tags,
             client_check_required=client_check_required,
             actions=actions,
             create_directories=layout.create_directories,

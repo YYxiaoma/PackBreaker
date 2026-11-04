@@ -20,6 +20,10 @@ from backend.app.application.unpack_acceptance import (
     assert_unmarked_execution_for_write,
     is_write_blocked_acceptance_execution,
 )
+from backend.app.application.unpack_manual_torrents import (
+    ManualTorrentStore,
+    ManualTorrentStoreError,
+)
 from backend.app.application.unpack_materialization import (
     assert_materialization_journals_applied,
     assert_materialization_targets_current,
@@ -151,6 +155,7 @@ class UnpackSeedingService:
         *,
         path_scope: AuthorizedPathScope,
         fetch_timeout_seconds: float = 30.0,
+        manual_torrent_store: ManualTorrentStore | None = None,
     ) -> None:
         if fetch_timeout_seconds <= 0:
             raise ValueError("最终辅种 torrent 获取超时必须大于 0")
@@ -159,6 +164,7 @@ class UnpackSeedingService:
         self._downloader_provider = downloader_provider
         self._filesystem = SafeFilesystemGateway(path_scope.legacy_data_root, path_scope=path_scope)
         self._fetch_timeout_seconds = fetch_timeout_seconds
+        self._manual_torrent_store = manual_torrent_store
 
     async def inspect_client_readonly(self, item_id: str) -> UnpackLiveClientReadView:
         """Explicit, bounded, GET-only qB/TR status probe without journal mutation.
@@ -548,6 +554,7 @@ class UnpackSeedingService:
             version = raw_ref.get("site_config_version")
             adapter_site_id = raw_ref.get("adapter_site_id")
             torrent_id = raw_ref.get("torrent_id")
+            manual_torrent_storage_key = raw_ref.get("manual_torrent_storage_key")
             if (
                 raw_ref.get("site_config_id") != candidate.site_id
                 or torrent_id != candidate.candidate_key
@@ -558,6 +565,10 @@ class UnpackSeedingService:
                 or not adapter_site_id
                 or not isinstance(torrent_id, str)
                 or not torrent_id
+                or (
+                    manual_torrent_storage_key is not None
+                    and not ManualTorrentStore.is_valid_key(manual_torrent_storage_key)
+                )
             ):
                 raise self._conflict("候选缺少安全站点引用")
             execution_id = item.execution_id
@@ -594,12 +605,22 @@ class UnpackSeedingService:
         ownership_tag = f"packbreaker-unpack-{ownership_digest[:16]}"
         torrent_content: bytes | None = None
         if stage == "FILES_MATERIALIZED":
-            # Before ADD, always re-fetch and validate the frozen metainfo.
-            async with asyncio.timeout(self._fetch_timeout_seconds):
-                payload = await site.adapter.fetch_torrent(torrent_id)
-            if payload.site_id != adapter_site_id or payload.torrent_id != torrent_id:
-                raise self._conflict("重新获取的 torrent 身份与候选不一致")
-            meta = parse_torrent(payload.content)
+            # Before ADD, validate the frozen metainfo. Uploaded torrents are
+            # read from private content-addressed storage; site candidates are re-fetched.
+            if manual_torrent_storage_key is not None:
+                if self._manual_torrent_store is None:
+                    raise self._conflict("手动种子文件存储当前不可用")
+                try:
+                    torrent_content = self._manual_torrent_store.load(manual_torrent_storage_key)
+                except ManualTorrentStoreError as exc:
+                    raise self._conflict("已确认的手动种子文件不存在或完整性校验失败") from exc
+            else:
+                async with asyncio.timeout(self._fetch_timeout_seconds):
+                    payload = await site.adapter.fetch_torrent(torrent_id)
+                if payload.site_id != adapter_site_id or payload.torrent_id != torrent_id:
+                    raise self._conflict("重新获取的 torrent 身份与候选不一致")
+                torrent_content = payload.content
+            meta = parse_torrent(torrent_content)
             if meta.metainfo_digest != plan.metainfo_digest:
                 raise ApplicationError(
                     code="UNPACK_SEED_TORRENT_CHANGED",
@@ -614,7 +635,6 @@ class UnpackSeedingService:
             )
             if not expected_hashes:
                 raise self._conflict("torrent 缺少可用于下载器确认的 info hash")
-            torrent_content = payload.content
         else:
             # Only an APPLIED ADD journal can authorize client-only resume.
             # An unrelated torrent with the same hash must never be adopted.
@@ -687,7 +707,7 @@ class UnpackSeedingService:
                     code="UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE",
                     status=409,
                     title="跳过客户端校验未得到完整状态",
-                    detail="冻结计划允许 skip checking，但下载器未报告完整停止状态，禁止直接启动",
+                    detail="下载器尚未确认种子已经完整下载并停止，因此没有启动做种。请先检查下载器中的完成进度与停止状态，再重试。",
                 )
             self._set_stage(
                 prepared,
@@ -930,7 +950,8 @@ class UnpackSeedingService:
                         save_path=prepared.plan.target_remote_save_path,
                         verification_level=VerificationLevel.FULL_VERIFIED,
                         skip_checking=not prepared.plan.client_check_required,
-                        tags=(prepared.ownership_tag,),
+                        tags=tuple((*prepared.plan.target_tags, prepared.ownership_tag)),
+                        category=prepared.plan.target_category,
                         paused=True,
                     )
                 )
@@ -960,7 +981,17 @@ class UnpackSeedingService:
                     TransmissionAddRequest(
                         torrent_content=torrent_content,
                         save_path=prepared.plan.target_remote_save_path,
-                        labels=(prepared.ownership_tag,),
+                        labels=tuple(
+                            [
+                                *prepared.plan.target_tags,
+                                *(
+                                    [prepared.plan.target_category]
+                                    if prepared.plan.target_category
+                                    else []
+                                ),
+                                prepared.ownership_tag,
+                            ]
+                        ),
                         paused=True,
                     )
                 )
@@ -1932,6 +1963,14 @@ def _refresh_execution_state(session: Session, execution: UnpackExecution) -> No
             or 0
         )
 
+    # Keep persisted counters mutually exclusive with each item's current status.
+    # A MATCHED_AUTO item can later become EXECUTION_ERROR or COMPLETED; retaining
+    # the old matching count would double-count it in the execution summary.
+    execution.matched_auto_count = count(UnpackItemStatus.MATCHED_AUTO)
+    execution.review_count = count(UnpackItemStatus.REVIEW_REQUIRED)
+    execution.content_verified_count = count(UnpackItemStatus.CONTENT_VERIFIED)
+    execution.content_mismatch_count = count(UnpackItemStatus.CONTENT_MISMATCH)
+    execution.timeout_count = count(UnpackItemStatus.MATCH_TIMEOUT)
     execution.error_count = count(UnpackItemStatus.MATCH_ERROR) + count(
         UnpackItemStatus.EXECUTION_ERROR
     )

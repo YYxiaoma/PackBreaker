@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Callable
 from urllib.parse import parse_qs
 
 import httpx2
@@ -8,7 +10,15 @@ import pytest
 
 from backend.app.domain.media_matching import ExternalMediaId
 from backend.app.domain.site_search import SearchMediaType, SearchQuery, SearchSortHint
-from backend.app.infrastructure.adapters.nexusphp import HDTimeAdapter, HHClubAdapter
+from backend.app.infrastructure.adapters.nexusphp import (
+    HDTimeAdapter,
+    HHClubAdapter,
+    NexusPhpProfile,
+    NexusPhpWebAdapter,
+    _parse_html,
+    _parse_nexus_ajax_total_count,
+    _profile_named_level,
+)
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from tests.contract.site_adapter_contract import (
     SiteAdapterContractCase,
@@ -17,6 +27,94 @@ from tests.contract.site_adapter_contract import (
 
 _COOKIE = "uid=synthetic; pass=synthetic-secret"
 _TORRENT = b"d4:infod4:name9:syntheticee"
+
+
+def _hhclub_transport(
+    handler: Callable[[httpx2.Request], httpx2.Response],
+) -> httpx2.MockTransport:
+    """Keep existing HHClub tests focused on their feature while allowing its seeding probe."""
+
+    def dispatch(request: httpx2.Request) -> httpx2.Response:
+        if (
+            request.url.host == "hhanclub.net"
+            and request.url.path == "/getusertorrentlistajax.php"
+            and request.url.params.get("type") == "seeding"
+        ):
+            return httpx2.Response(200, text="<div>synthetic seeding fragment without totals</div>")
+        return handler(request)
+
+    return httpx2.MockTransport(dispatch)
+
+
+@pytest.mark.asyncio
+async def test_springsunday_profile_uses_site_specific_bonus_and_ajax_totals() -> None:
+    requests: list[tuple[str, dict[str, str]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append((request.url.path, dict(request.url.params)))
+        assert request.url.host == "springsunday.net"
+        assert request.headers.get("cookie") == _COOKIE
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><a href="userdetails.php?id=99">YYxiaoma</a>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><table>'
+                    '<tr><td class="rowhead">传输</td>'
+                    "<td>上传量 <b>644.07 GiB</b> 下载量 <b>0 B</b> 分享率 <b>∞</b></td></tr>"
+                    '<tr><td class="rowhead">积分</td><td>10,577.70</td></tr>'
+                    '<tr><td class="rowhead">做种积分</td><td>10,544.90</td></tr>'
+                    '<tr class="nowrap"><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td>'
+                    "<td>6</td><td>7</td><td>8</td><td>12.345</td></tr>"
+                    "</table>"
+                ),
+            )
+        if request.url.path == "/getusertorrentlistajax.php":
+            if request.url.params.get("type") == "seeding":
+                return httpx2.Response(
+                    200,
+                    text=(
+                        "<div><b>48</b>条记录 / 总大小 <b>1.09 TiB</b></div>"
+                        "<table><tr><td>标题</td></tr><tr><td>样本</td></tr></table>"
+                    ),
+                )
+            if request.url.params.get("type") == "uploaded":
+                return httpx2.Response(
+                    200,
+                    text="<div><b>0</b>条记录</div><table><tr><td>标题</td></tr></table>",
+                )
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    adapter = NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="spring_sunday",
+            default_base_url="https://springsunday.net",
+            min_request_interval_seconds=0,
+        ),
+        transport=httpx2.MockTransport(handler),
+    )
+    profile = await adapter.fetch_user_profile()
+    assert profile.uploaded_bytes == int(644.07 * 1024**3)
+    assert profile.downloaded_bytes == 0
+    assert profile.torrents_posted == 0
+    assert profile.seeding_count == 48
+    assert profile.seeding_size_bytes == int(1.09 * 1024**4)
+    assert profile.bonus == 10577.70
+    assert profile.seeding_points == 10544.90
+    assert profile.bonus_per_hour == 12.345
+    assert [path for path, _params in requests] == [
+        "/index.php",
+        "/userdetails.php",
+        "/getusertorrentlistajax.php",
+        "/getusertorrentlistajax.php",
+    ]
 
 
 @pytest.mark.asyncio
@@ -47,6 +145,121 @@ async def test_nexusphp_429_preserves_bounded_retry_after(date_header: bool) -> 
     assert failure.value.retry_after_seconds is not None
     assert 115 <= failure.value.retry_after_seconds <= 121
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_hdtime_details_tolerates_a_small_number_of_invalid_utf8_bytes() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.host == "hdtime.org"
+        assert request.url.path == "/details.php"
+        return httpx2.Response(
+            200,
+            content=(
+                b"<html><body><h1>Synthetic.Movie.2026</h1><!-- malformed: \xff -->"
+                b'<a href="usercp.php">profile</a>'
+                b'<a href="download.php?id=123">download</a></body></html>'
+            ),
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    details = await HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler)).fetch_details(
+        "123"
+    )
+
+    assert details.candidate.display_name == "Synthetic.Movie.2026"
+
+
+@pytest.mark.asyncio
+async def test_hdtime_details_ignores_ambiguous_external_ids_from_collection_page() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/details.php"
+        return httpx2.Response(
+            200,
+            text=(
+                "<html><body><h1>Synthetic.Collection.1987-1991</h1>"
+                '<a href="usercp.php">profile</a>'
+                '<a href="https://www.imdb.com/title/tt0093978/">IMDb 1987</a>'
+                '<a href="https://www.imdb.com/title/tt0100625/">IMDb 1990</a>'
+                '<a href="https://www.imdb.com/title/tt0102932/">IMDb 1991</a>'
+                '<a href="https://movie.douban.com/subject/1297447/">Douban</a>'
+                '<a href="download.php?id=123">download</a></body></html>'
+            ),
+        )
+
+    details = await HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler)).fetch_details(
+        "123"
+    )
+
+    assert {(item.namespace, item.value) for item in details.candidate.descriptor.external_ids} == {
+        ("douban", "1297447")
+    }
+
+
+@pytest.mark.asyncio
+async def test_hdtime_details_prefers_title_external_id_over_conflicting_page_link() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/details.php"
+        return httpx2.Response(
+            200,
+            text=(
+                "<html><body><h1>Synthetic.Movie.2026.tt1234567</h1>"
+                '<a href="usercp.php">profile</a>'
+                '<a href="https://www.imdb.com/title/tt7654321/">Related IMDb</a>'
+                '<a href="https://movie.douban.com/subject/1297447/">Douban</a>'
+                '<a href="download.php?id=123">download</a></body></html>'
+            ),
+        )
+
+    details = await HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler)).fetch_details(
+        "123"
+    )
+
+    assert {(item.namespace, item.value) for item in details.candidate.descriptor.external_ids} == {
+        ("douban", "1297447"),
+        ("imdb", "tt1234567"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_hdtime_details_preserves_unique_external_ids_from_page_links() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/details.php"
+        return httpx2.Response(
+            200,
+            text=(
+                "<html><body><h1>Synthetic.Movie.2026</h1>"
+                '<a href="usercp.php">profile</a>'
+                '<a href="https://www.imdb.com/title/tt1234567/">IMDb</a>'
+                '<a href="https://movie.douban.com/subject/1297447/">Douban</a>'
+                '<a href="download.php?id=123">download</a></body></html>'
+            ),
+        )
+
+    details = await HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler)).fetch_details(
+        "123"
+    )
+
+    assert {(item.namespace, item.value) for item in details.candidate.descriptor.external_ids} == {
+        ("douban", "1297447"),
+        ("imdb", "tt1234567"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_hdtime_details_treats_site_frequency_page_as_retryable_rate_limit() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/details.php"
+        return httpx2.Response(
+            200,
+            text="<html><head><title>HDTIME</title></head><body><h2>访问过于频繁</h2></body></html>",
+        )
+
+    with pytest.raises(SiteAdapterError) as failure:
+        await HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler)).fetch_details("123")
+
+    assert failure.value.code == "SITE_RATE_LIMITED"
+    assert failure.value.retryable is True
+    assert failure.value.retry_after_seconds == 60.0
 
 
 @pytest.mark.asyncio
@@ -86,6 +299,87 @@ async def test_nexusphp_details_only_accept_explicit_unambiguous_size(
     assert details.site_id == "hdtime"
     assert details.torrent_id == "123"
     assert details.candidate.total_size == expected_size
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("page_title", "expected_title"),
+    [
+        ('种子详情 "Synthetic.Movie.2026"', "Synthetic.Movie.2026"),
+        ('Torrent Details "Synthetic.Movie.2026"', "Synthetic.Movie.2026"),
+    ],
+)
+async def test_nexusphp_details_accepts_unbranded_explicit_detail_title(
+    page_title: str, expected_title: str
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.host == "hdtime.org"
+        assert request.url.path == "/details.php"
+        assert request.url.params["id"] == "123"
+        return httpx2.Response(
+            200,
+            text=(
+                f"<html><head><title>{page_title}</title></head><body>"
+                '<a href="usercp.php">profile</a>'
+                '<a href="download.php?id=123">download</a>'
+                "</body></html>"
+            ),
+        )
+
+    details = await HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler)).fetch_details(
+        "123"
+    )
+    assert details.candidate.display_name == expected_title
+
+
+@pytest.mark.asyncio
+async def test_nexusphp_details_rejects_generic_single_part_page_title() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/details.php"
+        return httpx2.Response(
+            200,
+            text=(
+                "<html><head><title>HDTime</title></head><body>"
+                '<a href="usercp.php">profile</a>'
+                '<a href="download.php?id=123">download</a>'
+                "</body></html>"
+            ),
+        )
+
+    with pytest.raises(SiteAdapterError) as failure:
+        await HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler)).fetch_details("123")
+    assert failure.value.code == "SITE_INVALID_RESPONSE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("head_markup", "body_markup"),
+    [
+        ('<meta property="og:title" content="Synthetic.Movie.2026">', ""),
+        ("", "<h2>Synthetic.Movie.2026</h2>"),
+        ("", '<div class="torrentname">Synthetic.Movie.2026</div>'),
+    ],
+)
+async def test_nexusphp_details_uses_alternate_title_markup_with_matching_download_link(
+    head_markup: str, body_markup: str
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/details.php"
+        return httpx2.Response(
+            200,
+            text=(
+                f"<html><head><title>HDTime</title>{head_markup}</head><body>"
+                f"{body_markup}"
+                '<a href="usercp.php">profile</a>'
+                '<a href="download.php?id=123">download</a>'
+                "</body></html>"
+            ),
+        )
+
+    details = await HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler)).fetch_details(
+        "123"
+    )
+    assert details.candidate.display_name == "Synthetic.Movie.2026"
 
 
 @pytest.mark.asyncio
@@ -137,6 +431,46 @@ async def test_hdtime_adapter_satisfies_shared_contract_with_cookie_only_on_orig
 
 
 @pytest.mark.asyncio
+async def test_hdtime_search_recovers_size_when_trailing_columns_shift_the_configured_offset() -> (
+    None
+):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/torrents.php"
+        html = _search_html().replace(
+            "<td>10</td><td>status</td>",
+            "<td>10</td><td>status</td><td>extra trailing column</td>",
+        )
+        return httpx2.Response(200, text=html)
+
+    adapter = HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler))
+    page = await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.MOVIE))
+
+    assert len(page.items) == 1
+    assert page.items[0].total_size == 4 * 1024**3
+
+
+@pytest.mark.asyncio
+async def test_hdtime_details_reads_size_from_dedicated_torrent_size_class() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/details.php"
+        return httpx2.Response(
+            200,
+            text=(
+                "<html><body><h1>Synthetic.Movie.2026</h1>"
+                '<a href="usercp.php">profile</a>'
+                '<div class="torrent-info-text-size">4.00 GiB</div>'
+                '<a href="download.php?id=123">download</a></body></html>'
+            ),
+        )
+
+    details = await HDTimeAdapter(_COOKIE, transport=httpx2.MockTransport(handler)).fetch_details(
+        "123"
+    )
+
+    assert details.candidate.total_size == 4 * 1024**3
+
+
+@pytest.mark.asyncio
 async def test_hdtime_search_uses_external_id_and_stable_sort_mapping() -> None:
     seen_query: list[dict[str, list[str]]] = []
 
@@ -156,8 +490,17 @@ async def test_hdtime_search_uses_external_id_and_stable_sort_mapping() -> None:
     )
 
     assert seen_query[0]["search"] == ["tt1234567"]
+    assert seen_query[0]["search_area"] == ["4"]
     assert seen_query[0]["page"] == ["2"]
     assert seen_query[0]["sort"] == ["7"]
+
+
+@pytest.mark.asyncio
+async def test_hdtime_advertises_only_supported_external_id_search_modes() -> None:
+    capabilities = await HDTimeAdapter(_COOKIE).capabilities()
+
+    assert capabilities.supports_imdb_id is True
+    assert capabilities.supports_douban_id is False
 
 
 @pytest.mark.asyncio
@@ -872,6 +1215,52 @@ async def test_hdtime_homepage_user_identity_ignores_other_users_seeding_links()
 
 
 @pytest.mark.asyncio
+async def test_hdtime_fetches_published_total_independently_of_seeding_summary() -> None:
+    requested: list[tuple[str, dict[str, str]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requested.append((request.url.path, dict(request.url.params)))
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a>'
+                    '<a href="userdetails.php?id=99">CurrentUser</a>'
+                ),
+            )
+        if request.url.path == "/userdetails.php" and "action" not in request.url.params:
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a>'
+                    '<a href="userdetails.php?id=99&amp;action=2">当前做种</a>'
+                    '<a href="userdetails.php?id=99&amp;action=1">发种</a>'
+                    "<table><tr><td>等级</td><td>Member</td></tr></table>"
+                ),
+            )
+        if request.url.path == "/getusertorrentlistajax.php":
+            assert dict(request.url.params) == {"userid": "99", "type": "uploaded"}
+            return httpx2.Response(200, text="<p><b>7</b> 条记录 | 12.0 GiB</p>")
+        assert request.url.path == "/userdetails.php"
+        assert dict(request.url.params) == {"id": "99", "action": "2"}
+        return httpx2.Response(200, text="<p>0 条记录 | 总大小：0 B</p>")
+
+    profile = await HDTimeAdapter(
+        _COOKIE, transport=httpx2.MockTransport(handler)
+    ).fetch_user_profile()
+
+    assert profile.torrents_posted == 7
+    assert profile.seeding_count == 0
+    assert profile.seeding_size_bytes == 0
+    assert [path for path, _ in requested] == [
+        "/index.php",
+        "/userdetails.php",
+        "/getusertorrentlistajax.php",
+        "/userdetails.php",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_hdtime_rejects_ambiguous_seeding_summaries_without_guessing() -> None:
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path == "/index.php":
@@ -929,13 +1318,30 @@ async def test_hhclub_hourly_bonus_from_explicit_same_origin_bonus_page() -> Non
         )
 
     profile = await HHClubAdapter(
-        _COOKIE, transport=httpx2.MockTransport(handler)
+        _COOKIE, transport=_hhclub_transport(handler)
     ).fetch_user_profile()
     assert requested == ["/index.php", "/userdetails.php", "/mybonus.php"]
     assert profile.user_level == "Member"
     assert profile.bonus_per_hour == 12.345
     assert profile.seeding_count is None
     assert profile.seeding_size_bytes is None
+
+
+@pytest.mark.parametrize(
+    ("html", "expected"),
+    [
+        ("没有记录", 0),
+        ("No record.", 0),
+        (
+            "<div>17 | 2.4 TiB</div><table><tr><td>Title</td></tr></table>",
+            17,
+        ),
+    ],
+)
+def test_nexusphp_upload_count_matches_pt_depiler_empty_and_aggregate_markers(
+    html: str, expected: int
+) -> None:
+    assert _parse_nexus_ajax_total_count(html, _parse_html(html)) == expected
 
 
 @pytest.mark.asyncio
@@ -999,7 +1405,7 @@ async def test_hhclub_reads_current_users_full_published_count_from_confirmed_aj
         )
 
     profile = await HHClubAdapter(
-        _COOKIE, transport=httpx2.MockTransport(handler)
+        _COOKIE, transport=_hhclub_transport(handler)
     ).fetch_user_profile()
     assert profile.user_level == "Member"
     assert profile.torrents_posted == total
@@ -1071,7 +1477,7 @@ async def test_hhclub_does_not_follow_other_account_or_cross_origin_publication(
         )
 
     profile = await HHClubAdapter(
-        _COOKIE, transport=httpx2.MockTransport(handler)
+        _COOKIE, transport=_hhclub_transport(handler)
     ).fetch_user_profile()
     assert requested == ["/index.php", "/userdetails.php"]
     assert profile.user_level == "Member"
@@ -1114,7 +1520,7 @@ async def test_hhclub_publication_page_cannot_authorize_ajax_for_a_different_uid
         )
 
     profile = await HHClubAdapter(
-        _COOKIE, transport=httpx2.MockTransport(handler)
+        _COOKIE, transport=_hhclub_transport(handler)
     ).fetch_user_profile()
     assert requested == ["/index.php", "/userdetails.php", "/userdetails.php"]
     assert profile.user_level == "Member"
@@ -1159,7 +1565,7 @@ async def test_hhclub_optional_publication_ajax_failure_keeps_main_profile() -> 
         return httpx2.Response(403)
 
     profile = await HHClubAdapter(
-        _COOKIE, transport=httpx2.MockTransport(handler)
+        _COOKIE, transport=_hhclub_transport(handler)
     ).fetch_user_profile()
     assert requested == [
         "/index.php",
@@ -1199,7 +1605,7 @@ async def test_hhclub_seeding_categories_are_not_assumed_to_be_full_totals() -> 
         )
 
     profile = await HHClubAdapter(
-        _COOKIE, transport=httpx2.MockTransport(handler)
+        _COOKIE, transport=_hhclub_transport(handler)
     ).fetch_user_profile()
     assert requested == ["/index.php", "/userdetails.php"]
     assert profile.user_level == "Member"
@@ -1232,7 +1638,7 @@ async def test_hhclub_optional_bonus_page_failure_preserves_main_profile() -> No
         return httpx2.Response(404)
 
     profile = await HHClubAdapter(
-        _COOKIE, transport=httpx2.MockTransport(handler)
+        _COOKIE, transport=_hhclub_transport(handler)
     ).fetch_user_profile()
     assert requested == ["/index.php", "/userdetails.php", "/mybonus.php"]
     assert profile.user_level == "Member"
@@ -1262,7 +1668,7 @@ async def test_hhclub_profile_does_not_follow_cross_origin_bonus_link() -> None:
         )
 
     profile = await HHClubAdapter(
-        _COOKIE, transport=httpx2.MockTransport(handler)
+        _COOKIE, transport=_hhclub_transport(handler)
     ).fetch_user_profile()
     assert profile.bonus_per_hour is None
     assert requested == ["hhanclub.net", "hhanclub.net"]
@@ -1501,3 +1907,637 @@ def _hhclub_details_html() -> str:
       <a href="download.php?id=456&amp;passkey=synthetic">download</a>
     </body></html>
     """
+
+
+def test_user_level_parser_prefers_title_and_never_uses_neighboring_sidebar_text() -> None:
+    parser = _parse_html(
+        '<table><tr><td>用户等级</td><td><img title="Power User" alt="种子评论"></td></tr></table>'
+        '<a href="comments.php">种子评论</a><a href="experience.php">经验值</a>'
+    )
+    assert _profile_named_level(parser) == "Power User"
+
+    empty_grade = _parse_html(
+        "<table><tr><td>用户等级</td><td></td></tr></table>"
+        '<a href="comments.php">种子评论</a><a href="experience.php">经验值</a>'
+    )
+    assert _profile_named_level(empty_grade) is None
+
+    legacy_grade_note = _parse_html(
+        "<table><tr><td>等级</td><td>(幼儿园)User 🩺校验等级 "
+        "加群参考《规则&教程》第二部分第4条</td></tr></table>"
+    )
+    assert _profile_named_level(legacy_grade_note) == "(幼儿园)User"
+
+
+def test_hhclub_user_level_comes_from_profile_link_class() -> None:
+    parser = _parse_html('<a href="userdetails.php?id=99" class="Power_User_Name">YYxiaoma</a>')
+    assert _profile_named_level(parser, site_id="hhclub") == "Power User"
+
+
+def test_audiences_user_level_comes_from_profile_hero_class() -> None:
+    parser = _parse_html(
+        '<div class="ud-hero"><span class="ud-class"><b>精英(Elite)</b></span></div>'
+        '<a href="comments.php">种子评论</a><a href="experience.php">经验值</a>'
+    )
+    assert _profile_named_level(parser, site_id="audiences") == "精英(Elite)"
+
+
+@pytest.mark.asyncio
+async def test_u2_uses_its_bonus_and_seeding_summary_endpoints() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><a href="userdetails.php?id=99">YYxiaoma</a>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><table>'
+                    '<tr><td>用户等级</td><td><b title="旅人"></b></td></tr>'
+                    "<tr><td>上传量</td><td>55.17 GiB</td></tr>"
+                    "<tr><td>下载量</td><td>0 B</td></tr>"
+                    "<tr><td>分享率</td><td>∞</td></tr>"
+                    '<tr><td>UCoin</td><td><span title="26,191.39">UCoin</span></td></tr>'
+                    "<tr><td>做种积分</td><td>616,255.50</td></tr>"
+                    "<tr><td>发种数</td><td>0</td></tr>"
+                    "</table>"
+                ),
+            )
+        if request.url.path == "/mprecent.php":
+            assert request.url.params.get("user") == "99"
+            return httpx2.Response(
+                200, text='<table class="main"><td class="text">UCoin240</td></table>'
+            )
+        if request.url.path == "/getusertorrentlistajax.php":
+            assert dict(request.url.params) == {"userid": "99", "type": "seeding"}
+            return httpx2.Response(
+                200,
+                text=(
+                    "<div><b>17</b>条记录 / 大小 28.55 GiB</div>"
+                    "<table><tr><td>Title</td></tr></table>"
+                ),
+            )
+        raise AssertionError(f"Unexpected U2 request: {request.url}")
+
+    profile = await NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="u2",
+            default_base_url="https://u2.dmhy.org",
+            min_request_interval_seconds=0,
+        ),
+        transport=httpx2.MockTransport(handler),
+    ).fetch_user_profile()
+
+    assert profile.user_level == "旅人"
+    assert profile.uploaded_bytes == int(55.17 * 1024**3)
+    assert profile.downloaded_bytes == 0
+    assert profile.ratio is None  # UI formats uploaded > 0 / downloaded == 0 as ∞
+    assert profile.bonus == 26191.39
+    assert profile.seeding_points == 616255.50
+    assert profile.bonus_per_hour == 10.0
+    assert profile.seeding_count == 17
+    assert profile.seeding_size_bytes == int(28.55 * 1024**3)
+    assert profile.torrents_posted == 0
+    assert [request.url.path for request in requests] == [
+        "/index.php",
+        "/userdetails.php",
+        "/mprecent.php",
+        "/getusertorrentlistajax.php",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ubits_profile_uses_site_specific_coin_and_seed_point_labels() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a>'
+                    '<a class="Name" href="userdetails.php?id=99&hash=synthetic">YYxiaoma</a>'
+                ),
+            )
+        if request.url.path == "/mybonus.php":
+            return httpx2.Response(
+                200,
+                text=('<a href="usercp.php">settings</a><div>你当前每小时能获取 17.25</div>'),
+            )
+        assert request.url.path == "/userdetails.php"
+        assert request.url.params.get("id") == "99"
+        assert "hash" not in request.url.params
+        return httpx2.Response(
+            200,
+            text=(
+                '<a href="usercp.php">settings</a><table>'
+                '<tr><td>用户等级</td><td><img title="Power User" alt="Power User"></td></tr>'
+                "<tr><td>上传量</td><td>3.03 TiB</td></tr>"
+                "<tr><td>下载量</td><td>509 GiB</td></tr>"
+                "<tr><td>分享率</td><td>6.09</td></tr>"
+                "<tr><td>U币</td><td>340,160.90</td></tr>"
+                "<tr><td>做种积分</td><td>82,200.10</td></tr>"
+                "<tr><td>做种数</td><td>475</td></tr>"
+                "<tr><td>做种大小</td><td>13.68 TiB</td></tr>"
+                "<tr><td>发种数</td><td>6</td></tr>"
+                "</table>"
+            ),
+        )
+
+    profile = await NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="ubits",
+            default_base_url="https://ubits.club",
+            min_request_interval_seconds=0,
+        ),
+        transport=httpx2.MockTransport(handler),
+    ).fetch_user_profile()
+
+    assert profile.user_level == "Power User"
+    assert profile.uploaded_bytes == int(3.03 * 1024**4)
+    assert profile.downloaded_bytes == 509 * 1024**3
+    assert profile.ratio == 6.09
+    assert profile.bonus == 340160.90
+    assert profile.bonus_per_hour == 17.25
+    assert profile.seeding_points == 82200.10
+    assert profile.seeding_count == 475
+    assert profile.seeding_size_bytes == int(13.68 * 1024**4)
+    assert profile.torrents_posted == 6
+
+
+@pytest.mark.asyncio
+async def test_pttime_uses_legacy_getusertorrentlist_endpoint_for_totals() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><a href="userdetails.php?id=99">YYxiaoma</a>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><table>'
+                    '<tr><td>用户等级</td><td><b title="幼儿园 User"></b></td></tr>'
+                    "<tr><td>上传量</td><td>690.17 GiB</td></tr>"
+                    "<tr><td>下载量</td><td>500 GiB</td></tr>"
+                    "<tr><td>分享率</td><td>1.38</td></tr>"
+                    "</table>"
+                ),
+            )
+        if request.url.path == "/getusertorrentlist.php":
+            if request.url.params.get("type") == "seeding":
+                return httpx2.Response(
+                    200,
+                    text=(
+                        '<div id="outer"><span>Info</span><span>Info</span>'
+                        "<span><b>2</b></span><span>4.94 TiB</span></div>"
+                        "<table><tr><td>Title</td></tr><tr><td>one</td></tr></table>"
+                    ),
+                )
+            assert request.url.params.get("type") == "uploaded"
+            return httpx2.Response(
+                200,
+                text="<div><b>13</b>条记录</div><table><tr><td>Title</td></tr></table>",
+            )
+        raise AssertionError(f"Unexpected PTTime request: {request.url}")
+
+    profile = await NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="pttime",
+            default_base_url="https://www.pttime.org",
+            min_request_interval_seconds=0,
+        ),
+        transport=httpx2.MockTransport(handler),
+    ).fetch_user_profile()
+
+    assert profile.user_level == "幼儿园 User"
+    assert profile.seeding_count == 2
+    assert profile.seeding_size_bytes == int(4.94 * 1024**4)
+    assert profile.torrents_posted == 13
+    assert [request.url.path for request in requests] == [
+        "/index.php",
+        "/userdetails.php",
+        "/getusertorrentlist.php",
+        "/getusertorrentlist.php",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_audiences_profile_reads_mybonus_and_no_record_upload_response() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><a href="userdetails.php?id=99">YYxiaoma</a>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a>'
+                    '<div class="ud-hero"><span class="ud-class">'
+                    '<b class="Power_User_Name">YYxiaoma</b></span></div>'
+                    '<div class="site-userbar__compact-metric--uploaded">上传量 717.12 GiB</div>'
+                    '<div class="site-userbar__compact-metric--downloaded">下载量 477.60 GiB</div>'
+                    '<div class="site-userbar__compact-metric--ratio">1.51</div>'
+                    '<div class="site-userbar__compact-metric--bonus">爆米花 23,456.70</div>'
+                    '<div class="site-userbar__compact-metric--seeding-bonus">'
+                    "做种积分 45,678.90</div>"
+                    '<a class="site-userbar__compact-metric-inline-link--seeding">405</a>'
+                    "<table>"
+                    '<tr><td>用户等级</td><td><b title="User"></b></td></tr>'
+                    "<tr><td>上传量</td><td>1 GiB</td></tr>"
+                    "<tr><td>下载量</td><td>2 GiB</td></tr>"
+                    "<tr><td>分享率</td><td>9.99</td></tr></table>"
+                ),
+            )
+        if request.url.path == "/mybonus.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a>'
+                    '<div class="mybonus-side__rate">你当前每小时能获取 12.75</div>'
+                ),
+            )
+        assert request.url.path == "/getusertorrentlistajax.php"
+        assert request.headers.get("referer") == "https://audiences.me/userdetails.php"
+        if request.url.params.get("type") == "seeding":
+            return httpx2.Response(
+                200,
+                text=(
+                    "<table><tr><td>Title</td><td>Count</td><td>Size</td></tr>"
+                    "<tr><td>Total</td><td>404</td><td>5.25 TiB</td></tr></table>"
+                ),
+            )
+        return httpx2.Response(200, text="没有记录")
+
+    profile = await NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="audiences",
+            default_base_url="https://audiences.me",
+            min_request_interval_seconds=0,
+        ),
+        transport=httpx2.MockTransport(handler),
+    ).fetch_user_profile()
+
+    assert profile.user_level == "Power User"
+    assert profile.uploaded_bytes == int(717.12 * 1024**3)
+    assert profile.downloaded_bytes == int(477.60 * 1024**3)
+    assert profile.ratio == 1.51
+    assert profile.bonus == 23456.70
+    assert profile.seeding_points == 45678.90
+    assert profile.bonus_per_hour == 12.75
+    assert profile.seeding_count == 405  # profile compact metric wins over a list summary
+    assert profile.seeding_size_bytes == int(5.25 * 1024**4)
+    assert profile.torrents_posted == 0
+    assert "/mybonus.php" in [r.url.path for r in requests]
+    assert len([r for r in requests if r.url.path == "/getusertorrentlistajax.php"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_keepfrds_reads_user_and_torrent_stats_from_json_api_without_retired_ajax() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><a href="userdetails.php?id=99">YYxiaoma</a>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><table>'
+                    "<tr><td>实际上传量</td><td>2.00 TiB</td></tr>"
+                    "<tr><td>实际下载量</td><td>1.00 TiB</td></tr></table>"
+                ),
+            )
+        assert request.url.path == "/api/userdetails.php"
+        assert "application/json" in request.headers.get("accept", "")
+        return httpx2.Response(
+            200,
+            json={
+                "version": 1,
+                "user": {
+                    "id": 99,
+                    "username": "YYxiaoma",
+                    "class": 2,
+                    "joinedAt": "2024-01-15T10:30:22Z",
+                    "uploadedBytes": 3 * 1024**4,
+                    "downloadedBytes": 512 * 1024**3,
+                    "bonus": 12345.6,
+                },
+                "torrentStats": {
+                    "seeding": 607,
+                    "seedingBytes": 13 * 1024**4,
+                    "leeching": 0,
+                    "uploaded": 9,
+                    "updatedAt": "2026-10-19T00:00:00Z",
+                },
+            },
+        )
+
+    profile = await NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="keepfrds",
+            default_base_url="https://pt.keepfrds.com",
+            min_request_interval_seconds=0,
+        ),
+        transport=httpx2.MockTransport(handler),
+    ).fetch_user_profile()
+
+    assert profile.uid == "99"
+    assert profile.username == "YYxiaoma"
+    assert profile.user_level == "Power User"
+    assert profile.uploaded_bytes == 3 * 1024**4
+    assert profile.downloaded_bytes == 512 * 1024**3
+    assert profile.ratio == 6.0
+    assert profile.torrents_posted == 9
+    assert profile.seeding_count == 607
+    assert profile.seeding_size_bytes == 13 * 1024**4
+    assert profile.bonus == 12345.6
+    assert profile.join_time is not None
+    assert not any(request.url.path == "/getusertorrentlistajax.php" for request in requests)
+
+
+@pytest.mark.asyncio
+async def test_pterclub_uses_profile_seeding_count_and_site_specific_published_queries() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><a href="userdetails.php?id=99">YYxiaoma</a>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a>'
+                    '<a href="getusertorrentlist.php?userid=99&amp;type=seeding">607</a>'
+                    "<table>"
+                    '<tr><td>用户等级</td><td><img title="伯曼猫 User" alt="伯曼猫 User"></td></tr>'
+                    "<tr><td>上传量</td><td>886.73 GiB</td></tr>"
+                    "<tr><td>下载量</td><td>1.66 TiB</td></tr>"
+                    "<tr><td>分享率</td><td>534.17</td></tr>"
+                    "<tr><td>发种数</td><td>9</td></tr>"
+                    "</table>"
+                ),
+            )
+        if request.url.path == "/getusertorrentlistajax.php":
+            assert dict(request.url.params) == {"userid": "99", "type": "seeding"}
+            return httpx2.Response(
+                200,
+                text=(
+                    "<div><b>12</b>条记录 / 总大小 <b>7.52 TiB</b></div>"
+                    "<table><tr><td>Title</td></tr></table>"
+                ),
+            )
+        assert request.url.path == "/torrents.php"
+        params = dict(request.url.params)
+        assert params["search"] == "YYxiaoma"
+        assert params["search_area"] == "3"
+        assert params["search_mode"] == "3"
+        assert params["incldead"] == "1"
+        assert params["spstate"] == "0"
+        assert params["inclbookmarked"] == "0"
+        if params["check"] == "prechecked":
+            return httpx2.Response(
+                200,
+                text='<p class="np-pager"><b>1</b><b>17</b></p>',
+            )
+        assert params["check"] == "checked"
+        return httpx2.Response(
+            200,
+            text='<p class="np-pager"><b>1</b><b>5</b></p>',
+        )
+
+    profile = await NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="pterclub",
+            default_base_url="https://pterclub.net",
+            min_request_interval_seconds=0,
+        ),
+        transport=httpx2.MockTransport(handler),
+    ).fetch_user_profile()
+
+    assert profile.user_level == "伯曼猫 User"
+    assert profile.seeding_count == 607
+    assert profile.seeding_size_bytes == int(7.52 * 1024**4)
+    assert profile.torrents_posted == 22  # prechecked + checked, not generic AJAX total
+    assert [request.url.path for request in requests] == [
+        "/index.php",
+        "/userdetails.php",
+        "/getusertorrentlistajax.php",
+        "/torrents.php",
+        "/torrents.php",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hhclub_profile_parses_site_specific_bonus_and_generic_seeding_total() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><a href="userdetails.php?id=99">YYxiaoma</a>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><table>'
+                    "<tr><td>等级</td><td>Power User</td></tr>"
+                    "<tr><td>上传量</td><td>3.15 TiB</td></tr>"
+                    "<tr><td>下载量</td><td>694 GiB</td></tr>"
+                    "<tr><td>分享率</td><td>4.65</td></tr>"
+                    "<tr><td>憨豆</td><td>313,451.00</td></tr>"
+                    "<tr><td>做种积分</td><td>102,358.60</td></tr>"
+                    '</table><div class="grid"><div class="row-span-4">12.75</div></div>'
+                ),
+            )
+        assert request.url.path == "/getusertorrentlistajax.php"
+        assert dict(request.url.params) == {"userid": "99", "type": "seeding"}
+        return httpx2.Response(
+            200,
+            text=(
+                "<div><b>694</b>条记录 / 总大小 <b>14.95 TiB</b></div>"
+                "<table><tr><td>Title</td></tr></table>"
+            ),
+        )
+
+    profile = await HHClubAdapter(
+        _COOKIE,
+        transport=httpx2.MockTransport(handler),
+    ).fetch_user_profile()
+
+    assert profile.user_level == "Power User"
+    assert profile.uploaded_bytes == int(3.15 * 1024**4)
+    assert profile.downloaded_bytes == 694 * 1024**3
+    assert profile.ratio == 4.65
+    assert profile.bonus == 313451.0
+    assert profile.seeding_points == 102358.6
+    assert profile.bonus_per_hour == 12.75
+    assert profile.seeding_count == 694
+    assert profile.seeding_size_bytes == int(14.95 * 1024**4)
+    assert [request.url.path for request in requests] == [
+        "/index.php",
+        "/userdetails.php",
+        "/getusertorrentlistajax.php",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_springsunday_total_timeout_preserves_profile_on_slow_uploaded_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "backend.app.infrastructure.adapters.nexusphp._DEFAULT_PROFILE_TOTAL_TIMEOUT_SECONDS",
+        0.01,
+    )
+    requests: list[tuple[str, str | None]] = []
+
+    class SlowUploadedTransport(httpx2.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+            path = request.url.path
+            request_type = request.url.params.get("type")
+            requests.append((path, request_type))
+            if path == "/index.php":
+                return httpx2.Response(
+                    200,
+                    text=(
+                        '<a href="usercp.php">settings</a>'
+                        '<a href="userdetails.php?id=99">YYxiaoma</a>'
+                    ),
+                )
+            if path == "/userdetails.php":
+                return httpx2.Response(
+                    200,
+                    text=(
+                        '<a href="usercp.php">settings</a><table>'
+                        "<tr><td>用户等级</td><td>User</td></tr>"
+                        "<tr><td>上传量</td><td>10 GiB</td></tr>"
+                        "<tr><td>下载量</td><td>5 GiB</td></tr>"
+                        "<tr><td>分享率</td><td>2.0</td></tr>"
+                        "<tr><td>积分</td><td>100</td></tr></table>"
+                    ),
+                )
+            if path == "/getusertorrentlistajax.php" and request_type == "seeding":
+                return httpx2.Response(
+                    200,
+                    text=(
+                        "<div><b>5</b>条记录 / 总大小 <b>1.0 TiB</b></div>"
+                        "<table><tr><td>Title</td></tr></table>"
+                    ),
+                )
+            if path == "/getusertorrentlistajax.php" and request_type == "uploaded":
+                await asyncio.sleep(0.1)
+                return httpx2.Response(200, text="<div><b>0</b>条记录</div>")
+            raise AssertionError(f"Unexpected SpringSunday request: {request.url}")
+
+        async def aclose(self) -> None:
+            return None
+
+    adapter = NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="spring_sunday",
+            default_base_url="https://springsunday.net",
+            min_request_interval_seconds=0,
+        ),
+        transport=SlowUploadedTransport(),
+        timeout_seconds=0.001,
+    )
+    profile = await adapter.fetch_user_profile()
+
+    assert profile.user_level == "User"
+    assert profile.uploaded_bytes == 10 * 1024**3
+    assert profile.downloaded_bytes == 5 * 1024**3
+    assert profile.seeding_count == 5
+    assert profile.seeding_size_bytes == 1024**4
+    assert profile.torrents_posted is None
+    assert requests.count(("/index.php", None)) == 1
+    assert requests.count(("/userdetails.php", None)) == 1
+    assert requests.count(("/getusertorrentlistajax.php", "seeding")) == 1
+    assert requests.count(("/getusertorrentlistajax.php", "uploaded")) == 1
+
+
+@pytest.mark.asyncio
+async def test_springsunday_optional_stat_timeout_does_not_retry_whole_profile() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><a href="userdetails.php?id=99">YYxiaoma</a>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<a href="usercp.php">settings</a><table>'
+                    "<tr><td>上传量</td><td>644.07 GiB</td></tr>"
+                    "<tr><td>下载量</td><td>0 B</td></tr>"
+                    "<tr><td>分享率</td><td>∞</td></tr>"
+                    "<tr><td>积分</td><td>10,577.70</td></tr></table>"
+                ),
+            )
+        if request.url.path == "/getusertorrentlistajax.php":
+            raise httpx2.ReadTimeout("synthetic slow optional endpoint")
+        raise AssertionError(f"Unexpected SpringSunday request: {request.url}")
+
+    profile = await NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="spring_sunday",
+            default_base_url="https://springsunday.net",
+            min_request_interval_seconds=0,
+        ),
+        transport=httpx2.MockTransport(handler),
+    ).fetch_user_profile()
+
+    assert profile.uploaded_bytes == int(644.07 * 1024**3)
+    assert profile.downloaded_bytes == 0
+    assert profile.bonus == 10577.70
+    assert requests.count("/index.php") == 1
+    assert requests.count("/userdetails.php") == 1
+    assert requests.count("/getusertorrentlistajax.php") == 2

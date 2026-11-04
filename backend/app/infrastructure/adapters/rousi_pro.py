@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime
 
 import httpx2
@@ -29,6 +30,7 @@ from backend.app.infrastructure.torrent_parser import parse_torrent
 _BASE_URL = "https://rousi.pro"
 _READ_ONLY_AUTH_PATH = "/api/points/attendance/stats"
 _PROFILE_PATH = "/api/v1/profile"
+_SEEDING_REWARD_PATH = "/api/v1/seeding-reward"
 _RESPONSE_LIMIT = 32 * 1024
 _SEARCH_PATH = "/api/v1/torrents"
 _SEARCH_RESPONSE_LIMIT = 2 * 1024 * 1024
@@ -112,9 +114,15 @@ class RousiProCandidateAdapter:
         # unreviewed endpoints. Crucially, /api/v1/torrents is a public search
         # route with a DIFFERENT response contract when an api-token header
         # is included: authenticated requests return a broad unfiltered list.
-        # Only the authentication test receives the API key. Never send Cookie
-        # or API key to public search, follow redirects or print credentials.
-        if path not in {_READ_ONLY_AUTH_PATH, _PROFILE_PATH, _SEARCH_PATH}:
+        # Only the authentication probe uses the api-token header. Profile and
+        # seeding-reward reads use Bearer auth; public search intentionally omits
+        # credentials because that changes the endpoint's response contract.
+        if path not in {
+            _READ_ONLY_AUTH_PATH,
+            _PROFILE_PATH,
+            _SEEDING_REWARD_PATH,
+            _SEARCH_PATH,
+        }:
             raise ValueError("Rousi Pro API 只允许已审查的只读接口")
         try:
             async with (
@@ -137,7 +145,7 @@ class RousiProCandidateAdapter:
                                 "Authorization": _bearer_auth(self._api_key),
                                 "Accept": "application/json",
                             }
-                            if path == _PROFILE_PATH
+                            if path in {_PROFILE_PATH, _SEEDING_REWARD_PATH}
                             else {"Accept": "application/json"}
                         )
                     ),
@@ -225,7 +233,7 @@ class RousiProCandidateAdapter:
             not isinstance(user_level, str) or not user_level.strip() or len(user_level) > 256
         ):
             user_level = None
-        return SiteUserProfile(
+        profile = SiteUserProfile(
             site_id="rousi_pro",
             uid=str(uid) if uid is not None else None,
             username=username.strip() if isinstance(username, str) else None,
@@ -236,9 +244,31 @@ class RousiProCandidateAdapter:
             seeding_count=_nonnegative_int(seeding.get("seeding_count")),
             seeding_size_bytes=_nonnegative_int(seeding.get("seeding_size")),
             bonus=_nonnegative_float(raw.get("karma")),
+            seeding_points=_nonnegative_float(raw.get("credits")),
             join_time=_parse_rousipro_datetime(raw.get("registered_at")),
             last_access_at=_parse_rousipro_datetime(raw.get("last_active_at")),
         )
+        # PT-Depiler's Rousi Pro definition reads bonusPerHour from the
+        # authenticated seeding-reward endpoint, not from uploaded bytes or the
+        # static profile. This is an optional read-only supplement.
+        if profile.username is not None and profile.bonus_per_hour is None:
+            try:
+                reward_response = await self._read_only_json(
+                    _SEEDING_REWARD_PATH, size_limit=_RESPONSE_LIMIT
+                )
+                reward_data = reward_response.get("data")
+                if (
+                    type(reward_response.get("code")) is int
+                    and reward_response["code"] == 0
+                    and isinstance(reward_data, dict)
+                ):
+                    reward = _nonnegative_float(reward_data.get("total_reward"))
+                    if reward is not None:
+                        profile = replace(profile, bonus_per_hour=reward)
+            except SiteAdapterError:
+                # Optional reward statistics must not hide valid profile data.
+                pass
+        return profile
 
     async def search(self, query: SearchQuery) -> SearchPage:
         # An external-ID-only query has no verified API mapping. Do not turn it

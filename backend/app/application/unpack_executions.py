@@ -57,6 +57,7 @@ class UnpackExecutionItemView:
     selected_candidate_id: str | None
     match_origin: str | None
     candidate_generation: int
+    highest_candidate_score_bps: int | None
     retry_count: int
     content_verification_level: str | None
     torrent_metainfo_digest: str | None
@@ -169,34 +170,41 @@ class UnpackExecutionQueryService:
                     UnpackExecution.id.desc(),
                 ).limit(limit)
             ).all()
-            no_match_counts = self._no_match_counts(session, tuple(item.id for item in records))
+            item_counts = self._item_status_counts(session, tuple(item.id for item in records))
             return tuple(
-                self._execution_view(item, no_match_count=no_match_counts.get(item.id, 0))
+                self._execution_view(item, item_counts=item_counts.get(item.id, {}))
                 for item in records
             )
 
     def get(self, execution_id: str) -> UnpackExecutionView:
         with self._session_factory() as session:
             execution = self._require_execution(session, execution_id)
-            counts = self._no_match_counts(session, (execution.id,))
-            return self._execution_view(execution, no_match_count=counts.get(execution.id, 0))
+            item_counts = self._item_status_counts(session, (execution.id,))
+            return self._execution_view(execution, item_counts=item_counts.get(execution.id, {}))
 
     @staticmethod
-    def _no_match_counts(session: Session, execution_ids: tuple[str, ...]) -> dict[str, int]:
+    def _item_status_counts(
+        session: Session,
+        execution_ids: tuple[str, ...],
+    ) -> dict[str, dict[UnpackItemStatus, int]]:
         if not execution_ids:
             return {}
-        return {
-            execution_id: int(count)
-            for execution_id, count in session.execute(
-                select(
-                    UnpackExecutionItem.execution_id,
-                    func.count(UnpackExecutionItem.id),
-                )
-                .where(UnpackExecutionItem.execution_id.in_(execution_ids))
-                .where(UnpackExecutionItem.status == UnpackItemStatus.NO_MATCH.value)
-                .group_by(UnpackExecutionItem.execution_id)
-            )
+        counts_by_execution: dict[str, dict[UnpackItemStatus, int]] = {
+            execution_id: {} for execution_id in execution_ids
         }
+        rows = session.execute(
+            select(
+                UnpackExecutionItem.execution_id,
+                UnpackExecutionItem.status,
+                func.count(UnpackExecutionItem.id),
+            )
+            .where(UnpackExecutionItem.execution_id.in_(execution_ids))
+            .group_by(UnpackExecutionItem.execution_id, UnpackExecutionItem.status)
+        )
+        for execution_id, raw_status, count in rows:
+            status = UnpackItemStatus(raw_status)
+            counts_by_execution.setdefault(execution_id, {})[status] = int(count)
+        return counts_by_execution
 
     def list_items(
         self,
@@ -253,6 +261,27 @@ class UnpackExecutionQueryService:
                 if visible_ids
                 else set()
             )
+            # Read the highest score only from the item's current candidate
+            # generation. Historical retry candidates must never leak into
+            # the visible review badge. One bounded query serves the page.
+            highest_scores: dict[str, int] = {}
+            if visible_ids:
+                score_rows = session.execute(
+                    select(
+                        UnpackMatchCandidate.item_id,
+                        func.max(UnpackMatchCandidate.score_bps),
+                    )
+                    .join(
+                        UnpackExecutionItem,
+                        UnpackExecutionItem.id == UnpackMatchCandidate.item_id,
+                    )
+                    .where(
+                        UnpackMatchCandidate.item_id.in_(visible_ids),
+                        UnpackMatchCandidate.generation == UnpackExecutionItem.candidate_generation,
+                    )
+                    .group_by(UnpackMatchCandidate.item_id)
+                ).all()
+                highest_scores = {row[0]: row[1] for row in score_rows if row[1] is not None}
             return UnpackExecutionItemPage(
                 items=tuple(
                     self._item_view(
@@ -262,6 +291,7 @@ class UnpackExecutionQueryService:
                             and item.id not in side_effect_item_ids
                         ),
                         has_external_operations=item.id in side_effect_item_ids,
+                        highest_candidate_score_bps=highest_scores.get(item.id),
                     )
                     for item in visible
                 ),
@@ -476,7 +506,14 @@ class UnpackExecutionQueryService:
         return execution
 
     @staticmethod
-    def _execution_view(record: UnpackExecution, *, no_match_count: int) -> UnpackExecutionView:
+    def _execution_view(
+        record: UnpackExecution,
+        *,
+        item_counts: dict[UnpackItemStatus, int],
+    ) -> UnpackExecutionView:
+        def count(status: UnpackItemStatus) -> int:
+            return item_counts.get(status, 0)
+
         return UnpackExecutionView(
             id=record.id,
             definition_id=record.definition_id,
@@ -485,14 +522,15 @@ class UnpackExecutionQueryService:
             discovery_complete=record.discovery_complete,
             discovery_cursor=record.discovery_cursor,
             total_count=record.total_count,
-            matched_auto_count=record.matched_auto_count,
-            no_match_count=no_match_count,
-            review_count=record.review_count,
-            content_verified_count=record.content_verified_count,
-            content_mismatch_count=record.content_mismatch_count,
-            timeout_count=record.timeout_count,
-            error_count=record.error_count,
-            completed_count=record.completed_count,
+            matched_auto_count=count(UnpackItemStatus.MATCHED_AUTO),
+            no_match_count=count(UnpackItemStatus.NO_MATCH),
+            review_count=count(UnpackItemStatus.REVIEW_REQUIRED),
+            content_verified_count=count(UnpackItemStatus.CONTENT_VERIFIED),
+            content_mismatch_count=count(UnpackItemStatus.CONTENT_MISMATCH),
+            timeout_count=count(UnpackItemStatus.MATCH_TIMEOUT),
+            error_count=count(UnpackItemStatus.MATCH_ERROR)
+            + count(UnpackItemStatus.EXECUTION_ERROR),
+            completed_count=count(UnpackItemStatus.COMPLETED),
             started_at=record.started_at,
             finished_at=record.finished_at,
             version=record.version,
@@ -506,6 +544,7 @@ class UnpackExecutionQueryService:
         *,
         review_allowed: bool,
         has_external_operations: bool,
+        highest_candidate_score_bps: int | None,
     ) -> UnpackExecutionItemView:
         return UnpackExecutionItemView(
             id=record.id,
@@ -517,6 +556,7 @@ class UnpackExecutionQueryService:
             selected_candidate_id=record.selected_candidate_id,
             match_origin=record.match_origin,
             candidate_generation=record.candidate_generation,
+            highest_candidate_score_bps=highest_candidate_score_bps,
             retry_count=record.retry_count,
             content_verification_level=record.content_verification_level,
             torrent_metainfo_digest=record.torrent_metainfo_digest,

@@ -21,6 +21,10 @@ from backend.app.application.unpack_acceptance import (
     assert_unmarked_execution_for_write,
     is_write_blocked_acceptance_execution,
 )
+from backend.app.application.unpack_manual_torrents import (
+    ManualTorrentStore,
+    ManualTorrentStoreError,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.file_mapping import AutoMappingDecision, SourceFileCandidate, auto_map_files
 from backend.app.domain.operation import OperationStatus
@@ -129,6 +133,7 @@ class _Context:
     site_config_version: int
     adapter_site_id: str
     torrent_id: str
+    manual_torrent_storage_key: str | None
     expected_metainfo_digest: str
     target_downloader_id: str
     output_directory: str
@@ -164,6 +169,7 @@ class UnpackAuxiliaryStagingService:
         *,
         path_scope: AuthorizedPathScope,
         fetch_timeout_seconds: float = 30.0,
+        manual_torrent_store: ManualTorrentStore | None = None,
     ) -> None:
         if fetch_timeout_seconds <= 0:
             raise ValueError("辅助文件 torrent 获取超时必须大于 0")
@@ -172,6 +178,7 @@ class UnpackAuxiliaryStagingService:
         self._downloader_provider = downloader_provider
         self._path_scope = path_scope
         self._fetch_timeout_seconds = fetch_timeout_seconds
+        self._manual_torrent_store = manual_torrent_store
 
     def list_auxiliary_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
         if limit < 1 or limit > 500:
@@ -347,6 +354,7 @@ class UnpackAuxiliaryStagingService:
             site_config_version = raw_ref.get("site_config_version")
             adapter_site_id = raw_ref.get("adapter_site_id")
             torrent_id = raw_ref.get("torrent_id")
+            manual_torrent_storage_key = raw_ref.get("manual_torrent_storage_key")
             if (
                 raw_ref.get("site_config_id") != candidate.site_id
                 or torrent_id != candidate.candidate_key
@@ -357,6 +365,10 @@ class UnpackAuxiliaryStagingService:
                 or not adapter_site_id
                 or not isinstance(torrent_id, str)
                 or not torrent_id
+                or (
+                    manual_torrent_storage_key is not None
+                    and not ManualTorrentStore.is_valid_key(manual_torrent_storage_key)
+                )
             ):
                 raise self._conflict("辅助文件补齐候选缺少安全站点引用")
             expected_digest = item.torrent_metainfo_digest or candidate.metainfo_digest
@@ -400,6 +412,7 @@ class UnpackAuxiliaryStagingService:
                 site_config_version=site_config_version,
                 adapter_site_id=adapter_site_id,
                 torrent_id=torrent_id,
+                manual_torrent_storage_key=manual_torrent_storage_key,
                 expected_metainfo_digest=expected_digest,
                 target_downloader_id=target_downloader_id,
                 output_directory=output_directory,
@@ -426,22 +439,36 @@ class UnpackAuxiliaryStagingService:
         ):
             raise self._conflict("候选站点配置已变化，请重新匹配")
 
-        try:
-            async with asyncio.timeout(self._fetch_timeout_seconds):
-                payload = await site_binding.adapter.fetch_torrent(context.torrent_id)
-        except TimeoutError as exc:
-            # Only the site's metadata read is safe to classify as transient.
-            # Do not swallow a raw TimeoutError from a downloader ADD/STOP/
-            # REMOVE write: its remote result may be unknown and requires
-            # explicit journal reconciliation rather than a silent retry.
-            raise SiteAdapterError(
-                "SITE_UNAVAILABLE",
-                "辅助文件 torrent 元信息读取超时",
-                retryable=True,
-            ) from exc
-        if payload.site_id != context.adapter_site_id or payload.torrent_id != context.torrent_id:
-            raise self._conflict("重新获取的 torrent 身份与候选不一致")
-        meta = parse_torrent(payload.content)
+        if context.manual_torrent_storage_key is not None:
+            if self._manual_torrent_store is None:
+                raise self._conflict("手动种子文件存储当前不可用")
+            try:
+                torrent_content = self._manual_torrent_store.load(
+                    context.manual_torrent_storage_key
+                )
+            except ManualTorrentStoreError as exc:
+                raise self._conflict("已确认的手动种子文件不存在或完整性校验失败") from exc
+        else:
+            try:
+                async with asyncio.timeout(self._fetch_timeout_seconds):
+                    payload = await site_binding.adapter.fetch_torrent(context.torrent_id)
+            except TimeoutError as exc:
+                # Only the site's metadata read is safe to classify as transient.
+                # Do not swallow a raw TimeoutError from a downloader ADD/STOP/
+                # REMOVE write: its remote result may be unknown and requires
+                # explicit journal reconciliation rather than a silent retry.
+                raise SiteAdapterError(
+                    "SITE_UNAVAILABLE",
+                    "辅助文件 torrent 元信息读取超时",
+                    retryable=True,
+                ) from exc
+            if (
+                payload.site_id != context.adapter_site_id
+                or payload.torrent_id != context.torrent_id
+            ):
+                raise self._conflict("重新获取的 torrent 身份与候选不一致")
+            torrent_content = payload.content
+        meta = parse_torrent(torrent_content)
         if meta.metainfo_digest != context.expected_metainfo_digest:
             raise ApplicationError(
                 code="UNPACK_AUX_TORRENT_CHANGED",
@@ -516,7 +543,7 @@ class UnpackAuxiliaryStagingService:
             context=context,
             binding=binding,
             meta=meta,
-            payload=payload.content,
+            payload=torrent_content,
             plan=plan,
             torrent_hash=torrent_hash,
             staging_path=staging_path,

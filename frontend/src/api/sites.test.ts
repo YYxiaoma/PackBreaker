@@ -84,6 +84,20 @@ describe('站点 API 并发前置条件', () => {
     expect(post).toHaveBeenCalledWith('/sites/site-1/sync');
   });
 
+  it('仅显式手动同步携带 force_retry，自动刷新不绕过断路器', async () => {
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: {} });
+    await syncSiteDetail('site-1', true);
+    expect(post).toHaveBeenCalledWith('/sites/site-1/sync', null, {
+      params: { force_retry: true },
+    });
+  });
+
+  it('站点用户资料同步使用单独超时，不受全局 60 秒 API 超时限制', async () => {
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: {} });
+    await syncSiteDetail('site-1', false, 750_000);
+    expect(post).toHaveBeenCalledWith('/sites/site-1/sync', null, { timeout: 750_000 });
+  });
+
   it('删除与启停都携带当前版本', async () => {
     const remove = vi.spyOn(apiClient, 'delete').mockResolvedValue({ data: undefined });
     const post = vi.spyOn(apiClient, 'post').mockResolvedValue({ data: {} });

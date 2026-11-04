@@ -161,9 +161,11 @@ async def test_nexus_detail_read_timeout_is_site_scoped_and_search_unchanged(
         limit: int,
         accept: str = "application/x-bittorrent",
         timeout_seconds: float | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> bytes:
         assert accept == "text/html"
         assert limit > 0
+        assert extra_headers is None
         path = url.split("?", 1)[0].rsplit("/", 1)[-1]
         observed.append((path, timeout_seconds))
         if path == "index.php":
@@ -632,8 +634,8 @@ async def test_mteam_user_profile_normalizes_nested_stats_and_preserves_missing_
                         "username": "SyntheticUser",
                         "userClass": "Elite",
                         "memberStatus": {
-                            "createdDate": "2024-01-15T10:30:22+08:00",
-                            "lastBrowse": "2026-10-16T10:20:00+08:00",
+                            "createdDate": "2024-01-15T10:30:22",
+                            "lastBrowse": "2026-10-16T10:20:00",
                         },
                         "stats": {
                             "uploaded": "1099511627776",
@@ -705,7 +707,11 @@ async def test_mteam_user_profile_supports_current_member_count_shape() -> None:
                 200,
                 json={
                     "code": "0",
-                    "data": {"seederCount": "34", "seederSize": "4398046511104"},
+                    "data": {
+                        "seederCount": "34",
+                        "seederSize": "4398046511104",
+                        "uploadCount": "567",
+                    },
                 },
             )
         if request.url.path == "/api/tracker/mybonus":
@@ -732,6 +738,7 @@ async def test_mteam_user_profile_supports_current_member_count_shape() -> None:
     assert profile.bonus_per_hour == 7.25
     assert profile.seeding_count == 34
     assert profile.seeding_size_bytes == 4398046511104
+    assert profile.torrents_posted == 567
     assert profile.message_count == 2
 
 

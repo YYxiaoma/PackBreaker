@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -15,7 +15,7 @@ from backend.app.api.dependencies import CSRF_COOKIE
 from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretStore
 from backend.app.config import AppSettings
-from backend.app.domain.site_adapter import SiteUserProfile
+from backend.app.domain.site_adapter import SiteConnectionResult, SiteUserProfile
 from backend.app.domain.site_config import SiteKind, site_kind_is_persistable, site_profile
 from backend.app.domain.site_search import SiteSearchCapabilities
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
@@ -23,8 +23,11 @@ from backend.app.infrastructure.adapters.sites import SiteAdapterFactory
 from backend.app.infrastructure.persistence.models import (
     SecretRecord,
     Site,
+    SiteRiskEvent,
     SiteUserProfileSnapshot,
     SiteUserProfileSync,
+    UnpackDefinition,
+    UnpackExecution,
 )
 from backend.app.infrastructure.persistence.site_repositories import SiteRepository
 from backend.app.main import create_app
@@ -77,6 +80,268 @@ def _create_site(client: TestClient, api_key: str = "synthetic-mteam-key") -> di
     return cast(dict[str, object], response.json())
 
 
+def test_adapter_for_config_respects_enabled_site_snapshot(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        created = _create_site(client)
+        site_id = str(created["id"])
+        enabled = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={**_csrf(client), "If-Match": '"1"'},
+            json={"action": "enable"},
+        )
+        assert enabled.status_code == 200, enabled.text
+
+        binding = app.state.site_service.adapter_for_config(site_id)
+        assert binding.config_id == site_id
+        assert binding.site_id == "mteam"
+
+        disabled = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={**_csrf(client), "If-Match": enabled.headers["ETag"]},
+            json={"action": "disable"},
+        )
+        assert disabled.status_code == 200, disabled.text
+        with pytest.raises(ApplicationError) as error:
+            app.state.site_service.adapter_for_config(site_id)
+        assert error.value.code == "SITE_DISABLED"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_site_risk_limit_auto_disables_and_requires_manual_reenable(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        created = _create_site(client)
+        site_id = str(created["id"])
+        assert created["risk_control_limit"] == 3
+        assert created["risk_retry_interval_seconds"] == 60
+        assert created["risk_disabled_at"] is None
+
+        enabled = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={**_csrf(client), "If-Match": '"1"'},
+            json={"action": "enable"},
+        )
+        assert enabled.status_code == 200, enabled.text
+        assert enabled.json()["enabled"] is True
+
+        patched = client.patch(
+            f"/api/v1/sites/{site_id}",
+            headers={**_csrf(client), "If-Match": enabled.headers["ETag"]},
+            json={"risk_control_limit": 2, "risk_retry_interval_seconds": 120},
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["enabled"] is True
+        assert patched.json()["risk_control_limit"] == 2
+        assert patched.json()["risk_retry_interval_seconds"] == 120
+
+        runtime = app.state.runtime
+        factory = runtime.session_factory
+        now = datetime.now(UTC)
+        with factory() as session:
+            definition = UnpackDefinition(
+                id="risk-definition-1",
+                name="风控验收",
+                trigger_kind="MANUAL",
+                status="PENDING_EXECUTION",
+                source_kind="DIRECTORY",
+                execution_scope_kind="ALL_MATCHING_MEDIA",
+                source_config={"directory_path": "/tmp"},
+                file_filter={},
+                site_ids=[site_id],
+                output_config={},
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(definition)
+            session.flush()
+            session.add(
+                UnpackExecution(
+                    id="risk-execution-1",
+                    definition_id=definition.id,
+                    trigger="MANUAL",
+                    status="MATCHING",
+                    config_snapshot={"site_ids": [site_id]},
+                    discovery_complete=True,
+                    total_count=0,
+                    started_at=now,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                UnpackExecution(
+                    id="risk-execution-2",
+                    definition_id=definition.id,
+                    trigger="MANUAL",
+                    status="MATCHING",
+                    config_snapshot={"site_ids": [site_id]},
+                    discovery_complete=True,
+                    total_count=0,
+                    started_at=now,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.commit()
+
+        service = app.state.site_service
+        first = service.record_unpack_risk_event(
+            execution_id="risk-execution-1",
+            item_id="risk-item-1",
+            site_config_id=site_id,
+            error_code="SITE_RATE_LIMITED",
+        )
+        assert first is not None and first.risk_count == 1
+        assert first.threshold_reached is False
+
+        with factory() as session:
+            event = session.scalar(
+                select(SiteRiskEvent)
+                .where(SiteRiskEvent.execution_id == "risk-execution-1")
+                .order_by(SiteRiskEvent.occurred_at)
+                .limit(1)
+            )
+            assert event is not None
+            event.occurred_at = datetime.now(UTC) - timedelta(minutes=11)
+            session.commit()
+
+        second = service.record_unpack_risk_event(
+            execution_id="risk-execution-1",
+            item_id="risk-item-2",
+            site_config_id=site_id,
+            error_code="SITE_RATE_LIMITED",
+        )
+        assert second is not None and second.risk_count == 1
+        assert second.threshold_reached is False
+
+        third = service.record_unpack_risk_event(
+            execution_id="risk-execution-1",
+            item_id="risk-item-3",
+            site_config_id=site_id,
+            error_code="SITE_RATE_LIMITED",
+        )
+        assert third is not None and third.risk_count == 2
+        assert third.threshold_reached is True
+
+        blocked = client.get(f"/api/v1/sites/{site_id}")
+        assert blocked.status_code == 200
+        assert blocked.json()["enabled"] is False
+        assert blocked.json()["risk_disabled_at"] is not None
+
+        other_execution = service.record_unpack_risk_event(
+            execution_id="risk-execution-2",
+            item_id="risk-item-other-task",
+            site_config_id=site_id,
+            error_code="SITE_RATE_LIMITED",
+        )
+        assert other_execution is not None and other_execution.risk_count == 1
+        assert other_execution.threshold_reached is False
+
+        reenabled = client.post(
+            f"/api/v1/sites/{site_id}/actions",
+            headers={**_csrf(client), "If-Match": blocked.headers["ETag"]},
+            json={"action": "enable"},
+        )
+        assert reenabled.status_code == 200, reenabled.text
+        assert reenabled.json()["enabled"] is True
+        assert reenabled.json()["risk_disabled_at"] is None
+
+        non_risk = service.record_unpack_risk_event(
+            execution_id="risk-execution-2",
+            item_id="risk-item-non-risk",
+            site_config_id=site_id,
+            error_code="SITE_TIMEOUT",
+        )
+        assert non_risk is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_site_risk_config_rejects_invalid_values(tmp_path: Path) -> None:
+    client, _app = _authenticated_client(tmp_path)
+    try:
+        created = _create_site(client)
+        site_id = str(created["id"])
+        response = client.patch(
+            f"/api/v1/sites/{site_id}",
+            headers={**_csrf(client), "If-Match": '"1"'},
+            json={"risk_control_limit": 0, "risk_retry_interval_seconds": 61},
+        )
+        assert response.status_code == 422
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_springsunday_accepts_3600_second_timeout_through_normal_patch_path(
+    tmp_path: Path,
+) -> None:
+    client, _app = _authenticated_client(tmp_path)
+    try:
+        created = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={
+                "name": "SpringSunday 隔离验收",
+                "type": "SPRING_SUNDAY",
+                "credential": {"kind": "COOKIE", "value": "synthetic-springsunday-cookie"},
+            },
+        )
+        assert created.status_code == 201, created.text
+        site_id = str(created.json()["id"])
+        assert created.json()["enabled"] is False
+
+        updated = client.patch(
+            f"/api/v1/sites/{site_id}",
+            headers={**_csrf(client), "If-Match": '"1"'},
+            json={
+                "request_timeout_seconds": 3600,
+                "browser_emulation_enabled": True,
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        body = updated.json()
+        assert body["request_timeout_seconds"] == 3600
+        assert body["browser_emulation_enabled"] is True
+        assert body["enabled"] is False
+        assert body["connection_status"] == "UNTESTED"
+        assert body["capabilities"] == {}
+        assert updated.headers["ETag"] == '"2"'
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_non_springsunday_sites_still_reject_timeout_over_120_seconds(
+    tmp_path: Path,
+) -> None:
+    client, _app = _authenticated_client(tmp_path)
+    try:
+        created = client.post(
+            "/api/v1/sites",
+            headers=_csrf(client),
+            json={
+                "name": "M-Team 超时上限回归",
+                "type": "MTEAM",
+                "credential": {"kind": "API_KEY", "value": "synthetic-mteam-key"},
+            },
+        )
+        assert created.status_code == 201, created.text
+        site_id = str(created.json()["id"])
+        response = client.patch(
+            f"/api/v1/sites/{site_id}",
+            headers={**_csrf(client), "If-Match": '"1"'},
+            json={"request_timeout_seconds": 3600},
+        )
+        assert response.status_code == 422
+        assert "SITE_RUNTIME_CONFIG_INVALID" in response.text
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_site_detail_reads_cached_profile_and_never_exposes_credentials(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     secret = "synthetic-site-detail-secret"
@@ -96,6 +361,7 @@ def test_site_detail_reads_cached_profile_and_never_exposes_credentials(tmp_path
                     uploaded_bytes=12_345,
                     downloaded_bytes=1_234,
                     ratio=10.02,
+                    torrents_posted=1234,
                     seeding_count=256,
                     seeding_size_bytes=8_192,
                     hnr_status="正常",
@@ -147,7 +413,10 @@ def test_site_detail_reads_cached_profile_and_never_exposes_credentials(tmp_path
         assert listed.status_code == 200
         summary = listed.json()["items"][0]["user_summary"]
         assert summary["username"] == "demo001"
+        assert summary["torrents_posted"] == 1234
         assert summary["seeding_count"] == 256
+        assert summary["join_time"] == now.isoformat().replace("+00:00", "Z")
+        assert summary["last_access_at"] == now.isoformat().replace("+00:00", "Z")
         assert secret not in listed.text
 
         history = client.get(f"/api/v1/sites/{site_id}/sync-history")
@@ -157,6 +426,52 @@ def test_site_detail_reads_cached_profile_and_never_exposes_credentials(tmp_path
         seeding = client.get(f"/api/v1/sites/{site_id}/seeding")
         assert seeding.status_code == 200
         assert seeding.json() == {"supported": False, "items": [], "next_cursor": None}
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_manual_profile_sync_retries_an_open_circuit_and_returns_real_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        created = _create_site(client)
+        site_id = str(created["id"])
+        calls = {"probe": 0, "profile": 0}
+
+        class RecoveringAdapter:
+            async def capabilities(self) -> SiteSearchCapabilities:
+                return SiteSearchCapabilities()
+
+            async def test_connection(self) -> SiteConnectionResult:
+                calls["probe"] += 1
+                if calls["probe"] == 1:
+                    raise SiteAdapterError("SITE_AUTH_FAILED", "synthetic invalid session")
+                return SiteConnectionResult("mteam")
+
+            async def fetch_user_profile(self) -> SiteUserProfile:
+                calls["profile"] += 1
+                return SiteUserProfile(site_id="mteam", username="manual-retry-ok")
+
+        monkeypatch.setattr(
+            app.state.site_service._adapter_factory,
+            "create",
+            lambda **_kwargs: RecoveringAdapter(),
+        )
+        failed_probe = client.post(f"/api/v1/sites/{site_id}/test", headers=_csrf(client))
+        assert failed_probe.status_code == 502
+        assert failed_probe.json()["code"] == "SITE_AUTH_FAILED"
+        assert client.get(f"/api/v1/sites/{site_id}/health").json()["circuit_state"] == "OPEN"
+
+        retried = client.post(
+            f"/api/v1/sites/{site_id}/sync?force_retry=true", headers=_csrf(client)
+        )
+        assert retried.status_code == 200
+        assert retried.json()["account"]["username"] == "manual-retry-ok"
+        assert calls["probe"] == 2
+        assert calls["profile"] == 1
+        assert client.get(f"/api/v1/sites/{site_id}/health").json()["circuit_state"] == "CLOSED"
+        assert client.get(f"/api/v1/sites/{site_id}").json()["connection_status"] == "OK"
     finally:
         client.__exit__(None, None, None)
 

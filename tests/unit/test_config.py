@@ -31,6 +31,10 @@ def test_environment_values_are_typed_and_normalized(monkeypatch: pytest.MonkeyP
     assert settings.trusted_proxy_list == ("10.0.0.0/8", "192.168.0.0/16")
 
 
+def test_unpack_match_query_budget_defaults_to_eight() -> None:
+    assert AppSettings().unpack_match_max_queries_per_site == 8
+
+
 def test_relative_startup_paths_are_rejected() -> None:
     with pytest.raises(ValidationError):
         AppSettings(config_dir=Path("relative"))
@@ -47,3 +51,15 @@ def test_unknown_timezone_is_rejected() -> None:
 def test_invalid_trusted_proxy_is_rejected() -> None:
     with pytest.raises(ValidationError):
         AppSettings(trusted_proxies="10.0.0.0/8,not-an-ip")
+
+
+def test_match_stage_pause_is_not_a_deployment_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PACKBREAKER_UNPACK_TEST_PAUSE_AFTER_MATCH", "true")
+
+    settings = AppSettings()
+    compose_text = (Path(__file__).resolve().parents[2] / "compose.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert not hasattr(settings, "unpack_test_pause_after_match")
+    assert "PACKBREAKER_UNPACK_TEST_PAUSE_AFTER_MATCH" not in compose_text

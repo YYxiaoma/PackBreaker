@@ -3,7 +3,6 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import {
   Activity,
   ArrowRight,
-  Bell,
   CheckCircle2,
   CircleAlert,
   Cpu,
@@ -300,20 +299,6 @@ onUnmounted(() => {
           </p>
         </details>
       </article>
-    </section>
-    <section class="overview-task-strip" aria-label="当前待办与运行任务">
-      <span
-        ><Bell :size="16" />待审核 <b>{{ count('tasks', 'awaiting_confirmation') }}</b> 个影片</span
-      >
-      <span
-        ><Play :size="16" />运行中任务 <b>{{ count('tasks', 'running') }}</b></span
-      >
-      <span
-        >可重试 <b>{{ count('tasks', 'retry') }}</b> 个影片</span
-      >
-      <span
-        >待对账 <b>{{ count('operations', 'reconcile_required') }}</b> 条操作</span
-      >
     </section>
 
     <section class="overview-monitor-grid" aria-label="系统资源与连接状态">
@@ -1001,22 +986,6 @@ article.kpi-card {
   font-size: 13px;
   font-style: normal;
   font-weight: 400;
-}
-.overview-task-strip {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 14px 28px;
-  color: var(--muted);
-  font-size: 13px;
-}
-.overview-task-strip > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-.overview-task-strip b {
-  color: var(--ink);
 }
 @media (min-width: 2000px) {
   .overview-monitor-grid {

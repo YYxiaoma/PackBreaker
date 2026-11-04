@@ -55,10 +55,13 @@ async def test_rousi_pro_candidate_uses_api_key_header_only_on_reviewed_readonly
     def profile_handler(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
         assert request.method == "GET"
-        assert str(request.url) == f"{_ORIGIN}/api/v1/profile"
         assert request.headers.get("authorization") == f"Bearer {_KEY}"
         assert request.headers.get("api-token") is None
         assert request.headers.get("cookie") is None
+        if request.url.path == "/api/v1/seeding-reward":
+            assert str(request.url) == f"{_ORIGIN}/api/v1/seeding-reward"
+            return httpx2.Response(200, json={"code": 0, "data": {"total_reward": 1.25}})
+        assert str(request.url) == f"{_ORIGIN}/api/v1/profile"
         return httpx2.Response(
             200,
             json={
@@ -73,6 +76,7 @@ async def test_rousi_pro_candidate_uses_api_key_header_only_on_reviewed_readonly
                     "downloaded": 536870912,
                     "ratio": 2.0,
                     "karma": 1000.5,
+                    "credits": 765.5,
                     "seeding_leeching_data": {"seeding_count": 10, "seeding_size": 10737418240},
                 },
             },
@@ -94,16 +98,25 @@ async def test_rousi_pro_candidate_uses_api_key_header_only_on_reviewed_readonly
     assert profile.seeding_count == 10
     assert profile.seeding_size_bytes == 10737418240
     assert profile.bonus == 1000.5
+    assert profile.seeding_points == 765.5
+    assert profile.bonus_per_hour == 1.25
     assert profile.join_time is not None
     assert profile.last_access_at is not None
     assert profile.last_access_at.isoformat() == "2024-02-03T04:05:06+00:00"
-    assert len(requests) == 2
+    assert len(requests) == 3
+    assert [request.url.path for request in requests] == [
+        "/api/points/attendance/stats",
+        "/api/v1/profile",
+        "/api/v1/seeding-reward",
+    ]
     assert _KEY not in repr(profile)
 
 
 @pytest.mark.asyncio
 async def test_rousi_pro_profile_preserves_missing_optional_fields_as_none() -> None:
     def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path == "/api/v1/seeding-reward":
+            return httpx2.Response(200, json={"code": 1, "data": None})
         assert request.url.path == "/api/v1/profile"
         return httpx2.Response(200, json={"code": 0, "data": {"id": 7, "username": "u"}})
 
@@ -113,6 +126,7 @@ async def test_rousi_pro_profile_preserves_missing_optional_fields_as_none() -> 
     assert profile.username == "u"
     assert profile.uploaded_bytes is None
     assert profile.downloaded_bytes is None
+    assert profile.torrents_posted is None
     assert profile.ratio is None
     assert profile.seeding_count is None
     assert profile.seeding_size_bytes is None

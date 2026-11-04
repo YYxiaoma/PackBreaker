@@ -139,6 +139,7 @@ class _FakeQb:
         self.start_behavior = start_behavior
         self.lose_verify_response = False
         self.state: QbittorrentTorrentState | None = None
+        self.last_add_request: QbittorrentAddRequest | None = None
         self.calls: list[str] = []
 
     def _assert_intent(self, operation_type: str) -> None:
@@ -154,6 +155,7 @@ class _FakeQb:
     async def add_torrent(self, request: QbittorrentAddRequest) -> QbittorrentAddResult:
         self._assert_intent("UNPACK_EXEC_QBITTORRENT_ADD")
         self.calls.append("add")
+        self.last_add_request = request
         torrent_hash = self._meta.v1_info_hash
         assert torrent_hash is not None
         assert request.paused is True
@@ -211,6 +213,7 @@ class _FakeTransmission:
         self._factory = factory
         self._meta = parse_torrent(torrent)
         self.state: TransmissionTorrentState | None = None
+        self.last_add_request: TransmissionAddRequest | None = None
         self.calls: list[str] = []
 
     def _assert_intent(self, operation_type: str) -> None:
@@ -226,6 +229,7 @@ class _FakeTransmission:
     async def add_torrent(self, request: TransmissionAddRequest) -> TransmissionAddResult:
         self._assert_intent("UNPACK_EXEC_TRANSMISSION_ADD")
         self.calls.append("add")
+        self.last_add_request = request
         torrent_hash = self._meta.v1_info_hash
         assert torrent_hash is not None
         assert request.paused is True
@@ -284,6 +288,8 @@ def _fixture(
     tmp_path: Path,
     *,
     kind: str,
+    target_category: str | None = None,
+    target_tags: tuple[str, ...] = (),
     lose_add_response: bool = False,
     force_client_check: bool = False,
     start_behavior: str = "success",
@@ -331,6 +337,8 @@ def _fixture(
         target_downloader_version=3,
         target_downloader_binding_digest="b" * 64,
         target_remote_save_path="/downloads/seeding",
+        target_category=target_category,
+        target_tags=target_tags,
         client_check_required=client_check_required,
         actions=(
             UnpackExecutionAction(
@@ -555,6 +563,11 @@ def test_final_seeding_site_wait_must_recheck_materialization_before_add(
         assert item is not None
         assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
         assert item.last_error_code == "UNPACK_EXEC_MATERIALIZATION_PROOF_MISSING"
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        assert execution.matched_auto_count == 0
+        assert execution.content_verified_count == 0
+        assert execution.error_count == 1
         assert not session.scalars(
             select(UnpackExternalOperationJournal).where(
                 UnpackExternalOperationJournal.id != "materialized-proof-1"
@@ -1626,13 +1639,22 @@ def test_seeding_new_verified_state_drift_still_requires_reconciliation(
 
 
 def test_qb_full_verified_skip_checking_adds_paused_then_starts(tmp_path: Path) -> None:
-    service, factory, fake, _torrent_bytes = _fixture(tmp_path, kind="qb")
+    service, factory, fake, _torrent_bytes = _fixture(
+        tmp_path,
+        kind="qb",
+        target_category="Movie Library",
+        target_tags=("4K", "seed"),
+    )
     qb = cast(_FakeQb, fake)
 
     report = asyncio.run(service.advance_next_batch("execution-1"))
 
     assert report.completed_count == 1
     assert qb.calls == ["add", "start"]
+    assert qb.last_add_request is not None
+    assert qb.last_add_request.category == "Movie Library"
+    assert qb.last_add_request.tags[:2] == ("4K", "seed")
+    assert qb.last_add_request.tags[-1].startswith("packbreaker-unpack-")
     assert qb.state is not None and qb.state.seeding
     with factory() as session:
         item = session.get(UnpackExecutionItem, "item-1")
@@ -1801,12 +1823,20 @@ def test_transmission_resume_rejects_tampered_add_journal(tmp_path: Path) -> Non
 
 
 def test_transmission_requires_explicit_verify_before_start(tmp_path: Path) -> None:
-    service, factory, fake, _torrent_bytes = _fixture(tmp_path, kind="transmission")
+    service, factory, fake, _torrent_bytes = _fixture(
+        tmp_path,
+        kind="transmission",
+        target_category="Movie Library",
+        target_tags=("4K", "seed"),
+    )
     transmission = cast(_FakeTransmission, fake)
 
     first = asyncio.run(service.advance_next_batch("execution-1"))
     assert first.client_verifying_count == 1
     assert transmission.calls == ["add"]
+    assert transmission.last_add_request is not None
+    assert transmission.last_add_request.labels[:3] == ("4K", "seed", "Movie Library")
+    assert transmission.last_add_request.labels[-1].startswith("packbreaker-unpack-")
 
     second = asyncio.run(service.advance_next_batch("execution-1"))
 

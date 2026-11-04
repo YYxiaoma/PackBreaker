@@ -7,8 +7,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
+from backend.app.application.unpack_acceptance import assert_unmarked_execution_for_write
+from backend.app.application.unpack_deletion_audit import archive_deleted_item_operations
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.unpack import (
+    BULK_REMATCHABLE_ITEM_STATUSES,
     REVIEWABLE_ITEM_STATUSES,
     UnpackExecutionStatus,
     UnpackItemStatus,
@@ -39,6 +42,13 @@ class UnpackReviewResult:
     item_status: UnpackItemStatus
     decided_at: datetime
     replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UnpackBulkRetryResult:
+    execution_id: str
+    retried_count: int
+    skipped_unsafe_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,32 +215,13 @@ class UnpackItemActionService:
             if item.version != expected_item_version:
                 raise self._version_conflict(item.version)
             current = UnpackItemStatus(item.status)
-            if current is UnpackItemStatus.EXECUTION_ERROR and item.last_error_code in {
-                "UNPACK_EXEC_MATERIALIZATION_PROOF_MISSING",
-                "UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT",
-            }:
-                has_external_operations = session.scalar(
-                    select(UnpackExternalOperationJournal.id)
-                    .where(UnpackExternalOperationJournal.item_id == item.id)
-                    .limit(1)
-                )
-                if has_external_operations is not None:
-                    raise ApplicationError(
-                        code="UNPACK_RETRY_EXTERNAL_RECONCILE_REQUIRED",
-                        status=409,
-                        title="外部操作可能已经完成，必须先对账",
-                        detail=(
-                            "物化文件或流水证据已失效，下载器可能已经启动做种。"
-                            "请人工核对下载器任务、目标媒体文件与操作记录；"
-                            "禁止通过普通重试重新匹配或重发下载器操作。"
-                        ),
-                    )
             if current not in {
                 UnpackItemStatus.NO_MATCH,
                 UnpackItemStatus.MATCH_TIMEOUT,
                 UnpackItemStatus.MATCH_ERROR,
+                UnpackItemStatus.EXECUTION_ERROR,
             }:
-                raise self._conflict("只有无匹配、匹配超时或匹配错误的影片才允许重试")
+                raise self._conflict("只有已失败或无匹配的影片才允许重试")
 
             execution = session.get(UnpackExecution, item.execution_id)
             if execution is None:
@@ -243,13 +234,14 @@ class UnpackItemActionService:
                     title="数据拆包任务不存在",
                     detail="执行绑定的任务定义已不存在",
                 )
-            # This endpoint is a deliberate human action, not the task's
-            # automatic retry policy. NO_MATCH never consumes auto retries.
-            if not item_transition_allowed(current, UnpackItemStatus.MATCH_PENDING):
-                raise self._conflict("当前影片状态不允许重新进入匹配队列")
-
             now = utc_now()
-            _queue_failed_item(session, item, now)
+            if current is UnpackItemStatus.EXECUTION_ERROR:
+                _retry_failed_execution_item(session, item, now)
+            else:
+                # Explicit human retry retains the existing auxiliary-resume rules.
+                if not item_transition_allowed(current, UnpackItemStatus.MATCH_PENDING):
+                    raise self._conflict("当前影片状态不允许重新进入匹配队列")
+                _queue_failed_item(session, item, now)
             session.flush()
             _refresh_execution_state(session, execution)
             session.commit()
@@ -261,10 +253,29 @@ class UnpackItemActionService:
                 item_status=UnpackItemStatus(item.status),
             )
 
-    def retry_failed_matches(self, execution_id: str, *, expected_execution_version: int) -> int:
-        """Atomically requeue all eligible failed searches in one execution."""
+    def retry_eligible_items(
+        self,
+        execution_id: str,
+        *,
+        expected_execution_version: int,
+        selected_statuses: tuple[UnpackItemStatus, ...],
+    ) -> UnpackBulkRetryResult:
+        """Retry unmatched, review, and failed items without touching external effects.
+
+        One atomic transaction; current in-progress matching and successful items
+        are preserved. Any external operation journal makes an item ineligible
+        for this *bulk rematch* action, even when a separate guarded one-item
+        recovery would be possible.
+        """
         if expected_execution_version < 1:
             raise self._invalid("If-Match execution version 必须大于等于 1")
+        if not selected_statuses:
+            raise self._invalid("请至少选择一种拆包状态")
+        if len(selected_statuses) != len(set(selected_statuses)):
+            raise self._invalid("拆包状态不能重复选择")
+        if any(status not in BULK_REMATCHABLE_ITEM_STATUSES for status in selected_statuses):
+            raise self._invalid("包含不能批量重试的拆包状态")
+        retryable = tuple(status.value for status in selected_statuses)
         with self._session_factory() as session:
             begin_immediate_write(session)
             execution = session.get(UnpackExecution, execution_id)
@@ -275,38 +286,50 @@ class UnpackItemActionService:
                     code="UNPACK_EXECUTION_VERSION_CONFLICT",
                     status=409,
                     title="执行记录已发生变化",
-                    detail="请刷新后重新操作",
+                    detail="请刷新任务列表后重试",
                 )
-            if execution.status not in {
-                UnpackExecutionStatus.FAILED.value,
-                UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value,
-            }:
-                raise self._conflict("只有已结束且匹配失败的任务允许批量重试")
-            definition = session.get(UnpackDefinition, execution.definition_id)
-            if definition is None:
+            if session.get(UnpackDefinition, execution.definition_id) is None:
                 raise self._execution_not_found()
             items = session.scalars(
-                select(UnpackExecutionItem).where(
+                select(UnpackExecutionItem)
+                .where(
                     UnpackExecutionItem.execution_id == execution.id,
-                    UnpackExecutionItem.status.in_(
-                        (
-                            UnpackItemStatus.NO_MATCH.value,
-                            UnpackItemStatus.MATCH_TIMEOUT.value,
-                            UnpackItemStatus.MATCH_ERROR.value,
-                        )
-                    ),
+                    UnpackExecutionItem.status.in_(retryable),
                 )
+                .order_by(UnpackExecutionItem.id)
             ).all()
-            eligible = list(items)
-            if not eligible:
-                raise self._conflict("没有可供人工重新匹配的影片")
+            if not items:
+                return UnpackBulkRetryResult(
+                    execution_id=execution.id,
+                    retried_count=0,
+                    skipped_unsafe_count=0,
+                )
+            item_ids = tuple(item.id for item in items)
+            unsafe_item_ids = set(
+                session.scalars(
+                    select(UnpackExternalOperationJournal.item_id)
+                    .where(UnpackExternalOperationJournal.item_id.in_(item_ids))
+                    .distinct()
+                ).all()
+            )
             now = utc_now()
-            for item in eligible:
-                _queue_failed_item(session, item, now)
-            session.flush()
-            _refresh_execution_state(session, execution)
+            retried = 0
+            for item in items:
+                if item.id in unsafe_item_ids:
+                    continue
+                # A fresh matching generation safely discards earlier candidate
+                # selections. It does NOT erase journal history or media files.
+                _reset_item_for_match_retry(item, now)
+                retried += 1
+            if retried:
+                session.flush()
+                _refresh_execution_state(session, execution)
             session.commit()
-            return len(eligible)
+            return UnpackBulkRetryResult(
+                execution_id=execution.id,
+                retried_count=retried,
+                skipped_unsafe_count=len(unsafe_item_ids),
+            )
 
     def delete_item(self, item_id: str, *, expected_item_version: int) -> None:
         """Forget an eligible execution-list entry, never media or external journals."""
@@ -322,40 +345,26 @@ class UnpackItemActionService:
             execution = session.get(UnpackExecution, item.execution_id)
             if execution is None:
                 raise self._execution_not_found()
-            if execution.status not in {
-                UnpackExecutionStatus.COMPLETED.value,
-                UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value,
-                UnpackExecutionStatus.FAILED.value,
-                UnpackExecutionStatus.CANCELLED.value,
-            } or item.status not in {
-                UnpackItemStatus.NO_MATCH.value,
-                UnpackItemStatus.MATCH_ERROR.value,
-                UnpackItemStatus.MATCH_TIMEOUT.value,
-                UnpackItemStatus.CONTENT_MISMATCH.value,
-                UnpackItemStatus.EXECUTION_ERROR.value,
-                UnpackItemStatus.COMPLETED.value,
-                UnpackItemStatus.CANCELLED.value,
+            if item.status in {
+                UnpackItemStatus.MATCH_PENDING.value,
+                UnpackItemStatus.MATCHING.value,
             }:
                 raise ApplicationError(
                     code="UNPACK_ITEM_DELETE_ACTIVE",
                     status=409,
-                    title="影片仍在执行或待审核",
-                    detail="只有已结束的执行中的终态影片才允许删除",
+                    title="影片仍在待匹配或匹配中",
+                    detail="请等待影片匹配结束后再删除",
                 )
-            if (
-                session.scalar(
-                    select(UnpackExternalOperationJournal.id)
-                    .where(UnpackExternalOperationJournal.item_id == item.id)
-                    .limit(1)
+            # Other item states can be removed while their historical external
+            # journal is atomically archived to an independent audit table.
+            archive_deleted_item_operations(
+                session, definition_id=execution.definition_id, item=item
+            )
+            session.execute(
+                delete(UnpackExternalOperationJournal).where(
+                    UnpackExternalOperationJournal.item_id == item.id
                 )
-                is not None
-            ):
-                raise ApplicationError(
-                    code="UNPACK_ITEM_DELETE_EXTERNAL_JOURNAL",
-                    status=409,
-                    title="影片已有外部操作记录",
-                    detail="必须保留辅助下载或辅种操作的对账证据，不能删除该影片记录",
-                )
+            )
             session.execute(
                 delete(UnpackReviewDecisionModel).where(
                     UnpackReviewDecisionModel.item_id == item.id
@@ -500,6 +509,83 @@ _AUXILIARY_STARTED_OPERATIONS = frozenset(
         "UNPACK_AUX_TORRENT_START",
     }
 )
+
+
+# Only a stage before final client START can be safely resumed under the
+# original frozen plan, with every past external effect proven APPLIED.
+_SAFE_SEED_RETRY_ERRORS = frozenset(
+    {
+        "SITE_INVALID_RESPONSE",
+        "SITE_UNAVAILABLE",
+        "SITE_TIMEOUT",
+        "SITE_RATE_LIMITED",
+        "UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE",
+        "DOWNLOADER_UNAVAILABLE",
+        "DOWNLOADER_CONNECTION_FAILED",
+    }
+)
+_MATERIALIZED_OPERATIONS = frozenset(
+    {
+        "UNPACK_EXEC_CREATE_DIRECTORY",
+        "UNPACK_EXEC_MATERIALIZE_HARDLINK",
+        "UNPACK_EXEC_MATERIALIZE_SYMLINK",
+        "UNPACK_EXEC_MATERIALIZE_COPY",
+    }
+)
+_ADD_OPERATIONS = frozenset({"UNPACK_EXEC_QBITTORRENT_ADD", "UNPACK_EXEC_TRANSMISSION_ADD"})
+
+
+def _retry_failed_execution_item(
+    session: Session, item: UnpackExecutionItem, now: datetime
+) -> None:
+    """Safely requeue a failed item without throwing away external operation evidence.
+
+    No external effects: restart matching from scratch.
+    Materialized stage with strictly proven records: resume the SAME plan and
+    generation; the seeding worker revalidates file identities, downloader
+    ownership and frozen plan before any further side effect.
+    Unknown/pending/conflicting effects or later stages: fail closed.
+    """
+    journals = session.scalars(
+        select(UnpackExternalOperationJournal).where(
+            UnpackExternalOperationJournal.item_id == item.id
+        )
+    ).all()
+    if not journals:
+        _reset_item_for_match_retry(item, now)
+        return
+
+    assert_unmarked_execution_for_write(session, item.execution_id)
+    checkpoint = dict(item.execution_state or {})
+    seen_ops = {row.operation_type for row in journals}
+    resume_allowed = (
+        item.last_error_code in _SAFE_SEED_RETRY_ERRORS
+        and checkpoint.get("stage") == "FILES_MATERIALIZED"
+        and isinstance(item.execution_plan, dict)
+        and isinstance(item.execution_plan_digest, str)
+        and checkpoint.get("plan_digest") == item.execution_plan_digest
+        and item.selected_candidate_id is not None
+        and item.torrent_metainfo_digest is not None
+        and all(row.status == OperationStatus.APPLIED.value for row in journals)
+        and len(seen_ops) == len(journals)
+        and bool(seen_ops & _MATERIALIZED_OPERATIONS)
+        and seen_ops.issubset(_MATERIALIZED_OPERATIONS | _ADD_OPERATIONS)
+        and len(seen_ops & _ADD_OPERATIONS) <= 1
+    )
+    if not resume_allowed:
+        raise ApplicationError(
+            code="UNPACK_RETRY_EXTERNAL_RECONCILE_REQUIRED",
+            status=409,
+            title="需要先核对已执行的文件或下载器操作",
+            detail="该影片已经操作过文件或下载器，现有记录不足以安全继续。请在“对账证据”中核对，不会清空历史记录或重新添加种子。",
+        )
+    # Do not change the plan, candidate, checkpoint or APPLIED journal. The
+    # seeding worker must revalidate all frozen identities during _prepare().
+    item.status = UnpackItemStatus.EXECUTING.value
+    item.last_error_code = None
+    item.last_error_message = None
+    item.updated_at = now
+    item.version += 1
 
 
 def _queue_failed_item(session: Session, item: UnpackExecutionItem, now: datetime) -> None:

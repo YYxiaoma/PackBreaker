@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ApiProblem, strongEtag, toApiProblem } from './client';
+import { apiClient, ApiProblem, strongEtag, toApiProblem } from './client';
 
 describe('API 安全错误映射', () => {
   it('只保留 problem+json 的脱敏字段，不回显请求配置或凭证', () => {
@@ -33,6 +33,23 @@ describe('API 安全错误映射', () => {
     });
     expect(problem.code).toBe('API_UNAVAILABLE');
     expect(problem.message).toBe('无法连接 PackBreaker API，请确认后端服务已经启动');
+  });
+});
+
+describe('API 请求超时', () => {
+  it('所有 API 请求默认使用 60 秒超时', () => {
+    expect(apiClient.defaults.timeout).toBe(60_000);
+  });
+
+  it('将接口超时与后端不可达区分开', () => {
+    const problem = toApiProblem({
+      isAxiosError: true,
+      code: 'ETIMEDOUT',
+      message: 'timeout of 60000ms exceeded',
+      config: { timeout: 60000 },
+    });
+    expect(problem.code).toBe('API_REQUEST_TIMEOUT');
+    expect(problem.message).toBe('接口请求超时，请稍后重试');
   });
 });
 

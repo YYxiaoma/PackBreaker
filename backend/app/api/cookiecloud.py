@@ -76,6 +76,22 @@ class CookieCloudProbeResponse(BaseModel):
     version: int
 
 
+class CookieCloudDraftProbeRequest(BaseModel):
+    server_url: str = Field(default="", max_length=2048)
+    uuid: str = Field(default="", max_length=255)
+    password: SecretStr | None = Field(default=None, max_length=512)
+    request_timeout_seconds: int = Field(default=15, ge=1, le=120)
+
+
+class CookieCloudDraftProbeResponse(BaseModel):
+    status: Literal["ok"]
+    tested_at: datetime
+    crypto_type: CookieCloudCryptoType
+    domain_count: int
+    cookie_count: int
+    update_time: str | None
+
+
 class CookieCloudSyncResponse(BaseModel):
     status: Literal["ok"]
     synced_at: datetime
@@ -89,8 +105,16 @@ class CookieCloudSyncResponse(BaseModel):
     skipped_api_key_sites: list[str] = Field(default_factory=list)
     unchanged_sites: int
     unmatched_domains: int
+    discovered_sites: int
+    sync_success_sites: int
+    sync_failed_sites: int
     update_time: str | None
     version: int
+
+
+class CookieCloudProfileSyncStatusResponse(BaseModel):
+    pending_count: int = Field(ge=0)
+    max_concurrency: int = Field(ge=1)
 
 
 def _view(record: CookieCloudSettingView) -> CookieCloudSettingResponse:
@@ -247,6 +271,29 @@ async def test_cookiecloud(
     )
 
 
+@router.post("/cookiecloud/test-draft", response_model=CookieCloudDraftProbeResponse)
+async def test_cookiecloud_draft(
+    payload: CookieCloudDraftProbeRequest,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
+) -> JSONResponse:
+    probe = await cookiecloud_service(request).probe_draft(
+        server_url=payload.server_url,
+        uuid=payload.uuid,
+        password=payload.password.get_secret_value() if payload.password is not None else None,
+        request_timeout_seconds=payload.request_timeout_seconds,
+    )
+    response = CookieCloudDraftProbeResponse(
+        status="ok",
+        tested_at=probe.tested_at,
+        crypto_type=probe.crypto_type,
+        domain_count=probe.domain_count,
+        cookie_count=probe.cookie_count,
+        update_time=probe.update_time,
+    )
+    return JSONResponse(response.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+
 @router.post("/cookiecloud/sync", response_model=CookieCloudSyncResponse)
 async def sync_cookiecloud(
     request: Request,
@@ -266,12 +313,28 @@ async def sync_cookiecloud(
         skipped_api_key_sites=list(report.skipped_api_key_sites),
         unchanged_sites=report.unchanged_sites,
         unmatched_domains=report.unmatched_domains,
+        discovered_sites=report.discovered_sites,
+        sync_success_sites=report.sync_success_sites,
+        sync_failed_sites=report.sync_failed_sites,
         update_time=report.update_time,
         version=record.version,
     )
     return JSONResponse(
         response.model_dump(mode="json"),
         headers={"ETag": f'"{record.version}"', "Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    "/cookiecloud/profile-sync-status",
+    response_model=CookieCloudProfileSyncStatusResponse,
+)
+async def cookiecloud_profile_sync_status(
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> CookieCloudProfileSyncStatusResponse:
+    return CookieCloudProfileSyncStatusResponse(
+        **cookiecloud_service(request).profile_sync_status()
     )
 
 

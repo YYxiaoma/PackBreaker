@@ -264,6 +264,110 @@ def test_unpack_match_origin_migration_adds_persistent_match_source(tmp_path: Pa
         engine.dispose()
 
 
+def test_template_library_migration_preserves_existing_unpack_history(tmp_path: Path) -> None:
+    database = tmp_path / "template-library-preserves-history.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database)
+    command.upgrade(config, "0049_site_risk_control")
+
+    engine = create_engine(sqlite_database_url(database))
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO unpack_definition "
+                    "(id, name, trigger_kind, status, source_kind, execution_scope_kind, "
+                    "source_config, file_filter, site_ids, output_config, retry_enabled, "
+                    "max_retries, auto_match_threshold_bps, auto_match_enabled, version, "
+                    "created_at, updated_at) VALUES "
+                    "('keep-definition', 'Keep existing task', 'MANUAL', 'PENDING_EXECUTION', "
+                    "'DIRECTORY', 'ALL_MATCHING_MEDIA', '{\"directory_path\":\"/tmp\"}', "
+                    "'{}', '[]', '{}', 1, 3, 9900, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO unpack_definition_selected_source "
+                    "(id, definition_id, source_object_key, canonical_path_hint, filename, "
+                    "size_bytes_at_selection, source_snapshot, created_at) VALUES "
+                    "('keep-selected-source', 'keep-definition', 'source-1', '/tmp/Movie.mkv', "
+                    "'Movie.mkv', 100, '{}', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO unpack_execution "
+                    "(id, definition_id, trigger, status, config_snapshot, discovery_complete, "
+                    "total_count, matched_auto_count, review_count, content_verified_count, "
+                    "content_mismatch_count, timeout_count, error_count, completed_count, "
+                    "started_at, version, created_at, updated_at) VALUES "
+                    "('keep-execution', 'keep-definition', 'MANUAL', 'DISCOVERING', '{}', 0, "
+                    "1, 0, 0, 0, 0, 0, 0, 0, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP, "
+                    "CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO unpack_execution_item "
+                    "(id, execution_id, source_object_key, source_snapshot, media_identity, "
+                    "status, candidate_generation, retry_count, version, created_at, updated_at) "
+                    "VALUES ('keep-item', 'keep-execution', 'source-1', '{}', '{}', "
+                    "'DISCOVERED', 0, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(sqlite_database_url(database))
+    try:
+        with engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "0051_unpack_template_match_acceptance"
+            )
+            template_import_columns = {
+                item["name"] for item in inspect(engine).get_columns("unpack_template_import_job")
+            }
+            assert "seed_mappings" in template_import_columns
+            assert connection.execute(
+                text(
+                    "SELECT name, task_kind, template_id, template_version "
+                    "FROM unpack_definition WHERE id='keep-definition'"
+                )
+            ).one() == ("Keep existing task", "MANUAL", None, None)
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT id FROM unpack_definition_selected_source "
+                        "WHERE id='keep-selected-source'"
+                    )
+                ).scalar_one()
+                == "keep-selected-source"
+            )
+            assert (
+                connection.execute(
+                    text("SELECT id FROM unpack_execution WHERE id='keep-execution'")
+                ).scalar_one()
+                == "keep-execution"
+            )
+            assert (
+                connection.execute(
+                    text("SELECT id FROM unpack_execution_item WHERE id='keep-item'")
+                ).scalar_one()
+                == "keep-item"
+            )
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+            template_fk_targets = {
+                row[2]
+                for row in connection.execute(text("PRAGMA foreign_key_list(unpack_definition)"))
+            }
+            assert "unpack_template" in template_fk_targets
+    finally:
+        engine.dispose()
+
+
 def test_legacy_task_runtime_retirement_disables_telegram_approval(tmp_path: Path) -> None:
     database = tmp_path / "retire-legacy-runtime.db"
     config = Config("alembic.ini")

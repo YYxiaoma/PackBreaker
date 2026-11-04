@@ -886,6 +886,91 @@
         "title": "CookieCloudCryptoType",
         "type": "string"
       },
+      "CookieCloudDraftProbeRequest": {
+        "properties": {
+          "password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 512,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "request_timeout_seconds": {
+            "default": 15,
+            "maximum": 120.0,
+            "minimum": 1.0,
+            "title": "Request Timeout Seconds",
+            "type": "integer"
+          },
+          "server_url": {
+            "default": "",
+            "maxLength": 2048,
+            "title": "Server Url",
+            "type": "string"
+          },
+          "uuid": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Uuid",
+            "type": "string"
+          }
+        },
+        "title": "CookieCloudDraftProbeRequest",
+        "type": "object"
+      },
+      "CookieCloudDraftProbeResponse": {
+        "properties": {
+          "cookie_count": {
+            "title": "Cookie Count",
+            "type": "integer"
+          },
+          "crypto_type": {
+            "$ref": "#/components/schemas/CookieCloudCryptoType"
+          },
+          "domain_count": {
+            "title": "Domain Count",
+            "type": "integer"
+          },
+          "status": {
+            "const": "ok",
+            "title": "Status",
+            "type": "string"
+          },
+          "tested_at": {
+            "format": "date-time",
+            "title": "Tested At",
+            "type": "string"
+          },
+          "update_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Update Time"
+          }
+        },
+        "required": [
+          "status",
+          "tested_at",
+          "crypto_type",
+          "domain_count",
+          "cookie_count",
+          "update_time"
+        ],
+        "title": "CookieCloudDraftProbeResponse",
+        "type": "object"
+      },
       "CookieCloudProbeResponse": {
         "properties": {
           "cookie_count": {
@@ -935,6 +1020,26 @@
           "version"
         ],
         "title": "CookieCloudProbeResponse",
+        "type": "object"
+      },
+      "CookieCloudProfileSyncStatusResponse": {
+        "properties": {
+          "max_concurrency": {
+            "minimum": 1.0,
+            "title": "Max Concurrency",
+            "type": "integer"
+          },
+          "pending_count": {
+            "minimum": 0.0,
+            "title": "Pending Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending_count",
+          "max_concurrency"
+        ],
+        "title": "CookieCloudProfileSyncStatusResponse",
         "type": "object"
       },
       "CookieCloudSettingResponse": {
@@ -1154,6 +1259,10 @@
           "crypto_type": {
             "$ref": "#/components/schemas/CookieCloudCryptoType"
           },
+          "discovered_sites": {
+            "title": "Discovered Sites",
+            "type": "integer"
+          },
           "eligible_sites": {
             "title": "Eligible Sites",
             "type": "integer"
@@ -1181,6 +1290,14 @@
             "const": "ok",
             "title": "Status",
             "type": "string"
+          },
+          "sync_failed_sites": {
+            "title": "Sync Failed Sites",
+            "type": "integer"
+          },
+          "sync_success_sites": {
+            "title": "Sync Success Sites",
+            "type": "integer"
           },
           "synced_at": {
             "format": "date-time",
@@ -1226,6 +1343,9 @@
           "updated_sites",
           "unchanged_sites",
           "unmatched_domains",
+          "discovered_sites",
+          "sync_success_sites",
+          "sync_failed_sites",
           "update_time",
           "version"
         ],
@@ -1570,6 +1690,305 @@
           "must_change_password"
         ],
         "title": "LoginResponse",
+        "type": "object"
+      },
+      "ManualCandidateAddResponse": {
+        "properties": {
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "candidate_key": {
+            "title": "Candidate Key",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "item_version": {
+            "title": "Item Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "candidate_key",
+          "generation",
+          "item_version"
+        ],
+        "title": "ManualCandidateAddResponse",
+        "type": "object"
+      },
+      "ManualCandidateInputRequest": {
+        "properties": {
+          "expected_generation": {
+            "minimum": 0.0,
+            "title": "Expected Generation",
+            "type": "integer"
+          },
+          "expected_item_version": {
+            "minimum": 1.0,
+            "title": "Expected Item Version",
+            "type": "integer"
+          },
+          "expected_metainfo_digest": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Metainfo Digest"
+          },
+          "expected_payload_sha256": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Payload Sha256"
+          },
+          "site_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Site Id",
+            "type": "string"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "torrent_file_base64": {
+            "anyOf": [
+              {
+                "maxLength": 44739244,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrent File Base64"
+          },
+          "torrent_file_name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrent File Name"
+          }
+        },
+        "required": [
+          "site_id",
+          "expected_generation",
+          "expected_item_version"
+        ],
+        "title": "ManualCandidateInputRequest",
+        "type": "object"
+      },
+      "ManualCandidatePreviewResponse": {
+        "properties": {
+          "candidate_key": {
+            "title": "Candidate Key",
+            "type": "string"
+          },
+          "candidate_title": {
+            "title": "Candidate Title",
+            "type": "string"
+          },
+          "douban_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Douban Id"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "title": "Evidence",
+            "type": "object"
+          },
+          "file_count": {
+            "title": "File Count",
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/ManualTorrentFileResponse"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "hard_conflicts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Hard Conflicts",
+            "type": "array"
+          },
+          "imdb_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imdb Id"
+          },
+          "metainfo_digest": {
+            "title": "Metainfo Digest",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "title": "Payload Sha256",
+            "type": "string"
+          },
+          "score_bps": {
+            "title": "Score Bps",
+            "type": "integer"
+          },
+          "seeders": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeders"
+          },
+          "site_id": {
+            "title": "Site Id",
+            "type": "string"
+          },
+          "site_name": {
+            "title": "Site Name",
+            "type": "string"
+          },
+          "source_kind": {
+            "enum": [
+              "URL",
+              "FILE"
+            ],
+            "title": "Source Kind",
+            "type": "string"
+          },
+          "source_size_bytes": {
+            "title": "Source Size Bytes",
+            "type": "integer"
+          },
+          "source_title": {
+            "title": "Source Title",
+            "type": "string"
+          },
+          "torrent_kind": {
+            "title": "Torrent Kind",
+            "type": "string"
+          },
+          "torrent_name": {
+            "title": "Torrent Name",
+            "type": "string"
+          },
+          "total_size_bytes": {
+            "title": "Total Size Bytes",
+            "type": "integer"
+          },
+          "v1_info_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "V1 Info Hash"
+          },
+          "v2_info_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "V2 Info Hash"
+          }
+        },
+        "required": [
+          "site_id",
+          "site_name",
+          "source_kind",
+          "source_title",
+          "source_size_bytes",
+          "candidate_key",
+          "candidate_title",
+          "torrent_name",
+          "torrent_kind",
+          "v1_info_hash",
+          "v2_info_hash",
+          "metainfo_digest",
+          "payload_sha256",
+          "total_size_bytes",
+          "file_count",
+          "files",
+          "score_bps",
+          "evidence",
+          "hard_conflicts",
+          "seeders",
+          "imdb_id",
+          "douban_id"
+        ],
+        "title": "ManualCandidatePreviewResponse",
+        "type": "object"
+      },
+      "ManualTorrentFileResponse": {
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size_bytes"
+        ],
+        "title": "ManualTorrentFileResponse",
         "type": "object"
       },
       "MovieDedupCrossFilesystemPolicy": {
@@ -2785,7 +3204,7 @@
           "request_timeout_seconds": {
             "anyOf": [
               {
-                "maximum": 120.0,
+                "maximum": 3600.0,
                 "minimum": 1.0,
                 "type": "integer"
               },
@@ -2794,6 +3213,21 @@
               }
             ],
             "title": "Request Timeout Seconds"
+          },
+          "risk_control_limit": {
+            "default": 3,
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Risk Control Limit",
+            "type": "integer"
+          },
+          "risk_retry_interval_seconds": {
+            "default": 60,
+            "maximum": 86400.0,
+            "minimum": 60.0,
+            "multipleOf": 60.0,
+            "title": "Risk Retry Interval Seconds",
+            "type": "integer"
           },
           "search_interval_seconds": {
             "default": 0,
@@ -3250,7 +3684,7 @@
           "request_timeout_seconds": {
             "anyOf": [
               {
-                "maximum": 120.0,
+                "maximum": 3600.0,
                 "minimum": 1.0,
                 "type": "integer"
               },
@@ -3259,6 +3693,33 @@
               }
             ],
             "title": "Request Timeout Seconds"
+          },
+          "risk_control_limit": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Control Limit"
+          },
+          "risk_retry_interval_seconds": {
+            "anyOf": [
+              {
+                "maximum": 86400.0,
+                "minimum": 60.0,
+                "multipleOf": 60.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Retry Interval Seconds"
           },
           "search_interval_seconds": {
             "anyOf": [
@@ -3766,7 +4227,7 @@
           "request_timeout_seconds": {
             "anyOf": [
               {
-                "maximum": 120.0,
+                "maximum": 3600.0,
                 "minimum": 1.0,
                 "type": "integer"
               },
@@ -4089,6 +4550,30 @@
             ],
             "title": "Fetched At"
           },
+          "join_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Join Time"
+          },
+          "last_access_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Access At"
+          },
           "ratio": {
             "anyOf": [
               {
@@ -4110,6 +4595,17 @@
               }
             ],
             "title": "Seeding Count"
+          },
+          "torrents_posted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrents Posted"
           },
           "uploaded_bytes": {
             "anyOf": [
@@ -4151,7 +4647,10 @@
           "uploaded_bytes",
           "downloaded_bytes",
           "ratio",
+          "torrents_posted",
           "seeding_count",
+          "join_time",
+          "last_access_at",
           "fetched_at"
         ],
         "title": "SiteUserSummaryResponse",
@@ -4260,6 +4759,26 @@
             "title": "Request Timeout Seconds",
             "type": "integer"
           },
+          "risk_control_limit": {
+            "title": "Risk Control Limit",
+            "type": "integer"
+          },
+          "risk_disabled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Disabled At"
+          },
+          "risk_retry_interval_seconds": {
+            "title": "Risk Retry Interval Seconds",
+            "type": "integer"
+          },
           "search_interval_seconds": {
             "title": "Search Interval Seconds",
             "type": "integer"
@@ -4311,6 +4830,9 @@
           "download_credential_configured",
           "request_timeout_seconds",
           "search_interval_seconds",
+          "risk_control_limit",
+          "risk_retry_interval_seconds",
+          "risk_disabled_at",
           "user_agent",
           "browser_emulation_enabled",
           "proxy_enabled",
@@ -4682,6 +5204,11 @@
       },
       "UnpackDefinitionCreateRequest": {
         "properties": {
+          "auto_match_enabled": {
+            "default": true,
+            "title": "Auto Match Enabled",
+            "type": "boolean"
+          },
           "auto_match_threshold_bps": {
             "default": 10000,
             "maximum": 10000.0,
@@ -4762,6 +5289,40 @@
             ],
             "title": "Source Scan Id"
           },
+          "task_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UnpackTaskKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "template_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Version"
+          },
           "timezone": {
             "anyOf": [
               {
@@ -4807,6 +5368,10 @@
       },
       "UnpackDefinitionResponse": {
         "properties": {
+          "auto_match_enabled": {
+            "title": "Auto Match Enabled",
+            "type": "boolean"
+          },
           "auto_match_threshold_bps": {
             "title": "Auto Match Threshold Bps",
             "type": "integer"
@@ -4902,6 +5467,31 @@
           "status": {
             "$ref": "#/components/schemas/UnpackDefinitionStatus"
           },
+          "task_kind": {
+            "$ref": "#/components/schemas/UnpackTaskKind"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "template_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Version"
+          },
           "timezone": {
             "anyOf": [
               {
@@ -4930,6 +5520,9 @@
           "id",
           "name",
           "trigger_kind",
+          "task_kind",
+          "template_id",
+          "template_version",
           "status",
           "source_kind",
           "execution_scope_kind",
@@ -4940,6 +5533,7 @@
           "retry_enabled",
           "max_retries",
           "auto_match_threshold_bps",
+          "auto_match_enabled",
           "cron_expression",
           "timezone",
           "next_run_at",
@@ -5036,6 +5630,17 @@
           "has_external_operations": {
             "title": "Has External Operations",
             "type": "boolean"
+          },
+          "highest_candidate_score_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Highest Candidate Score Bps"
           },
           "id": {
             "title": "Id",
@@ -5165,6 +5770,7 @@
           "selected_candidate_id",
           "match_origin",
           "candidate_generation",
+          "highest_candidate_score_bps",
           "retry_count",
           "content_verification_level",
           "torrent_metainfo_digest",
@@ -5947,21 +6553,31 @@
         "title": "UnpackOperationDiagnosticResponse",
         "type": "object"
       },
-      "UnpackRetryFailedMatchesRequest": {
+      "UnpackRetryEligibleItemsRequest": {
         "properties": {
           "action": {
-            "const": "retry_failed_matches",
+            "const": "retry_eligible_items",
             "title": "Action",
             "type": "string"
+          },
+          "item_statuses": {
+            "items": {
+              "$ref": "#/components/schemas/UnpackItemStatus"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Item Statuses",
+            "type": "array"
           }
         },
         "required": [
-          "action"
+          "action",
+          "item_statuses"
         ],
-        "title": "UnpackRetryFailedMatchesRequest",
+        "title": "UnpackRetryEligibleItemsRequest",
         "type": "object"
       },
-      "UnpackRetryFailedMatchesResponse": {
+      "UnpackRetryEligibleItemsResponse": {
         "properties": {
           "execution_id": {
             "title": "Execution Id",
@@ -5970,13 +6586,18 @@
           "retried_count": {
             "title": "Retried Count",
             "type": "integer"
+          },
+          "skipped_unsafe_count": {
+            "title": "Skipped Unsafe Count",
+            "type": "integer"
           }
         },
         "required": [
           "execution_id",
-          "retried_count"
+          "retried_count",
+          "skipped_unsafe_count"
         ],
-        "title": "UnpackRetryFailedMatchesResponse",
+        "title": "UnpackRetryEligibleItemsResponse",
         "type": "object"
       },
       "UnpackReviewDecision": {
@@ -6267,6 +6888,342 @@
         "title": "UnpackSourceScanSelectionSummaryResponse",
         "type": "object"
       },
+      "UnpackTaskKind": {
+        "enum": [
+          "MANUAL",
+          "MONITOR",
+          "TEMPLATE"
+        ],
+        "title": "UnpackTaskKind",
+        "type": "string"
+      },
+      "UnpackTemplateImportJobResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "failure_count": {
+            "title": "Failure Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "processed_count": {
+            "title": "Processed Count",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "success_count": {
+            "title": "Success Count",
+            "type": "integer"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          },
+          "template_version": {
+            "title": "Template Version",
+            "type": "integer"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "template_id",
+          "template_version",
+          "status",
+          "total_count",
+          "processed_count",
+          "success_count",
+          "failure_count",
+          "errors",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "UnpackTemplateImportJobResponse",
+        "type": "object"
+      },
+      "UnpackTemplateImportRequest": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "seed_mappings": {
+            "items": {
+              "$ref": "#/components/schemas/UnpackTemplateSeedMappingRequest"
+            },
+            "maxItems": 5000,
+            "title": "Seed Mappings",
+            "type": "array"
+          },
+          "site_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Site Id",
+            "type": "string"
+          },
+          "source_label": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Label"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "torrent_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Torrent Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "site_id",
+          "torrent_ids"
+        ],
+        "title": "UnpackTemplateImportRequest",
+        "type": "object"
+      },
+      "UnpackTemplateListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UnpackTemplateResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "UnpackTemplateListResponse",
+        "type": "object"
+      },
+      "UnpackTemplateResponse": {
+        "properties": {
+          "content_digest": {
+            "title": "Content Digest",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "integer"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "expected_seed_count": {
+            "title": "Expected Seed Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "mapped_media_count": {
+            "title": "Mapped Media Count",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "seed_count": {
+            "title": "Seed Count",
+            "type": "integer"
+          },
+          "site_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Site Ids",
+            "type": "array"
+          },
+          "site_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Site Keys",
+            "type": "array"
+          },
+          "source_provenance": {
+            "additionalProperties": true,
+            "title": "Source Provenance",
+            "type": "object"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "current_version",
+          "status",
+          "expected_seed_count",
+          "seed_count",
+          "mapped_media_count",
+          "site_keys",
+          "site_ids",
+          "content_digest",
+          "source_provenance",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "UnpackTemplateResponse",
+        "type": "object"
+      },
+      "UnpackTemplateSeedMappingRequest": {
+        "properties": {
+          "collection_root_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Collection Root Name",
+            "type": "string"
+          },
+          "confidence_bps": {
+            "default": 0,
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Confidence Bps",
+            "type": "integer"
+          },
+          "media_title": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Media Title",
+            "type": "string"
+          },
+          "relative_directory": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Relative Directory",
+            "type": "string"
+          },
+          "relative_file_name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relative File Name"
+          },
+          "source_execution_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Execution Id"
+          },
+          "torrent_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Torrent Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "torrent_id",
+          "collection_root_name",
+          "relative_directory",
+          "media_title"
+        ],
+        "title": "UnpackTemplateSeedMappingRequest",
+        "type": "object"
+      },
       "UnpackTreeEntryResponse": {
         "properties": {
           "display_path": {
@@ -6526,7 +7483,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.1.4"
+    "version": "1.1.5"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7480,6 +8437,55 @@
         ]
       }
     },
+    "/api/v1/cookiecloud/profile-sync-status": {
+      "get": {
+        "operationId": "cookiecloud_profile_sync_status_api_v1_cookiecloud_profile_sync_status_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CookieCloudProfileSyncStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cookiecloud Profile Sync Status",
+        "tags": [
+          "cookiecloud"
+        ]
+      }
+    },
     "/api/v1/cookiecloud/sync": {
       "post": {
         "operationId": "sync_cookiecloud_api_v1_cookiecloud_sync_post",
@@ -7637,6 +8643,97 @@
           }
         },
         "summary": "Test Cookiecloud",
+        "tags": [
+          "cookiecloud"
+        ]
+      }
+    },
+    "/api/v1/cookiecloud/test-draft": {
+      "post": {
+        "operationId": "test_cookiecloud_draft_api_v1_cookiecloud_test_draft_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CookieCloudDraftProbeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CookieCloudDraftProbeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Cookiecloud Draft",
         "tags": [
           "cookiecloud"
         ]
@@ -11253,6 +12350,16 @@
             }
           },
           {
+            "in": "query",
+            "name": "force_retry",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force Retry",
+              "type": "boolean"
+            }
+          },
+          {
             "in": "header",
             "name": "X-CSRF-Token",
             "required": false,
@@ -13219,7 +14326,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UnpackRetryFailedMatchesRequest"
+                "$ref": "#/components/schemas/UnpackRetryEligibleItemsRequest"
               }
             }
           },
@@ -13230,7 +14337,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UnpackRetryFailedMatchesResponse"
+                  "$ref": "#/components/schemas/UnpackRetryEligibleItemsResponse"
                 }
               }
             },
@@ -13757,6 +14864,206 @@
           }
         },
         "summary": "Read Unpack Item Downloader State",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/items/{item_id}/manual-candidate-preview": {
+      "post": {
+        "operationId": "preview_manual_unpack_candidate_api_v1_unpack_items__item_id__manual_candidate_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualCandidateInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualCandidatePreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Manual Unpack Candidate",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/items/{item_id}/manual-candidates": {
+      "post": {
+        "operationId": "add_manual_unpack_candidate_api_v1_unpack_items__item_id__manual_candidates_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualCandidateInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualCandidateAddResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Manual Unpack Candidate",
         "tags": [
           "unpack-v2"
         ]
@@ -14349,6 +15656,204 @@
           }
         },
         "summary": "Get Unpack Source Scan Selection Summary",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/templates": {
+      "get": {
+        "operationId": "list_unpack_templates_api_v1_unpack_templates_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackTemplateListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Unpack Templates",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/templates/import": {
+      "post": {
+        "operationId": "create_unpack_template_import_api_v1_unpack_templates_import_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnpackTemplateImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackTemplateImportJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Unpack Template Import",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/templates/import-jobs/{job_id}": {
+      "get": {
+        "operationId": "get_unpack_template_import_job_api_v1_unpack_templates_import_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackTemplateImportJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Unpack Template Import Job",
         "tags": [
           "unpack-v2"
         ]

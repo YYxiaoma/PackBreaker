@@ -28,7 +28,7 @@ def test_browser_ci_does_not_prestart_dev_server_on_preview_port() -> None:
     assert "check-unpack-v2-ui.cjs" in all_commands
     assert "PB_UNPACK_V2_E2E_PRODUCTION=1 node scripts/check-unpack-v2-ui.cjs" in all_commands
     v2_script = (ROOT / "scripts/check-unpack-v2-ui.cjs").read_text()
-    assert "['preview']" in v2_script
+    assert 'productionPreview ? ["preview"] : []' in v2_script
     assert "--strictPort" in v2_script
     assert "E2E_UNMOCKED_API" in v2_script
     assert "check-web-approval-e2e.cjs" not in all_commands

@@ -156,3 +156,114 @@ def test_unpack_source_directory_title_enables_english_then_chinese_fallback() -
         ),
     )
     assert ("九品芝麻官",) not in _task_unit_from_item(other).descriptor.alias_tokens
+
+
+def test_unpack_queries_include_roman_numeral_and_chinese_title_fallbacks() -> None:
+    rocky = parse_media_name("Rocky.II.1979.1080p.BluRay.x265.10bit.4Audio.MNHD-FRDS")
+    rocky_queries = build_unpack_search_queries(
+        rocky,
+        unit_kind=TaskUnitKind.MOVIE,
+        capabilities=SiteSearchCapabilities(supports_imdb_id=True),
+    )
+    rocky_texts = [query.query_text for query in rocky_queries]
+    assert "rocky ii" in rocky_texts
+    assert "rocky ii 1979" in rocky_texts
+    assert "rocky 2" in rocky_texts
+    assert "rocky 2 1979" in rocky_texts
+
+    better_tomorrow = parse_media_name(
+        "Top138.英雄本色(4K修复版).A.Better.Tomorrow.1986.REMASTERED."
+        "Bluray.1080p.x265.AAC(5.1).2Audios.GREENOTEA"
+    )
+    queries = build_unpack_search_queries(
+        better_tomorrow,
+        unit_kind=TaskUnitKind.MOVIE,
+        capabilities=SiteSearchCapabilities(),
+    )
+    texts = [query.query_text for query in queries]
+    assert "a better tomorrow" in texts
+    assert "a better tomorrow 1986" in texts
+    assert "英雄本色" in texts
+    assert "英雄本色 1986" in texts
+    assert all("top138" not in text for text in texts)
+
+
+def test_unpack_queries_add_sequel_number_fallback_without_audio_channel_noise() -> None:
+    source = parse_media_name("Mad.Max.2.1981.BluRay.1080p.DTS-HD.MA.5.1.2Audios.MNHD-FRDS")
+    queries = build_unpack_search_queries(
+        source,
+        unit_kind=TaskUnitKind.MOVIE,
+        capabilities=SiteSearchCapabilities(),
+    )
+    texts = [query.query_text for query in queries]
+    assert "mad max 2 1981" in texts
+    assert "mad max 1981" in texts
+    assert all("5 1" not in text for text in texts)
+
+    numbered_part = parse_media_name(
+        "Harry.Potter.and.the.Deathly.Hallows.Part.2.2011.BluRay.1080p.x265"
+    )
+    numbered_part_queries = build_unpack_search_queries(
+        numbered_part,
+        unit_kind=TaskUnitKind.MOVIE,
+        capabilities=SiteSearchCapabilities(),
+    )
+    assert "harry potter and the deathly hallows part 2011" not in [
+        query.query_text for query in numbered_part_queries
+    ]
+
+
+def test_single_word_english_title_uses_year_and_remains_search_relevant() -> None:
+    from backend.app.domain.candidate_scoring import candidate_search_relevant
+
+    source = parse_media_name(
+        "Leon.1994.Extended.Remastered.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS",
+        aliases=("这个杀手不太冷",),
+    )
+    candidate = parse_media_name(
+        "Leon The Professional 1994 REMASTERED EXTENDED 1080p BluRay TrueHD "
+        "7.1 Atmos 2Audio H.265 10bit-CrsS"
+    )
+    queries = build_unpack_search_queries(
+        source,
+        unit_kind=TaskUnitKind.MOVIE,
+        capabilities=SiteSearchCapabilities(),
+    )
+
+    assert queries[0].query_text == "leon 1994"
+    assert "这个杀手不太冷" in [query.query_text for query in queries]
+    assert candidate_search_relevant(source, candidate)
+
+
+def test_unknown_metadata_is_not_reported_as_matching_and_group_mismatch_is_explicit() -> None:
+    source = parse_media_name(
+        "Leon.1994.Extended.Remastered.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS",
+        aliases=("这个杀手不太冷",),
+        total_size=1000,
+    )
+    candidate = parse_media_name(
+        "这个杀手不太冷 1994 Leon The Professional 1994 "
+        "2in1 2160p UHD Blu-ray HEVC Atmos TrueHD 7.1-CrsS",
+        total_size=9000,
+    )
+
+    exact = assess_unpack_candidate(source, candidate).evidence["exact"]
+
+    assert exact["external_id"] is None
+    assert exact["episode"] is None
+    assert exact["release_group"] is False
+    assert exact["resolution"] is False
+    assert exact["size"] is False
+
+
+def test_long_title_search_has_compact_stopword_free_fallback() -> None:
+    source = parse_media_name(
+        "Harry.Potter.and.the.Prisoner.of.Azkaban.2004.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS"
+    )
+    queries = build_unpack_search_queries(
+        source,
+        unit_kind=TaskUnitKind.MOVIE,
+        capabilities=SiteSearchCapabilities(),
+    )
+
+    assert "harry potter prisoner azkaban 2004" in [query.query_text for query in queries]

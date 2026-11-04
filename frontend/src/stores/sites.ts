@@ -117,8 +117,15 @@ export const useSiteStore = defineStore('sites', () => {
   async function setEnabled(item: Site, enabled: boolean) {
     return guarded(`enable:${item.id}`, async () => {
       const updated = await setSiteEnabled(item.id, item.version, enabled);
-      replace(updated);
-      return updated;
+      // The enable/disable action returns config state but does not hydrate user_summary.
+      // Keep the already-loaded statistics instead of replacing them with an empty summary.
+      const current = items.value.find((site) => site.id === item.id);
+      const merged = {
+        ...updated,
+        user_summary: updated.user_summary ?? current?.user_summary ?? item.user_summary,
+      };
+      replace(merged);
+      return merged;
     });
   }
 

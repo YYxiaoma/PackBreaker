@@ -229,6 +229,56 @@ async def test_site_reliability_circuit_opens_then_half_open_success_recovers() 
 
 
 @pytest.mark.asyncio
+async def test_site_rate_limit_does_not_reopen_circuit_or_stick_half_open_probe() -> None:
+    fake_time = _FakeTime()
+    events: list[SiteReliabilityEvent] = []
+    raw = _FakeSiteAdapter()
+    raw.search_failures.extend(
+        [
+            SiteAdapterError("SITE_UNAVAILABLE", "synthetic outage", retryable=True),
+            SiteAdapterError(
+                "SITE_RATE_LIMITED",
+                "synthetic rate limit",
+                retryable=True,
+                retry_after_seconds=4.0,
+            ),
+        ]
+    )
+    policy = SiteReliabilityPolicy(
+        max_attempts=1,
+        circuit_failure_threshold=1,
+        circuit_open_seconds=5.0,
+        search_cache_ttl_seconds=0.0,
+    )
+    registry = _registry(fake_time, policy=policy, events=events)
+    adapter = registry.wrap(config_id="site-rate-limit-half-open", config_version=1, adapter=raw)
+    query = SearchQuery(("rate-limit-half-open",), SearchMediaType.MOVIE)
+
+    with pytest.raises(SiteAdapterError) as outage:
+        await adapter.search(query)
+    assert outage.value.code == "SITE_UNAVAILABLE"
+
+    fake_time.advance(5.0)
+    with pytest.raises(SiteAdapterError) as limited:
+        await adapter.search(query)
+    assert limited.value.code == "SITE_RATE_LIMITED"
+    half_open = await registry.health(config_id="site-rate-limit-half-open", config_version=1)
+    assert half_open.circuit_state == "HALF_OPEN"
+    assert half_open.failure_count == 1
+    assert half_open.half_open_probe_in_flight is False
+    assert half_open.retry_after_seconds == pytest.approx(0.0)
+
+    assert (await adapter.search(query)).items
+    recovered = await registry.health(config_id="site-rate-limit-half-open", config_version=1)
+    assert recovered.circuit_state == "CLOSED"
+    assert recovered.failure_count == 0
+    assert [event.event_type for event in events] == [
+        "CIRCUIT_OPENED",
+        "CIRCUIT_RECOVERED",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_site_reliability_half_open_allows_only_one_probe() -> None:
     fake_time = _FakeTime()
     raw = _FakeSiteAdapter()

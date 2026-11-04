@@ -34,7 +34,10 @@ class SiteUserSummaryResponse(BaseModel):
     uploaded_bytes: int | None
     downloaded_bytes: int | None
     ratio: float | None
+    torrents_posted: int | None
     seeding_count: int | None
+    join_time: datetime | None
+    last_access_at: datetime | None
     fetched_at: datetime | None
 
 
@@ -49,6 +52,9 @@ class SiteViewResponse(BaseModel):
     download_credential_configured: bool
     request_timeout_seconds: int
     search_interval_seconds: int
+    risk_control_limit: int
+    risk_retry_interval_seconds: int
+    risk_disabled_at: datetime | None
     user_agent: str | None
     browser_emulation_enabled: bool
     proxy_enabled: bool
@@ -108,8 +114,10 @@ class SiteCreateRequest(BaseModel):
     credential: SiteCredentialInput | None = None
     download_cookie: SecretStr | None = Field(default=None, min_length=1, max_length=8192)
     # Missing/null means use the trusted profile default for this site kind.
-    request_timeout_seconds: int | None = Field(default=None, ge=1, le=120)
+    request_timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
     search_interval_seconds: int = Field(default=0, ge=0, le=3600)
+    risk_control_limit: int = Field(default=3, ge=1, le=20)
+    risk_retry_interval_seconds: int = Field(default=60, ge=60, le=86400, multiple_of=60)
     user_agent: str | None = Field(default=None, max_length=512)
     browser_emulation_enabled: bool = False
     proxy: SiteProxyCreateInput = Field(default_factory=SiteProxyCreateInput)
@@ -124,8 +132,10 @@ class SitePatchRequest(BaseModel):
     clear_credential: bool = False
     download_cookie: SecretStr | None = Field(default=None, min_length=1, max_length=8192)
     clear_download_cookie: bool = False
-    request_timeout_seconds: int | None = Field(default=None, ge=1, le=120)
+    request_timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
     search_interval_seconds: int | None = Field(default=None, ge=0, le=3600)
+    risk_control_limit: int | None = Field(default=None, ge=1, le=20)
+    risk_retry_interval_seconds: int | None = Field(default=None, ge=60, le=86400, multiple_of=60)
     user_agent: str | None = Field(default=None, max_length=512)
     browser_emulation_enabled: bool | None = None
     proxy: SiteProxyPatchInput | None = None
@@ -138,7 +148,7 @@ class SiteTemporaryProbeRequest(BaseModel):
     credential: SiteCredentialInput
     download_cookie: SecretStr | None = Field(default=None, min_length=1, max_length=8192)
     # Missing/null means use the trusted profile default for this site kind.
-    request_timeout_seconds: int | None = Field(default=None, ge=1, le=120)
+    request_timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
     search_interval_seconds: int = Field(default=0, ge=0, le=3600)
     user_agent: str | None = Field(default=None, max_length=512)
     browser_emulation_enabled: bool = False
@@ -372,7 +382,10 @@ def _view(record: SiteView, profile: Any | None = None) -> SiteViewResponse:
                 uploaded_bytes=profile.uploaded_bytes,
                 downloaded_bytes=profile.downloaded_bytes,
                 ratio=profile.ratio,
+                torrents_posted=profile.torrents_posted,
                 seeding_count=profile.seeding_count,
+                join_time=profile.join_time,
+                last_access_at=profile.last_access_at,
                 fetched_at=profile.fetched_at,
             )
             if profile is not None
@@ -387,6 +400,9 @@ def _view(record: SiteView, profile: Any | None = None) -> SiteViewResponse:
         download_credential_configured=record.download_credential_configured,
         request_timeout_seconds=record.request_timeout_seconds,
         search_interval_seconds=record.search_interval_seconds,
+        risk_control_limit=record.risk_control_limit,
+        risk_retry_interval_seconds=record.risk_retry_interval_seconds,
+        risk_disabled_at=record.risk_disabled_at,
         user_agent=record.user_agent,
         browser_emulation_enabled=record.browser_emulation_enabled,
         proxy_enabled=record.proxy_enabled,
@@ -594,6 +610,8 @@ async def create_site(
             else site_profile(payload.type).request_timeout_seconds
         ),
         search_interval_seconds=payload.search_interval_seconds,
+        risk_control_limit=payload.risk_control_limit,
+        risk_retry_interval_seconds=payload.risk_retry_interval_seconds,
         user_agent=payload.user_agent,
         browser_emulation_enabled=payload.browser_emulation_enabled,
         proxy_enabled=payload.proxy.enabled,
@@ -632,8 +650,20 @@ async def sync_site_user_profile(
     site_id: str,
     request: Request,
     _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
+    force_retry: bool = False,
 ) -> SiteDetailResponse:
-    await site_service(request).sync_user_profile(site_id)
+    service = site_service(request)
+    site = service.get(site_id)
+    health = await service.health(site_id)
+    connection_status = getattr(site.connection_status, "value", site.connection_status)
+    needs_connection_test = force_retry and (
+        health.circuit_state == "OPEN" or connection_status != "OK"
+    )
+    if health.circuit_state == "OPEN" and force_retry:
+        await service.reset_circuit(site_id, expected_version=site.version)
+    if needs_connection_test:
+        await service.test_connection(site_id)
+    await service.sync_user_profile(site_id)
     return await _site_detail_response(request, site_id)
 
 
@@ -717,6 +747,8 @@ async def patch_site(
                 else None
             ),
             runtime_config=_runtime_patch(payload),
+            risk_control_limit=payload.risk_control_limit,
+            risk_retry_interval_seconds=payload.risk_retry_interval_seconds,
             proxy_password_action=proxy_password_action,
             proxy_password=proxy_password,
         ),

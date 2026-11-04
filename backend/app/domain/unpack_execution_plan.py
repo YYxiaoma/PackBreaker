@@ -90,6 +90,8 @@ class UnpackExecutionPlan:
     create_directories: tuple[str, ...]
     blocked_reasons: tuple[ExecutionPlanBlockReason, ...]
     created_at: datetime
+    target_category: str | None = None
+    target_tags: tuple[str, ...] = ()
     schema_version: str = UNPACK_EXECUTION_PLAN_SCHEMA_VERSION
     plan_digest: str = ""
 
@@ -119,6 +121,18 @@ class UnpackExecutionPlan:
             raise ValueError("执行计划下载器 binding digest 无效")
         if not self.target_remote_save_path:
             raise ValueError("执行计划必须绑定下载器 save path")
+        category = self.target_category.strip() if isinstance(self.target_category, str) else ""
+        if self.target_category is not None and not isinstance(self.target_category, str):
+            raise ValueError("执行计划目标分类格式无效")
+        if len(category) > 128 or "\x00" in category:
+            raise ValueError("执行计划目标分类长度无效")
+        object.__setattr__(self, "target_category", category or None)
+        if any(not isinstance(value, str) for value in self.target_tags):
+            raise ValueError("执行计划目标标签格式无效")
+        tags = tuple(dict.fromkeys(value.strip() for value in self.target_tags if value.strip()))
+        if len(tags) > 100 or any(len(value) > 128 or "\x00" in value for value in tags):
+            raise ValueError("执行计划目标标签长度无效")
+        object.__setattr__(self, "target_tags", tags)
         paths = tuple(item.torrent_path for item in self.actions)
         if len(set(paths)) != len(paths):
             raise ValueError("执行计划不能包含重复 torrent path")
@@ -184,6 +198,10 @@ def unpack_execution_plan_to_payload(
         "ready": plan.ready,
         "created_at": plan.created_at.isoformat(),
     }
+    if plan.target_category is not None:
+        payload["target_category"] = plan.target_category
+    if plan.target_tags:
+        payload["target_tags"] = list(plan.target_tags)
     if include_digest:
         payload["plan_digest"] = plan.plan_digest
     return payload
@@ -197,8 +215,11 @@ def unpack_execution_plan_from_payload(payload: object) -> UnpackExecutionPlan:
     raw_actions = payload.get("actions")
     raw_dirs = payload.get("create_directories")
     raw_blockers = payload.get("blocked_reasons")
+    raw_target_tags = payload.get("target_tags", [])
     if (
-        not isinstance(raw_actions, list)
+        not isinstance(raw_target_tags, list)
+        or any(not isinstance(item, str) for item in raw_target_tags)
+        or not isinstance(raw_actions, list)
         or not isinstance(raw_dirs, list)
         or not all(isinstance(item, str) for item in raw_dirs)
         or not isinstance(raw_blockers, list)
@@ -224,6 +245,8 @@ def unpack_execution_plan_from_payload(payload: object) -> UnpackExecutionPlan:
                 payload, "target_downloader_binding_digest"
             ),
             target_remote_save_path=_required_text(payload, "target_remote_save_path"),
+            target_category=_optional_text(payload.get("target_category")),
+            target_tags=tuple(raw_target_tags),
             client_check_required=_required_bool(payload, "client_check_required"),
             actions=actions,
             create_directories=tuple(raw_dirs),

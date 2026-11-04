@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -12,6 +13,7 @@ import pytest
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from backend.app.application.cookiecloud import CookieCloudService
 from backend.app.domain.cookiecloud import (
     CookieCloudCryptoType,
     cookie_domain_matches_host,
@@ -312,3 +314,75 @@ async def test_client_rejects_redirects_and_unknown_crypto() -> None:
     with pytest.raises(CookieCloudError) as exc:
         await unknown.fetch(server_url="https://cookie.example.test", uuid="u", timeout_seconds=5)
     assert exc.value.code == "COOKIECLOUD_CRYPTO_UNSUPPORTED"
+
+
+@pytest.mark.asyncio
+async def test_cookiecloud_profile_sync_queue_runs_concurrently_and_isolates_one_site_failure() -> (
+    None
+):
+    active = 0
+    peak_active = 0
+    completed: list[str] = []
+
+    class FakeSiteService:
+        async def test_connection(self, site_id: str) -> None:
+            raise AssertionError(f"unexpected connection test for {site_id}")
+
+        async def sync_user_profile(self, site_id: str) -> None:
+            nonlocal active, peak_active
+            active += 1
+            peak_active = max(peak_active, active)
+            try:
+                await asyncio.sleep(0.01)
+                if site_id == "site-2":
+                    raise RuntimeError("synthetic one-site failure")
+                completed.append(site_id)
+            finally:
+                active -= 1
+
+    service = CookieCloudService(None, None, site_service=FakeSiteService())  # type: ignore[arg-type]
+    service._enqueue_site_profile_syncs([(f"site-{index}", False, True) for index in range(6)])
+    await service.wait_for_profile_syncs()
+
+    assert peak_active == 4
+    assert set(completed) == {"site-0", "site-1", "site-3", "site-4", "site-5"}
+    assert service._profile_sync_queue == []
+    assert service._profile_sync_enqueued == set()
+
+
+@pytest.mark.asyncio
+async def test_cookiecloud_profile_sync_queue_retries_when_credentials_change_in_flight() -> None:
+    first_profile_started = asyncio.Event()
+    release_first_profile = asyncio.Event()
+    profile_calls = 0
+    connection_tests: list[str] = []
+
+    class FakeSiteService:
+        async def test_connection(self, site_id: str) -> None:
+            connection_tests.append(site_id)
+
+        async def sync_user_profile(self, site_id: str) -> None:
+            nonlocal profile_calls
+            profile_calls += 1
+            if profile_calls == 1:
+                first_profile_started.set()
+                await release_first_profile.wait()
+
+    service = CookieCloudService(None, None, site_service=FakeSiteService())  # type: ignore[arg-type]
+    service._enqueue_site_profile_syncs([("site-1", False, True)])
+    await asyncio.wait_for(first_profile_started.wait(), timeout=1)
+
+    # A second CookieCloud sync changes credentials while the initial profile
+    # request is in flight. It queues a connection test but does not fetch stats again.
+    service._enqueue_site_profile_syncs([("site-1", True, False)])
+    assert service.profile_sync_status()["pending_count"] == 1
+
+    release_first_profile.set()
+    await service.wait_for_profile_syncs()
+
+    assert profile_calls == 1
+    assert connection_tests == ["site-1"]
+    assert service._profile_sync_queue == []
+    assert service._profile_sync_enqueued == set()
+    assert service._profile_sync_running == set()
+    assert service._profile_sync_rerun == {}

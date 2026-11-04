@@ -8,6 +8,12 @@ class UnpackTriggerKind(StrEnum):
     MONITOR = "MONITOR"
 
 
+class UnpackTaskKind(StrEnum):
+    MANUAL = "MANUAL"
+    MONITOR = "MONITOR"
+    TEMPLATE = "TEMPLATE"
+
+
 class UnpackDefinitionStatus(StrEnum):
     PENDING_EXECUTION = "PENDING_EXECUTION"
     ENABLED = "ENABLED"
@@ -66,6 +72,23 @@ class UnpackItemStatus(StrEnum):
     COMPLETED = "COMPLETED"
     EXECUTION_ERROR = "EXECUTION_ERROR"
     CANCELLED = "CANCELLED"
+
+
+# Only pre-write matching decisions/errors may be selected for task-level
+# rematching; in-progress verification, external execution and completion
+# must never be restarted from this bulk action.
+BULK_REMATCHABLE_ITEM_STATUSES = frozenset(
+    {
+        UnpackItemStatus.MATCHED_AUTO,
+        UnpackItemStatus.MATCHED_MANUAL,
+        UnpackItemStatus.REVIEW_REQUIRED,
+        UnpackItemStatus.NO_MATCH,
+        UnpackItemStatus.MATCH_TIMEOUT,
+        UnpackItemStatus.MATCH_ERROR,
+        UnpackItemStatus.CONTENT_MISMATCH,
+        UnpackItemStatus.EXECUTION_ERROR,
+    }
+)
 
 
 class UnpackCandidateVerificationStatus(StrEnum):

@@ -554,12 +554,12 @@ async function remove(item: Downloader) {
           <b>路径映射</b>
           <el-button size="small" @click="addMapping"><Plus :size="14" />添加规则</el-button>
         </div>
-        <el-alert
-          title="左侧是下载器看到的路径；右侧是同一目录在 PackBreaker 容器内的实际挂载路径。右侧可使用 /downloads、/mnt/media 等任意已挂载绝对路径，不再要求位于 /data 下；出于安全原因不能填写容器根目录 /。"
-          type="info"
-          :closable="false"
-          class="section-space"
-        />
+        <div v-if="draft.mappings.length" class="mapping-editor-labels">
+          <span>下载器路径</span>
+          <span aria-hidden="true"></span>
+          <span>存储路径</span>
+          <span aria-hidden="true"></span>
+        </div>
         <div v-for="(mapping, index) in draft.mappings" :key="index" class="mapping-editor-row">
           <el-input v-model="mapping.remote_prefix" placeholder="下载器路径，例如 /downloads" />
           <span>→</span>
@@ -653,15 +653,29 @@ async function remove(item: Downloader) {
   margin: 8px 0 10px;
 }
 
+.mapping-editor-labels,
 .mapping-editor-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
+}
+
+.mapping-editor-labels {
+  margin-bottom: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.mapping-editor-row {
   margin-bottom: 8px;
 }
 
 @media (max-width: 700px) {
+  .mapping-editor-labels,
+  .mapping-editor-row {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  }
   .downloader-heading-actions {
     width: 100%;
     justify-content: flex-end;

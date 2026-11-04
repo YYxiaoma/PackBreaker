@@ -184,36 +184,6 @@ body {
   box-shadow: inset 3px 0 0 var(--blue);
 }
 
-/* A persistent corner entry instead of another primary navigation item. */
-#app .about-corner-button {
-  position: fixed;
-  right: 24px;
-  bottom: 22px;
-  z-index: 18;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 38px;
-  padding: 8px 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  color: var(--muted);
-  box-shadow: 0 6px 20px rgba(28, 42, 64, 0.09);
-  cursor: pointer;
-}
-#app .about-corner-button:hover,
-#app .about-corner-button.active {
-  border-color: var(--blue);
-  color: var(--blue);
-}
-@media (max-width: 800px) {
-  #app .about-corner-button {
-    right: 12px;
-    bottom: max(12px, env(safe-area-inset-bottom));
-  }
-}
-
 #app .profile {
   margin: 6px 0 0;
   padding: 15px 8px 5px;
@@ -976,22 +946,6 @@ body {
   font-weight: 730;
 }
 
-#app .backup-management .backup-card {
-  min-height: 102px;
-  padding: 18px;
-  border: 1px solid #dce7fb;
-  border-radius: 15px;
-  background: linear-gradient(120deg, #f8fbff, #f4f7ff);
-}
-
-#app .backup-management .backup-card > svg {
-  padding: 9px;
-  width: 48px;
-  height: 48px;
-  border-radius: 13px;
-  background: var(--blue-soft);
-}
-
 #app .upgrade-center {
   display: grid;
   gap: 15px;
@@ -1030,16 +984,6 @@ body {
 
 #app .operational-logs .log-policy {
   color: #8490a6;
-}
-
-/* Footer */
-#app main > footer {
-  padding: 15px 4px 5px;
-  color: #a1aabb;
-}
-
-#app main > footer span::after {
-  content: ' · 自动化整理，安全辅种';
 }
 
 /* Login */
@@ -1166,8 +1110,7 @@ html.dark body {
 .dark #app .stat,
 .dark #app .ops-overview .ops-summary article,
 .dark #app .ops-overview .health-card,
-.dark #app .review-center .review-stats > div,
-.dark #app .backup-management .backup-card {
+.dark #app .review-center .review-stats > div {
   border-color: var(--line);
   background: #1a2230;
 }
@@ -1343,4 +1286,40 @@ html.dark body {
   #app .section-heading {
     align-items: flex-start;
   }
+}
+
+/* These filter bars sit directly on the page background, not inside a second card. */
+#app .unpack-filter-toolbar,
+#app .dedup-filter-toolbar,
+#app .log-filter-toolbar {
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+#app .unpack-filter-toolbar .filters,
+#app .dedup-filter-toolbar .filters {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.dark #app .unpack-filter-toolbar,
+.dark #app .dedup-filter-toolbar,
+.dark #app .log-filter-toolbar,
+.dark #app .unpack-filter-toolbar .filters,
+.dark #app .dedup-filter-toolbar .filters,
+.dark #app .log-filter-toolbar {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* The Agent page uses grid spacing instead of the legacy section-space top margin. */
+#app .ai-settings > .section-space {
+  margin-top: 0;
 }

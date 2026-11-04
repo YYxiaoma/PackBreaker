@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { Activity, BarChart3, Clock3, Globe, Link2, RefreshCw, UserRound } from '@lucide/vue';
+import { Activity, BarChart3, Clock3, Link2, RefreshCw, UserRound } from '@lucide/vue';
 
 import { toApiProblem } from '../api/client';
 import {
@@ -13,6 +13,12 @@ import {
   type SiteSeeding,
   type SiteSyncHistoryItem,
 } from '../api/sites';
+import {
+  formatSiteBytes as formatBytes,
+  formatSiteDate,
+  formatSiteRatio as formatRatio,
+} from '../utils/siteStats';
+import { siteFaviconUrl, siteIconUrl } from '../utils/siteIcon';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -21,6 +27,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean];
+  'profile-synced': [siteId: string];
 }>();
 
 const activeTab = ref('overview');
@@ -110,8 +117,15 @@ async function syncNow(silent = false, siteId = props.siteId) {
   syncing.value = true;
   error.value = '';
   try {
-    const synced = await syncSiteDetail(siteId);
+    const configuredTimeoutSeconds =
+      detail.value?.site.id === siteId ? detail.value.site.request_timeout_seconds : 120;
+    // A profile sync can make several sequential tracker requests (profile, bonus, seeding, uploads).
+    // Allow six configured request budgets plus a response margin so the global 60s API timeout
+    // cannot abort a legitimate slow-site sync before its own request timeout expires.
+    const syncTimeoutMs = Math.max(60_000, (configuredTimeoutSeconds * 6 + 30) * 1000);
+    const synced = await syncSiteDetail(siteId, !silent, syncTimeoutMs);
     detailCache.set(siteId, synced);
+    emit('profile-synced', siteId);
     if (props.siteId === siteId) {
       detail.value = synced;
       await loadHistory();
@@ -186,24 +200,7 @@ function valueOrDash(value: unknown): string {
 }
 
 function formatDate(value: string | null | undefined): string {
-  return value ? new Date(value).toLocaleString() : '—';
-}
-
-function formatBytes(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '—';
-  if (value < 1024) return value + ' B';
-  const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
-  let size = value;
-  let unit = -1;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  return size >= 100 ? size.toFixed(0) + ' ' + units[unit] : size.toFixed(2) + ' ' + units[unit];
-}
-
-function formatRatio(value: number | null | undefined): string {
-  return value === null || value === undefined ? '—' : value.toFixed(2);
+  return formatSiteDate(value);
 }
 
 function connectionTagType(status: SiteDetail['site']['connection_status']) {
@@ -258,17 +255,16 @@ function siteTypeLabel(type: string): string {
   return type === 'MTEAM' ? '综合类' : type === 'HDTIME' || type === 'HDFANS' ? '高清影视' : type;
 }
 
-function faviconUrl(baseUrl: string): string {
-  try {
-    const url = new URL(baseUrl);
-    return url.origin + '/favicon.ico';
-  } catch {
-    return '';
+function handleSiteIconError(event: Event, baseUrl: string): void {
+  const image = event.currentTarget as HTMLImageElement | null;
+  if (!image) return;
+  const fallback = siteFaviconUrl(baseUrl);
+  if (fallback && image.dataset.fallback !== 'true' && image.getAttribute('src') !== fallback) {
+    image.dataset.fallback = 'true';
+    image.src = fallback;
+    return;
   }
-}
-
-function hideFavicon(event: Event): void {
-  (event.currentTarget as HTMLImageElement | null)?.style.setProperty('display', 'none');
+  image.style.display = 'none';
 }
 </script>
 
@@ -276,7 +272,7 @@ function hideFavicon(event: Event): void {
   <el-drawer
     :model-value="modelValue"
     direction="rtl"
-    size="min(500px, 42vw)"
+    size="min(720px, calc(100vw - 24px))"
     :with-header="false"
     class="site-detail-drawer"
     @update:model-value="emit('update:modelValue', $event)"
@@ -286,12 +282,11 @@ function hideFavicon(event: Event): void {
       <header class="site-detail-header">
         <div class="site-detail-heading">
           <span class="site-detail-logo">
-            <Globe :size="25" />
             <img
-              v-if="detail && faviconUrl(detail.site.base_url)"
-              :src="detail ? faviconUrl(detail.site.base_url) : ''"
-              :alt="detail?.site.name ?? ''"
-              @error="hideFavicon"
+              v-if="detail"
+              :src="siteIconUrl(detail.site.type, detail.site.base_url)"
+              :alt="detail.site.name"
+              @error="handleSiteIconError($event, detail.site.base_url)"
             />
           </span>
           <div class="site-detail-title">
@@ -308,8 +303,17 @@ function hideFavicon(event: Event): void {
           </div>
         </div>
         <div class="site-detail-header-actions">
-          <el-button type="primary" :loading="syncing" :disabled="!detail" @click="syncNow">
-            <RefreshCw :size="15" />立即同步
+          <el-button
+            type="primary"
+            :disabled="!detail || syncing"
+            :aria-busy="syncing"
+            @click="syncNow"
+          >
+            <RefreshCw
+              :size="15"
+              class="sync-button-icon"
+              :class="{ 'sync-button-icon--spinning': syncing }"
+            />立即同步
           </el-button>
           <el-button text aria-label="关闭详情" @click="close">×</el-button>
         </div>
@@ -384,7 +388,14 @@ function hideFavicon(event: Event): void {
                     ><strong>{{ formatBytes(detail.statistics.downloaded_bytes) }}</strong>
                   </div>
                   <div>
-                    <span>分享率</span><strong>{{ formatRatio(detail.statistics.ratio) }}</strong>
+                    <span>分享率</span
+                    ><strong>{{
+                      formatRatio(
+                        detail.statistics.ratio,
+                        detail.statistics.uploaded_bytes,
+                        detail.statistics.downloaded_bytes,
+                      )
+                    }}</strong>
                   </div>
                   <div>
                     <span>做种数</span
@@ -642,6 +653,7 @@ function hideFavicon(event: Event): void {
 
 .site-detail-header {
   display: flex;
+  flex-wrap: nowrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
@@ -651,6 +663,7 @@ function hideFavicon(event: Event): void {
 
 .site-detail-heading {
   display: flex;
+  flex: 1 1 auto;
   min-width: 0;
   gap: 12px;
 }
@@ -684,14 +697,19 @@ function hideFavicon(event: Event): void {
 .site-detail-name-row,
 .site-detail-status-row {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
 .site-detail-name-row h2 {
+  min-width: 0;
   margin: 0;
   font-size: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .site-detail-status-row {
@@ -712,6 +730,27 @@ function hideFavicon(event: Event): void {
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.sync-button-icon {
+  display: inline-block;
+  flex: 0 0 auto;
+  transform-origin: 50% 50%;
+}
+
+.sync-button-icon--spinning {
+  animation: site-sync-spin 0.9s linear infinite;
+}
+
+@keyframes site-sync-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .site-detail-body {
@@ -767,7 +806,7 @@ function hideFavicon(event: Event): void {
 }
 
 .detail-list dd.breakable {
-  text-align: left;
+  text-align: right;
 }
 
 .capability-tags {

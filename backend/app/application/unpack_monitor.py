@@ -158,6 +158,7 @@ class UnpackMonitorService:
                 },
                 "matching": {
                     "auto_match_threshold_bps": definition.auto_match_threshold_bps,
+                    "auto_match_enabled": definition.auto_match_enabled,
                 },
                 "selected_sources": [],
             }
@@ -215,6 +216,12 @@ class UnpackMonitorService:
                 "source_kind": definition.source_kind,
                 "source_config": dict(definition.source_config),
             }
+
+    async def freeze_downloader_sources(
+        self, source_config: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Freeze matching completed downloader torrents for a manually launched template task."""
+        return await self._freeze_downloader_sources({"source_config": dict(source_config)})
 
     async def _freeze_downloader_sources(
         self,
@@ -278,6 +285,13 @@ class UnpackMonitorService:
 
 
 def _monitor_torrent_matches(config: dict[str, Any], torrent: DownloaderTorrent) -> bool:
+    raw_hash = config.get("torrent_hash")
+    if (
+        isinstance(raw_hash, str)
+        and raw_hash.strip()
+        and torrent.torrent_hash.casefold() != raw_hash.strip().casefold()
+    ):
+        return False
     raw_name = config.get("name_contains")
     if isinstance(raw_name, str):
         name_contains = raw_name.strip().casefold()

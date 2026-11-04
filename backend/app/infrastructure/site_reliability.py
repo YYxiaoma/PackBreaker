@@ -376,7 +376,13 @@ class ReliableSiteAdapter:
                         await self._record_nonretryable_failure(exc, half_open_probe)
                         raise
                     last_error = exc
-                    await self._record_breaker_failure(half_open_probe, exc.code)
+                    if exc.code == "SITE_RATE_LIMITED":
+                        # A 429/frequency-limit response is not a connectivity failure.
+                        # In half-open state it must release the probe without re-opening
+                        # the circuit, otherwise every later call is rejected immediately.
+                        await self._abort_attempt(half_open_probe)
+                    else:
+                        await self._record_breaker_failure(half_open_probe, exc.code)
                 else:
                     self._state.requests_succeeded += 1
                     await self._record_success()

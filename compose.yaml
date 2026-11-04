@@ -13,6 +13,8 @@ services:
       PGID: "${PGID:-1000}"
       PACKBREAKER_TIMEZONE: "${PACKBREAKER_TIMEZONE:-Asia/Shanghai}"
       PACKBREAKER_TRUSTED_PROXIES: "${PACKBREAKER_TRUSTED_PROXIES:-}"
+      PACKBREAKER_UNPACK_MATCH_MAX_PAGES_PER_QUERY: "${PACKBREAKER_UNPACK_MATCH_MAX_PAGES_PER_QUERY:-3}"
+      PACKBREAKER_UNPACK_MATCH_EXTRA_EXCLUDE_NAMES: "${PACKBREAKER_UNPACK_MATCH_EXTRA_EXCLUDE_NAMES:-sp.,featurette,behind the scenes,making of,deleted scene,short film,bonus feature,interview}"
     volumes:
       - packbreaker-config:/config
       # v1.0.8：媒体目录可直接挂到任意容器绝对路径，例如 /downloads。

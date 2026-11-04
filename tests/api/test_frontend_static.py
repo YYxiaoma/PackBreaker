@@ -18,14 +18,18 @@ def _settings(tmp_path: Path, frontend_dir: Path | None) -> AppSettings:
 def test_frontend_static_assets_and_api_share_same_app(tmp_path: Path) -> None:
     frontend = (tmp_path / "frontend").resolve()
     assets = frontend / "assets"
+    icons = frontend / "icons" / "site"
     assets.mkdir(parents=True)
+    icons.mkdir(parents=True)
     (frontend / "index.html").write_text("<main>PackBreaker UI</main>", encoding="utf-8")
     (assets / "app.js").write_text("console.log('synthetic')", encoding="utf-8")
+    (icons / "site-icon.ico").write_bytes(b"synthetic-site-icon")
 
     app = create_app(settings=_settings(tmp_path, frontend))
     with TestClient(app) as client:
         index = client.get("/")
         asset = client.get("/assets/app.js")
+        site_icon = client.get("/icons/site/site-icon.ico")
         live = client.get("/api/v1/health/live")
         unknown_api = client.get("/api/v1/does-not-exist")
 
@@ -38,6 +42,8 @@ def test_frontend_static_assets_and_api_share_same_app(tmp_path: Path) -> None:
     assert "connect-src 'self'" in index_csp
     assert asset.status_code == 200
     assert asset.text == "console.log('synthetic')"
+    assert site_icon.status_code == 200
+    assert site_icon.content == b"synthetic-site-icon"
     assert live.status_code == 200
     assert live.json()["service"] == "packbreaker"
     assert live.headers["Content-Security-Policy"] == (

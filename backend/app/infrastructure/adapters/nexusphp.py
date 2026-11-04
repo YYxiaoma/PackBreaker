@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
+from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import SplitResult, parse_qs, urlencode, urljoin, urlsplit
 
 import httpx2
 
 from backend.app.domain.errors import DomainViolation
-from backend.app.domain.media_matching import ExternalMediaId
+from backend.app.domain.media_matching import ExternalMediaId, parse_media_name
 from backend.app.domain.site_adapter import (
     SiteConnectionResult,
     SiteUserProfile,
@@ -29,14 +32,57 @@ from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.adapters.site_retry_after import retry_after_seconds
 from backend.app.infrastructure.torrent_parser import parse_torrent
 
+_logger = logging.getLogger("packbreaker.site_adapter.nexusphp")
+
 _DEFAULT_HTML_LIMIT_BYTES = 5 * 1024 * 1024
 _DEFAULT_TORRENT_LIMIT_BYTES = 20 * 1024 * 1024
+_DEFAULT_PROFILE_TOTAL_TIMEOUT_SECONDS = 30.0
 _IMDB_RE = re.compile(r"/title/(tt\d{5,10})", re.IGNORECASE)
 _DOUBAN_RE = re.compile(r"/subject/(\d{3,12})")
 _SIZE_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGTPE]?i?B)\s*$", re.IGNORECASE)
+_SIZE_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])([0-9]+(?:\.[0-9]+)?)\s*([KMGTPE]?i?B)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 _TORRENT_ID_RE = re.compile(r"^\d{1,64}$")
+_KEEPFRDS_CLASS_NAMES = {
+    0: "Peasant",
+    1: "User",
+    2: "Power User",
+    3: "Elite User",
+    4: "Crazy User",
+    5: "Insane User",
+    6: "Veteran User",
+    7: "Extreme User",
+    8: "Ultimate User",
+    9: "Nexus Master",
+    10: "贵宾",
+    11: "养老族",
+    12: "发布员",
+    13: "总版主",
+    14: "管理员",
+    15: "维护开发员",
+    16: "主管",
+}
 _POWERED_BY_NEXUSPHP_RE = re.compile(r"\s*-\s*Powered by NexusPHP\s*$", re.IGNORECASE)
 _DETAIL_TITLE_RE = re.compile(r'^(?:种子详情|Torrent Details?)\s*["“](.+)["”]$', re.IGNORECASE)
+
+
+def _decode_nexus_html(raw: bytes) -> str:
+    """容忍少量畸形字节，但拒绝明显损坏的 HTML 响应。"""
+
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        decoded = raw.decode("utf-8", errors="replace")
+        replacement_count = decoded.count("\ufffd")
+        if replacement_count > max(4, len(raw) // 20_000):
+            raise SiteAdapterError("SITE_INVALID_RESPONSE", "NexusPHP HTML 不是有效 UTF-8") from exc
+        _logger.warning(
+            "NexusPHP HTML 含少量无效 UTF-8 字节，已使用替换字符继续解析",
+            extra={"replacement_count": replacement_count},
+        )
+        return decoded
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,11 +156,66 @@ HHCLUB_PROFILE = NexusPhpProfile(
 
 @dataclass(slots=True)
 class _Row:
+    classes: set[str] = field(default_factory=set)
+    table_index: int = 0
     cells: list[str] = field(default_factory=list)
     cell_text_parts: list[list[str]] = field(default_factory=list)
     cell_titles: list[list[str]] = field(default_factory=list)
+    cell_attributes: list[list[tuple[str, str, str]]] = field(default_factory=list)
     links: list[tuple[str, str | None, str]] = field(default_factory=list)
     active_cell: int | None = None
+
+
+@dataclass(slots=True)
+class _TextCapture:
+    tag: str
+    class_name: str
+    parts: list[str] = field(default_factory=list)
+    depth: int = 1
+
+
+class _PTTimeSummaryParser(HTMLParser):
+    """Capture the first four direct span children of PTTime's #outer summary."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.outer_tag: str | None = None
+        self.outer_depth = 0
+        self.span_depth = 0
+        self.current_span: int | None = None
+        self.spans: list[list[str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if self.outer_depth == 0 and attributes.get("id") == "outer":
+            self.outer_tag = tag
+            self.outer_depth = 1
+            return
+        if self.outer_depth == 0:
+            return
+        if tag == self.outer_tag:
+            self.outer_depth += 1
+        if self.outer_depth == 1 and tag == "span" and self.current_span is None:
+            self.spans.append([])
+            self.current_span = len(self.spans) - 1
+            self.span_depth = 1
+        elif self.current_span is not None and tag == "span":
+            self.span_depth += 1
+
+    def handle_data(self, data: str) -> None:
+        if self.outer_depth > 0 and self.current_span is not None:
+            self.spans[self.current_span].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.current_span is not None and tag == "span":
+            self.span_depth -= 1
+            if self.span_depth == 0:
+                self.current_span = None
+        if self.outer_tag is not None and tag == self.outer_tag:
+            self.outer_depth -= 1
+            if self.outer_depth == 0:
+                self.outer_tag = None
+                self.current_span = None
 
 
 @dataclass(slots=True)
@@ -131,11 +232,20 @@ class _NexusHtmlParser(HTMLParser):
         self._cards: list[_Card] = []
         self._card_stack: list[_Card] = []
         self._card_element_stack: list[tuple[str, str | None, bool]] = []
-        self._link_stack: list[tuple[str, str | None, list[str]]] = []
+        self._link_stack: list[tuple[str, str | None, str | None, list[str]]] = []
+        self._class_text_captures: list[_TextCapture] = []
+        self.class_text_parts: dict[str, list[str]] = {}
+        self.audiences_level_classes: list[str] = []
+        self.all_link_classes: list[tuple[str, str | None, str]] = []
+        self._table_stack: list[int] = []
+        self._next_table_index = 0
         self._heading_depth = 0
         self._heading_text: list[str] = []
+        self._secondary_heading_depth = 0
+        self._secondary_heading_text: list[str] = []
         self._title_depth = 0
         self._title_text: list[str] = []
+        self._meta_title_text: list[str] = []
         self.text_parts: list[str] = []
         self.all_links: list[tuple[str, str | None, str]] = []
 
@@ -153,25 +263,76 @@ class _NexusHtmlParser(HTMLParser):
         return value or None
 
     @property
+    def secondary_heading(self) -> str | None:
+        value = _clean_text(" ".join(self._secondary_heading_text))
+        return value or None
+
+    @property
     def page_title(self) -> str | None:
         value = _clean_text(" ".join(self._title_text))
+        return value or None
+
+    @property
+    def meta_title(self) -> str | None:
+        value = _clean_text(" ".join(self._meta_title_text))
         return value or None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
         classes = set((attributes.get("class") or "").split())
+        for capture in self._class_text_captures:
+            if capture.tag == tag:
+                capture.depth += 1
+        profile_capture_classes = (
+            "row-span-4",
+            "ud-class",
+            "site-userbar__compact-metric--uploaded",
+            "site-userbar__compact-metric--downloaded",
+            "site-userbar__compact-metric--ratio",
+            "site-userbar__compact-metric--bonus",
+            "site-userbar__compact-metric--seeding-bonus",
+            "site-userbar__compact-metric-inline-link--seeding",
+            "site-userbar__compact-metric--hr",
+            "mybonus-side__rate",
+            "torrent-info-text-size",
+        )
+        for captured_class in profile_capture_classes:
+            if captured_class in classes:
+                self._class_text_captures.append(_TextCapture(tag=tag, class_name=captured_class))
+        for class_name in classes:
+            folded_class = class_name.casefold()
+            if "title" in folded_class or folded_class in {
+                "torrentname",
+                "torrent_name",
+                "torrent-name",
+            }:
+                self._class_text_captures.append(_TextCapture(tag=tag, class_name=class_name))
+        if tag == "b" and any(
+            capture.class_name == "ud-class" for capture in self._class_text_captures
+        ):
+            self.audiences_level_classes.extend(
+                class_name[: -len("_Name")].replace("_", " ")
+                for class_name in classes
+                if class_name.endswith("_Name") and len(class_name) > len("_Name")
+            )
+        if tag == "table":
+            self._next_table_index += 1
+            self._table_stack.append(self._next_table_index)
         starts_card = tag == "div" and "torrent-table-sub-info" in classes
         if starts_card:
             self._card_stack.append(_Card())
         card_field = _card_field(classes) if self._card_stack else None
         self._card_element_stack.append((tag, card_field, starts_card))
         if tag == "tr":
-            self._row_stack.append(_Row())
+            self._row_stack.append(
+                _Row(classes=classes, table_index=self._table_stack[-1] if self._table_stack else 0)
+            )
         elif tag == "td" and self._row_stack:
             row = self._row_stack[-1]
             row.cells.append("")
             row.cell_text_parts.append([])
             row.cell_titles.append([])
+            row.cell_attributes.append([])
             row.active_cell = len(row.cells) - 1
         elif tag in {"span", "time"} and self._row_stack:
             # NexusPHP derivatives may place the absolute publish timestamp
@@ -184,11 +345,32 @@ class _NexusHtmlParser(HTMLParser):
                 row.cell_titles[row.active_cell].append(title)
         elif tag == "a":
             href = attributes.get("href") or ""
-            self._link_stack.append((href, attributes.get("title"), []))
+            self._link_stack.append((href, attributes.get("title"), attributes.get("class"), []))
         elif tag == "h1":
             self._heading_depth += 1
+        elif tag in {"h2", "h3"}:
+            self._secondary_heading_depth += 1
+        elif tag == "meta":
+            meta_name = (
+                attributes.get("property")
+                or attributes.get("name")
+                or attributes.get("itemprop")
+                or ""
+            ).casefold()
+            meta_content = attributes.get("content")
+            if meta_name in {"og:title", "twitter:title", "title"} and meta_content:
+                self._meta_title_text.append(meta_content)
         elif tag == "title":
             self._title_depth += 1
+        if self._row_stack:
+            row = self._row_stack[-1]
+            if row.active_cell is not None:
+                for attribute_name in ("title", "alt", "aria-label"):
+                    attribute_value = attributes.get(attribute_name)
+                    if attribute_value:
+                        row.cell_attributes[row.active_cell].append(
+                            (tag, attribute_name, attribute_value)
+                        )
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "tr" and self._row_stack:
@@ -196,15 +378,19 @@ class _NexusHtmlParser(HTMLParser):
         elif tag == "td" and self._row_stack:
             self._row_stack[-1].active_cell = None
         elif tag == "a" and self._link_stack:
-            href, title, parts = self._link_stack.pop()
-            link = (href, title, _clean_text(" ".join(parts)))
+            href, title, class_name, parts = self._link_stack.pop()
+            label = _clean_text(" ".join(parts))
+            link = (href, title, label)
             self.all_links.append(link)
+            self.all_link_classes.append((href, class_name, label))
             for row in self._row_stack:
                 row.links.append(link)
             for card in self._card_stack:
                 card.links.append(link)
         elif tag == "h1" and self._heading_depth:
             self._heading_depth -= 1
+        elif tag in {"h2", "h3"} and self._secondary_heading_depth:
+            self._secondary_heading_depth -= 1
         elif tag == "title" and self._title_depth:
             self._title_depth -= 1
 
@@ -217,6 +403,19 @@ class _NexusHtmlParser(HTMLParser):
                 if starts_card and self._card_stack:
                     self._cards.append(self._card_stack.pop())
             break
+        if tag == "table" and self._table_stack:
+            self._table_stack.pop()
+        remaining_captures: list[_TextCapture] = []
+        for capture in self._class_text_captures:
+            if capture.tag == tag:
+                capture.depth -= 1
+            if capture.depth <= 0:
+                captured_text = _clean_text(" ".join(capture.parts))
+                if captured_text:
+                    self.class_text_parts.setdefault(capture.class_name, []).append(captured_text)
+            else:
+                remaining_captures.append(capture)
+        self._class_text_captures = remaining_captures
 
     def handle_data(self, data: str) -> None:
         if not data:
@@ -230,9 +429,13 @@ class _NexusHtmlParser(HTMLParser):
                 if cleaned:
                     row.cell_text_parts[row.active_cell].append(cleaned)
         if self._link_stack:
-            self._link_stack[-1][2].append(data)
+            self._link_stack[-1][3].append(data)
+        for capture in self._class_text_captures:
+            capture.parts.append(data)
         if self._heading_depth:
             self._heading_text.append(data)
+        elif self._secondary_heading_depth:
+            self._secondary_heading_text.append(data)
         if self._title_depth:
             self._title_text.append(data)
         if self._card_stack:
@@ -269,8 +472,8 @@ class NexusPhpWebAdapter:
         self._base_url, self._origin = _normalize_origin(base_url or profile.default_base_url)
         self._transport = transport
         self._timeout_seconds = timeout_seconds
-        if details_timeout_seconds is not None and not 0 < details_timeout_seconds <= 120:
-            raise ValueError("NexusPHP 详情专用超时必须在 0～120 秒范围内")
+        if details_timeout_seconds is not None and not 0 < details_timeout_seconds <= 3600:
+            raise ValueError("NexusPHP 详情专用超时必须在 0～3600 秒范围内")
         self._details_timeout_seconds = details_timeout_seconds or timeout_seconds
         self._user_agent = user_agent.strip() if user_agent else None
         self._browser_emulation_enabled = browser_emulation_enabled
@@ -281,7 +484,9 @@ class NexusPhpWebAdapter:
     async def capabilities(self) -> SiteSearchCapabilities:
         return SiteSearchCapabilities(
             supports_imdb_id=True,
-            supports_douban_id=True,
+            # HDTime's current search form exposes IMDb-link search, but no
+            # Douban-link search mode. Do not issue a misleading Douban-ID query.
+            supports_douban_id=self._profile.site_id != "hdtime",
             supports_category=True,
             supports_pagination=True,
             supports_detail_file_list=False,
@@ -291,6 +496,7 @@ class NexusPhpWebAdapter:
 
     async def test_connection(self) -> SiteConnectionResult:
         parser = _parse_html(await self._get_html(self._profile.index_path))
+        self._reject_rate_limit_page(parser)
         if not any(
             _href_path(href).endswith(self._profile.authenticated_href)
             for href, _, _ in parser.all_links
@@ -299,7 +505,45 @@ class NexusPhpWebAdapter:
         return SiteConnectionResult(self._profile.site_id)
 
     async def fetch_user_profile(self) -> SiteUserProfile:
-        index = _parse_html(await self._get_html(self._profile.index_path))
+        site_key = self._profile.site_id.replace("_", "").lower()
+        # PT-Depiler uses a 30-second default for user-info requests. Keep the
+        # three sites with confirmed slow profile/stat endpoints bounded but
+        # aligned with that behavior instead of dropping optional fields at 15s.
+        profile_timeout_seconds = (
+            max(self._timeout_seconds, _DEFAULT_PROFILE_TOTAL_TIMEOUT_SECONDS)
+            if site_key in {"ubits", "audiences", "springsunday"}
+            else None
+        )
+
+        async def get_profile_html(
+            path: str,
+            *,
+            params: dict[str, str] | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> str:
+            if profile_timeout_seconds is None:
+                return await self._get_html(path, params=params, headers=headers)
+            try:
+                # HTTPX read timeouts are inactivity limits, not a total deadline.
+                # PT-Depiler's Axios timeout is total-request based; mirror that
+                # bounded behavior so a slow chunked response cannot hang profile sync.
+                return await asyncio.wait_for(
+                    self._get_html(
+                        path,
+                        params=params,
+                        timeout_seconds=profile_timeout_seconds,
+                        headers=headers,
+                    ),
+                    timeout=profile_timeout_seconds,
+                )
+            except TimeoutError as exc:
+                raise SiteAdapterError(
+                    "SITE_TIMEOUT",
+                    "NexusPHP 用户资料请求超过总耗时上限",
+                    retryable=True,
+                ) from exc
+
+        index = _parse_html(await get_profile_html(self._profile.index_path))
         self._reject_login_page(index)
         authenticated = any(
             _href_path(href).endswith(self._profile.authenticated_href)
@@ -310,7 +554,7 @@ class NexusPhpWebAdapter:
         profile_link = _user_profile_link(index.all_links)
         confirmed_from_settings = False
         if profile_link is None:
-            parser = _parse_html(await self._get_html(f"/{self._profile.authenticated_href}"))
+            parser = _parse_html(await get_profile_html(f"/{self._profile.authenticated_href}"))
             self._reject_login_page(parser)
             uid = None
             username = None
@@ -326,13 +570,28 @@ class NexusPhpWebAdapter:
                     # Never follow a foreign link or use its UID for AJAX.
                     pass
                 else:
-                    parser = _parse_html(await self._get_html_url(profile_url))
+                    if urlsplit(profile_url).path.lstrip("/") != "userdetails.php":
+                        raise SiteAdapterError(
+                            "SITE_REQUEST_POLICY_VIOLATION",
+                            "站点用户资料链接路径不受支持",
+                        )
+                    # Validate the original link's origin first, then request the
+                    # fixed same-origin profile endpoint with only the numeric id.
+                    parser = _parse_html(
+                        await get_profile_html("/userdetails.php", params={"id": settings_uid})
+                    )
                     uid = settings_uid
                     username = settings_username
                     confirmed_from_settings = True
         else:
             href, uid, username = profile_link
-            parser = _parse_html(await self._get_html_url(self._same_origin_url(href)))
+            profile_url = self._same_origin_url(href)
+            if urlsplit(profile_url).path.lstrip("/") != "userdetails.php":
+                raise SiteAdapterError(
+                    "SITE_REQUEST_POLICY_VIOLATION", "站点用户资料链接路径不受支持"
+                )
+            # Do not forward auxiliary query parameters from the page's link.
+            parser = _parse_html(await get_profile_html("/userdetails.php", params={"id": uid}))
         self._reject_login_page(parser)
         profile = _parse_nexus_user_profile(
             parser,
@@ -341,6 +600,227 @@ class NexusPhpWebAdapter:
             username=username,
             timezone_offset_minutes=self._profile.timezone_offset_minutes,
         )
+        numeric_uid = uid is not None and re.fullmatch(r"[0-9]{1,64}", uid) is not None
+
+        if site_key == "keepfrds":
+            # KeepFrds removed the old AJAX user-torrent endpoint. Its JSON API is
+            # the authoritative source for class, byte totals, published and seeding totals.
+            try:
+                api_raw = await self._get_bytes(
+                    f"{self._base_url}/api/userdetails.php",
+                    limit=self._max_html_bytes,
+                    accept="application/json",
+                )
+                profile = _parse_keepfrds_api_profile(
+                    profile,
+                    api_raw.decode("utf-8"),
+                    expected_uid=uid,
+                )
+            except (SiteAdapterError, UnicodeDecodeError) as exc:
+                error_code = (
+                    exc.code if isinstance(exc, SiteAdapterError) else "SITE_INVALID_RESPONSE"
+                )
+                _logger.warning(
+                    "KeepFrds 用户统计 API 读取失败，保留网页可解析字段 error_code=%s",
+                    error_code,
+                )
+
+        if site_key == "u2" and numeric_uid and profile.bonus_per_hour is None:
+            try:
+                if self._transport is None and self._profile.min_request_interval_seconds > 0:
+                    await asyncio.sleep(self._profile.min_request_interval_seconds)
+                hourly_html = await self._get_html("/mprecent.php", params={"user": uid or ""})
+                hourly_bonus = _parse_u2_bonus_per_hour(hourly_html)
+                if hourly_bonus is not None:
+                    profile = replace(profile, bonus_per_hour=hourly_bonus)
+            except SiteAdapterError as exc:
+                _logger.warning("U2 每小时 UCoin 统计读取失败 error_code=%s", exc.code)
+
+        if site_key == "hhclub" and profile.bonus_per_hour is None:
+            hourly_bonus = _parse_hhclub_profile_bonus_per_hour(parser)
+            if hourly_bonus is not None:
+                profile = replace(profile, bonus_per_hour=hourly_bonus)
+
+        if site_key in {"ubits", "audiences"} and profile.bonus_per_hour is None:
+            # PT-Depiler's default user-info flow reads hourly bonus from
+            # /mybonus.php. Audiences has a dedicated compact-rate selector;
+            # UBits uses the generic "currently getting" sentence.
+            try:
+                bonus_page = _parse_html(await get_profile_html("/mybonus.php"))
+                self._reject_login_page(bonus_page)
+                hourly_bonus = _parse_nexus_bonus_per_hour(
+                    bonus_page,
+                    class_name="mybonus-side__rate" if site_key == "audiences" else None,
+                )
+                if hourly_bonus is not None:
+                    profile = replace(profile, bonus_per_hour=hourly_bonus)
+            except SiteAdapterError as exc:
+                _logger.warning("%s 每小时收益读取失败 error_code=%s", site_key, exc.code)
+
+        if site_key == "springsunday" and profile.bonus_per_hour is None:
+            hourly_bonus = _parse_springsunday_bonus_per_hour(parser)
+            if hourly_bonus is not None:
+                profile = replace(profile, bonus_per_hour=hourly_bonus)
+
+        if site_key == "pterclub" and profile.seeding_count is None:
+            header_seeding_count = _parse_pter_seeding_count(parser)
+            if header_seeding_count is not None:
+                profile = replace(profile, seeding_count=header_seeding_count)
+
+        # User-profile fields and full-list summaries are optional. A slow or retired
+        # auxiliary endpoint must not cause the reliability wrapper to retry the entire
+        # homepage + user-details flow three times and trip the site's circuit breaker.
+        # Preserve authentication errors from the primary profile pages, but record
+        # auxiliary failures by safe error code only and return the fields already parsed.
+        if numeric_uid and site_key not in {"hdtime", "keepfrds"}:
+            if profile.seeding_count is None or profile.seeding_size_bytes is None:
+                if self._transport is None and self._profile.min_request_interval_seconds > 0:
+                    await asyncio.sleep(self._profile.min_request_interval_seconds)
+                seeding_path = (
+                    "/getusertorrentlist.php"
+                    if site_key == "pttime"
+                    else "/getusertorrentlistajax.php"
+                )
+                request_headers = (
+                    {"Referer": f"{self._base_url}/userdetails.php"}
+                    if site_key == "audiences"
+                    else None
+                )
+                try:
+                    seeding_html = await get_profile_html(
+                        seeding_path,
+                        params={"userid": uid or "", "type": "seeding"},
+                        headers=request_headers,
+                    )
+                    seeding_parser = _parse_html(seeding_html)
+                    self._reject_login_page(seeding_parser)
+                    if site_key == "pttime":
+                        seeding_summary = _parse_pttime_seeding_summary(seeding_html)
+                    elif site_key == "u2":
+                        seeding_summary = _parse_u2_ajax_seeding_summary(seeding_html)
+                    elif site_key == "audiences":
+                        seeding_summary = _parse_audiences_seeding_summary(seeding_parser)
+                    else:
+                        seeding_summary = _parse_nexus_ajax_seeding_summary(
+                            seeding_html, seeding_parser, spring_sunday=site_key == "springsunday"
+                        )
+                    if seeding_summary is not None:
+                        profile = replace(
+                            profile,
+                            # Preserve an explicitly parsed profile/header count. The
+                            # summary endpoint only fills missing fields; this matches
+                            # PT-depiler's selector-first behavior and avoids replacing
+                            # a current-seeding count with a different list-total value.
+                            seeding_count=(
+                                profile.seeding_count
+                                if profile.seeding_count is not None
+                                else seeding_summary[0]
+                            ),
+                            seeding_size_bytes=(
+                                profile.seeding_size_bytes
+                                if profile.seeding_size_bytes is not None
+                                else seeding_summary[1]
+                            ),
+                        )
+                except SiteAdapterError as exc:
+                    _logger.warning(
+                        "站点做种汇总读取失败 site_id=%s error_code=%s",
+                        site_key,
+                        exc.code,
+                    )
+
+            if site_key == "pterclub" and profile.username:
+                # PT-depiler computes PTerClub's published total from two reviewed
+                # torrent-search states; the generic user-torrent AJAX count is not equivalent.
+                try:
+                    pter_published_total = 0
+                    for check_state in ("prechecked", "checked"):
+                        if (
+                            self._transport is None
+                            and self._profile.min_request_interval_seconds > 0
+                        ):
+                            await asyncio.sleep(self._profile.min_request_interval_seconds)
+                        uploaded_html = await self._get_html(
+                            "/torrents.php",
+                            params={
+                                "incldead": "1",
+                                "spstate": "0",
+                                "inclbookmarked": "0",
+                                "check": check_state,
+                                "search": profile.username,
+                                "search_area": "3",
+                                "search_mode": "3",
+                            },
+                        )
+                        uploaded_parser = _parse_html(uploaded_html)
+                        self._reject_login_page(uploaded_parser)
+                        count = _parse_pter_uploaded_total(uploaded_html)
+                        if count is None:
+                            raise SiteAdapterError(
+                                "SITE_INVALID_RESPONSE", "PTerClub 发种统计页缺少可识别的分页总数"
+                            )
+                        pter_published_total += count
+                    profile = replace(profile, torrents_posted=pter_published_total)
+                except SiteAdapterError as exc:
+                    _logger.warning("PTerClub 发种统计读取失败 error_code=%s", exc.code)
+            elif site_key != "hhclub" and profile.torrents_posted is None:
+                if self._transport is None and self._profile.min_request_interval_seconds > 0:
+                    await asyncio.sleep(self._profile.min_request_interval_seconds)
+                uploaded_path = (
+                    "/getusertorrentlist.php"
+                    if site_key == "pttime"
+                    else "/getusertorrentlistajax.php"
+                )
+                request_headers = (
+                    {"Referer": f"{self._base_url}/userdetails.php"}
+                    if site_key == "audiences"
+                    else None
+                )
+                try:
+                    uploaded_html = await get_profile_html(
+                        uploaded_path,
+                        params={"userid": uid or "", "type": "uploaded"},
+                        headers=request_headers,
+                    )
+                    uploaded_parser = _parse_html(uploaded_html)
+                    self._reject_login_page(uploaded_parser)
+                    published_count = _parse_nexus_ajax_total_count(uploaded_html, uploaded_parser)
+                    if published_count is not None:
+                        profile = replace(profile, torrents_posted=published_count)
+                except SiteAdapterError as exc:
+                    _logger.warning(
+                        "站点发种统计读取失败 site_id=%s error_code=%s",
+                        site_key,
+                        exc.code,
+                    )
+        if site_key == "hdtime" and numeric_uid and profile.torrents_posted is None:
+            # PT-Depiler reads NexusPHP publication totals from the current
+            # user's uploaded-torrent list. For HDTime, only request that
+            # fixed read-only summary after the authenticated profile explicitly
+            # links to this same user's publication list (action=1).
+            published_href = _own_published_list_href(parser, uid=uid or "")
+            if published_href is not None:
+                try:
+                    published_url = self._same_origin_url(published_href)
+                    if urlsplit(published_url).path.lstrip("/") != "userdetails.php":
+                        raise SiteAdapterError(
+                            "SITE_REQUEST_POLICY_VIOLATION",
+                            "HDTime 发种统计链接路径不受支持",
+                        )
+                    if self._transport is None and self._profile.min_request_interval_seconds > 0:
+                        await asyncio.sleep(self._profile.min_request_interval_seconds)
+                    uploaded_html = await get_profile_html(
+                        "/getusertorrentlistajax.php",
+                        params={"userid": uid or "", "type": "uploaded"},
+                    )
+                    uploaded_parser = _parse_html(uploaded_html)
+                    self._reject_login_page(uploaded_parser)
+                    published_count = _parse_nexus_ajax_total_count(uploaded_html, uploaded_parser)
+                    if published_count is not None:
+                        profile = replace(profile, torrents_posted=published_count)
+                except SiteAdapterError as exc:
+                    _logger.warning("HDTime 发种统计读取失败 error_code=%s", exc.code)
+
         if self._profile.site_id == "hhclub" and profile.bonus_per_hour is None:
             # HHClub displays the hourly rate on its independent bonus page.
             # Follow only an explicit same-origin profile link to that known read-only page.
@@ -453,11 +933,20 @@ class NexusPhpWebAdapter:
         return profile
 
     async def search(self, query: SearchQuery) -> SearchPage:
+        # HDTime's live form maps area 4 to IMDb links; area 0 is title search.
+        # Sending an IMDb ID as a title returns an empty-looking page without an
+        # error, which previously turned a valid search into a false no-match.
+        search_area = (
+            "4"
+            if self._profile.site_id == "hdtime"
+            and any(item.namespace == "imdb" for item in query.external_ids)
+            else "0"
+        )
         params = {
             "search": _search_value(query),
             "incldead": "1",
             "spstate": "0",
-            "search_area": "0",
+            "search_area": search_area,
             "search_mode": "0",
             "sort": _sort_value(query.sort),
             "type": "desc",
@@ -465,6 +954,7 @@ class NexusPhpWebAdapter:
             "page": str(query.page - 1),
         }
         parser = _parse_html(await self._get_html(self._profile.search_path, params=params))
+        self._reject_rate_limit_page(parser)
         self._reject_login_page(parser)
         return SearchPage(
             self._profile.site_id,
@@ -487,12 +977,95 @@ class NexusPhpWebAdapter:
                 timeout_seconds=self._details_timeout_seconds,
             )
         )
+        self._reject_rate_limit_page(parser)
         self._reject_login_page(parser)
         for candidate in _parse_search_rows(parser, self._profile):
             if candidate.torrent_id == normalized_id:
                 return TorrentDetails(candidate)
         display_name = parser.heading or _page_title_candidate(parser.page_title)
         if display_name is None:
+            download_href = _download_href(parser.all_links, normalized_id)
+            if download_href is not None:
+                title_candidates: list[str] = []
+                if parser.secondary_heading:
+                    title_candidates.append(parser.secondary_heading)
+                if parser.meta_title:
+                    title_candidates.append(parser.meta_title)
+                title_like_classes = sorted(
+                    (
+                        class_name
+                        for class_name in parser.class_text_parts
+                        if "title" in class_name.casefold()
+                        or class_name.casefold() in {"torrentname", "torrent_name", "torrent-name"}
+                    ),
+                    key=lambda name: (
+                        0
+                        if name.casefold()
+                        in {
+                            "torrentname",
+                            "torrent_name",
+                            "torrent-name",
+                            "torrent-title",
+                            "torrent_title",
+                        }
+                        else 1
+                        if "torrent" in name.casefold()
+                        else 2
+                        if "detail" in name.casefold()
+                        else 3,
+                        name.casefold(),
+                    ),
+                )
+                for class_name in title_like_classes:
+                    title_candidates.extend(parser.class_text_parts[class_name])
+                generic_titles = {
+                    "hdtime",
+                    "hdt",
+                    "hdtorrents",
+                    "torrent",
+                    "torrent details",
+                    "details",
+                    "种子详情",
+                    "详情",
+                    "login",
+                    "log in",
+                    "登录",
+                    "首页",
+                    "home",
+                }
+                for raw_title in title_candidates:
+                    cleaned_title = _clean_text(raw_title)
+                    if not cleaned_title:
+                        continue
+                    candidate_title = _page_title_candidate(cleaned_title) or cleaned_title
+                    if candidate_title.casefold() in generic_titles:
+                        continue
+                    if _DETAIL_TITLE_RE.fullmatch(candidate_title):
+                        continue
+                    display_name = candidate_title
+                    break
+        if display_name is None:
+            title_like_classes = sorted(
+                class_name
+                for class_name in parser.class_text_parts
+                if "title" in class_name.casefold()
+                or class_name.casefold() in {"torrentname", "torrent_name", "torrent-name"}
+            )[:12]
+            _logger.warning(
+                "NexusPHP detail page title could not be parsed",
+                extra={
+                    "site_id": self._profile.site_id,
+                    "torrent_id": normalized_id,
+                    "page_title": parser.page_title,
+                    "heading": parser.heading,
+                    "secondary_heading": parser.secondary_heading,
+                    "meta_title": parser.meta_title,
+                    "title_like_classes": title_like_classes,
+                    "link_count": len(parser.all_links),
+                    "has_exact_download_link": _download_href(parser.all_links, normalized_id)
+                    is not None,
+                },
+            )
             raise SiteAdapterError("SITE_INVALID_RESPONSE", "NexusPHP 详情页缺少可识别标题")
         return TorrentDetails(
             normalize_candidate_meta(
@@ -500,7 +1073,7 @@ class NexusPhpWebAdapter:
                 torrent_id=normalized_id,
                 display_name=display_name,
                 total_size=_explicit_detail_size(parser),
-                external_ids=_external_ids(parser.all_links),
+                external_ids=_detail_external_ids(parser.all_links, display_name),
             )
         )
 
@@ -538,6 +1111,7 @@ class NexusPhpWebAdapter:
         *,
         params: dict[str, str] | None = None,
         timeout_seconds: float | None = None,
+        headers: dict[str, str] | None = None,
     ) -> str:
         url = f"{self._base_url}{path}"
         if params:
@@ -547,18 +1121,18 @@ class NexusPhpWebAdapter:
             limit=self._max_html_bytes,
             accept="text/html",
             timeout_seconds=timeout_seconds,
+            extra_headers=headers,
         )
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise SiteAdapterError("SITE_INVALID_RESPONSE", "NexusPHP HTML 不是有效 UTF-8") from exc
+        return _decode_nexus_html(raw)
 
-    async def _get_html_url(self, url: str) -> str:
-        raw = await self._get_bytes(url, limit=self._max_html_bytes, accept="text/html")
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise SiteAdapterError("SITE_INVALID_RESPONSE", "NexusPHP HTML 不是有效 UTF-8") from exc
+    async def _get_html_url(self, url: str, *, timeout_seconds: float | None = None) -> str:
+        raw = await self._get_bytes(
+            url,
+            limit=self._max_html_bytes,
+            accept="text/html",
+            timeout_seconds=timeout_seconds,
+        )
+        return _decode_nexus_html(raw)
 
     async def _get_bytes(
         self,
@@ -567,6 +1141,7 @@ class NexusPhpWebAdapter:
         limit: int,
         accept: str = "application/x-bittorrent",
         timeout_seconds: float | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> bytes:
         self._assert_same_origin(url)
         chunks: list[bytes] = []
@@ -584,6 +1159,15 @@ class NexusPhpWebAdapter:
                         "Referer": f"{self._base_url}/",
                     }
                 )
+            for header_name, header_value in (extra_headers or {}).items():
+                # Site-specific profile requests may need a same-origin Referer.
+                # Do not permit arbitrary caller-supplied headers at this boundary.
+                if header_name.casefold() != "referer":
+                    raise SiteAdapterError(
+                        "SITE_REQUEST_POLICY_VIOLATION", "NexusPHP 仅允许站内 Referer 覆盖"
+                    )
+                self._assert_same_origin(header_value)
+                headers["Referer"] = header_value
             async with (
                 httpx2.AsyncClient(
                     headers=headers,
@@ -646,6 +1230,34 @@ class NexusPhpWebAdapter:
             raise SiteAdapterError("SITE_UNAVAILABLE", "NexusPHP 站点暂时不可用", retryable=True)
         if response.status_code != 200:
             raise SiteAdapterError("SITE_HTTP_ERROR", "NexusPHP 返回异常状态")
+
+    def _reject_rate_limit_page(self, parser: _NexusHtmlParser) -> None:
+        visible_text = " ".join(
+            value
+            for value in (
+                parser.page_title,
+                parser.heading,
+                parser.secondary_heading,
+                *parser.text_parts,
+            )
+            if isinstance(value, str) and value
+        ).casefold()
+        if any(
+            marker in visible_text
+            for marker in (
+                "访问过于频繁",
+                "请求过于频繁",
+                "操作过于频繁",
+                "too many requests",
+                "rate limit exceeded",
+            )
+        ):
+            raise SiteAdapterError(
+                "SITE_RATE_LIMITED",
+                "NexusPHP 请求过于频繁，请稍后重试",
+                retryable=True,
+                retry_after_seconds=60.0,
+            )
 
     def _reject_login_page(self, parser: _NexusHtmlParser) -> None:
         has_login = any("login.php" in _href_path(href) for href, _, _ in parser.all_links)
@@ -769,6 +1381,46 @@ def _parse_html(value: str) -> _NexusHtmlParser:
     return parser
 
 
+def _parse_size_text(value: str) -> int | None:
+    direct = _parse_size(value)
+    if direct is not None:
+        return direct
+    matches = tuple(_SIZE_TOKEN_RE.finditer(value))
+    if len(matches) != 1:
+        return None
+    return _parse_size(matches[0].group(0))
+
+
+def _parse_row_size(row: _Row, profile: NexusPhpProfile) -> int | None:
+    """Use the configured size column first, then a unique explicit size cell.
+
+    Some NexusPHP skins append columns after the torrent-size column. In that
+    layout, fixed offsets shift to seeders/status and silently drop size evidence.
+    The fallback is deliberately row-local and accepts only one unambiguous size.
+    """
+    configured = _parse_size(_cell(row, profile.size_cell_from_end))
+    if configured is not None:
+        return configured
+
+    values: list[int] = []
+    for index, cell in enumerate(row.cells):
+        cell_sizes: set[int] = set()
+        parsed_cell = _parse_size_text(cell)
+        if parsed_cell is not None:
+            cell_sizes.add(parsed_cell)
+        if index < len(row.cell_attributes):
+            for _tag, attribute, raw_value in row.cell_attributes[index]:
+                if attribute not in {"title", "aria-label", "alt"}:
+                    continue
+                parsed_attribute = _parse_size_text(raw_value)
+                if parsed_attribute is not None:
+                    cell_sizes.add(parsed_attribute)
+        if len(cell_sizes) == 1:
+            values.append(next(iter(cell_sizes)))
+
+    return values[0] if len(values) == 1 else None
+
+
 def _parse_search_rows(
     parser: _NexusHtmlParser, profile: NexusPhpProfile
 ) -> tuple[CandidateMeta, ...]:
@@ -788,7 +1440,7 @@ def _parse_search_rows(
             site_id=profile.site_id,
             torrent_id=torrent_id,
             display_name=title,
-            total_size=_parse_size(_cell(row, profile.size_cell_from_end)),
+            total_size=_parse_row_size(row, profile),
             published_at=_parse_date(row, profile),
             category=_category(row.links),
             seeders=_parse_nonnegative_int(_cell(row, profile.seeders_cell_from_end)),
@@ -817,12 +1469,18 @@ def _parse_search_rows(
 
 
 def _explicit_detail_size(parser: _NexusHtmlParser) -> int | None:
-    """Accept only unambiguous labeled size cells in a torrent details table.
+    """Accept only unambiguous torrent-size labels or the dedicated size class.
 
     A details page often has no search-result row. Do not infer a torrent size
     from free text, user totals, sibling torrents or the page's other numbers.
     """
-    sizes: set[int] = set()
+    sizes: set[int] = {
+        parsed
+        for value in parser.class_text_parts.get("torrent-info-text-size", [])
+        if (parsed := _parse_size_text(value)) is not None
+    }
+    if len(sizes) > 1:
+        return None
     for row in parser.rows:
         if len(row.cells) != 2:
             continue
@@ -861,9 +1519,10 @@ def _user_profile_link(
         if parsed.path.lstrip("/") != "userdetails.php" or parsed.fragment:
             continue
         params = parse_qs(parsed.query)
-        if set(params) != {"id"}:
-            # Seeding/action links are not evidence of the current user's
-            # identity, even when the homepage links to no other user.
+        if set(params) not in ({"id"}, {"id", "hash"}):
+            # UBits decorates the current user's profile link with a `hash`
+            # parameter. Accept only that known decoration and never forward it.
+            # Other query parameters can identify seeding/action links, not the user.
             continue
         values = params["id"]
         if not values or len(values) != 1 or not values[0].isdigit():
@@ -875,6 +1534,8 @@ def _user_profile_link(
                 # multiple IDs belongs to the authenticated account.
                 return None
             continue
+        # Preserve the original URL until the caller validates its origin. The
+        # caller then rebuilds the fixed profile URL with only this numeric id.
         candidate = (href, values[0], username)
     return candidate
 
@@ -888,13 +1549,15 @@ def _parse_nexus_user_profile(
     timezone_offset_minutes: int,
 ) -> SiteUserProfile:
     text = "|".join(parser.text_parts)
+    site_key = site_id.replace("_", "").lower()
     hnr_link_count, hnr_link_status = _profile_hnr(parser)
-    uploaded = _profile_size(text, "上传量", "Uploaded")
-    downloaded = _profile_size(text, "下载量", "Downloaded")
-    ratio = _profile_float(text, "分享率", "Ratio")
+    uploaded = _profile_size_from_parser(parser, text, "上传量", "上傳量", "Uploaded")
+    downloaded = _profile_size_from_parser(parser, text, "下载量", "下載量", "Downloaded")
+    ratio = _profile_float_from_parser(parser, text, "分享率", "Ratio")
     if ratio is None and uploaded is not None and downloaded not in {None, 0}:
         ratio = uploaded / downloaded
-    hnr_count = _profile_int(
+    hnr_count = _profile_int_from_parser(
+        parser,
         text,
         "H&R 次数",
         "H&R次数",
@@ -904,22 +1567,109 @@ def _parse_nexus_user_profile(
     )
     if hnr_count is None:
         hnr_count = hnr_link_count
+    bonus_labels: tuple[str, ...]
+    if site_key == "audiences":
+        bonus_labels = ("爆米花", "Karma Points", "积分", "茉莉", "魔力值", "Bonus")
+    elif site_key == "springsunday":
+        bonus_labels = ("积分", "茉莉", "魔力值", "Bonus")
+    elif site_key == "u2":
+        bonus_labels = ("UCoin", "U币", "Bonus")
+    elif site_key == "ubits":
+        bonus_labels = ("U币", "UBits Coin", "魔力值", "Bonus")
+    elif site_key == "hhclub":
+        bonus_labels = ("憨豆", "魔力值", "Bonus")
+    else:
+        bonus_labels = ("魔力值", "Bonus")
+
+    seeding_count = _profile_int_from_parser(
+        parser, text, "做种数", "当前做种", "正在做种", "Seeding"
+    )
+    bonus = _profile_float_from_parser(parser, text, *bonus_labels)
+    seeding_points = _profile_float_from_parser(
+        parser,
+        text,
+        "做种积分",
+        "做種積分",
+        "保种积分",
+        "保種積分",
+        "Seed points",
+        "Seeding Points",
+    )
+    bonus_per_hour = _profile_float_from_parser(
+        parser,
+        text,
+        "每小时魔力值",
+        "每小时魔力",
+        "每小时憨豆",
+        "Bonus per hour",
+    )
+    if site_key == "audiences":
+        uploaded_metric = _profile_class_size(parser, "site-userbar__compact-metric--uploaded")
+        downloaded_metric = _profile_class_size(parser, "site-userbar__compact-metric--downloaded")
+        ratio_metric = _profile_class_float(parser, "site-userbar__compact-metric--ratio")
+        bonus_metric = _profile_class_float(parser, "site-userbar__compact-metric--bonus")
+        seeding_points_metric = _profile_class_float(
+            parser, "site-userbar__compact-metric--seeding-bonus"
+        )
+        seeding_count_metric = _profile_class_int(
+            parser, "site-userbar__compact-metric-inline-link--seeding"
+        )
+        bonus_per_hour_metric = _profile_class_float(parser, "mybonus-side__rate")
+        if uploaded_metric is not None:
+            uploaded = uploaded_metric
+        if downloaded_metric is not None:
+            downloaded = downloaded_metric
+        if ratio_metric is not None:
+            ratio = ratio_metric
+        if bonus_metric is not None:
+            bonus = bonus_metric
+        if seeding_points_metric is not None:
+            seeding_points = seeding_points_metric
+        if seeding_count_metric is not None:
+            seeding_count = seeding_count_metric
+        if bonus_per_hour_metric is not None:
+            bonus_per_hour = bonus_per_hour_metric
+        if ratio is None and uploaded is not None and downloaded not in {None, 0}:
+            ratio = uploaded / downloaded
+
     return SiteUserProfile(
         site_id=site_id,
         uid=uid,
         username=username or _profile_text(text, "用户名", "Username", max_length=256),
-        user_level=_profile_named_level(parser),
-        real_uploaded_bytes=_profile_size(text, "真实上传量", "Real Uploaded"),
-        real_downloaded_bytes=_profile_size(text, "真实下载量", "Real Downloaded"),
+        user_level=_profile_named_level(parser, site_id=site_id),
+        real_uploaded_bytes=_profile_size_from_parser(
+            parser,
+            text,
+            "真实上传量",
+            "实际上传量",
+            "真實上傳量",
+            "實際上傳量",
+            "Real Uploaded",
+            "Actual Uploaded",
+        ),
+        real_downloaded_bytes=_profile_size_from_parser(
+            parser,
+            text,
+            "真实下载量",
+            "实际下载量",
+            "真實下載量",
+            "實際下載量",
+            "Real Downloaded",
+            "Actual Downloaded",
+        ),
         uploaded_bytes=uploaded,
         downloaded_bytes=downloaded,
         ratio=ratio,
-        torrents_posted=_profile_int(text, "发种数", "发布种子", "发布数", "Torrents Posted"),
-        seeding_count=_profile_int(text, "做种数", "当前做种", "正在做种", "Seeding"),
-        seeding_size_bytes=_profile_size(text, "做种量", "当前做种量", "Seeding Size"),
-        bonus=_profile_float(text, "魔力值", "Bonus"),
-        seeding_points=_profile_float(text, "做种积分", "Seeding Points"),
-        bonus_per_hour=_profile_float(text, "每小时魔力值", "每小时魔力", "Bonus per hour"),
+        torrents_posted=_profile_int_from_parser(
+            parser, text, "发种数", "发布种子", "发布数", "Torrents Posted"
+        ),
+        seeding_count=seeding_count,
+        seeding_size_bytes=_profile_size_from_parser(
+            parser, text, "做种量", "做种大小", "做種大小", "当前做种量", "Seeding Size"
+        ),
+        bonus=bonus,
+        seeding_points=seeding_points,
+        bonus_per_hour=bonus_per_hour,
         join_time=_profile_datetime(
             text,
             "加入日期",
@@ -951,7 +1701,8 @@ def _parse_nexus_user_profile(
         )
         or hnr_link_status,
         hnr_count=hnr_count,
-        message_count=_profile_int(
+        message_count=_profile_int_from_parser(
+            parser,
             text,
             "未读消息",
             "未读消息数",
@@ -976,26 +1727,106 @@ def _profile_hnr(parser: _NexusHtmlParser) -> tuple[int | None, str | None]:
     return None, None
 
 
-def _profile_named_level(parser: _NexusHtmlParser) -> str | None:
-    # Some sites split official names (e.g. "INSANE" + "USER") across nested
-    # elements inside the same grade cell. Do not join unrelated profile fields.
+def _normalize_level_candidate(value: str) -> str | None:
+    candidate = _clean_text(value).strip(" :：")
+    for guidance_marker in ("🩺校验等级", "校验等级", "等级参考", "加群参考", "规则&教程"):
+        if guidance_marker in candidate:
+            candidate = candidate.split(guidance_marker, 1)[0].strip(" ：:·-—")
+    if not candidate or len(candidate) > 256 or candidate.isdecimal():
+        return None
+    folded = candidate.casefold()
+    if folded.startswith(("next class", "next level", "下一级", "下一等级", "即将升级")):
+        return None
+    if candidate in {
+        "种子评论",
+        "经验值",
+        "用户详情",
+        "查看详情",
+        "发布种子",
+        "分享率",
+        "上传量",
+        "下载量",
+        "做种积分",
+        "魔力值",
+        "未读消息",
+    }:
+        return None
+    return candidate
+
+
+def _profile_named_level(parser: _NexusHtmlParser, *, site_id: str | None = None) -> str | None:
+    site_key = (site_id or "").replace("_", "").lower()
+    if site_key == "audiences":
+        # PT-depiler: div.ud-hero span.ud-class > b. Audiences moved the
+        # current class into its profile hero instead of a NexusPHP table row.
+        for value in parser.audiences_level_classes:
+            candidate = _normalize_level_candidate(value)
+            if candidate is not None:
+                return candidate
+        for value in parser.class_text_parts.get("ud-class", ()):
+            candidate = _normalize_level_candidate(value)
+            if candidate is not None:
+                return candidate
+
+    # HHClub encodes the class in the CSS class of the current user's profile link.
+    # Prefer that explicit marker over neighboring labels such as "经验值" or "种子评论".
+    for href, class_value, _label in parser.all_link_classes:
+        if urlsplit(href).path.lstrip("/") != "userdetails.php":
+            continue
+        for class_name in (class_value or "").split():
+            if class_name.endswith("_Name") and len(class_name) > len("_Name"):
+                candidate = _normalize_level_candidate(
+                    class_name[: -len("_Name")].replace("_", " ")
+                )
+                if candidate is not None:
+                    return candidate
+
+    labels = {
+        "等级",
+        "等級",
+        "用户等级",
+        "用戶等級",
+        "会员等级",
+        "會員等級",
+        "class",
+        "user class",
+        "level",
+        "user level",
+        "level name",
+    }
+    attribute_priority = {
+        ("b", "title"): 0,
+        ("strong", "title"): 0,
+        ("img", "alt"): 1,
+        ("img", "title"): 1,
+        ("span", "title"): 2,
+        ("span", "aria-label"): 2,
+        ("a", "title"): 3,
+        ("a", "aria-label"): 3,
+    }
     for row in parser.rows:
         for index, cell in enumerate(row.cells[:-1]):
-            if _clean_text(cell).rstrip(":：") not in {
-                "等级",
-                "等級",
-                "用户等级",
-                "用戶等級",
-                "Class",
-            }:
+            if _clean_text(cell).rstrip(":：").casefold() not in labels:
                 continue
+            attributes = (
+                row.cell_attributes[index + 1] if index + 1 < len(row.cell_attributes) else []
+            )
+            for tag, attribute, value in sorted(
+                attributes,
+                key=lambda item: attribute_priority.get((item[0], item[1]), 10),
+            ):
+                if (tag, attribute) not in attribute_priority:
+                    continue
+                candidate = _normalize_level_candidate(value)
+                if candidate is not None:
+                    return candidate
             parts = row.cell_text_parts[index + 1]
-            name = _clean_text(" ".join(parts))
-            if name and len(name) <= 256 and not name.isdecimal():
-                return name
-    text = "|".join(parser.text_parts)
-    fallback_name = _profile_text(text, "用户等级", "等级", "等級", "Class", max_length=256)
-    return fallback_name if fallback_name is not None and not fallback_name.isdecimal() else None
+            candidate = _normalize_level_candidate(" ".join(parts))
+            if candidate is not None:
+                return candidate
+    # Do not fall back to the next arbitrary text node on the page: a grade may be
+    # represented by an icon with title/alt, and the next text can be a sidebar link.
+    return None
 
 
 def _own_seeding_summary_href(parser: _NexusHtmlParser, *, uid: str) -> str | None:
@@ -1106,6 +1937,363 @@ def _parse_hdtime_ajax_seeding_summary(parser: _NexusHtmlParser) -> tuple[int, i
     return _parse_explicit_seeding_summary(parser, require_leading=True)
 
 
+def _parse_u2_ajax_seeding_summary(html: str) -> tuple[int, int] | None:
+    # U2 uses the generic endpoint but a site-specific "N records / size" summary.
+    count_match = re.search(
+        r"<b\b[^>]*>\s*([0-9][0-9,]*)\s*</b>\s*(?:条记录|條記錄|records?)",
+        html,
+        re.IGNORECASE,
+    )
+    visible_text = _clean_text(re.sub(r"<[^>]*>", " ", unescape(html)))
+    size_match = re.search(
+        r"大小.*?([0-9][0-9,]*(?:\.[0-9]+)?\s*[KMGTPE]?i?B)",
+        visible_text,
+        re.IGNORECASE,
+    )
+    if count_match is None or size_match is None:
+        return None
+    count = _parse_nonnegative_int(count_match.group(1))
+    size = _parse_size(size_match.group(1))
+    return (count, size) if count is not None and size is not None else None
+
+
+def _parse_pttime_seeding_summary(html: str) -> tuple[int, int] | None:
+    parser = _PTTimeSummaryParser()
+    parser.feed(html)
+    if len(parser.spans) < 4:
+        return None
+    count_text = _clean_text(" ".join(parser.spans[2]))
+    size_text = _clean_text(" ".join(parser.spans[3]))
+    count_match = re.search(r"[0-9][0-9,]*", count_text)
+    size_match = re.search(r"[0-9][0-9,]*(?:\.[0-9]+)?\s*[KMGTPE]?i?B", size_text, re.IGNORECASE)
+    if count_match is None or size_match is None:
+        return None
+    count = _parse_nonnegative_int(count_match.group(0))
+    size = _parse_size(size_match.group(0))
+    return (count, size) if count is not None and size is not None else None
+
+
+def _parse_audiences_seeding_summary(parser: _NexusHtmlParser) -> tuple[int, int] | None:
+    table_indexes = [row.table_index for row in parser.rows if row.table_index > 0]
+    if not table_indexes:
+        return None
+    first_table = min(table_indexes)
+    for row in parser.rows:
+        if row.table_index != first_table or len(row.cells) < 3:
+            continue
+        if not any("total" in _clean_text(cell).casefold() for cell in row.cells):
+            continue
+        count_match = re.search(r"[0-9][0-9,]*", row.cells[1])
+        size_match = re.search(
+            r"[0-9][0-9,]*(?:\.[0-9]+)?\s*[KMGTPE]?i?B", row.cells[2], re.IGNORECASE
+        )
+        if count_match is None or size_match is None:
+            return None
+        count = _parse_nonnegative_int(count_match.group(0))
+        size = _parse_size(size_match.group(0))
+        return (count, size) if count is not None and size is not None else None
+    return None
+
+
+def _parse_pter_uploaded_total(html: str) -> int | None:
+    pager = re.search(
+        r"""<p\b[^>]*class\s*=\s*["'][^"']*\bnp-pager\b[^"']*["'][^>]*>(.*?)</p>""",
+        html,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if pager is None:
+        # PT-depiler treats a valid search page without a pager as an empty result.
+        return 0
+    bold_values = re.findall(r"<b\b[^>]*>(.*?)</b>", pager.group(1), re.IGNORECASE | re.DOTALL)
+    if not bold_values:
+        return 0
+    last_bold = _clean_text(re.sub(r"<[^>]*>", " ", unescape(bold_values[-1])))
+    match = re.search(r"([0-9][0-9,]*)\s*$", last_bold)
+    return _parse_nonnegative_int(match.group(1)) if match is not None else 0
+
+
+def _parse_pter_seeding_count(parser: _NexusHtmlParser) -> int | None:
+    for href, title, label in parser.all_links:
+        parsed = urlsplit(href)
+        if _script_name(parsed.path) != "getusertorrentlist.php":
+            continue
+        if parse_qs(parsed.query).get("type") != ["seeding"]:
+            continue
+        match = re.search(r"[0-9][0-9,]*", _clean_text(f"{label} {title or ''}"))
+        if match is not None:
+            return _parse_nonnegative_int(match.group(0))
+    return None
+
+
+def _parse_u2_bonus_per_hour(html: str) -> float | None:
+    # PT-depiler reads the daily UCoin rate from /mprecent.php and divides by 24.
+    match = re.search(r"UCoin\s*([0-9][0-9,]*(?:\.[0-9]+)?)", html, re.IGNORECASE)
+    if match is None:
+        match = re.search(r"UCoin([0-9][0-9,]*(?:\.[0-9]+)?)", html, re.IGNORECASE)
+    if match is None:
+        return None
+    try:
+        value = float(match.group(1).replace(",", "")) / 24
+    except ValueError:
+        return None
+    return value if 0 <= value < float("inf") else None
+
+
+def _parse_hhclub_profile_bonus_per_hour(parser: _NexusHtmlParser) -> float | None:
+    for text in parser.class_text_parts.get("row-span-4", ()):
+        match = re.search(r"[0-9][0-9,]*(?:\.[0-9]+)?", text)
+        if match is None:
+            continue
+        try:
+            value = float(match.group(0).replace(",", ""))
+        except ValueError:
+            continue
+        if 0 <= value < float("inf"):
+            return value
+    return None
+
+
+def _json_nonnegative_int(value: object) -> int | None:
+    if type(value) is int and value >= 0:
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        return int(value)
+    return None
+
+
+def _json_nonnegative_float(value: object) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        parsed = float(value)
+        return parsed if 0 <= parsed < float("inf") else None
+    if isinstance(value, str):
+        try:
+            parsed = float(value.replace(",", "").strip())
+        except ValueError:
+            return None
+        return parsed if 0 <= parsed < float("inf") else None
+    return None
+
+
+def _parse_keepfrds_api_profile(
+    profile: SiteUserProfile, payload_text: str, *, expected_uid: str | None
+) -> SiteUserProfile:
+    try:
+        payload = json.loads(payload_text)
+    except (TypeError, ValueError) as exc:
+        raise SiteAdapterError(
+            "SITE_INVALID_RESPONSE", "KeepFrds 用户统计 API 返回的 JSON 无效"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise SiteAdapterError("SITE_INVALID_RESPONSE", "KeepFrds 用户统计 API 结构无效")
+    user = payload.get("user")
+    stats = payload.get("torrentStats")
+    if not isinstance(user, dict) or not isinstance(stats, dict):
+        raise SiteAdapterError("SITE_INVALID_RESPONSE", "KeepFrds 用户统计 API 缺少必要对象")
+
+    raw_uid = user.get("id")
+    api_uid = str(raw_uid) if _json_nonnegative_int(raw_uid) is not None else None
+    if expected_uid is not None and api_uid is not None and api_uid != expected_uid:
+        raise SiteAdapterError("SITE_INVALID_RESPONSE", "KeepFrds API 用户 ID 与当前登录用户不一致")
+    raw_class = user.get("class")
+    class_id = _json_nonnegative_int(raw_class)
+    api_level = _KEEPFRDS_CLASS_NAMES.get(class_id) if class_id is not None else None
+    if api_level is None and isinstance(raw_class, str) and not raw_class.isdecimal():
+        api_level = _normalize_level_candidate(raw_class)
+
+    uploaded = _json_nonnegative_int(user.get("uploadedBytes"))
+    downloaded = _json_nonnegative_int(user.get("downloadedBytes"))
+    ratio = profile.ratio
+    if uploaded is not None and downloaded is not None:
+        ratio = uploaded / downloaded if downloaded > 0 else None
+
+    joined_at = user.get("joinedAt")
+    join_time = profile.join_time
+    if isinstance(joined_at, str) and joined_at.strip():
+        try:
+            parsed_join_time = datetime.fromisoformat(joined_at.strip().replace("Z", "+00:00"))
+            if parsed_join_time.tzinfo is None or parsed_join_time.utcoffset() is None:
+                parsed_join_time = parsed_join_time.replace(tzinfo=UTC)
+            join_time = parsed_join_time
+        except ValueError:
+            pass
+
+    raw_username = user.get("username")
+    api_username = (
+        raw_username.strip() if isinstance(raw_username, str) and raw_username.strip() else None
+    )
+    return replace(
+        profile,
+        uid=api_uid or profile.uid,
+        username=api_username or profile.username,
+        user_level=api_level or profile.user_level,
+        uploaded_bytes=uploaded if uploaded is not None else profile.uploaded_bytes,
+        downloaded_bytes=downloaded if downloaded is not None else profile.downloaded_bytes,
+        ratio=ratio,
+        torrents_posted=(
+            _json_nonnegative_int(stats.get("uploaded"))
+            if _json_nonnegative_int(stats.get("uploaded")) is not None
+            else profile.torrents_posted
+        ),
+        seeding_count=(
+            _json_nonnegative_int(stats.get("seeding"))
+            if _json_nonnegative_int(stats.get("seeding")) is not None
+            else profile.seeding_count
+        ),
+        seeding_size_bytes=(
+            _json_nonnegative_int(stats.get("seedingBytes"))
+            if _json_nonnegative_int(stats.get("seedingBytes")) is not None
+            else profile.seeding_size_bytes
+        ),
+        bonus=(
+            _json_nonnegative_float(user.get("bonus"))
+            if _json_nonnegative_float(user.get("bonus")) is not None
+            else profile.bonus
+        ),
+        join_time=join_time,
+    )
+
+
+def _parse_springsunday_ajax_summary(html: str) -> tuple[int, int] | None:
+    """SpringSunday exposes full seeding totals as the first two bold values."""
+    marker = re.search(
+        r"<b\b[^>]*>\s*([0-9][0-9,]*)\s*</b>\s*(?:条记录|條記錄|records?)",
+        html,
+        re.IGNORECASE,
+    )
+    if marker is None:
+        return None
+    bold_values = re.findall(r"<b\b[^>]*>(.*?)</b\s*>", html, re.IGNORECASE | re.DOTALL)
+    if len(bold_values) < 2:
+        return None
+    count_text = _clean_text(re.sub(r"<[^>]*>", " ", unescape(bold_values[0])))
+    size_text = _clean_text(re.sub(r"<[^>]*>", " ", unescape(bold_values[1])))
+    count = _parse_nonnegative_int(count_text)
+    size = _parse_size(size_text)
+    return (count, size) if count is not None and size is not None else None
+
+
+def _parse_nexus_ajax_total_count(html: str, parser: _NexusHtmlParser) -> int | None:
+    """Read NexusPHP upload totals using the response variants handled by PT-Depiler."""
+    match = re.search(
+        r"<b\b[^>]*>\s*([0-9][0-9,]*)\s*</b>\s*(?:条记录|條記錄|records?)",
+        html,
+        re.IGNORECASE,
+    )
+    if match is not None:
+        return _parse_nonnegative_int(match.group(1))
+
+    # Several NexusPHP sites return only this short marker when the user has no
+    # published torrents (Audiences currently returns exactly "没有记录").
+    if not parser.rows and re.search(r"(?:No records?\.?|没有记录|沒有記錄)", html, re.IGNORECASE):
+        return 0
+
+    # PT-Depiler also recognizes the aggregate "count | size" marker before the
+    # table. Prefer it over row counts so pagination does not undercount uploads.
+    pre_table = re.split(r"<table\b", html, maxsplit=1, flags=re.IGNORECASE)[0]
+    pre_table_text = " ".join(_parse_html(pre_table).text_parts)
+    pipe_summary = re.search(
+        r"(?<![0-9,])([0-9][0-9,]*)\s*\|\s*([0-9]+(?:\.[0-9]+)?\s*[KMGTPE]?i?B)\b",
+        pre_table_text,
+        re.IGNORECASE,
+    )
+    if pipe_summary is not None:
+        return _parse_nonnegative_int(pipe_summary.group(1))
+
+    table_index = max((row.table_index for row in parser.rows), default=0)
+    rows = [row for row in parser.rows if row.table_index == table_index]
+    return max(0, len(rows) - 1) if rows else None
+
+
+def _parse_nexus_ajax_seeding_summary(
+    html: str, parser: _NexusHtmlParser, *, spring_sunday: bool = False
+) -> tuple[int, int] | None:
+    if spring_sunday:
+        summary = _parse_springsunday_ajax_summary(html)
+        if summary is not None:
+            return summary
+    explicit = _parse_explicit_seeding_summary(parser)
+    if explicit is not None:
+        return explicit
+    pre_table = re.split(r"<table\b", html, maxsplit=1, flags=re.IGNORECASE)[0]
+    pre_table_text = " ".join(_parse_html(pre_table).text_parts)
+    pipe_summary = re.search(
+        r"(?<![0-9,])([0-9][0-9,]*)\s*\|\s*([0-9]+(?:\.[0-9]+)?\s*[KMGTPE]?i?B)\b",
+        pre_table_text,
+        re.IGNORECASE,
+    )
+    if pipe_summary is not None:
+        count = _parse_nonnegative_int(pipe_summary.group(1))
+        size = _parse_size(pipe_summary.group(2))
+        if count is not None and size is not None:
+            return count, size
+    table_index = max((row.table_index for row in parser.rows), default=0)
+    rows = [row for row in parser.rows if row.table_index == table_index]
+    data_rows = rows[1:] if len(rows) > 1 else []
+    if not data_rows:
+        return None
+    size_index = next(
+        (index for index, cell in enumerate(data_rows[0].cells) if _parse_size(cell) is not None),
+        None,
+    )
+    if size_index is None:
+        return None
+    total_size = 0
+    for row in data_rows:
+        if size_index >= len(row.cells):
+            return None
+        size = _parse_size(row.cells[size_index])
+        if size is None:
+            return None
+        total_size += size
+    return len(data_rows), total_size
+
+
+def _parse_springsunday_bonus_per_hour(parser: _NexusHtmlParser) -> float | None:
+    row = next((item for item in parser.rows if "nowrap" in item.classes and item.cells), None)
+    if row is None:
+        return None
+    match = re.search(r"[0-9][0-9,]*(?:\.[0-9]+)?", _clean_text(row.cells[-1]))
+    if match is None:
+        return None
+    try:
+        value = float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+    return value if 0 <= value < float("inf") else None
+
+
+def _parse_nexus_bonus_per_hour(
+    parser: _NexusHtmlParser, *, class_name: str | None = None
+) -> float | None:
+    """Read the current hourly rate using PT-Depiler's selectors and sentence variants."""
+    class_value = _profile_class_float(parser, class_name) if class_name else None
+    if class_value is not None:
+        return class_value
+
+    text = "".join(parser.text_parts)
+    match = re.search(
+        r"(?:你当前每小时能获取|你當前每小時能獲取|You are currently getting)"
+        r"\s*([0-9][0-9,]*(?:\.[0-9]+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if match is not None:
+        try:
+            value = float(match.group(1).replace(",", ""))
+        except ValueError:
+            return None
+        return value if 0 <= value < float("inf") else None
+
+    return _profile_float_from_parser(
+        parser,
+        text,
+        "每小时魔力值",
+        "每小时魔力",
+        "每小时憨豆",
+        "Bonus per hour",
+    )
+
+
 def _parse_hhclub_hourly_bonus(parser: _NexusHtmlParser) -> float | None:
     # Avoid using the formula's A/B coefficients or bonus history as the hourly rate.
     # Only the site's explicit current-hour reward sentence is authoritative here.
@@ -1123,6 +2311,109 @@ def _parse_hhclub_hourly_bonus(parser: _NexusHtmlParser) -> float | None:
         if 0 <= value < float("inf"):
             return value
     return None
+
+
+def _profile_value_from_parser(
+    parser: _NexusHtmlParser,
+    text: str,
+    labels: tuple[str, ...],
+    value_pattern: str,
+) -> str | None:
+    normalized_labels = {_clean_text(label).rstrip(":：").casefold() for label in labels}
+    exact_label_seen = False
+    for row in parser.rows:
+        for index, cell in enumerate(row.cells):
+            if _clean_text(cell).rstrip(":：").casefold() not in normalized_labels:
+                continue
+            exact_label_seen = True
+            if index + 1 >= len(row.cells):
+                continue
+            value_cell = row.cells[index + 1]
+            match = re.search(rf"({value_pattern})", value_cell, re.IGNORECASE)
+            if match is not None:
+                return _clean_text(match.group(1))
+            if index + 1 < len(row.cell_attributes):
+                for _tag, _attribute, attribute_value in row.cell_attributes[index + 1]:
+                    match = re.search(rf"({value_pattern})", attribute_value, re.IGNORECASE)
+                    if match is not None:
+                        return _clean_text(match.group(1))
+    # Some derivatives put several labelled values into a single profile cell.
+    for row in parser.rows:
+        for cell in row.cells:
+            for label in labels:
+                match = re.search(
+                    rf"{re.escape(label)}\s*[:：]?\s*({value_pattern})(?=\s|$)",
+                    cell,
+                    re.IGNORECASE,
+                )
+                if match is not None:
+                    return _clean_text(match.group(1))
+    # If a real table row declared the field but had no value, do not accidentally
+    # consume a numeric value from the next row (e.g. ratio=∞ followed by points).
+    if exact_label_seen:
+        return None
+    return _profile_value(text, labels, value_pattern)
+
+
+def _profile_class_text(parser: _NexusHtmlParser, class_name: str) -> str | None:
+    for value in parser.class_text_parts.get(class_name, ()):
+        cleaned = _clean_text(value)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _profile_class_size(parser: _NexusHtmlParser, class_name: str) -> int | None:
+    value = _profile_class_text(parser, class_name)
+    if value is None:
+        return None
+    match = re.search(r"[0-9][0-9,]*(?:\.[0-9]+)?\s*[KMGTPE]?i?B", value, re.IGNORECASE)
+    return _parse_size(match.group(0)) if match is not None else None
+
+
+def _profile_class_float(parser: _NexusHtmlParser, class_name: str) -> float | None:
+    value = _profile_class_text(parser, class_name)
+    if value is None:
+        return None
+    match = re.search(r"[0-9][0-9,]*(?:\.[0-9]+)?", value)
+    if match is None:
+        return None
+    try:
+        parsed = float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+    return parsed if 0 <= parsed < float("inf") else None
+
+
+def _profile_class_int(parser: _NexusHtmlParser, class_name: str) -> int | None:
+    value = _profile_class_text(parser, class_name)
+    if value is None:
+        return None
+    match = re.search(r"[0-9][0-9,]*", value)
+    return _parse_nonnegative_int(match.group(0)) if match is not None else None
+
+
+def _profile_size_from_parser(parser: _NexusHtmlParser, text: str, *labels: str) -> int | None:
+    value = _profile_value_from_parser(
+        parser, text, labels, r"[0-9][0-9,]*(?:\.[0-9]+)?\s*[KMGTPE]?i?B"
+    )
+    return _parse_size(value or "")
+
+
+def _profile_int_from_parser(parser: _NexusHtmlParser, text: str, *labels: str) -> int | None:
+    value = _profile_value_from_parser(parser, text, labels, r"[0-9][0-9,]*")
+    return _parse_nonnegative_int(value or "")
+
+
+def _profile_float_from_parser(parser: _NexusHtmlParser, text: str, *labels: str) -> float | None:
+    value = _profile_value_from_parser(parser, text, labels, r"[0-9][0-9,]*(?:\.[0-9]+)?")
+    if value is None:
+        return None
+    try:
+        parsed = float(value.replace(",", ""))
+    except ValueError:
+        return None
+    return parsed if 0 <= parsed < float("inf") else None
 
 
 def _profile_value(text: str, labels: tuple[str, ...], value_pattern: str) -> str | None:
@@ -1168,7 +2459,7 @@ def _profile_datetime(text: str, *labels: str, timezone_offset_minutes: int) -> 
 
 
 def _profile_size(text: str, *labels: str) -> int | None:
-    value = _profile_value(text, labels, r"[0-9]+(?:\.[0-9]+)?\s*[KMGTPE]?i?B")
+    value = _profile_value(text, labels, r"[0-9][0-9,]*(?:\.[0-9]+)?\s*[KMGTPE]?i?B")
     return _parse_size(value or "")
 
 
@@ -1178,11 +2469,11 @@ def _profile_int(text: str, *labels: str) -> int | None:
 
 
 def _profile_float(text: str, *labels: str) -> float | None:
-    value = _profile_value(text, labels, r"[0-9]+(?:\.[0-9]+)?")
+    value = _profile_value(text, labels, r"[0-9][0-9,]*(?:\.[0-9]+)?")
     if value is None:
         return None
     try:
-        parsed = float(value)
+        parsed = float(value.replace(",", ""))
     except ValueError:
         return None
     return parsed if 0 <= parsed < float("inf") else None
@@ -1291,7 +2582,7 @@ def _keep_richer_candidate(
 
 
 def _parse_size(value: str) -> int | None:
-    match = _SIZE_RE.fullmatch(_clean_text(value))
+    match = _SIZE_RE.fullmatch(_clean_text(value).replace(",", ""))
     if match is None:
         return None
     powers = {
@@ -1326,6 +2617,29 @@ def _category(links: list[tuple[str, str | None, str]]) -> str | None:
     return None
 
 
+def _detail_external_ids(
+    links: list[tuple[str, str | None, str]], display_name: str
+) -> tuple[ExternalMediaId, ...]:
+    """Keep only unambiguous page IDs when a torrent represents multiple films.
+
+    Detail pages can include several IMDb links in a collection synopsis. The
+    generic media descriptor intentionally permits only one ID per namespace,
+    so prefer IDs parsed from the torrent title and only import a page-link ID
+    when that namespace has exactly one distinct value.
+    """
+    title_namespaces = {item.namespace for item in parse_media_name(display_name).external_ids}
+    by_namespace: dict[str, set[str]] = {}
+    for item in _external_ids(links):
+        if item.namespace in title_namespaces:
+            continue
+        by_namespace.setdefault(item.namespace, set()).add(item.value)
+    return tuple(
+        ExternalMediaId(namespace, next(iter(values)))
+        for namespace, values in sorted(by_namespace.items())
+        if len(values) == 1
+    )
+
+
 def _external_ids(links: list[tuple[str, str | None, str]]) -> tuple[ExternalMediaId, ...]:
     result: dict[tuple[str, str], ExternalMediaId] = {}
     for href, _, _ in links:
@@ -1344,11 +2658,19 @@ def _page_title_candidate(value: str | None) -> str | None:
     cleaned = _POWERED_BY_NEXUSPHP_RE.sub("", value)
     parts = [_clean_text(part) for part in cleaned.split("::")]
     meaningful = [part for part in parts if part and "nexusphp" not in part.casefold()]
-    if len(meaningful) < 2:
+    if not meaningful:
         return None
     candidate = meaningful[-1]
+    # Some NexusPHP derivatives expose only `种子详情 "title"` or
+    # `Torrent Details "title"` in <title>, without the usual `site ::` prefix.
+    # Recognize that explicit detail-title form before rejecting single-part
+    # titles; continue rejecting generic one-part page titles such as the site name.
     match = _DETAIL_TITLE_RE.fullmatch(candidate)
-    return _clean_text(match.group(1)) if match is not None else candidate
+    if match is not None:
+        return _clean_text(match.group(1))
+    if len(meaningful) < 2:
+        return None
+    return candidate
 
 
 def _validate_torrent_id(value: str) -> str:

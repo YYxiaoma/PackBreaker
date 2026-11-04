@@ -156,7 +156,7 @@ onMounted(() => {
       </el-button>
     </div>
 
-    <div class="filters log-controls">
+    <div class="filters log-controls log-filter-toolbar" aria-label="日志过滤条件">
       <el-input
         v-model="filters.q"
         maxlength="128"
@@ -268,8 +268,15 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 .log-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
   margin: 0;
-  padding-top: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .log-controls > .el-input {
   width: min(430px, 100%);

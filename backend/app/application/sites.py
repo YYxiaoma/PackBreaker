@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from math import ceil
 from time import perf_counter
 from typing import Any, Literal
 from urllib.parse import quote
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -33,16 +33,29 @@ from backend.app.domain.site_config import (
     trusted_site_base_url,
 )
 from backend.app.infrastructure.adapters.sites import SiteAdapterError, SiteAdapterFactory
+from backend.app.infrastructure.persistence.database import begin_immediate_write
 from backend.app.infrastructure.persistence.models import (
     Site,
+    SiteRiskEvent,
     SiteUserProfileSnapshot,
     SiteUserProfileSync,
     UnpackExecution,
+    new_uuid,
 )
 from backend.app.infrastructure.persistence.site_repositories import SiteRepository
 from backend.app.infrastructure.site_reliability import (
     SiteReliabilityHealth,
     SiteReliabilityRegistry,
+)
+
+SITE_RISK_CONTROL_ERROR_CODES = frozenset(
+    {
+        "SITE_RATE_LIMITED",
+        "SITE_ANTIBOT_BLOCKED",
+        "SITE_CAPTCHA_REQUIRED",
+        "SITE_CLOUDFLARE_CHALLENGE",
+        "SITE_FREQUENCY_LIMITED",
+    }
 )
 
 
@@ -72,6 +85,18 @@ class SiteView:
     last_test_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    risk_control_limit: int = 3
+    risk_retry_interval_seconds: int = 60
+    risk_disabled_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SiteRiskControlOutcome:
+    risk_count: int
+    risk_limit: int
+    threshold_reached: bool
+    retry_interval_seconds: int
+    risk_disabled_at: datetime | None
 
 
 _USER_PROFILE_DATA_FIELDS = (
@@ -127,12 +152,15 @@ class SiteUpdate:
     runtime_config: dict[str, Any] | None = None
     proxy_password_action: Literal["KEEP", "SET", "CLEAR"] = "KEEP"
     proxy_password: str | None = None
+    risk_control_limit: int | None = None
+    risk_retry_interval_seconds: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _SiteConnectionSnapshot:
     id: str
     version: int
+    enabled: bool
     type: SiteKind
     base_url: str
     credential_kind: SiteCredentialKind
@@ -155,6 +183,18 @@ class EnabledSiteAdapter:
     config_version: int
     site_id: str
     adapter: SiteAdapter
+    request_timeout_seconds: int = 30
+    search_interval_seconds: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SiteConfigReference:
+    """Non-secret local site identity for metadata-only operations."""
+
+    config_id: str
+    config_version: int
+    site_id: str
+    enabled: bool
 
 
 class SiteService:
@@ -340,9 +380,97 @@ class SiteService:
                         adapter=self._create_adapter(snapshot, credential),
                         min_request_interval_seconds=snapshot.search_interval_seconds,
                     ),
+                    request_timeout_seconds=snapshot.request_timeout_seconds,
+                    search_interval_seconds=snapshot.search_interval_seconds,
                 )
             )
         return tuple(result)
+
+    def config_references_for_site_ids(
+        self, site_config_ids: tuple[str, ...]
+    ) -> tuple[SiteConfigReference, ...]:
+        """Resolve local site IDs without decrypting credentials or making network requests."""
+        ids = tuple(dict.fromkeys(value for value in site_config_ids if value))
+        if not ids:
+            return ()
+        with self._session_factory() as session:
+            records = session.scalars(select(Site).where(Site.id.in_(ids))).all()
+            by_id = {record.id: record for record in records}
+            return tuple(
+                SiteConfigReference(
+                    config_id=record.id,
+                    config_version=record.version,
+                    site_id=self._expected_site_id(SiteKind(record.type)),
+                    enabled=record.enabled,
+                )
+                for site_id in ids
+                if (record := by_id.get(site_id)) is not None
+            )
+
+    def config_references_for_site_keys(
+        self, site_keys: tuple[str, ...]
+    ) -> tuple[SiteConfigReference, ...]:
+        """Map portable adapter site keys to enabled local configurations, without secrets."""
+        keys = frozenset(value for value in site_keys if value)
+        if not keys:
+            return ()
+        with self._session_factory() as session:
+            records = session.scalars(select(Site).where(Site.enabled.is_(True))).all()
+            result: list[SiteConfigReference] = []
+            for record in records:
+                key = self._expected_site_id(SiteKind(record.type))
+                if key in keys:
+                    result.append(
+                        SiteConfigReference(
+                            config_id=record.id,
+                            config_version=record.version,
+                            site_id=key,
+                            enabled=record.enabled,
+                        )
+                    )
+            return tuple(result)
+
+    def adapter_for_config(self, site_config_id: str) -> EnabledSiteAdapter:
+        """Build exactly one enabled site's adapter for an explicit metadata import."""
+        with self._session_factory() as session:
+            record = session.get(Site, site_config_id)
+            if record is None:
+                raise ApplicationError(
+                    code="SITE_NOT_FOUND",
+                    status=404,
+                    title="站点不存在",
+                    detail="未找到指定站点配置",
+                )
+            snapshot = self._snapshot(record)
+        self._require_persistable_kind(snapshot.type)
+        if not snapshot.enabled:
+            raise ApplicationError(
+                code="SITE_DISABLED",
+                status=409,
+                title="站点未启用",
+                detail="请先启用目标站点，再导入种子元数据",
+            )
+        if snapshot.secret_id is None:
+            raise ApplicationError(
+                code="SITE_ENABLED_CONFIG_INVALID",
+                status=500,
+                title="站点配置无效",
+                detail="目标站点缺少凭证",
+            )
+        credential = self._read_primary_credential(snapshot)
+        return EnabledSiteAdapter(
+            config_id=snapshot.id,
+            config_version=snapshot.version,
+            site_id=self._expected_site_id(snapshot.type),
+            adapter=self._reliability_registry.wrap(
+                config_id=snapshot.id,
+                config_version=snapshot.version,
+                adapter=self._create_adapter(snapshot, credential),
+                min_request_interval_seconds=snapshot.search_interval_seconds,
+            ),
+            request_timeout_seconds=snapshot.request_timeout_seconds,
+            search_interval_seconds=snapshot.search_interval_seconds,
+        )
 
     def bindings_for_unpack_execution(self, execution_id: str) -> tuple[EnabledSiteAdapter, ...]:
         """Never promote an acceptance-only CarPT site into global enabled sites."""
@@ -374,6 +502,8 @@ class SiteService:
                     adapter=self._create_adapter(snapshot, credential),
                     min_request_interval_seconds=snapshot.search_interval_seconds,
                 ),
+                request_timeout_seconds=snapshot.request_timeout_seconds,
+                search_interval_seconds=snapshot.search_interval_seconds,
             ),
         )
 
@@ -395,6 +525,8 @@ class SiteService:
         download_cookie: str | None = None,
         request_timeout_seconds: int = 15,
         search_interval_seconds: int = 0,
+        risk_control_limit: int = 3,
+        risk_retry_interval_seconds: int = 60,
         user_agent: str | None = None,
         browser_emulation_enabled: bool = False,
         proxy_enabled: bool = False,
@@ -407,6 +539,10 @@ class SiteService:
         normalized_name = self._normalize_name(name)
         normalized_url = self._fixed_base_url(kind, base_url)
         required_kind = required_site_credential_kind(kind)
+        risk_config = self._normalize_risk_control_config(
+            risk_control_limit=risk_control_limit,
+            risk_retry_interval_seconds=risk_retry_interval_seconds,
+        )
         runtime = self._normalize_runtime_config(
             kind,
             request_timeout_seconds=request_timeout_seconds,
@@ -467,6 +603,8 @@ class SiteService:
                     download_secret_id=download_secret_id,
                     request_timeout_seconds=runtime["request_timeout_seconds"],
                     search_interval_seconds=runtime["search_interval_seconds"],
+                    risk_control_limit=risk_config["risk_control_limit"],
+                    risk_retry_interval_seconds=risk_config["risk_retry_interval_seconds"],
                     user_agent=runtime["user_agent"],
                     browser_emulation_enabled=runtime["browser_emulation_enabled"],
                     proxy_enabled=runtime["proxy_enabled"],
@@ -521,6 +659,24 @@ class SiteService:
 
             values: dict[str, Any] = {}
             connection_changed = False
+            if (
+                update_request.risk_control_limit is not None
+                or update_request.risk_retry_interval_seconds is not None
+            ):
+                values.update(
+                    self._normalize_risk_control_config(
+                        risk_control_limit=(
+                            update_request.risk_control_limit
+                            if update_request.risk_control_limit is not None
+                            else current.risk_control_limit
+                        ),
+                        risk_retry_interval_seconds=(
+                            update_request.risk_retry_interval_seconds
+                            if update_request.risk_retry_interval_seconds is not None
+                            else current.risk_retry_interval_seconds
+                        ),
+                    )
+                )
             if update_request.name is not None:
                 values["name"] = self._normalize_name(update_request.name)
             if update_request.type is not None:
@@ -614,6 +770,7 @@ class SiteService:
                     connection_status=SiteProbeStatus.UNTESTED.value,
                     capabilities={},
                     enabled=False,
+                    risk_disabled_at=current.risk_disabled_at,
                 )
             if not values:
                 if current.version != expected_version:
@@ -686,14 +843,17 @@ class SiteService:
                         title="站点下载凭证未配置",
                         detail="Rousi Pro 启用前必须单独配置下载 Cookie",
                     )
-            if current.enabled == enabled:
+            if current.enabled == enabled and (not enabled or current.risk_disabled_at is None):
                 if current.version != expected_version:
                     raise self._version_conflict()
                 return self._view(current)
             if not repository.update_config(
                 site_id,
                 expected_version=expected_version,
-                values={"enabled": enabled},
+                values={
+                    "enabled": enabled,
+                    "risk_disabled_at": None if enabled else current.risk_disabled_at,
+                },
             ):
                 session.rollback()
                 raise self._version_conflict()
@@ -701,6 +861,68 @@ class SiteService:
             view = self._view(self._require_record(repository, site_id))
             self._reliability_registry.discard(site_id)
             return view
+
+    def record_unpack_risk_event(
+        self,
+        *,
+        execution_id: str,
+        item_id: str,
+        site_config_id: str,
+        error_code: str,
+    ) -> SiteRiskControlOutcome | None:
+        """Count anti-abuse responses by site and execution over a rolling 10-minute window."""
+        if error_code not in SITE_RISK_CONTROL_ERROR_CODES:
+            return None
+        with self._session_factory() as session:
+            begin_immediate_write(session)
+            site = session.get(Site, site_config_id)
+            if site is None:
+                session.rollback()
+                return None
+            now = datetime.now(UTC)
+            session.execute(
+                delete(SiteRiskEvent).where(SiteRiskEvent.occurred_at < now - timedelta(days=30))
+            )
+            event = SiteRiskEvent(
+                id=new_uuid(),
+                site_id=site_config_id,
+                execution_id=execution_id,
+                item_id=item_id,
+                error_code=error_code,
+                occurred_at=now,
+                threshold_reached=False,
+            )
+            session.add(event)
+            session.flush()
+            count = int(
+                session.scalar(
+                    select(func.count(SiteRiskEvent.id)).where(
+                        SiteRiskEvent.site_id == site_config_id,
+                        SiteRiskEvent.execution_id == execution_id,
+                        SiteRiskEvent.occurred_at >= now - timedelta(minutes=10),
+                    )
+                )
+                or 0
+            )
+            threshold_reached = count >= site.risk_control_limit
+            if threshold_reached:
+                event.threshold_reached = True
+                if site.risk_disabled_at is None:
+                    site.enabled = False
+                    site.risk_disabled_at = now
+                    site.version += 1
+                    site.updated_at = now
+            outcome = SiteRiskControlOutcome(
+                risk_count=count,
+                risk_limit=site.risk_control_limit,
+                threshold_reached=threshold_reached,
+                retry_interval_seconds=site.risk_retry_interval_seconds,
+                risk_disabled_at=site.risk_disabled_at,
+            )
+            session.commit()
+        if outcome.threshold_reached:
+            self._reliability_registry.discard(site_config_id)
+        return outcome
 
     async def test_connection(self, site_id: str) -> dict[str, object]:
         snapshot = self._connection_snapshot(site_id)
@@ -1018,6 +1240,7 @@ class SiteService:
         snapshot = _SiteConnectionSnapshot(
             id="temporary-probe",
             version=1,
+            enabled=True,
             type=kind,
             base_url=trusted_site_base_url(kind),
             credential_kind=required_kind,
@@ -1066,6 +1289,7 @@ class SiteService:
         return _SiteConnectionSnapshot(
             id=record.id,
             version=record.version,
+            enabled=record.enabled,
             type=SiteKind(record.type),
             base_url=trusted_site_base_url(SiteKind(record.type)),
             credential_kind=SiteCredentialKind(record.credential_kind),
@@ -1228,6 +1452,40 @@ class SiteService:
             )
         return fixed
 
+    @staticmethod
+    def _normalize_risk_control_config(
+        *,
+        risk_control_limit: object,
+        risk_retry_interval_seconds: object,
+    ) -> dict[str, int]:
+        if (
+            isinstance(risk_control_limit, bool)
+            or not isinstance(risk_control_limit, int)
+            or not 1 <= risk_control_limit <= 20
+        ):
+            raise ApplicationError(
+                code="SITE_RISK_CONFIG_INVALID",
+                status=422,
+                title="站点风控配置无效",
+                detail="风控次数限制必须是 1～20 的整数",
+            )
+        if (
+            isinstance(risk_retry_interval_seconds, bool)
+            or not isinstance(risk_retry_interval_seconds, int)
+            or not 60 <= risk_retry_interval_seconds <= 86_400
+            or risk_retry_interval_seconds % 60 != 0
+        ):
+            raise ApplicationError(
+                code="SITE_RISK_CONFIG_INVALID",
+                status=422,
+                title="站点风控配置无效",
+                detail="风控后再次执行间隔必须是 1～1440 分钟的整数",
+            )
+        return {
+            "risk_control_limit": risk_control_limit,
+            "risk_retry_interval_seconds": risk_retry_interval_seconds,
+        }
+
     @classmethod
     def _normalize_runtime_config(
         cls,
@@ -1243,12 +1501,13 @@ class SiteService:
         proxy_username: object,
     ) -> dict[str, Any]:
         profile = site_profile(kind)
+        max_request_timeout_seconds = 3600 if kind is SiteKind.SPRING_SUNDAY else 120
         if (
             isinstance(request_timeout_seconds, bool)
             or not isinstance(request_timeout_seconds, int)
-            or not 1 <= request_timeout_seconds <= 120
+            or not 1 <= request_timeout_seconds <= max_request_timeout_seconds
         ):
-            raise cls._runtime_invalid("请求超时必须是 1～120 秒的整数")
+            raise cls._runtime_invalid(f"请求超时必须是 1～{max_request_timeout_seconds} 秒的整数")
         if (
             isinstance(search_interval_seconds, bool)
             or not isinstance(search_interval_seconds, int)
@@ -1549,6 +1808,9 @@ class SiteService:
             download_credential_configured=record.download_secret_id is not None,
             request_timeout_seconds=record.request_timeout_seconds,
             search_interval_seconds=record.search_interval_seconds,
+            risk_control_limit=record.risk_control_limit,
+            risk_retry_interval_seconds=record.risk_retry_interval_seconds,
+            risk_disabled_at=record.risk_disabled_at,
             user_agent=record.user_agent,
             browser_emulation_enabled=record.browser_emulation_enabled,
             proxy_enabled=record.proxy_enabled,

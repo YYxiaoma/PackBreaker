@@ -60,8 +60,19 @@ export async function getSiteDetail(id: string): Promise<SiteDetail> {
   return response.data;
 }
 
-export async function syncSiteDetail(id: string): Promise<SiteDetail> {
-  const response = await apiClient.post<SiteDetail>(`${sitePath(id)}/sync`);
+export async function syncSiteDetail(
+  id: string,
+  forceRetry = false,
+  timeoutMs?: number,
+): Promise<SiteDetail> {
+  const path = `${sitePath(id)}/sync`;
+  const config: { params?: { force_retry: boolean }; timeout?: number } = {};
+  if (forceRetry) config.params = { force_retry: true };
+  if (timeoutMs !== undefined) config.timeout = timeoutMs;
+  const response =
+    Object.keys(config).length > 0
+      ? await apiClient.post<SiteDetail>(path, null, config)
+      : await apiClient.post<SiteDetail>(path);
   return response.data;
 }
 

@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.application.unpack_acceptance import (
     READ_ONLY_ACCEPTANCE_MARKER,
     UnpackAcceptanceScope,
+)
+from backend.app.application.unpack_deletion_audit import archive_deleted_item_operations
+from backend.app.application.unpack_manual_torrents import (
+    ManualTorrentStore,
+    ManualTorrentStoreError,
 )
 from backend.app.application.unpack_site_readiness import require_ready_unpack_sites
 from backend.app.application.unpack_source_scans import (
@@ -27,12 +33,13 @@ from backend.app.domain.task_definition import (
     normalize_cron_expression,
 )
 from backend.app.domain.unpack import (
-    TERMINAL_EXECUTION_STATUSES,
     UnpackDefinitionStatus,
     UnpackExecutionScopeKind,
     UnpackExecutionStatus,
     UnpackExecutionTrigger,
+    UnpackItemStatus,
     UnpackSourceKind,
+    UnpackTaskKind,
     UnpackTriggerKind,
     validate_auto_match_threshold_bps,
 )
@@ -46,7 +53,10 @@ from backend.app.infrastructure.persistence.models import (
     UnpackExecution,
     UnpackExecutionItem,
     UnpackExternalOperationJournal,
+    UnpackMatchCandidate,
+    UnpackReviewDecisionModel,
     UnpackSourceScan,
+    UnpackTemplateVersion,
     new_uuid,
     utc_now,
 )
@@ -75,10 +85,15 @@ class UnpackDefinitionCreate:
     retry_enabled: bool = True
     max_retries: int = 3
     auto_match_threshold_bps: int = 10_000
+    auto_match_enabled: bool = True
     cron_expression: str | None = None
     timezone: str | None = None
     source_scan_id: str | None = None
     selected_sources: tuple[UnpackSelectedSourceCreate, ...] = ()
+    task_kind: UnpackTaskKind | None = None
+    template_id: str | None = None
+    template_version: int | None = None
+    frozen_downloader_sources: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,8 +101,11 @@ class UnpackDefinitionView:
     id: str
     name: str
     trigger_kind: UnpackTriggerKind
+    task_kind: UnpackTaskKind
     status: UnpackDefinitionStatus
     source_kind: UnpackSourceKind
+    template_id: str | None
+    template_version: int | None
     execution_scope_kind: UnpackExecutionScopeKind
     source_config: dict[str, Any]
     file_filter: dict[str, Any]
@@ -96,6 +114,7 @@ class UnpackDefinitionView:
     retry_enabled: bool
     max_retries: int
     auto_match_threshold_bps: int
+    auto_match_enabled: bool
     cron_expression: str | None
     timezone: str | None
     next_run_at: datetime | None
@@ -127,6 +146,7 @@ class UnpackDefinitionService:
         self._session_factory = session_factory
         self._acceptance_scope = acceptance_scope
         self._timezone = timezone
+        self._manual_torrent_store = ManualTorrentStore(data_root)
         self._path_scope = path_scope or AuthorizedPathScope.legacy_only(legacy_data_root=data_root)
         self._source_scans = UnpackSourceScanService(
             session_factory,
@@ -135,13 +155,17 @@ class UnpackDefinitionService:
 
     def create(self, request: UnpackDefinitionCreate) -> UnpackDefinitionView:
         normalized = self._normalize_request(request)
+        assert normalized.task_kind is not None
         now = utc_now()
         definition = UnpackDefinition(
             id=new_uuid(),
             name=normalized.name,
             trigger_kind=normalized.trigger_kind.value,
+            task_kind=normalized.task_kind.value,
             status=UnpackDefinitionStatus.PENDING_EXECUTION.value,
             source_kind=normalized.source_kind.value,
+            template_id=normalized.template_id,
+            template_version=normalized.template_version,
             execution_scope_kind=normalized.execution_scope_kind.value,
             source_config=normalized.source_config,
             file_filter=normalized.file_filter,
@@ -150,6 +174,7 @@ class UnpackDefinitionService:
             retry_enabled=normalized.retry_enabled,
             max_retries=normalized.max_retries,
             auto_match_threshold_bps=normalized.auto_match_threshold_bps,
+            auto_match_enabled=normalized.auto_match_enabled,
             cron_expression=normalized.cron_expression,
             timezone=normalized.timezone,
             next_run_at=None,
@@ -219,7 +244,10 @@ class UnpackDefinitionService:
                 request = UnpackDefinitionCreate(
                     name=request.name,
                     trigger_kind=request.trigger_kind,
+                    task_kind=request.task_kind,
                     source_kind=request.source_kind,
+                    template_id=request.template_id,
+                    template_version=request.template_version,
                     execution_scope_kind=request.execution_scope_kind,
                     source_config=request.source_config,
                     file_filter=request.file_filter,
@@ -228,6 +256,7 @@ class UnpackDefinitionService:
                     retry_enabled=request.retry_enabled,
                     max_retries=request.max_retries,
                     auto_match_threshold_bps=request.auto_match_threshold_bps,
+                    auto_match_enabled=request.auto_match_enabled,
                     cron_expression=request.cron_expression,
                     timezone=request.timezone,
                     selected_sources=tuple(
@@ -242,6 +271,7 @@ class UnpackDefinitionService:
                     ),
                 )
             normalized = self._normalize_request(request)
+            assert normalized.task_kind is not None
             if selected and (
                 normalized.execution_scope_kind.value != definition.execution_scope_kind
                 or normalized.source_kind.value != definition.source_kind
@@ -254,7 +284,10 @@ class UnpackDefinitionService:
             now = utc_now()
             definition.name = normalized.name
             definition.trigger_kind = normalized.trigger_kind.value
+            definition.task_kind = normalized.task_kind.value
             definition.source_kind = normalized.source_kind.value
+            definition.template_id = normalized.template_id
+            definition.template_version = normalized.template_version
             definition.execution_scope_kind = normalized.execution_scope_kind.value
             definition.source_config = normalized.source_config
             definition.file_filter = normalized.file_filter
@@ -263,6 +296,7 @@ class UnpackDefinitionService:
             definition.retry_enabled = normalized.retry_enabled
             definition.max_retries = normalized.max_retries
             definition.auto_match_threshold_bps = normalized.auto_match_threshold_bps
+            definition.auto_match_enabled = normalized.auto_match_enabled
             definition.cron_expression = normalized.cron_expression
             definition.timezone = normalized.timezone
             if definition.status == UnpackDefinitionStatus.ENABLED.value:
@@ -280,7 +314,8 @@ class UnpackDefinitionService:
             return self._view(session, definition)
 
     def delete(self, definition_id: str, *, expected_version: int) -> None:
-        """Never erase active executions or durable external-side-effect journals."""
+        """Delete definitions with no pending/matching item; retain external history."""
+        manual_torrent_keys: set[str] = set()
         with self._session_factory() as session:
             begin_immediate_write(session)
             definition = self._require_definition(session, definition_id)
@@ -289,29 +324,102 @@ class UnpackDefinitionService:
             execution_ids = session.scalars(
                 select(UnpackExecution.id).where(UnpackExecution.definition_id == definition_id)
             ).all()
-            if session.scalar(
-                select(UnpackExecution.id)
-                .where(UnpackExecution.definition_id == definition_id)
+            if execution_ids and session.scalar(
+                select(UnpackExecutionItem.id)
+                .where(UnpackExecutionItem.execution_id.in_(execution_ids))
                 .where(
-                    UnpackExecution.status.not_in(
-                        tuple(value.value for value in TERMINAL_EXECUTION_STATUSES)
+                    UnpackExecutionItem.status.in_(
+                        (
+                            UnpackItemStatus.MATCH_PENDING.value,
+                            UnpackItemStatus.MATCHING.value,
+                        )
                     )
                 )
                 .limit(1)
             ):
-                raise self._conflict("存在运行中或待审核的执行记录，请先处理，禁止删除")
-            if execution_ids and session.scalar(
-                select(UnpackExternalOperationJournal.id)
-                .join(
-                    UnpackExecutionItem,
-                    UnpackExecutionItem.id == UnpackExternalOperationJournal.item_id,
+                raise self._conflict("任务仍有待匹配或匹配中的影片，禁止删除")
+
+            # Preserve side-effect evidence BEFORE FK cascade removes the
+            # execution/items; no real downloader or media operation is made.
+            if execution_ids:
+                items_with_operations = session.scalars(
+                    select(UnpackExecutionItem)
+                    .join(
+                        UnpackExternalOperationJournal,
+                        UnpackExternalOperationJournal.item_id == UnpackExecutionItem.id,
+                    )
+                    .where(UnpackExecutionItem.execution_id.in_(execution_ids))
+                    .distinct()
+                ).all()
+                for item in items_with_operations:
+                    archive_deleted_item_operations(session, definition_id=definition_id, item=item)
+
+            if execution_ids:
+                candidates = session.scalars(
+                    select(UnpackMatchCandidate)
+                    .join(
+                        UnpackExecutionItem, UnpackExecutionItem.id == UnpackMatchCandidate.item_id
+                    )
+                    .where(UnpackExecutionItem.execution_id.in_(execution_ids))
+                ).all()
+                for candidate in candidates:
+                    raw_ref = candidate.raw_ref if isinstance(candidate.raw_ref, dict) else {}
+                    key = raw_ref.get("manual_torrent_storage_key")
+                    if isinstance(key, str) and self._manual_torrent_store.is_valid_key(key):
+                        manual_torrent_keys.add(key)
+
+            # Explicitly clear all dependent rows; some SQLite connections
+            # may not enforce FK ON DELETE CASCADE, and orphaned evidence must
+            # never be left behind. Journal history is already archived.
+            if execution_ids:
+                item_ids_query = select(UnpackExecutionItem.id).where(
+                    UnpackExecutionItem.execution_id.in_(execution_ids)
                 )
-                .where(UnpackExecutionItem.execution_id.in_(execution_ids))
-                .limit(1)
-            ):
-                raise self._conflict("任务存在外部操作 journal，必须保留追溯与恢复证据，禁止删除")
+                session.execute(
+                    delete(UnpackReviewDecisionModel).where(
+                        UnpackReviewDecisionModel.item_id.in_(item_ids_query)
+                    )
+                )
+                session.execute(
+                    delete(UnpackMatchCandidate).where(
+                        UnpackMatchCandidate.item_id.in_(item_ids_query)
+                    )
+                )
+                session.execute(
+                    delete(UnpackExternalOperationJournal).where(
+                        UnpackExternalOperationJournal.item_id.in_(item_ids_query)
+                    )
+                )
+                session.execute(
+                    delete(UnpackExecutionItem).where(
+                        UnpackExecutionItem.execution_id.in_(execution_ids)
+                    )
+                )
+                session.execute(
+                    delete(UnpackExecution).where(UnpackExecution.definition_id == definition_id)
+                )
+            session.execute(
+                delete(UnpackDefinitionSelectedSource).where(
+                    UnpackDefinitionSelectedSource.definition_id == definition_id
+                )
+            )
             session.delete(definition)
             session.commit()
+
+        if manual_torrent_keys:
+            with self._session_factory() as session:
+                remaining = session.scalars(select(UnpackMatchCandidate)).all()
+                referenced = {
+                    candidate.raw_ref.get("manual_torrent_storage_key")
+                    for candidate in remaining
+                    if isinstance(candidate.raw_ref, dict)
+                }
+            for key in manual_torrent_keys - referenced:
+                try:
+                    self._manual_torrent_store.delete(key)
+                except ManualTorrentStoreError:
+                    # Cleanup failure must not undo an already committed deletion.
+                    continue
 
     def run(self, definition_id: str) -> UnpackRunResult:
         with self._session_factory() as session:
@@ -403,12 +511,46 @@ class UnpackDefinitionService:
         except ValueError as exc:
             raise self._invalid(str(exc)) from exc
 
+        task_kind = request.task_kind or (
+            UnpackTaskKind.MONITOR
+            if request.trigger_kind is UnpackTriggerKind.MONITOR
+            else UnpackTaskKind.MANUAL
+        )
+        if (
+            task_kind is UnpackTaskKind.MONITOR
+            and request.trigger_kind is not UnpackTriggerKind.MONITOR
+        ):
+            raise self._invalid("监控拆包必须使用监控触发方式")
+        if (
+            task_kind in {UnpackTaskKind.MANUAL, UnpackTaskKind.TEMPLATE}
+            and request.trigger_kind is not UnpackTriggerKind.MANUAL
+        ):
+            raise self._invalid("手动拆包和模板拆包必须使用手动触发方式")
+
         site_ids = tuple(dict.fromkeys(item.strip() for item in request.site_ids if item.strip()))
         if not site_ids:
             raise self._invalid("至少选择一个扫描站点")
+        if task_kind is UnpackTaskKind.TEMPLATE:
+            if (
+                not request.template_id
+                or request.template_version is None
+                or request.template_version < 1
+            ):
+                raise self._invalid("模板拆包必须指定有效的模板及版本")
+            if request.execution_scope_kind is not UnpackExecutionScopeKind.ALL_MATCHING_MEDIA:
+                raise self._invalid("模板拆包使用全部符合条件的影片范围")
+            if request.cron_expression is not None and request.cron_expression.strip():
+                raise self._invalid("模板拆包任务不能配置 Cron")
+            cron_expression = None
+            timezone = None
+        elif request.template_id is not None or request.template_version is not None:
+            raise self._invalid("非模板拆包任务不能绑定模板版本")
 
         if request.trigger_kind is UnpackTriggerKind.MANUAL:
-            if request.source_kind is not UnpackSourceKind.DIRECTORY:
+            if (
+                task_kind is not UnpackTaskKind.TEMPLATE
+                and request.source_kind is not UnpackSourceKind.DIRECTORY
+            ):
                 raise self._invalid("手动拆包当前仅支持目录来源")
             if request.cron_expression is not None and request.cron_expression.strip():
                 raise self._invalid("手动拆包任务不能配置 Cron")
@@ -445,6 +587,19 @@ class UnpackDefinitionService:
                 raise self._invalid("下载器来源必须选择下载器")
             source_config["downloader_id"] = downloader_id.strip()
             source_config = self._normalize_downloader_source_config(source_config)
+            if task_kind is UnpackTaskKind.TEMPLATE:
+                frozen_sources = tuple(
+                    dict(item)
+                    for item in request.frozen_downloader_sources
+                    if isinstance(item, dict)
+                )
+                if not source_config.get("torrent_hash"):
+                    raise self._invalid("模板拆包使用下载器来源时必须选择一个具体种子")
+                if not frozen_sources:
+                    raise self._invalid(
+                        "模板拆包未能冻结所选下载器种子，请检查种子是否已完成并可访问"
+                    )
+                source_config["_frozen_downloader_sources"] = list(frozen_sources)
 
         selected_sources = request.selected_sources
         if request.execution_scope_kind is UnpackExecutionScopeKind.SELECTED_MEDIA:
@@ -493,14 +648,31 @@ class UnpackDefinitionService:
             retry_enabled=request.retry_enabled,
             max_retries=request.max_retries,
             auto_match_threshold_bps=threshold,
+            auto_match_enabled=request.auto_match_enabled,
             cron_expression=cron_expression,
             timezone=timezone,
             source_scan_id=request.source_scan_id.strip() if request.source_scan_id else None,
             selected_sources=normalized_selected,
+            task_kind=task_kind,
+            template_id=request.template_id if task_kind is UnpackTaskKind.TEMPLATE else None,
+            template_version=request.template_version
+            if task_kind is UnpackTaskKind.TEMPLATE
+            else None,
+            frozen_downloader_sources=request.frozen_downloader_sources,
         )
 
     def _normalize_downloader_source_config(self, raw: dict[str, Any]) -> dict[str, Any]:
         result = dict(raw)
+        result.pop("_frozen_downloader_sources", None)
+        raw_hash = result.get("torrent_hash")
+        if raw_hash is not None:
+            if not isinstance(raw_hash, str) or not re.fullmatch(
+                r"[0-9a-fA-F]{32,64}", raw_hash.strip()
+            ):
+                raise self._invalid("下载器种子哈希无效")
+            result["torrent_hash"] = raw_hash.strip().lower()
+        else:
+            result["torrent_hash"] = None
         raw_name = result.get("name_contains")
         if raw_name is not None and not isinstance(raw_name, str):
             raise self._invalid("下载器任务名称过滤必须是文本")
@@ -562,6 +734,30 @@ class UnpackDefinitionService:
         ):
             raise self._invalid("必须选择目标下载器")
         result["target_downloader_id"] = raw_target_downloader_id.strip()
+
+        raw_target_category = result.get("target_category")
+        if raw_target_category is not None and not isinstance(raw_target_category, str):
+            raise self._invalid("目标下载器分类必须是文本")
+        target_category = (
+            raw_target_category.strip() if isinstance(raw_target_category, str) else ""
+        )
+        if len(target_category) > 128 or "\x00" in target_category:
+            raise self._invalid("目标下载器分类最多 128 个字符")
+        result["target_category"] = target_category or None
+
+        raw_target_tags = result.get("target_tags", [])
+        if not isinstance(raw_target_tags, (list, tuple)) or any(
+            not isinstance(value, str) for value in raw_target_tags
+        ):
+            raise self._invalid("目标下载器标签必须是文本数组")
+        target_tags = tuple(
+            dict.fromkeys(value.strip() for value in raw_target_tags if value.strip())
+        )
+        if len(target_tags) > 100 or any(
+            len(value) > 128 or "\x00" in value for value in target_tags
+        ):
+            raise self._invalid("目标下载器标签最多 100 项，每项最多 128 个字符")
+        result["target_tags"] = list(target_tags)
         return result
 
     def _normalize_selected_source(
@@ -621,6 +817,26 @@ class UnpackDefinitionService:
             downloader_id = str(request.source_config["downloader_id"])
             if session.get(Downloader, downloader_id) is None:
                 raise self._invalid("所选下载器不存在")
+        if request.task_kind is UnpackTaskKind.TEMPLATE:
+            version = session.scalar(
+                select(UnpackTemplateVersion)
+                .where(UnpackTemplateVersion.template_id == request.template_id)
+                .where(UnpackTemplateVersion.version == request.template_version)
+            )
+            if version is None or version.status != "READY":
+                raise self._invalid("所选模板版本尚未完成导入或已不可用")
+            bound_site_keys = tuple(
+                sorted(item for item in (version.site_keys or []) if isinstance(item, str) and item)
+            )
+            if len(bound_site_keys) != 1:
+                raise self._invalid("官方拆包模板必须且只能绑定一个站点")
+            if len(request.site_ids) != 1:
+                raise self._invalid("模板拆包只能选择模板绑定的一个站点配置")
+            selected_site = session.get(Site, request.site_ids[0])
+            if selected_site is None or not selected_site.enabled:
+                raise self._invalid("模板绑定的站点配置不存在或未启用")
+            if selected_site.type.strip().casefold() != bound_site_keys[0].casefold():
+                raise self._invalid("所选站点与模板绑定站点不一致，拒绝跨站执行")
         target_downloader_id = request.output_config.get("target_downloader_id")
         if not isinstance(target_downloader_id, str):
             raise self._invalid("必须选择目标下载器")
@@ -683,14 +899,19 @@ class UnpackDefinitionService:
             .where(UnpackDefinitionSelectedSource.definition_id == definition.id)
             .order_by(UnpackDefinitionSelectedSource.id)
         ).all()
-        return {
+        source_config = dict(definition.source_config)
+        frozen_downloader_sources = source_config.pop("_frozen_downloader_sources", None)
+        snapshot = {
             "definition_id": definition.id,
             "definition_version": definition.version,
             "name": definition.name,
             "trigger_kind": definition.trigger_kind,
+            "task_kind": definition.task_kind,
+            "template_id": definition.template_id,
+            "template_version": definition.template_version,
             "source_kind": definition.source_kind,
             "execution_scope_kind": definition.execution_scope_kind,
-            "source_config": dict(definition.source_config),
+            "source_config": source_config,
             "file_filter": dict(definition.file_filter),
             "site_ids": list(definition.site_ids),
             "output_config": dict(definition.output_config),
@@ -700,6 +921,7 @@ class UnpackDefinitionService:
             },
             "matching": {
                 "auto_match_threshold_bps": definition.auto_match_threshold_bps,
+                "auto_match_enabled": definition.auto_match_enabled,
             },
             "selected_sources": [
                 {
@@ -712,6 +934,9 @@ class UnpackDefinitionService:
                 for item in selected
             ],
         }
+        if isinstance(frozen_downloader_sources, list):
+            snapshot["downloader_sources"] = frozen_downloader_sources
+        return snapshot
 
     def _view(self, session: Session, definition: UnpackDefinition) -> UnpackDefinitionView:
         selected_count = len(
@@ -721,20 +946,26 @@ class UnpackDefinitionService:
                 )
             ).all()
         )
+        public_source_config = dict(definition.source_config)
+        public_source_config.pop("_frozen_downloader_sources", None)
         return UnpackDefinitionView(
             id=definition.id,
             name=definition.name,
             trigger_kind=UnpackTriggerKind(definition.trigger_kind),
+            task_kind=UnpackTaskKind(definition.task_kind),
             status=UnpackDefinitionStatus(definition.status),
             source_kind=UnpackSourceKind(definition.source_kind),
+            template_id=definition.template_id,
+            template_version=definition.template_version,
             execution_scope_kind=UnpackExecutionScopeKind(definition.execution_scope_kind),
-            source_config=dict(definition.source_config),
+            source_config=public_source_config,
             file_filter=dict(definition.file_filter),
             site_ids=tuple(definition.site_ids),
             output_config=dict(definition.output_config),
             retry_enabled=definition.retry_enabled,
             max_retries=definition.max_retries,
             auto_match_threshold_bps=definition.auto_match_threshold_bps,
+            auto_match_enabled=definition.auto_match_enabled,
             cron_expression=definition.cron_expression,
             timezone=definition.timezone,
             next_run_at=definition.next_run_at,

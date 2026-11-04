@@ -1,13 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import {
-  Bot,
-  CheckCircle2,
-  MessageCircle,
-  RefreshCw,
-  ShieldCheck,
-  TriangleAlert,
-} from '@lucide/vue';
+import { Bot, CheckCircle2, MessageCircle, RefreshCw, ShieldCheck } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 
 import { ApiProblem } from '../api/client';
@@ -99,7 +92,7 @@ const statusType = computed(() => {
 const statusText = computed(() => {
   if (settings.value?.connection_status === 'OK') return '已通过连接测试';
   if (settings.value?.connection_status === 'FAILED') return '上次连接测试失败';
-  return '尚未测试';
+  return '';
 });
 const telegramStatusType = computed(() => {
   if (status.value?.telegram_consecutive_errors) return 'danger';
@@ -317,31 +310,22 @@ onMounted(() => void refresh());
 
 <template>
   <div v-loading="loading" class="ai-settings">
-    <section class="panel ai-status-panel">
-      <div class="ai-status-copy">
-        <span class="file-icon"><Bot :size="20" /></span>
-        <div>
-          <h3>AI 助手</h3>
-          <p class="muted">v0.1.6 仅提供 Telegram AI 对话；本页面只负责配置和状态管理。</p>
-        </div>
-      </div>
-      <div class="ai-status-actions">
-        <el-tag :type="statusType">{{ statusText }}</el-tag>
-        <el-switch v-model="draft.enabled" active-text="启用" inactive-text="停用" />
-      </div>
-    </section>
-
-    <el-alert
-      title="AI 助手首版严格只读"
-      description="AI 可以查询健康、任务、脱敏日志、站点/下载器状态、版本和帮助文档，但不能执行拆包、修改配置、删除记录、修改密码或升级容器。"
-      type="info"
-      :closable="false"
-      show-icon
-      class="section-space"
-    />
+    <header class="ai-page-heading">
+      <div class="ai-title-icon"><Bot :size="26" aria-hidden="true" /></div>
+      <h2>AI 助手</h2>
+      <el-tag
+        v-if="settings?.connection_status === 'OK' || settings?.connection_status === 'FAILED'"
+        :type="statusType"
+      >
+        {{ statusText }}
+      </el-tag>
+    </header>
 
     <section class="panel section-space">
-      <h3>Provider 配置</h3>
+      <div class="section-heading">
+        <h3>Provider 配置</h3>
+        <el-switch v-model="draft.enabled" active-text="启用" inactive-text="停用" />
+      </div>
       <el-form label-position="top" class="ai-form">
         <div class="ai-form-grid">
           <el-form-item label="Provider 类型" required>
@@ -412,41 +396,25 @@ onMounted(() => void refresh());
 
     <section class="panel section-space">
       <h3>AI 可读取的数据范围</h3>
-      <p class="muted">
-        无论如何选择，Cookie、API Key、密码、Session/CSRF、SecretStore
-        密文和代理密码都不会进入模型上下文。
-      </p>
       <el-checkbox-group v-model="draft.dataScopes" class="ai-scope-grid">
         <el-checkbox v-for="item in SCOPE_OPTIONS" :key="item.value" :value="item.value">
           {{ item.label }}
         </el-checkbox>
       </el-checkbox-group>
-      <div class="ai-safety-note">
-        <TriangleAlert :size="16" />
-        OpenAI-compatible 的 Base URL 与 Model 由真实 Provider 决定是否可用，PackBreaker
-        不维护模型白名单。
-      </div>
     </section>
 
     <section class="panel section-space">
       <div class="telegram-heading">
-        <div>
+        <div class="telegram-title-row">
           <h3>Telegram AI</h3>
-          <p class="muted">
-            复用“通知”中的 Telegram Bot Token 与代理；AI 对话使用独立身份白名单和 Long Polling
-            Cursor。
-          </p>
+          <el-switch
+            v-model="telegramDraft.enabled"
+            active-text="启用 Telegram AI"
+            inactive-text="停用"
+          />
         </div>
         <el-tag :type="telegramStatusType">{{ telegramStatusText }}</el-tag>
       </div>
-      <el-alert
-        title="Telegram 默认拒绝所有未授权来源"
-        description="AI 文本消息必须命中 Chat ID / User ID allowlist；Telegram 不会获得额外的数据拆包写权限。"
-        type="info"
-        :closable="false"
-        show-icon
-        class="ai-inline-alert telegram-alert"
-      />
       <el-form label-position="top" class="ai-form">
         <el-form-item label="Telegram 通知渠道" required>
           <el-select
@@ -506,11 +474,6 @@ onMounted(() => void refresh());
           </span>
         </div>
         <div class="ai-actions">
-          <el-switch
-            v-model="telegramDraft.enabled"
-            active-text="启用 Telegram AI"
-            inactive-text="停用"
-          />
           <el-button type="primary" :loading="telegramSaving" @click="saveTelegram">
             <MessageCircle :size="15" />保存 Telegram 配置
           </el-button>
@@ -523,31 +486,52 @@ onMounted(() => void refresh());
 <style scoped>
 .ai-settings {
   display: grid;
+  gap: 16px;
+  min-width: 0;
 }
-.ai-status-panel,
-.ai-status-copy,
-.ai-status-actions,
+.ai-page-heading,
 .ai-actions,
 .ai-secret-meta,
-.ai-safety-note,
+.section-heading,
 .telegram-heading,
+.telegram-title-row,
 .telegram-footer,
 .telegram-meta {
   display: flex;
   align-items: center;
 }
-.ai-status-panel {
-  justify-content: space-between;
-  gap: 18px;
+.ai-page-heading {
+  gap: 14px;
+  padding: 2px 2px 4px;
 }
-.ai-status-copy {
-  gap: 12px;
+.ai-title-icon {
+  display: grid;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  color: var(--blue);
+  background: var(--blue-soft);
+  border-radius: 13px;
 }
-.ai-status-copy h3,
-.ai-status-copy p {
+.ai-page-heading h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+}
+.ai-page-heading > .el-tag {
+  margin-left: auto;
+}
+.section-heading {
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.section-heading h3 {
   margin: 0;
 }
-.ai-status-actions,
 .ai-actions,
 .ai-secret-meta {
   gap: 12px;
@@ -587,17 +571,17 @@ onMounted(() => void refresh());
 .telegram-heading,
 .telegram-footer {
   justify-content: space-between;
-  gap: 18px;
+  gap: 14px;
 }
-.telegram-heading h3,
-.telegram-heading p {
+.telegram-heading {
+  flex-wrap: wrap;
+}
+.telegram-title-row {
+  gap: 8px;
+  min-width: 0;
+}
+.telegram-title-row h3 {
   margin: 0;
-}
-.telegram-heading p {
-  margin-top: 4px;
-}
-.telegram-alert {
-  margin-top: 16px;
 }
 .telegram-meta {
   gap: 16px;
@@ -609,8 +593,12 @@ onMounted(() => void refresh());
   font-size: 12px;
 }
 @media (max-width: 720px) {
-  .ai-status-panel,
-  .ai-status-actions,
+  .ai-page-heading {
+    gap: 10px;
+  }
+  .ai-page-heading > .el-tag {
+    margin-left: auto;
+  }
   .ai-actions,
   .ai-secret-meta,
   .telegram-heading,
@@ -618,6 +606,10 @@ onMounted(() => void refresh());
   .telegram-meta {
     align-items: stretch;
     flex-direction: column;
+  }
+  .section-heading {
+    align-items: center;
+    flex-direction: row;
   }
   .ai-form-grid,
   .ai-scope-grid {

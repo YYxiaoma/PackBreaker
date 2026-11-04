@@ -23,11 +23,16 @@ from backend.app.infrastructure.persistence.models import (
     Site,
     UnpackDefinition,
     UnpackDefinitionSelectedSource,
+    UnpackDeletedItemAudit,
     UnpackExecution,
     UnpackExecutionItem,
     UnpackExternalOperationJournal,
     UnpackMatchCandidate,
     UnpackSourceScan,
+    UnpackTemplate,
+    UnpackTemplateSeed,
+    UnpackTemplateVersion,
+    UnpackTorrentMetadata,
     new_uuid,
 )
 from backend.app.main import create_app
@@ -67,14 +72,14 @@ def _csrf(client: TestClient) -> dict[str, str]:
     return {"X-CSRF-Token": token}
 
 
-def _create_ready_site(app: FastAPI) -> str:
+def _create_ready_site(app: FastAPI, *, name: str = "M-Team v2 测试站") -> str:
     site_id = new_uuid()
     now = datetime.now(UTC)
     with app.state.runtime.session_factory() as session:
         session.add(
             Site(
                 id=site_id,
-                name="M-Team v2 测试站",
+                name=name,
                 type="MTEAM",
                 base_url="https://api.m-team.cc",
                 credential_kind="API_KEY",
@@ -746,6 +751,196 @@ def test_monitor_definition_is_pending_until_run_enables_it(tmp_path: Path) -> N
         client.__exit__(None, None, None)
 
 
+def test_template_unpack_definition_uses_a_ready_template_version(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        site_id = _create_ready_site(app)
+        downloader_id = _create_ready_downloader(app)
+        movies = app.state.settings.data_dir / "template-source"
+        output = app.state.settings.data_dir / "template-output"
+        movies.mkdir()
+        output.mkdir()
+        template_id = new_uuid()
+        version_id = new_uuid()
+        metadata_id = new_uuid()
+        now = datetime.now(UTC)
+        with app.state.runtime.session_factory() as session:
+            session.add_all(
+                [
+                    UnpackTemplate(
+                        id=template_id,
+                        name="API template test",
+                        description="Synthetic template fixture",
+                        current_version=1,
+                        source_provenance={"source": "test"},
+                        created_at=now,
+                        updated_at=now,
+                    ),
+                    UnpackTemplateVersion(
+                        id=version_id,
+                        template_id=template_id,
+                        version=1,
+                        schema_version=1,
+                        status="READY",
+                        expected_seed_count=1,
+                        seed_count=1,
+                        site_keys=["mteam"],
+                        content_digest="a" * 64,
+                        source_provenance={"source": "test"},
+                        created_at=now,
+                    ),
+                    UnpackTorrentMetadata(
+                        id=metadata_id,
+                        site_key="mteam",
+                        remote_torrent_id="synthetic-seed-1",
+                        display_name="Sample Film 2021 1080p",
+                        descriptor={
+                            "raw_name": "Sample Film 2021 1080p",
+                            "title_tokens": ["sample", "film"],
+                            "year": 2021,
+                            "files": [{"basename": "Sample Film.mkv", "length": 1024}],
+                        },
+                        total_size=1024,
+                        file_summary=[{"basename": "Sample Film.mkv", "length": 1024}],
+                        external_ids=[],
+                        info_hash=None,
+                        metadata_digest="b" * 64,
+                        fetched_at=now,
+                        verification_status="DETAILS_VERIFIED",
+                        source_provenance={"source": "test"},
+                        created_at=now,
+                        updated_at=now,
+                    ),
+                ]
+            )
+            session.flush()
+            session.add(
+                UnpackTemplateSeed(
+                    id=new_uuid(),
+                    template_version_id=version_id,
+                    metadata_id=metadata_id,
+                    mapping_rules={},
+                    sort_order=0,
+                    created_at=now,
+                )
+            )
+            session.commit()
+        listed = client.get("/api/v1/unpack/templates")
+        assert listed.status_code == 200
+        listed_body = listed.json()["items"]
+        assert len(listed_body) == 1
+        assert listed_body[0]["id"] == template_id
+        assert listed_body[0]["status"] == "READY"
+        assert listed_body[0]["site_ids"] == [site_id]
+        assert listed_body[0]["mapped_media_count"] == 0
+
+        created = client.post(
+            "/api/v1/unpack/definitions",
+            headers=_csrf(client),
+            json={
+                "name": "模板拆包 API 测试",
+                "trigger_kind": "MANUAL",
+                "task_kind": "TEMPLATE",
+                "template_id": template_id,
+                "template_version": 1,
+                "source_kind": "DIRECTORY",
+                "execution_scope_kind": "ALL_MATCHING_MEDIA",
+                "source_config": {"directory_path": movies.as_posix()},
+                "file_filter": {"extensions": [".mkv"]},
+                "site_ids": [site_id],
+                "output_config": {
+                    "output_directory": output.as_posix(),
+                    "storage_mode": "HARDLINK",
+                    "conflict_policy": "VERIFY_REUSE_OR_STOP",
+                    "target_downloader_id": downloader_id,
+                },
+                "retry_enabled": True,
+                "max_retries": 3,
+                "auto_match_threshold_bps": 9900,
+                "auto_match_enabled": True,
+            },
+        )
+        assert created.status_code == 201, created.text
+        body = created.json()
+        assert body["task_kind"] == "TEMPLATE"
+        assert body["template_id"] == template_id
+        assert body["template_version"] == 1
+        assert body["execution_scope_kind"] == "ALL_MATCHING_MEDIA"
+        assert body["source_config"] == {"directory_path": movies.as_posix()}
+
+        with app.state.runtime.session_factory() as session:
+            definition = session.get(UnpackDefinition, body["id"])
+            assert definition is not None
+            assert definition.task_kind == "TEMPLATE"
+            assert definition.template_id == template_id
+            assert definition.template_version == 1
+            assert "_frozen_downloader_sources" not in definition.source_config
+
+        second_site_id = _create_ready_site(app, name="M-Team v2 第二测试站")
+        cross_site = client.post(
+            "/api/v1/unpack/definitions",
+            headers=_csrf(client),
+            json={
+                "name": "模板拆包跨站拒绝测试",
+                "trigger_kind": "MANUAL",
+                "task_kind": "TEMPLATE",
+                "template_id": template_id,
+                "template_version": 1,
+                "source_kind": "DIRECTORY",
+                "execution_scope_kind": "ALL_MATCHING_MEDIA",
+                "source_config": {"directory_path": movies.as_posix()},
+                "file_filter": {"extensions": [".mkv"]},
+                "site_ids": [site_id, second_site_id],
+                "output_config": {
+                    "output_directory": output.as_posix(),
+                    "storage_mode": "HARDLINK",
+                    "conflict_policy": "VERIFY_REUSE_OR_STOP",
+                    "target_downloader_id": downloader_id,
+                },
+                "retry_enabled": True,
+                "max_retries": 3,
+                "auto_match_threshold_bps": 9900,
+                "auto_match_enabled": True,
+            },
+        )
+        assert cross_site.status_code == 422, cross_site.text
+
+        with app.state.runtime.session_factory() as session:
+            mismatched_site = session.get(Site, second_site_id)
+            assert mismatched_site is not None
+            mismatched_site.type = "HDTIME"
+            session.commit()
+        wrong_site_type = client.post(
+            "/api/v1/unpack/definitions",
+            headers=_csrf(client),
+            json={
+                "name": "模板拆包站点类型不匹配测试",
+                "trigger_kind": "MANUAL",
+                "task_kind": "TEMPLATE",
+                "template_id": template_id,
+                "template_version": 1,
+                "source_kind": "DIRECTORY",
+                "execution_scope_kind": "ALL_MATCHING_MEDIA",
+                "source_config": {"directory_path": movies.as_posix()},
+                "file_filter": {"extensions": [".mkv"]},
+                "site_ids": [second_site_id],
+                "output_config": {
+                    "output_directory": output.as_posix(),
+                    "storage_mode": "HARDLINK",
+                    "conflict_policy": "VERIFY_REUSE_OR_STOP",
+                    "target_downloader_id": downloader_id,
+                },
+                "retry_enabled": True,
+                "max_retries": 3,
+                "auto_match_threshold_bps": 9900,
+                "auto_match_enabled": True,
+            },
+        )
+        assert wrong_site_type.status_code == 422, wrong_site_type.text
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_unpack_item_review_api_requires_version_and_replays_idempotently(
     tmp_path: Path,
 ) -> None:
@@ -882,6 +1077,95 @@ def test_no_match_count_is_reported_in_execution_detail_and_list(tmp_path: Path)
         client.__exit__(None, None, None)
 
 
+def test_execution_counts_follow_current_item_statuses_not_stale_counters(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _candidate_id = _seed_item_action_fixture(app, item_status="EXECUTION_ERROR")
+        now = datetime.now(UTC)
+        with app.state.runtime.session_factory() as session:
+            first_item = session.get(UnpackExecutionItem, item_id)
+            assert first_item is not None
+            execution = session.get(UnpackExecution, first_item.execution_id)
+            assert execution is not None
+            execution.total_count = 4
+            # Simulate the stale aggregate seen in the isolated acceptance database:
+            # one current MATCHED_AUTO item plus an old count that still includes an error.
+            execution.matched_auto_count = 2
+            execution.review_count = 0
+            session.add_all(
+                [
+                    UnpackExecutionItem(
+                        id=new_uuid(),
+                        execution_id=execution.id,
+                        source_object_key="source-current-auto-match",
+                        source_snapshot={},
+                        media_identity={"title": "Auto matched movie"},
+                        status="MATCHED_AUTO",
+                        candidate_generation=1,
+                        retry_count=0,
+                        version=1,
+                        created_at=now,
+                        updated_at=now,
+                    ),
+                    UnpackExecutionItem(
+                        id=new_uuid(),
+                        execution_id=execution.id,
+                        source_object_key="source-current-no-match",
+                        source_snapshot={},
+                        media_identity={"title": "Unmatched movie"},
+                        status="NO_MATCH",
+                        candidate_generation=1,
+                        retry_count=0,
+                        version=1,
+                        created_at=now,
+                        updated_at=now,
+                    ),
+                    UnpackExecutionItem(
+                        id=new_uuid(),
+                        execution_id=execution.id,
+                        source_object_key="source-current-review",
+                        source_snapshot={},
+                        media_identity={"title": "Review movie"},
+                        status="REVIEW_REQUIRED",
+                        candidate_generation=1,
+                        retry_count=0,
+                        version=1,
+                        created_at=now,
+                        updated_at=now,
+                    ),
+                ]
+            )
+            session.commit()
+            execution_id = execution.id
+
+        for response in (
+            client.get(f"/api/v1/unpack/executions/{execution_id}"),
+            client.get("/api/v1/unpack/executions"),
+        ):
+            assert response.status_code == 200
+            data = response.json()
+            if "items" in data:
+                data = next(row for row in data["items"] if row["id"] == execution_id)
+            assert data["total_count"] == 4
+            assert data["matched_auto_count"] == 1
+            assert data["no_match_count"] == 1
+            assert data["review_count"] == 1
+            assert data["error_count"] == 1
+            assert (
+                data["matched_auto_count"]
+                + data["no_match_count"]
+                + data["review_count"]
+                + data["error_count"]
+            ) == data["total_count"]
+
+        with app.state.runtime.session_factory() as session:
+            execution = session.get(UnpackExecution, execution_id)
+            assert execution is not None
+            assert execution.matched_auto_count == 2, "查询应修正 API 展示，不应写回历史数据库"
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_delete_completed_unmatched_task_removes_history_without_media_mutation(
     tmp_path: Path,
 ) -> None:
@@ -925,10 +1209,11 @@ def test_bulk_retry_no_match_api_uses_execution_version(tmp_path: Path) -> None:
         result = client.post(
             endpoint,
             headers={**_csrf(client), "If-Match": str(version)},
-            json={"action": "retry_failed_matches"},
+            json={"action": "retry_eligible_items", "item_statuses": ["NO_MATCH"]},
         )
         assert result.status_code == 200
         assert result.json()["retried_count"] == 1
+        assert result.json()["skipped_unsafe_count"] == 0
         assert (
             client.get(f"/api/v1/unpack/executions/{execution_id}").json()["status"] == "MATCHING"
         )
@@ -936,7 +1221,7 @@ def test_bulk_retry_no_match_api_uses_execution_version(tmp_path: Path) -> None:
             client.post(
                 endpoint,
                 headers={**_csrf(client), "If-Match": str(version)},
-                json={"action": "retry_failed_matches"},
+                json={"action": "retry_eligible_items", "item_statuses": ["NO_MATCH"]},
             ).status_code
             == 409
         )
@@ -999,7 +1284,7 @@ def test_unpack_item_delete_api_requires_csrf_and_version_and_preserves_media(
         client.__exit__(None, None, None)
 
 
-def test_item_list_marks_external_journal_and_blocks_record_deletion(tmp_path: Path) -> None:
+def test_item_list_marks_external_journal_and_archives_on_deletion(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
         item_id, _candidate_id = _seed_item_action_fixture(app, item_status="MATCH_ERROR")
@@ -1034,8 +1319,15 @@ def test_item_list_marks_external_journal_and_blocks_record_deletion(tmp_path: P
             f"/api/v1/unpack/items/{item_id}",
             headers={**_csrf(client), "If-Match": "3"},
         )
-        assert deleted.status_code == 409
-        assert deleted.json()["code"] == "UNPACK_ITEM_DELETE_EXTERNAL_JOURNAL"
+        assert deleted.status_code == 204
+        with app.state.runtime.session_factory() as session:
+            assert session.get(UnpackExecutionItem, item_id) is None
+            assert session.scalar(select(UnpackExternalOperationJournal.id)) is None
+            audit = session.scalar(
+                select(UnpackDeletedItemAudit).where(UnpackDeletedItemAudit.item_id == item_id)
+            )
+            assert audit is not None
+            assert audit.payload["operations"][0]["idempotency_key"] == "f" * 64
     finally:
         client.__exit__(None, None, None)
 
@@ -1150,5 +1442,38 @@ def test_unpack_run_rejects_disabled_configured_site_before_execution(
             definition = session.get(UnpackDefinition, definition_id)
             assert definition is not None
             assert definition.status == "PENDING_EXECUTION"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_bulk_retry_rejects_no_status_and_prohibited_status_api(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, _ = _seed_item_action_fixture(app, item_status="NO_MATCH")
+        with app.state.runtime.session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            assert item is not None
+            execution = session.get(UnpackExecution, item.execution_id)
+            assert execution is not None
+            execution_id = execution.id
+            version = execution.version
+        endpoint = f"/api/v1/unpack/executions/{execution_id}/actions"
+        for statuses, expected_status in (
+            ([], 422),
+            (["MATCHING"], 422),
+            (["COMPLETED"], 422),
+            (["NO_MATCH", "NO_MATCH"], 422),
+            (["UNKNOWN"], 422),
+        ):
+            response = client.post(
+                endpoint,
+                headers={**_csrf(client), "If-Match": str(version)},
+                json={"action": "retry_eligible_items", "item_statuses": statuses},
+            )
+            assert response.status_code == expected_status
+        with app.state.runtime.session_factory() as session:
+            current = session.get(UnpackExecutionItem, item_id)
+            assert current is not None
+            assert current.status == "NO_MATCH"
     finally:
         client.__exit__(None, None, None)

@@ -126,112 +126,161 @@ onMounted(() => void load());
 
 <template>
   <div v-loading="loading" class="backup-management">
-    <el-alert
-      title="数据库备份不包含 secret.key，请独立安全保管主密钥。"
-      type="warning"
-      :closable="false"
-      show-icon
-    />
+    <section class="panel backup-overview-panel">
+      <div class="backup-section-heading">
+        <div class="backup-overview-copy">
+          <span class="file-icon"><DatabaseBackup :size="20" /></span>
+          <div>
+            <h3>SQLite 一致性备份</h3>
+            <p>
+              {{
+                policy?.enabled ? `每 ${policy.interval_hours} 小时自动检查` : '自动计划当前关闭'
+              }}
+              · 最近成功 {{ formatTime(policy?.last_success_at) }}
+            </p>
+          </div>
+        </div>
+        <el-button type="primary" :loading="running" :disabled="!policy" @click="runNow">
+          <DatabaseBackup :size="15" />立即备份
+        </el-button>
+      </div>
+      <el-alert
+        title="数据库备份不包含 secret.key，请独立安全保管主密钥。"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+    </section>
 
-    <div class="backup-card section-space">
-      <DatabaseBackup :size="30" />
-      <div class="backup-summary">
-        <b>SQLite 一致性备份</b>
-        <p>
-          {{ policy?.enabled ? `每 ${policy.interval_hours} 小时自动检查` : '自动计划当前关闭' }} ·
-          最近成功 {{ formatTime(policy?.last_success_at) }}
-        </p>
-      </div>
-      <el-button type="primary" :loading="running" :disabled="!policy" @click="runNow">
-        <DatabaseBackup :size="15" />立即备份
-      </el-button>
-    </div>
-
-    <div v-if="policy" class="setting-row">
-      <div>
-        <b>自动备份状态</b>
-        <p>连续错误 {{ policy.driver_consecutive_errors }} 次</p>
-      </div>
-      <el-tag :type="driverTone">{{ policy.driver_running ? '运行中' : '未运行' }}</el-tag>
-    </div>
-
-    <el-form v-if="policy" label-position="top" class="section-space">
-      <div class="form-grid">
-        <el-form-item label="计划备份">
-          <el-switch v-model="draft.enabled" active-text="启用" inactive-text="关闭" />
-        </el-form-item>
-        <el-form-item label="备份周期（小时）">
-          <el-input-number v-model="draft.interval_hours" :min="1" :max="168" />
-        </el-form-item>
-        <el-form-item label="普通备份保留（天）">
-          <el-input-number v-model="draft.retention_days" :min="1" :max="3650" />
-        </el-form-item>
-        <el-form-item label="至少保留最新份数">
-          <el-input-number v-model="draft.keep_latest" :min="1" :max="100" />
-        </el-form-item>
-      </div>
-      <div class="backup-actions">
-        <el-button type="primary" :loading="saving" @click="save">保存备份策略</el-button>
-        <el-button :disabled="loading" @click="load"><RefreshCw :size="15" />刷新状态</el-button>
-      </div>
-    </el-form>
-
-    <div v-if="policy" class="health-list section-space">
-      <div>
-        <ShieldCheck :size="17" />最近尝试
-        <span>{{ formatTime(policy.last_attempt_at) }}</span>
-      </div>
-      <div>
-        <ShieldCheck :size="17" />最近成功
-        <span>{{ formatTime(policy.last_success_at) }}</span>
-      </div>
-      <div>
-        <ShieldCheck :size="17" />最近错误
-        <el-tag :type="policy.last_error_code ? 'warning' : 'success'">
-          {{ policy.last_error_code ?? '无' }}
+    <section v-if="policy" class="panel">
+      <div class="backup-section-heading">
+        <h3>备份策略</h3>
+        <el-tag :type="policy.enabled ? 'success' : 'info'">
+          {{ policy.enabled ? '计划已启用' : '计划已关闭' }}
         </el-tag>
       </div>
-    </div>
+      <div class="setting-row">
+        <div>
+          <b>自动备份状态</b>
+          <p>连续错误 {{ policy.driver_consecutive_errors }} 次</p>
+        </div>
+        <el-tag :type="driverTone">{{ policy.driver_running ? '运行中' : '未运行' }}</el-tag>
+      </div>
 
-    <el-alert
-      class="section-space"
-      title="恢复数据库前必须先停止 PackBreaker。"
-      type="info"
-      :closable="false"
-    />
+      <el-form label-position="top" class="backup-policy-form">
+        <div class="form-grid">
+          <el-form-item label="计划备份">
+            <el-switch v-model="draft.enabled" active-text="启用" inactive-text="关闭" />
+          </el-form-item>
+          <el-form-item label="备份周期（小时）">
+            <el-input-number v-model="draft.interval_hours" :min="1" :max="168" />
+          </el-form-item>
+          <el-form-item label="普通备份保留（天）">
+            <el-input-number v-model="draft.retention_days" :min="1" :max="3650" />
+          </el-form-item>
+          <el-form-item label="至少保留最新份数">
+            <el-input-number v-model="draft.keep_latest" :min="1" :max="100" />
+          </el-form-item>
+        </div>
+        <div class="backup-actions">
+          <el-button type="primary" :loading="saving" @click="save">保存备份策略</el-button>
+          <el-button :disabled="loading" @click="load"><RefreshCw :size="15" />刷新状态</el-button>
+        </div>
+      </el-form>
+    </section>
+
+    <section v-if="policy" class="panel">
+      <h3>备份运行记录</h3>
+      <div class="health-list">
+        <div>
+          <ShieldCheck :size="17" />最近尝试
+          <span>{{ formatTime(policy.last_attempt_at) }}</span>
+        </div>
+        <div>
+          <ShieldCheck :size="17" />最近成功
+          <span>{{ formatTime(policy.last_success_at) }}</span>
+        </div>
+        <div>
+          <ShieldCheck :size="17" />最近错误
+          <el-tag :type="policy.last_error_code ? 'warning' : 'success'">
+            {{ policy.last_error_code ?? '无' }}
+          </el-tag>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>恢复须知</h3>
+      <el-alert title="恢复数据库前必须先停止 PackBreaker。" type="info" :closable="false" />
+    </section>
   </div>
 </template>
 
 <style scoped>
 .backup-management {
   display: grid;
-  gap: 14px;
+  gap: 16px;
 }
-.backup-summary {
+.backup-section-heading,
+.backup-overview-copy {
+  display: flex;
+  align-items: center;
+}
+.backup-section-heading {
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.backup-section-heading h3 {
+  margin: 0;
+}
+.backup-overview-copy {
   min-width: 0;
-  flex: 1;
+  gap: 12px;
 }
-.backup-summary p {
-  margin: 5px 0 0;
+.backup-overview-copy > div {
+  min-width: 0;
+}
+.backup-overview-copy h3,
+.backup-overview-copy p {
+  margin: 0;
+}
+.backup-overview-copy p {
+  margin-top: 5px;
   color: var(--muted);
   font-size: 12px;
 }
 .backup-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+.backup-policy-form {
+  margin-top: 16px;
 }
 .health-list span {
   margin-left: auto;
   color: var(--muted);
   font-size: 12px;
 }
+.backup-management > .panel > h3 {
+  margin-top: 0;
+  margin-bottom: 18px;
+}
 @media (max-width: 800px) {
-  .backup-card {
-    align-items: flex-start;
-    flex-wrap: wrap;
+  .backup-section-heading {
+    align-items: stretch;
+    flex-direction: column;
   }
-  .backup-card .el-button {
+  .backup-section-heading > .el-button {
     width: 100%;
+  }
+  .backup-actions > .el-button {
+    flex: 1 1 100%;
+  }
+  .health-list span {
+    overflow-wrap: anywhere;
+    text-align: right;
   }
 }
 </style>

@@ -147,6 +147,8 @@ button svg,
   flex-shrink: 0;
 }
 .sidebar > nav {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   /* 窗口较矮时仍可滚动菜单，但不显示侧栏内突兀的原生滚动条。 */
   scrollbar-width: none;
@@ -230,6 +232,19 @@ button svg,
   background: var(--blue-soft);
   color: var(--blue);
   font-weight: 600;
+}
+
+.sidebar-about {
+  flex-shrink: 0;
+  margin: auto 0 12px;
+  padding-top: 15px;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.sidebar-about > span {
+  flex: 1;
+  min-width: 0;
 }
 
 .nav-subitem:focus-visible {
@@ -1064,30 +1079,6 @@ footer i {
 .sidebar .nav-item:hover {
   background: var(--blue-soft);
   color: var(--blue);
-}
-.sidebar-slogan {
-  display: grid;
-  gap: 7px;
-  margin-top: auto;
-  margin-bottom: 26px;
-  padding: 14px 8px 3px;
-  color: #7a8aa7;
-}
-.sidebar-slogan strong {
-  font-size: 14px;
-  font-style: italic;
-  font-weight: 750;
-  letter-spacing: 0.8px;
-}
-.sidebar-slogan small {
-  font-size: 8px;
-  letter-spacing: 1.1px;
-  font-weight: 650;
-}
-.sidebar-slogan > span {
-  width: 20px;
-  border-top: 2px solid currentColor;
-  opacity: 0.65;
 }
 .topbar {
   position: relative;

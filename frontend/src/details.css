@@ -587,23 +587,6 @@
 .scope-tag {
   margin: 4px 8px 4px 0;
 }
-.backup-card {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: 25px 0;
-  margin: 5px 0;
-}
-.backup-card > svg {
-  color: var(--blue);
-}
-.backup-card p {
-  font-size: 11px;
-  color: var(--muted);
-}
-.backup-card .el-button {
-  margin-left: auto;
-}
 .version-icon {
   width: 65px;
   height: 65px;
@@ -746,12 +729,6 @@
   }
   .log-filters > .el-select {
     min-width: 95px;
-  }
-  .backup-card {
-    flex-wrap: wrap;
-  }
-  .backup-card .el-button {
-    margin-left: 0;
   }
   .detail-head p {
     flex-wrap: wrap;

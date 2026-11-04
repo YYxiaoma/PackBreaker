@@ -69,6 +69,9 @@ class _FakeService:
             updated_sites=1,
             unchanged_sites=1,
             unmatched_domains=1,
+            discovered_sites=2,
+            sync_success_sites=2,
+            sync_failed_sites=0,
             update_time=None,
         )
         return self.setting, report

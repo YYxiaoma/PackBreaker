@@ -1,21 +1,30 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { Cloud, RefreshCw, ShieldCheck } from '@lucide/vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import {
+  CalendarDays,
+  CheckCircle2,
+  Clock3,
+  Cloud,
+  FileText,
+  RefreshCw,
+  ShieldCheck,
+} from '@lucide/vue';
 import { ElMessage } from 'element-plus';
+import { useSiteStore } from '../stores/sites';
+import { waitForCookieCloudProfileSync } from '../utils/waitForCookieCloudProfileSync';
+import { hasCookieCloudConnectionDraftChanged } from '../utils/cookiecloudDraft';
 
 import { ApiProblem, toApiProblem } from '../api/client';
 import {
+  getCookieCloudProfileSyncStatus,
   getCookieCloudSettings,
   previewCookieCloudCron,
   syncCookieCloud,
-  testCookieCloud,
+  testCookieCloudDraft,
   updateCookieCloudSettings,
   type CookieCloudCronPreview,
   type CookieCloudSettings,
 } from '../api/cookiecloud';
-
-type CronInputMode = 'VISUAL' | 'CRON';
-type CronVisualKind = 'EVERY_MINUTES' | 'EVERY_HOURS' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
 
 interface Draft {
   enabled: boolean;
@@ -29,46 +38,33 @@ interface Draft {
 }
 
 const settings = ref<CookieCloudSettings>();
+const siteStore = useSiteStore();
 const loading = ref(false);
 const saving = ref(false);
 const probing = ref(false);
 const syncing = ref(false);
-const lastSyncDetail = ref('');
-const cronInputMode = ref<CronInputMode>('VISUAL');
-const cronVisualKind = ref<CronVisualKind>('EVERY_MINUTES');
-const cronVisualInterval = ref(30);
-const cronVisualHour = ref(3);
-const cronVisualMinute = ref(0);
-const cronVisualWeekday = ref(1);
-const cronVisualMonthDay = ref(1);
+const draftProbeStatus = ref<'OK' | 'FAILED' | null>(null);
+const draftProbeAt = ref<string | null>(null);
+let draftProbeSequence = 0;
 const cronPreview = ref<CookieCloudCronPreview | null>(null);
 const cronPreviewLoading = ref(false);
 const cronPreviewError = ref('');
-const cronMinute = ref('*/30');
-const cronHour = ref('*');
-const cronDay = ref('*');
-const cronMonth = ref('*');
-const cronWeekday = ref('*');
 
 function applyCronPreset(expression: string): void {
   draft.syncCronExpression = expression;
-  const parts = expression.split(' ');
-  if (parts.length === 5) {
-    [cronMinute.value, cronHour.value, cronDay.value, cronMonth.value, cronWeekday.value] =
-      parts as [string, string, string, string, string];
-  }
 }
-function rebuildCron(): void {
-  draft.syncCronExpression = [
-    cronMinute.value,
-    cronHour.value,
-    cronDay.value,
-    cronMonth.value,
-    cronWeekday.value,
-  ].join(' ');
-}
+
 let cronPreviewTimer: ReturnType<typeof setTimeout> | null = null;
 let cronPreviewSequence = 0;
+let componentMounted = true;
+
+onUnmounted(() => {
+  componentMounted = false;
+  if (cronPreviewTimer !== null) {
+    clearTimeout(cronPreviewTimer);
+    cronPreviewTimer = null;
+  }
+});
 
 const draft = reactive<Draft>({
   enabled: false,
@@ -81,15 +77,43 @@ const draft = reactive<Draft>({
   requestTimeoutSeconds: 15,
 });
 
+const connectionDraftChanged = computed(() =>
+  hasCookieCloudConnectionDraftChanged(draft, settings.value),
+);
+const settingsDraftChanged = computed(() => {
+  const saved = settings.value;
+  if (!saved) return false;
+  return (
+    draft.enabled !== saved.enabled ||
+    draft.serverUrl.trim() !== saved.server_url ||
+    draft.uuid.trim() !== saved.uuid ||
+    draft.password.length > 0 ||
+    draft.clearPassword ||
+    draft.autoSync !== saved.auto_sync ||
+    draft.syncCronExpression.trim() !== saved.sync_cron_expression ||
+    draft.requestTimeoutSeconds !== saved.request_timeout_seconds
+  );
+});
 const connectionType = computed(() => {
+  if (draftProbeStatus.value === 'OK') return 'success';
+  if (draftProbeStatus.value === 'FAILED') return 'danger';
+  if (connectionDraftChanged.value) return 'info';
   if (settings.value?.connection_status === 'OK') return 'success';
   if (settings.value?.connection_status === 'FAILED') return 'danger';
   return 'info';
 });
 const connectionText = computed(() => {
+  if (draftProbeStatus.value === 'OK') return '当前配置连接正常';
+  if (draftProbeStatus.value === 'FAILED') return '当前配置测试失败';
+  if (connectionDraftChanged.value) return '当前草稿尚未测试';
   if (settings.value?.connection_status === 'OK') return '连接与解密正常';
   if (settings.value?.connection_status === 'FAILED') return '上次测试或同步失败';
   return '尚未测试';
+});
+const connectionTestTime = computed(() => {
+  if (draftProbeStatus.value !== null) return formatTime(draftProbeAt.value);
+  if (connectionDraftChanged.value) return '—';
+  return formatTime(settings.value?.last_test_at);
 });
 const syncType = computed(() => {
   if (settings.value?.last_sync_status === 'SUCCESS') return 'success';
@@ -106,107 +130,25 @@ const syncText = computed(() => {
 const insecureHttp = computed(() => draft.serverUrl.trim().toLowerCase().startsWith('http://'));
 
 watch(
-  () => [
-    cronInputMode.value,
-    cronVisualKind.value,
-    cronVisualInterval.value,
-    cronVisualHour.value,
-    cronVisualMinute.value,
-    cronVisualWeekday.value,
-    cronVisualMonthDay.value,
-  ],
-  () => {
-    if (cronInputMode.value === 'VISUAL') applyVisualCron();
-  },
-);
-
-watch(
   () => [draft.autoSync, draft.syncCronExpression],
   () => scheduleCronPreview(),
 );
 
-function applyVisualCron(): void {
-  const interval = Math.max(1, Math.trunc(cronVisualInterval.value || 1));
-  const hour = Math.min(23, Math.max(0, Math.trunc(cronVisualHour.value || 0)));
-  const minute = Math.min(59, Math.max(0, Math.trunc(cronVisualMinute.value || 0)));
-  const weekday = Math.min(6, Math.max(0, Math.trunc(cronVisualWeekday.value || 0)));
-  const monthDay = Math.min(31, Math.max(1, Math.trunc(cronVisualMonthDay.value || 1)));
-  if (cronVisualKind.value === 'EVERY_MINUTES') {
-    draft.syncCronExpression = `*/${Math.min(59, interval)} * * * *`;
-  } else if (cronVisualKind.value === 'EVERY_HOURS') {
-    draft.syncCronExpression = `${minute} */${Math.min(23, interval)} * * *`;
-  } else if (cronVisualKind.value === 'DAILY') {
-    draft.syncCronExpression = `${minute} ${hour} * * *`;
-  } else if (cronVisualKind.value === 'WEEKLY') {
-    draft.syncCronExpression = `${minute} ${hour} * * ${weekday}`;
-  } else {
-    draft.syncCronExpression = `${minute} ${hour} ${monthDay} * *`;
-  }
-}
-
-function hydrateVisualCron(expression: string): void {
-  const parts = expression.trim().split(/\s+/);
-  if (parts.length !== 5) {
-    cronInputMode.value = 'CRON';
-    return;
-  }
-  const [minute, hour, day, month, weekday] = parts;
-  if (minute?.startsWith('*/') && hour === '*' && day === '*' && month === '*' && weekday === '*') {
-    cronVisualKind.value = 'EVERY_MINUTES';
-    cronVisualInterval.value = Number(minute.slice(2)) || 30;
-    cronInputMode.value = 'VISUAL';
-    return;
-  }
-  if (hour?.startsWith('*/') && day === '*' && month === '*' && weekday === '*') {
-    cronVisualKind.value = 'EVERY_HOURS';
-    cronVisualInterval.value = Number(hour.slice(2)) || 1;
-    cronVisualMinute.value = Number(minute) || 0;
-    cronInputMode.value = 'VISUAL';
-    return;
-  }
-  if (
-    day === '*' &&
-    month === '*' &&
-    weekday === '*' &&
-    /^\d+$/.test(minute ?? '') &&
-    /^\d+$/.test(hour ?? '')
-  ) {
-    cronVisualKind.value = 'DAILY';
-    cronVisualMinute.value = Number(minute);
-    cronVisualHour.value = Number(hour);
-    cronInputMode.value = 'VISUAL';
-    return;
-  }
-  if (
-    day === '*' &&
-    month === '*' &&
-    /^\d+$/.test(weekday ?? '') &&
-    /^\d+$/.test(minute ?? '') &&
-    /^\d+$/.test(hour ?? '')
-  ) {
-    cronVisualKind.value = 'WEEKLY';
-    cronVisualMinute.value = Number(minute);
-    cronVisualHour.value = Number(hour);
-    cronVisualWeekday.value = Number(weekday);
-    cronInputMode.value = 'VISUAL';
-    return;
-  }
-  if (
-    month === '*' &&
-    weekday === '*' &&
-    /^\d+$/.test(day ?? '') &&
-    /^\d+$/.test(minute ?? '') &&
-    /^\d+$/.test(hour ?? '')
-  ) {
-    cronVisualKind.value = 'MONTHLY';
-    cronVisualMinute.value = Number(minute);
-    cronVisualHour.value = Number(hour);
-    cronVisualMonthDay.value = Number(day);
-    cronInputMode.value = 'VISUAL';
-    return;
-  }
-  cronInputMode.value = 'CRON';
-}
+watch(
+  () => [
+    draft.serverUrl,
+    draft.uuid,
+    draft.password,
+    draft.clearPassword,
+    draft.requestTimeoutSeconds,
+  ],
+  () => {
+    draftProbeSequence += 1;
+    draftProbeStatus.value = null;
+    draftProbeAt.value = null;
+    probing.value = false;
+  },
+);
 
 function scheduleCronPreview(): void {
   if (cronPreviewTimer !== null) clearTimeout(cronPreviewTimer);
@@ -238,6 +180,8 @@ async function refreshCronPreview(): Promise<void> {
 }
 
 function applySettings(value: CookieCloudSettings): void {
+  draftProbeStatus.value = null;
+  draftProbeAt.value = null;
   settings.value = value;
   Object.assign(draft, {
     enabled: value.enabled,
@@ -249,14 +193,6 @@ function applySettings(value: CookieCloudSettings): void {
     syncCronExpression: value.sync_cron_expression,
     requestTimeoutSeconds: value.request_timeout_seconds,
   });
-  hydrateVisualCron(value.sync_cron_expression);
-  // Retired visual input must not overwrite the shared Cron-helper presets.
-  cronInputMode.value = 'CRON';
-  const parts = value.sync_cron_expression.split(' ');
-  if (parts.length === 5) {
-    [cronMinute.value, cronHour.value, cronDay.value, cronMonth.value, cronWeekday.value] =
-      parts as [string, string, string, string, string];
-  }
   scheduleCronPreview();
 }
 
@@ -268,6 +204,29 @@ function formatTime(value: string | null | undefined): string {
   if (!value) return '—';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatRunDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: cronPreview.value?.timezone || 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function formatRunTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: cronPreview.value?.timezone || 'Asia/Shanghai',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date);
 }
 
 function validate(): boolean {
@@ -298,10 +257,17 @@ function validate(): boolean {
   return true;
 }
 
-async function refresh(): Promise<void> {
+async function refresh(preserveDraft = false): Promise<void> {
+  const preserveUnsavedDraft = preserveDraft && settingsDraftChanged.value;
   loading.value = true;
   try {
-    applySettings(await getCookieCloudSettings());
+    const updated = await getCookieCloudSettings();
+    if (preserveUnsavedDraft) {
+      settings.value = updated;
+      scheduleCronPreview();
+    } else {
+      applySettings(updated);
+    }
   } catch (caught) {
     ElMessage.error(errorText(caught, 'CookieCloud 配置读取失败'));
   } finally {
@@ -334,18 +300,62 @@ async function save(): Promise<void> {
 }
 
 async function probe(): Promise<void> {
+  if (!draft.serverUrl.trim() || !draft.uuid.trim()) {
+    ElMessage.warning('请先填写 CookieCloud 服务器地址和 UUID');
+    return;
+  }
+  if (draft.clearPassword) {
+    ElMessage.warning('已选择清除已保存密码，请取消清除后再测试连接');
+    return;
+  }
+  if (!draft.password && !settings.value?.password_configured) {
+    ElMessage.warning('请先填写 CookieCloud 密码');
+    return;
+  }
+
+  const sequence = ++draftProbeSequence;
+  const payload = {
+    server_url: draft.serverUrl.trim(),
+    uuid: draft.uuid.trim(),
+    ...(draft.password ? { password: draft.password } : {}),
+    request_timeout_seconds: draft.requestTimeoutSeconds,
+  };
   probing.value = true;
   try {
-    const result = await testCookieCloud();
-    await refresh();
+    const result = await testCookieCloudDraft(payload);
+    if (sequence !== draftProbeSequence) return;
+    draftProbeStatus.value = 'OK';
+    draftProbeAt.value = result.tested_at;
     ElMessage.success(
-      '连接与解密正常：' + result.domain_count + ' 个域名，' + result.cookie_count + ' 条 Cookie',
+      `连接与解密正常：发现 ${result.domain_count} 个域名、${result.cookie_count} 条 Cookie`,
     );
   } catch (caught) {
-    await refresh();
+    if (sequence !== draftProbeSequence) return;
+    draftProbeStatus.value = 'FAILED';
+    draftProbeAt.value = new Date().toISOString();
     ElMessage.error(errorText(caught, 'CookieCloud 测试失败'));
   } finally {
-    probing.value = false;
+    if (sequence === draftProbeSequence) probing.value = false;
+  }
+}
+
+async function refreshSitesAfterBackgroundSync(): Promise<void> {
+  // Refresh once immediately so newly imported site configurations appear, then
+  // wait for the bounded background profile queue and refresh the final statistics.
+  try {
+    await siteStore.refresh();
+  } catch {
+    // Keep polling: a transient list request should not hide the background completion.
+  }
+  const waitResult = await waitForCookieCloudProfileSync(
+    getCookieCloudProfileSyncStatus,
+    () => componentMounted,
+  );
+  if (!componentMounted || waitResult === 'stopped') return;
+  try {
+    await siteStore.refresh();
+  } catch {
+    // The page's regular Refresh action remains available if the list API is down.
   }
 }
 
@@ -353,20 +363,13 @@ async function syncNow(): Promise<void> {
   syncing.value = true;
   try {
     const result = await syncCookieCloud();
-    await refresh();
-    lastSyncDetail.value =
-      `同步诊断：新建 ${result.created_sites} 个站点，更新合计 ${result.updated_sites} 个，已有 ${result.unchanged_sites} 个无变化。` +
-      ((result.skipped_api_key_sites ?? []).length
-        ? `需要手动填写 API Key 的站点：${(result.skipped_api_key_sites ?? []).join('、')}。`
-        : '');
+    await refresh(true);
     ElMessage.success(
-      `同步完成：读取 ${result.source_domains} 个域名 / ${result.source_cookies} 条 Cookie，` +
-        `可同步站点 ${result.eligible_sites}，匹配 ${result.matched_sites}，` +
-        `更新 ${result.updated_sites}，无变化 ${result.unchanged_sites}，未匹配域名 ${result.unmatched_domains}`,
+      `发现 ${result.discovered_sites} 个 PT 站，同步成功 ${result.sync_success_sites} 个，同步失败 ${result.sync_failed_sites} 个。`,
     );
+    void refreshSitesAfterBackgroundSync();
   } catch (caught) {
-    lastSyncDetail.value = '同步失败：' + toApiProblem(caught).message + '（未记录 Cookie 值）';
-    await refresh();
+    await refresh(true);
     ElMessage.error(errorText(caught, 'CookieCloud 同步失败'));
   } finally {
     syncing.value = false;
@@ -378,48 +381,58 @@ onMounted(() => void refresh());
 
 <template>
   <div v-loading="loading" class="cookiecloud-management">
-    <div class="settings-section-heading">
+    <header class="cookiecloud-page-heading">
+      <div class="cookiecloud-title-icon"><Cloud :size="26" aria-hidden="true" /></div>
       <div>
-        <h3>CookieCloud</h3>
-        <p>
-          对接 easychen/CookieCloud。PackBreaker 只向服务器发送 UUID，密码仅在本机 SecretStore
-          中用于解密。
-        </p>
+        <h2>CookieCloud 配置</h2>
+        <p>集成 easychen/CookieCloud，实现站点 Cookie 的自动同步与管理。</p>
       </div>
-      <Cloud :size="24" aria-hidden="true" />
-    </div>
+    </header>
 
-    <div v-if="settings" class="cookiecloud-status-grid">
-      <div class="cookiecloud-status-item">
-        <span>连接状态</span>
-        <el-tag :type="connectionType" effect="plain">{{ connectionText }}</el-tag>
-        <small>最后测试：{{ formatTime(settings.last_test_at) }}</small>
-      </div>
-      <div class="cookiecloud-status-item">
-        <span>同步状态</span>
-        <el-tag :type="syncType" effect="plain">{{ syncText }}</el-tag>
-        <small>最后同步：{{ formatTime(settings.last_sync_at) }}</small>
-      </div>
-      <div class="cookiecloud-status-item cookiecloud-status-wide">
-        <span>最近同步统计</span>
-        <strong>{{ settings.updated_sites }} / {{ settings.matched_sites }}</strong>
-        <small>
-          更新 / 匹配 · 可同步站点 {{ settings.eligible_sites }} · 无变化
-          {{ settings.unchanged_sites }}
-        </small>
-        <small>
-          源数据 {{ settings.source_domains }} 个域名 / {{ settings.source_cookies }} 条 Cookie ·
-          未匹配域名 {{ settings.unmatched_domains }}
-        </small>
-      </div>
-    </div>
+    <section v-if="settings" class="cookiecloud-status-grid" aria-label="CookieCloud 状态概览">
+      <article class="cookiecloud-status-card">
+        <div class="status-icon status-icon-success"><CheckCircle2 :size="25" /></div>
+        <div class="status-copy">
+          <span>连接状态</span>
+          <strong :class="`status-text-${connectionType}`">{{ connectionText }}</strong>
+          <small
+            >最近测试时间：{{ connectionTestTime
+            }}{{
+              draftProbeStatus ? ' · 当前草稿' : connectionDraftChanged ? ' · 当前草稿未测试' : ''
+            }}</small
+          >
+        </div>
+      </article>
+      <article class="cookiecloud-status-card">
+        <div class="status-icon status-icon-primary"><RefreshCw :size="25" /></div>
+        <div class="status-copy">
+          <span>同步状态</span>
+          <strong :class="`status-text-${syncType}`">{{ syncText }}</strong>
+          <small>最近同步时间：{{ formatTime(settings.last_sync_at) }}</small>
+        </div>
+      </article>
+      <article class="cookiecloud-status-card cookiecloud-result-card">
+        <div class="status-icon status-icon-primary"><FileText :size="25" /></div>
+        <div class="status-copy cookiecloud-result-copy">
+          <span>最近同步结果</span>
+          <div class="cookiecloud-result-metrics">
+            <div>
+              <strong>{{ settings.eligible_sites }}</strong
+              ><small>可同步站点</small>
+            </div>
+            <div>
+              <strong class="result-success">{{ settings.matched_sites }}</strong
+              ><small>匹配站点</small>
+            </div>
+            <div>
+              <strong class="result-failed">{{ settings.unmatched_domains }}</strong
+              ><small>未匹配域名</small>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
 
-    <el-alert v-if="lastSyncDetail" type="info" :closable="false" :title="lastSyncDetail" />
-    <el-alert
-      type="info"
-      :closable="false"
-      title="同步时自动导入已支持且具有 Cookie 的站点；M-TEAM 与 Rousi Pro 的 API Key 仍需分别配置。诊断仅显示站点名称及数量，不记录 Cookie 原文。"
-    />
     <el-alert
       v-if="insecureHttp"
       type="warning"
@@ -428,11 +441,22 @@ onMounted(() => void refresh());
       class="cookiecloud-alert"
     />
 
-    <el-form label-position="top" class="cookiecloud-form">
-      <el-form-item label="启用 CookieCloud">
-        <el-switch v-model="draft.enabled" />
-      </el-form-item>
-      <div class="cookiecloud-form-grid">
+    <section class="cookiecloud-card">
+      <div class="cookiecloud-card-heading">
+        <div class="section-icon"><ShieldCheck :size="22" /></div>
+        <div class="section-heading-copy">
+          <h3>基础配置</h3>
+          <p>配置 CookieCloud 服务的连接信息。</p>
+        </div>
+        <div class="toggle-control">
+          <el-switch v-model="draft.enabled" aria-label="启用 CookieCloud" />
+          <div>
+            <strong>启用 CookieCloud</strong>
+          </div>
+        </div>
+      </div>
+
+      <el-form label-position="left" label-width="126px" class="cookiecloud-fields">
         <el-form-item label="服务器地址">
           <el-input
             v-model="draft.serverUrl"
@@ -442,154 +466,186 @@ onMounted(() => void refresh());
         <el-form-item label="UUID">
           <el-input v-model="draft.uuid" autocomplete="off" placeholder="CookieCloud UUID" />
         </el-form-item>
-      </div>
-      <el-form-item label="密码">
-        <el-input
-          v-model="draft.password"
-          type="password"
-          show-password
-          autocomplete="new-password"
-          :placeholder="settings?.password_configured ? '已配置；留空保持不变' : 'CookieCloud 密码'"
-        />
-        <el-checkbox
-          v-if="settings?.password_configured"
-          v-model="draft.clearPassword"
-          :disabled="Boolean(draft.password)"
-          >清除已保存密码</el-checkbox
-        >
-      </el-form-item>
-
-      <div class="cookiecloud-form-grid">
-        <el-form-item label="自动同步">
-          <el-switch v-model="draft.autoSync" />
+        <el-form-item label="密码">
+          <div class="password-field">
+            <el-input
+              v-model="draft.password"
+              type="password"
+              show-password
+              autocomplete="new-password"
+              :placeholder="
+                settings?.password_configured ? '已配置；留空则使用已保存密码' : 'CookieCloud 密码'
+              "
+            />
+            <el-checkbox
+              v-if="settings?.password_configured"
+              v-model="draft.clearPassword"
+              :disabled="Boolean(draft.password)"
+              >清除已保存密码</el-checkbox
+            >
+          </div>
         </el-form-item>
+      </el-form>
+    </section>
+
+    <section class="cookiecloud-card">
+      <div class="cookiecloud-card-heading">
+        <div class="section-icon"><Clock3 :size="22" /></div>
+        <div class="section-heading-copy">
+          <h3>自动同步设置</h3>
+          <p>设置 CookieCloud 的自动同步计划。</p>
+        </div>
+        <div class="toggle-control">
+          <el-switch v-model="draft.autoSync" aria-label="自动同步" />
+          <div><strong>自动同步</strong><small>启用后将按计划自动执行同步任务</small></div>
+        </div>
+      </div>
+
+      <el-form
+        label-position="left"
+        label-width="126px"
+        class="cookiecloud-fields cookiecloud-schedule-fields"
+      >
         <el-form-item label="请求超时（秒）">
           <el-input-number v-model="draft.requestTimeoutSeconds" :min="1" :max="120" />
         </el-form-item>
-      </div>
-
-      <el-form-item v-if="draft.autoSync" label="自动同步时间">
-        <div class="cron-editor">
-          <el-input v-model="draft.syncCronExpression" placeholder="*/30 * * * *" />
-          <div class="cookiecloud-cron-helper">
-            <b>Cron 辅助</b>
-            <div class="cookiecloud-cron-presets">
+        <el-form-item v-if="draft.autoSync" label="Cron 表达式">
+          <div class="cron-editor">
+            <el-input v-model="draft.syncCronExpression" placeholder="*/30 * * * *" />
+            <div class="cookiecloud-cron-presets" aria-label="Cron 快捷设置">
               <el-button @click="applyCronPreset('*/5 * * * *')">每 5 分钟</el-button>
               <el-button @click="applyCronPreset('*/10 * * * *')">每 10 分钟</el-button>
               <el-button @click="applyCronPreset('0 * * * *')">每小时</el-button>
               <el-button @click="applyCronPreset('0 3 * * *')">每天 03:00</el-button>
               <el-button @click="applyCronPreset('0 3 * * 1')">每周一 03:00</el-button>
             </div>
-            <div class="cookiecloud-cron-parts">
-              <el-form-item label="分钟">
-                <el-select v-model="cronMinute" @change="rebuildCron">
-                  <el-option
-                    v-for="value in ['*', '*/5', '*/10', '0', '30']"
-                    :key="value"
-                    :label="value"
-                    :value="value"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="小时">
-                <el-select v-model="cronHour" @change="rebuildCron">
-                  <el-option
-                    v-for="value in ['*', '0', '3', '12']"
-                    :key="value"
-                    :label="value"
-                    :value="value"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="日期">
-                <el-select v-model="cronDay" @change="rebuildCron">
-                  <el-option
-                    v-for="value in ['*', '1', '15']"
-                    :key="value"
-                    :label="value"
-                    :value="value"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="月份">
-                <el-select v-model="cronMonth" @change="rebuildCron">
-                  <el-option
-                    v-for="value in ['*', '1', '6', '12']"
-                    :key="value"
-                    :label="value"
-                    :value="value"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="星期">
-                <el-select v-model="cronWeekday" @change="rebuildCron">
-                  <el-option
-                    v-for="value in ['*', '1', '1-5', '0,6']"
-                    :key="value"
-                    :label="value"
-                    :value="value"
-                  />
-                </el-select>
-              </el-form-item>
-            </div>
-            <small class="field-hint"
-              >与新增拆包任务一致；支持预设、逐字段组合及直接输入表达式。</small
-            >
           </div>
+        </el-form-item>
+      </el-form>
+    </section>
 
-          <small v-if="cronPreviewLoading" class="field-hint">正在计算执行时间…</small>
-          <small v-else-if="cronPreviewError" class="field-error">{{ cronPreviewError }}</small>
-          <div v-else-if="cronPreview" class="cron-preview">
-            <small class="field-hint">
-              {{ cronPreview.description }} · 时区 {{ cronPreview.timezone }}
-            </small>
-            <small class="field-hint">
-              未来 5 次：{{ cronPreview.next_runs.map((item) => formatTime(item)).join(' · ') }}
-            </small>
-          </div>
+    <section class="cookiecloud-runs-card">
+      <div class="cookiecloud-runs-heading">
+        <div class="section-icon"><CalendarDays :size="22" /></div>
+        <div class="section-heading-copy">
+          <h3>未来 5 次执行时间</h3>
+          <p>按照当前 Cron 配置预览自动同步时间。</p>
         </div>
-      </el-form-item>
-    </el-form>
+        <span class="timezone-label">时区：{{ cronPreview?.timezone || 'Asia/Shanghai' }}</span>
+      </div>
+      <div v-if="cronPreviewLoading" class="cookiecloud-runs-message">正在计算未来执行时间…</div>
+      <div v-else-if="cronPreviewError" class="cookiecloud-runs-message field-error">
+        {{ cronPreviewError }}
+      </div>
+      <div v-else-if="!draft.autoSync" class="cookiecloud-runs-message">
+        自动同步已关闭，开启后可预览未来 5 次执行时间。
+      </div>
+      <div v-else-if="cronPreview" class="cookiecloud-runs-grid">
+        <article
+          v-for="(run, index) in cronPreview.next_runs"
+          :key="run"
+          class="cookiecloud-run-item"
+        >
+          <span class="run-index">第 {{ index + 1 }} 次</span>
+          <CalendarDays :size="23" class="run-calendar-icon" aria-hidden="true" />
+          <strong class="run-date">{{ formatRunDate(run) }}</strong>
+          <strong class="run-time">{{ formatRunTime(run) }}</strong>
+          <small>{{ cronPreview?.timezone || 'Asia/Shanghai' }}</small>
+        </article>
+      </div>
+      <div v-else class="cookiecloud-runs-message">
+        输入有效的 Cron 表达式后，将在此显示未来 5 次执行时间。
+      </div>
+    </section>
 
-    <el-alert
-      type="info"
-      :closable="false"
-      title="手动“立即同步”不受 Cron 限制；Cron 仅控制后台自动同步。同步统计会区分源数据、可同步站点、匹配、更新、无变化和未匹配域名。"
-    />
-
-    <div class="cookiecloud-actions">
-      <el-button :loading="probing" :disabled="!settings?.password_configured" @click="probe">
+    <footer class="cookiecloud-actions">
+      <el-button
+        :loading="probing"
+        :disabled="
+          !draft.serverUrl.trim() ||
+          !draft.uuid.trim() ||
+          (!draft.password && (!settings?.password_configured || draft.clearPassword))
+        "
+        @click="probe"
+      >
         <ShieldCheck :size="16" /> 测试连接
       </el-button>
-      <el-button :loading="syncing" :disabled="!settings?.password_configured" @click="syncNow">
-        <RefreshCw :size="16" /> 立即同步
+      <el-button
+        :disabled="!settings?.password_configured || syncing"
+        :aria-busy="syncing"
+        @click="syncNow"
+      >
+        <RefreshCw
+          :size="16"
+          class="sync-button-icon"
+          :class="{ 'sync-button-icon--spinning': syncing }"
+        />
+        立即同步
       </el-button>
       <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
-    </div>
+    </footer>
   </div>
 </template>
 
 <style scoped>
+.sync-button-icon {
+  display: inline-block;
+  flex: 0 0 auto;
+  transform-origin: 50% 50%;
+}
+
+.sync-button-icon--spinning {
+  animation: cookiecloud-sync-spin 0.9s linear infinite;
+}
+
+@keyframes cookiecloud-sync-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .cookiecloud-management {
   display: grid;
-  gap: 20px;
-}
-
-.settings-section-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
   gap: 16px;
+  min-width: 0;
 }
 
-.settings-section-heading h3 {
-  margin: 0 0 6px;
+.cookiecloud-page-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 2px 2px 4px;
 }
 
-.settings-section-heading p {
+.cookiecloud-title-icon {
+  display: grid;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  border-radius: 13px;
+}
+
+.cookiecloud-page-heading h2,
+.cookiecloud-card-heading h3,
+.cookiecloud-runs-heading h3 {
   margin: 0;
+  color: var(--el-text-color-primary);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.cookiecloud-page-heading p,
+.cookiecloud-card-heading p,
+.cookiecloud-runs-heading p {
+  margin: 5px 0 0;
   color: var(--el-text-color-secondary);
-  line-height: 1.65;
+  line-height: 1.5;
 }
 
 .cookiecloud-status-grid {
@@ -598,73 +654,278 @@ onMounted(() => void refresh());
   gap: 12px;
 }
 
-.cookiecloud-status-item {
+.cookiecloud-status-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  min-height: 104px;
+  padding: 16px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+}
+
+.status-icon,
+.section-icon {
+  display: grid;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.status-icon-success {
+  color: var(--el-color-success);
+  background: var(--el-color-success-light-9);
+}
+
+.status-icon-primary,
+.section-icon {
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.status-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+}
+
+.status-copy > span {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.status-copy > strong {
+  overflow-wrap: anywhere;
+  font-size: 17px;
+}
+
+.status-copy small {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.status-text-success {
+  color: var(--el-color-success);
+}
+.status-text-danger {
+  color: var(--el-color-danger);
+}
+.status-text-info {
+  color: var(--el-text-color-primary);
+}
+
+.cookiecloud-result-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cookiecloud-result-metrics > div {
+  display: grid;
+  gap: 3px;
+  text-align: center;
+}
+
+.cookiecloud-result-metrics > div + div {
+  border-left: 1px solid var(--el-border-color-lighter);
+}
+
+.cookiecloud-result-metrics strong {
+  color: var(--el-color-primary);
+  font-size: 22px;
+}
+
+.cookiecloud-result-metrics .result-success {
+  color: var(--el-color-success);
+}
+.cookiecloud-result-metrics .result-failed {
+  color: var(--el-color-danger);
+}
+
+.cookiecloud-card,
+.cookiecloud-runs-card {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding: 20px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+}
+
+.cookiecloud-card-heading,
+.cookiecloud-runs-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.cookiecloud-card-heading .section-icon,
+.cookiecloud-runs-heading .section-icon {
+  flex-basis: 40px;
+  width: 40px;
+  height: 40px;
+}
+
+.section-heading-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.section-heading-copy h3,
+.cookiecloud-runs-heading h3 {
+  font-size: 18px;
+}
+
+.section-heading-copy p,
+.cookiecloud-runs-heading p {
+  font-size: 13px;
+}
+
+.toggle-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.toggle-control > div {
+  display: grid;
+  gap: 3px;
+}
+
+.toggle-control strong {
+  font-size: 13px;
+}
+.toggle-control small {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.cookiecloud-fields {
+  display: grid;
+  gap: 4px;
+}
+
+.cookiecloud-fields :deep(.el-form-item) {
+  display: grid;
+  grid-template-columns: 126px minmax(0, 1fr);
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.cookiecloud-fields :deep(.el-form-item__label) {
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  padding: 0 18px 0 0;
+  color: var(--el-text-color-primary);
+}
+
+.cookiecloud-fields :deep(.el-form-item__content) {
+  min-width: 0;
+}
+.cookiecloud-fields :deep(.el-input-number) {
+  width: 180px;
+}
+
+.password-field {
   display: grid;
   gap: 8px;
-  padding: 14px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 10px;
-}
-
-.cookiecloud-status-item span,
-.cookiecloud-status-item small,
-.field-hint {
-  color: var(--el-text-color-secondary);
-}
-
-.cookiecloud-status-item strong {
-  font-size: 20px;
-}
-
-.cookiecloud-form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  width: 100%;
 }
 
 .cookiecloud-alert {
   margin: 0;
 }
 
-.cron-editor,
-.cron-preview {
+.cron-editor {
   display: grid;
   width: 100%;
   gap: 10px;
 }
 
-.cron-visual-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.cookiecloud-cron-helper {
-  display: grid;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 10px;
-}
 .cookiecloud-cron-presets {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
+
 .cookiecloud-cron-presets .el-button {
   margin-left: 0;
 }
-.cookiecloud-cron-parts {
+
+.cookiecloud-runs-card {
+  gap: 18px;
+  padding: 20px;
+  background: linear-gradient(135deg, var(--el-color-primary-light-9), var(--el-bg-color) 70%);
+  border-color: var(--el-color-primary-light-7);
+}
+
+.timezone-label {
+  margin-left: auto;
+  color: var(--el-color-primary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cookiecloud-runs-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
-.cookiecloud-cron-parts .el-form-item {
-  margin-bottom: 0;
+
+.cookiecloud-run-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 8px;
+  text-align: center;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 10px;
 }
 
-.cron-kind-select {
-  width: 180px;
+.run-index {
+  padding: 3px 10px;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.run-calendar-icon,
+.run-time {
+  color: var(--el-color-primary);
+}
+.run-date {
+  font-size: 14px;
+}
+.run-time {
+  font-size: 18px;
+}
+.cookiecloud-run-item small {
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+
+.cookiecloud-runs-message {
+  padding: 18px;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+  background: var(--el-bg-color);
+  border: 1px dashed var(--el-border-color);
+  border-radius: 8px;
 }
 
 .field-error {
@@ -672,22 +933,67 @@ onMounted(() => void refresh());
 }
 
 .cookiecloud-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  padding: 12px 0;
+  background: var(--el-bg-color);
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 
-@media (max-width: 900px) {
-  .cookiecloud-cron-parts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+@media (max-width: 1200px) {
+  .cookiecloud-status-grid {
+    grid-template-columns: 1fr 1fr;
   }
+  .cookiecloud-result-card {
+    grid-column: 1 / -1;
+  }
+  .cookiecloud-runs-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
   .cookiecloud-status-grid,
-  .cookiecloud-form-grid {
+  .cookiecloud-runs-grid {
     grid-template-columns: 1fr;
   }
-
+  .cookiecloud-result-card {
+    grid-column: auto;
+  }
+  .cookiecloud-card,
+  .cookiecloud-runs-card {
+    padding: 14px;
+  }
+  .cookiecloud-card-heading,
+  .cookiecloud-runs-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .toggle-control {
+    width: 100%;
+    margin-left: 52px;
+  }
+  .cookiecloud-fields :deep(.el-form-item) {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .cookiecloud-fields :deep(.el-form-item__label) {
+    justify-content: flex-start;
+    padding: 0;
+  }
+  .timezone-label {
+    width: 100%;
+    margin-left: 52px;
+  }
   .cookiecloud-actions {
     flex-wrap: wrap;
+  }
+  .cookiecloud-actions .el-button {
+    flex: 1;
   }
 }
 </style>

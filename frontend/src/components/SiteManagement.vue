@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Activity, Globe, LayoutGrid, List, Plus, RefreshCw, Search, Settings2 } from '@lucide/vue';
+import { Activity, LayoutGrid, List, Plus, RefreshCw, Search, Settings2 } from '@lucide/vue';
 
 import { ApiProblem, toApiProblem } from '../api/client';
 import type {
@@ -15,7 +15,13 @@ import type {
   SiteTemporaryProbeInput,
 } from '../api/sites';
 import { useSiteStore } from '../stores/sites';
+import {
+  formatSiteBytes as formatBytes,
+  formatSiteDate,
+  formatSiteRatio as formatRatio,
+} from '../utils/siteStats';
 import { siteProfileOptionLabel } from '../api/sites';
+import { siteFaviconUrl, siteIconUrl } from '../utils/siteIcon';
 import SiteDetailDrawer from './SiteDetailDrawer.vue';
 
 interface SiteDraft {
@@ -31,6 +37,8 @@ interface SiteDraft {
   downloadCredentialConfigured: boolean;
   requestTimeoutSeconds: number;
   searchIntervalSeconds: number;
+  riskControlLimit: number;
+  riskRetryIntervalMinutes: number;
   userAgent: string;
   browserEmulationEnabled: boolean;
   proxyEnabled: boolean;
@@ -93,6 +101,8 @@ const draft = reactive<SiteDraft>({
   downloadCredentialConfigured: false,
   requestTimeoutSeconds: 15,
   searchIntervalSeconds: 0,
+  riskControlLimit: 3,
+  riskRetryIntervalMinutes: 1,
   userAgent: '',
   browserEmulationEnabled: false,
   proxyEnabled: false,
@@ -147,6 +157,7 @@ function statusState(item: Site): 'ok' | 'failed' | 'idle' {
 }
 
 function statusText(item: Site): string {
+  if (item.risk_disabled_at) return '触发风控次数上限后自动停用；请确认站点恢复正常后手动重新启用';
   if (!item.enabled) return '已停用';
   if (item.connection_status === 'UNTESTED') return '未测试';
   if (item.connection_status === 'FAILED') return '连接失败';
@@ -176,34 +187,16 @@ function typeLabel(kind: SiteKind): string {
   return kindLabel(kind);
 }
 
-function faviconUrl(baseUrl: string): string {
-  try {
-    const url = new URL(baseUrl);
-    return url.origin + '/favicon.ico';
-  } catch {
-    return '';
+function handleSiteIconError(event: Event, baseUrl: string): void {
+  const image = event.currentTarget as HTMLImageElement | null;
+  if (!image) return;
+  const fallback = siteFaviconUrl(baseUrl);
+  if (fallback && image.dataset.fallback !== 'true' && image.getAttribute('src') !== fallback) {
+    image.dataset.fallback = 'true';
+    image.src = fallback;
+    return;
   }
-}
-
-function hideFavicon(event: Event): void {
-  (event.currentTarget as HTMLImageElement | null)?.style.setProperty('display', 'none');
-}
-
-function formatBytes(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '—';
-  if (value < 1024) return value + ' B';
-  const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
-  let size = value;
-  let unit = -1;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  return size >= 100 ? size.toFixed(0) + ' ' + units[unit] : size.toFixed(2) + ' ' + units[unit];
-}
-
-function formatRatio(value: number | null | undefined): string {
-  return value === null || value === undefined ? '—' : value.toFixed(2);
+  image.style.display = 'none';
 }
 
 function isBusy(item: Site, operation: string): boolean {
@@ -237,6 +230,8 @@ function resetDraft() {
     downloadCredentialConfigured: false,
     requestTimeoutSeconds: 15,
     searchIntervalSeconds: 0,
+    riskControlLimit: 3,
+    riskRetryIntervalMinutes: 1,
     userAgent: '',
     browserEmulationEnabled: false,
     proxyEnabled: false,
@@ -280,6 +275,8 @@ function openEdit(item: Site) {
     downloadCredentialConfigured: item.download_credential_configured,
     requestTimeoutSeconds: item.request_timeout_seconds,
     searchIntervalSeconds: item.search_interval_seconds,
+    riskControlLimit: item.risk_control_limit,
+    riskRetryIntervalMinutes: item.risk_retry_interval_seconds / 60,
     userAgent: item.user_agent ?? '',
     browserEmulationEnabled: item.browser_emulation_enabled,
     proxyEnabled: item.proxy_enabled,
@@ -321,6 +318,22 @@ function validateDraft(requireCredential = false): boolean {
   }
   if (!Number.isInteger(draft.searchIntervalSeconds) || draft.searchIntervalSeconds < 0) {
     ElMessage.warning('搜索间隔必须是非负整数秒');
+    return false;
+  }
+  if (
+    !Number.isInteger(draft.riskControlLimit) ||
+    draft.riskControlLimit < 1 ||
+    draft.riskControlLimit > 20
+  ) {
+    ElMessage.warning('风控次数限制必须是 1～20 的整数');
+    return false;
+  }
+  if (
+    !Number.isInteger(draft.riskRetryIntervalMinutes) ||
+    draft.riskRetryIntervalMinutes < 1 ||
+    draft.riskRetryIntervalMinutes > 1440
+  ) {
+    ElMessage.warning('风控后再次执行间隔必须是 1～1440 分钟的整数');
     return false;
   }
   if (/\r|\n|\0/.test(draft.credential) || /\r|\n|\0/.test(draft.userAgent)) {
@@ -484,6 +497,12 @@ async function save() {
           patch.download_cookie = draft.downloadCookie;
         }
       }
+      if (draft.riskControlLimit !== current.risk_control_limit) {
+        patch.risk_control_limit = draft.riskControlLimit;
+      }
+      if (draft.riskRetryIntervalMinutes * 60 !== current.risk_retry_interval_seconds) {
+        patch.risk_retry_interval_seconds = draft.riskRetryIntervalMinutes * 60;
+      }
       if (runtimeChanged(current) || draft.type !== current.type) {
         patch.request_timeout_seconds = draft.requestTimeoutSeconds;
         patch.search_interval_seconds = draft.searchIntervalSeconds;
@@ -524,6 +543,8 @@ async function save() {
           : {}),
         request_timeout_seconds: draft.requestTimeoutSeconds,
         search_interval_seconds: draft.searchIntervalSeconds,
+        risk_control_limit: draft.riskControlLimit,
+        risk_retry_interval_seconds: draft.riskRetryIntervalMinutes * 60,
         user_agent: draft.userAgent.trim() || null,
         browser_emulation_enabled: draft.browserEmulationEnabled,
         proxy: proxyCreatePayload(),
@@ -660,13 +681,11 @@ async function remove(item: Site) {
       <article v-for="item in visibleItems" :key="item.id" class="panel site-card">
         <div class="site-card-header">
           <span class="site-card-icon">
-            <Globe :size="24" />
             <img
-              v-if="faviconUrl(item.base_url)"
-              :src="faviconUrl(item.base_url)"
+              :src="siteIconUrl(item.type, item.base_url)"
               :alt="item.name"
               loading="lazy"
-              @error="hideFavicon"
+              @error="handleSiteIconError($event, item.base_url)"
             />
           </span>
           <div class="site-card-title">
@@ -697,6 +716,7 @@ async function remove(item: Site) {
         <p class="site-endpoint" :title="item.base_url">{{ item.base_url }}</p>
 
         <div class="site-status-tags">
+          <el-tag v-if="item.risk_disabled_at" size="small" type="danger"> 风控自动停用 </el-tag>
           <el-tag size="small" :type="statusTag(item.connection_status)">
             {{ connectionLabel(item.connection_status) }}
           </el-tag>
@@ -721,6 +741,28 @@ async function remove(item: Site) {
             <span>用户等级</span>
             <strong>{{ item.user_summary?.user_level ?? '—' }}</strong>
           </div>
+          <div class="site-summary-time">
+            <span>加入时间</span>
+            <strong
+              :title="
+                item.user_summary?.join_time
+                  ? new Date(item.user_summary.join_time).toLocaleString()
+                  : '—'
+              "
+              >{{ formatSiteDate(item.user_summary?.join_time) }}</strong
+            >
+          </div>
+          <div class="site-summary-time">
+            <span>最后访问</span>
+            <strong
+              :title="
+                item.user_summary?.last_access_at
+                  ? new Date(item.user_summary.last_access_at).toLocaleString()
+                  : '—'
+              "
+              >{{ formatSiteDate(item.user_summary?.last_access_at) }}</strong
+            >
+          </div>
           <div>
             <span>上传量</span>
             <strong>{{
@@ -734,14 +776,26 @@ async function remove(item: Site) {
             }}</strong>
           </div>
           <div>
-            <span>分享率</span>
-            <strong>{{ item.user_summary ? formatRatio(item.user_summary.ratio) : '—' }}</strong>
+            <span>发种数</span>
+            <strong>{{ item.user_summary?.torrents_posted ?? '—' }}</strong>
           </div>
           <div>
             <span>做种数</span>
             <strong>{{ item.user_summary?.seeding_count ?? '—' }}</strong>
           </div>
-          <div class="site-summary-wide">
+          <div>
+            <span>分享率</span>
+            <strong>{{
+              item.user_summary
+                ? formatRatio(
+                    item.user_summary.ratio,
+                    item.user_summary.uploaded_bytes,
+                    item.user_summary.downloaded_bytes,
+                  )
+                : '—'
+            }}</strong>
+          </div>
+          <div>
             <span>最后同步</span>
             <strong>{{
               item.user_summary?.fetched_at
@@ -776,13 +830,11 @@ async function remove(item: Site) {
         <template #default="{ row }">
           <div class="site-list-name">
             <span class="site-card-icon site-card-icon--small">
-              <Globe :size="19" />
               <img
-                v-if="faviconUrl(row.base_url)"
-                :src="faviconUrl(row.base_url)"
+                :src="siteIconUrl(row.type, row.base_url)"
                 :alt="row.name"
                 loading="lazy"
-                @error="hideFavicon"
+                @error="handleSiteIconError($event, row.base_url)"
               />
             </span>
             <div>
@@ -802,8 +854,26 @@ async function remove(item: Site) {
           }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="启用状态" width="125">
+        <template #default="{ row }">
+          <el-tag
+            size="small"
+            :type="row.risk_disabled_at ? 'danger' : row.enabled ? 'success' : 'info'"
+          >
+            {{ row.risk_disabled_at ? '风控自动停用' : row.enabled ? '已启用' : '已停用' }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="用户名" width="130" show-overflow-tooltip>
         <template #default="{ row }">{{ row.user_summary?.username ?? '—' }}</template>
+      </el-table-column>
+      <el-table-column label="加入时间" width="160" show-overflow-tooltip>
+        <template #default="{ row }">{{ formatSiteDate(row.user_summary?.join_time) }}</template>
+      </el-table-column>
+      <el-table-column label="最后访问" width="160" show-overflow-tooltip>
+        <template #default="{ row }">{{
+          formatSiteDate(row.user_summary?.last_access_at)
+        }}</template>
       </el-table-column>
       <el-table-column label="分享率" width="90">
         <template #default="{ row }">{{ formatRatio(row.user_summary?.ratio) }}</template>
@@ -909,12 +979,30 @@ async function remove(item: Site) {
 
         <div class="form-grid">
           <el-form-item label="请求超时（秒）">
-            <el-input-number v-model="draft.requestTimeoutSeconds" :min="1" :max="120" />
+            <el-input-number
+              v-model="draft.requestTimeoutSeconds"
+              :min="1"
+              :max="draft.type === 'SPRING_SUNDAY' ? 3600 : 120"
+            />
           </el-form-item>
           <el-form-item label="搜索间隔（秒）">
             <el-input-number v-model="draft.searchIntervalSeconds" :min="0" :max="3600" />
           </el-form-item>
         </div>
+        <div class="form-grid">
+          <el-form-item label="风控次数限制（10 分钟内）">
+            <el-input-number v-model="draft.riskControlLimit" :min="1" :max="20" />
+          </el-form-item>
+          <el-form-item label="风控后再次执行间隔（分钟）">
+            <el-input-number v-model="draft.riskRetryIntervalMinutes" :min="1" :max="1440" />
+          </el-form-item>
+        </div>
+        <el-alert
+          title="同一次拆包执行中，10 分钟内触发风控达到上限后会自动停用该站点。任务会延后等待；请确认站点恢复正常后手动重新启用，系统不会自动恢复站点。"
+          type="warning"
+          :closable="false"
+          class="form-alert"
+        />
 
         <template v-if="selectedProfile?.supports_user_agent">
           <el-form-item label="User-Agent">
@@ -987,7 +1075,11 @@ async function remove(item: Site) {
       </template>
     </el-dialog>
 
-    <SiteDetailDrawer v-model="detailDrawer" :site-id="selectedSiteId" />
+    <SiteDetailDrawer
+      v-model="detailDrawer"
+      :site-id="selectedSiteId"
+      @profile-synced="refresh(false)"
+    />
   </div>
 </template>
 
@@ -1198,6 +1290,28 @@ async function remove(item: Site) {
 
 .site-summary-wide {
   grid-column: 1 / -1;
+}
+
+.site-summary-time {
+  min-width: 0;
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.site-summary-time span {
+  flex: 0 0 auto;
+}
+
+.site-summary-time strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-size: 11px;
 }
 
 .site-card-actions {

@@ -78,10 +78,10 @@ export function unpackItemStatusSummary(
 
 export function unpackPlanStatusLabel(value: UnpackItemDiagnostics['plan_status']): string {
   const labels: Record<UnpackItemDiagnostics['plan_status'], string> = {
-    NOT_CREATED: '尚未生成',
-    READY: '冻结计划无阻断（未实时复核）',
-    BLOCKED: '冻结计划已阻断',
-    INVALID: '计划证明无效，请人工检查',
+    NOT_CREATED: '当时还没有生成计划',
+    READY: '当时的检查通过（现在未复查）',
+    BLOCKED: '当时发现问题，未继续执行',
+    INVALID: '保存的执行安排无效，需要检查',
   };
   return labels[value];
 }
@@ -112,10 +112,18 @@ export function unpackVerificationLevelLabel(value: string | null): string {
 }
 
 export function unpackErrorLabel(code: string | null, message: string | null): string {
+  if (code === 'UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE')
+    return '下载器未确认种子已经完整下载且处于停止状态，因此没有启动做种。请检查下载器后重试。';
+  if (code === 'SITE_INVALID_RESPONSE')
+    return message?.includes('执行计划')
+      ? '站点返回的数据异常，无法生成执行计划。可以稍后重试。'
+      : '站点返回的种子信息异常，未能继续做种。可以稍后重试。';
   if (message?.trim()) return message.trim();
   const known: Record<string, string> = {
     UNPACK_MATCH_TIMEOUT: '站点匹配超时，可重试该影片',
     UNPACK_MATCH_ERROR: '影片匹配失败，可重试该影片',
+    SITE_RISK_CONTROL_LIMIT_REACHED: '站点在 10 分钟内触发风控次数上限，已自动停用',
+    SITE_RISK_CONTROL_COOLDOWN: '站点触发风控，任务已按配置间隔延后重试',
     UNPACK_EXECUTION_PLAN_BLOCKED: '执行计划被安全检查阻断',
     UNPACK_SEED_CLIENT_VERIFY_FAILED: '下载器校验未通过，禁止启动做种',
     UNPACK_SEED_RECONCILE_REQUIRED: '外部操作结果需要人工对账',
@@ -156,54 +164,164 @@ export function unpackReconciliationGuidance(
   const reasons = new Set(historical.reconciliation_reasons);
   if (reasons.has('JOURNAL_RECONCILE_REQUIRED')) {
     steps.push(
-      '存在待人工对账的外部流水：核对操作类型、最后错误和实际客户端结果，不要覆盖或清空 journal。',
+      '有一项文件或下载器操作的结果还没确认。先检查它是否真的完成，不要删除这些历史记录。',
     );
   }
   if (reasons.has('EXTERNAL_WRITE_UNCONFIRMED')) {
     steps.push(
-      '失败任务存在未确认外部写入：先确认请求是否到达下载器，再决定后续处理；不能自动重试或重发。',
+      '有一项请求的结果还没有确认。请先确认请求是否到达下载器、种子是否已经存在，不能自动重试或重复发送。',
     );
   }
   if (reasons.has('MATERIALIZATION_EVIDENCE_INVALID')) {
     steps.push(
-      '冻结的物化文件身份或流水证明异常：人工核对原文件、目标文件及 inode/链接关系，不可直接覆盖媒体。',
+      '准备文件时的记录可能与实际文件不一致。请人工核对原文件和目标文件是否被移动或修改，不能直接覆盖文件。',
     );
   }
   if (reasons.has('MULTIPLE_DOWNLOADER_ADD_PROOFS') || live?.error_code === 'ADD_PROOF_AMBIGUOUS') {
     steps.push(
-      '同一影片存在 qBittorrent（qB）与 Transmission 两套 ADD 流水：不能自动选择、认领或修改任一客户端下载任务，须人工核对两端操作与冻结计划。',
+      '同一影片在 qBittorrent（qB）和 Transmission 都留下过添加种子的记录。不能自动选择其中一个，请人工核对两边是否重复做种，不要擅自删除。',
     );
   }
   if (live === null) {
-    steps.push('尚未执行本次实时只读核验；历史流水不能代表当前下载器状态。');
+    steps.push('本次尚未执行下载器查询。下面的历史记录不能代表下载器现在的情况。');
   } else if (live.status === 'MATCHED') {
     steps.push(
-      '此次查询确认 Hash、保存路径与归属标签匹配，但不代表对账完成，也不证明目标媒体文件仍完整。',
+      '这次查询在下载器中找到了属于本任务的种子，但还不能保证磁盘文件完整，也不能直接解除风险限制。',
     );
   } else if (live.status === 'MISSING') {
     steps.push(
-      '此次查询未找到目标种子：需人工核对下载器连接、冻结 Hash 与任务变动，不得据此自动重新添加。',
+      '本次在下载器中未找到对应种子。请先检查连接和任务是否被移动或删除，不要直接重新添加。',
     );
   } else if (live.status === 'OWNERSHIP_MISMATCH') {
     steps.push(
-      '发现种子归属冲突：人工核对 Hash、保存路径与标签，禁止接管或移除疑似其他程序的种子。',
+      '发现种子归属冲突：这可能是其他程序创建的种子。请核对保存位置和任务标记，不要直接接管或删除。',
     );
   } else if (live.status === 'UNRESOLVED_ADD') {
-    steps.push('ADD 请求结果未获可信确认；为避免误认领，本次未查询或接管下载器中的同 Hash 种子。');
+    steps.push(
+      '以前发出过添加种子的请求，但结果没有确认。为避免重复添加或接管错误的种子，本次没有继续操作。',
+    );
   } else if (live.status === 'NO_ADD_EVIDENCE') {
-    steps.push('冻结的 ADD 成功证明不存在；未执行下载器核验，不能推断外部没有该种子。');
+    steps.push(
+      '没有找到以前成功添加种子的可靠记录，因此这次没查询下载器；这不代表下载器里一定没有该种子。',
+    );
   } else {
-    steps.push('下载器状态未知或查询时证据发生变化；不能据此认定种子已丢失或已安全做种。');
+    steps.push('下载器当前状态未知，或查询时记录发生了变化。无法确认种子是否安全运行。');
   }
   if (historical.operations_truncated) {
-    steps.push('操作记录列表已截断；必须人工核对全部 journal，未显示的流水也可能存在冲突。');
+    steps.push('操作记录较多，这里只展示了一部分。未显示的记录也可能需要人工检查。');
   }
   if (historical.requires_manual_reconciliation) {
     steps.push(
-      '必须人工核对并保留完整证据；实时只读结果不会解除安全拦截、自动清除对账状态或自动执行写操作。',
+      '请人工核对并保留这些记录。本页的查询只读，不会解除安全限制，也不会自动修改文件或种子。',
     );
   }
   return steps;
+}
+
+export function unpackExecutionStageLabel(stage: string | null): string {
+  const names: Record<string, string> = {
+    FILES_MATERIALIZED: '文件已准备好',
+    TORRENT_ADDED: '种子已添加到下载器',
+    CLIENT_VERIFYING: '等待下载器检查文件',
+    CLIENT_VERIFIED: '下载器已检查文件',
+    STARTING: '准备启动做种',
+    COMPLETED: '已经完成',
+  };
+  return (stage && names[stage]) || '尚未进入最终做种步骤';
+}
+
+export function unpackOperationTypeLabel(type: string): string {
+  const names: Record<string, string> = {
+    UNPACK_EXEC_CREATE_DIRECTORY: '创建目标文件夹',
+    UNPACK_EXEC_MATERIALIZE_HARDLINK: '通过硬链接准备文件',
+    UNPACK_EXEC_MATERIALIZE_SYMLINK: '通过软链接准备文件',
+    UNPACK_EXEC_MATERIALIZE_COPY: '复制文件到目标目录',
+    UNPACK_EXEC_QBITTORRENT_ADD: '向 qBittorrent 添加种子',
+    UNPACK_EXEC_QBITTORRENT_RECHECK: '让 qBittorrent 校验文件',
+    UNPACK_EXEC_QBITTORRENT_START: '在 qBittorrent 启动做种',
+    UNPACK_EXEC_TRANSMISSION_ADD: '向 Transmission 添加种子',
+    UNPACK_EXEC_TRANSMISSION_VERIFY: '让 Transmission 校验文件',
+    UNPACK_EXEC_TRANSMISSION_START: '在 Transmission 启动做种',
+    UNPACK_AUX_STAGING_DIR: '创建辅助文件目录',
+    UNPACK_AUX_TORRENT_ADD: '添加辅助文件下载',
+    UNPACK_AUX_FILE_SELECTION: '选择所需辅助文件',
+    UNPACK_AUX_TORRENT_START: '启动辅助文件下载',
+    UNPACK_AUX_TORRENT_STOP: '停止辅助文件下载',
+    UNPACK_AUX_TORRENT_REMOVE: '清理辅助文件下载',
+  };
+  return names[type] || '其他文件或下载器操作';
+}
+
+export function unpackOperationStatusLabel(status: string): string {
+  const names: Record<string, string> = {
+    APPLIED: '已记录成功',
+    INTENT_RECORDED: '结果尚未确认',
+    RECONCILE_REQUIRED: '需要人工检查',
+    FAILED: '失败',
+    CANCELLED: '已取消',
+  };
+  return names[status] || '结果不明确';
+}
+
+export function unpackRecordedStateLabel(state: string | null, fileType: string | null): string {
+  const files: Record<string, string> = {
+    directory: '文件夹',
+    regular: '文件',
+    symlink: '软链接',
+  };
+  if (fileType) return files[fileType] || '文件操作记录';
+  if (!state) return '未记录';
+  const value = state.toLowerCase();
+  if (/stop|pause/.test(value)) return '已停止或暂停';
+  if (/seed|upload/.test(value)) return '做种中';
+  if (/check|verify/.test(value)) return '校验中';
+  if (/download/.test(value)) return '下载中';
+  return '下载器状态记录';
+}
+
+export function unpackLiveStateLabel(state: string | null): string {
+  return unpackRecordedStateLabel(state, null);
+}
+
+export function unpackItemRetryAvailability(
+  item: Pick<UnpackExecutionItem, 'status' | 'has_external_operations' | 'last_error_code'>,
+): 'match' | 'resume' | 'reconcile' | 'none' {
+  if (['NO_MATCH', 'MATCH_TIMEOUT', 'MATCH_ERROR'].includes(item.status)) return 'match';
+  if (item.status !== 'EXECUTION_ERROR') return 'none';
+  if (!item.has_external_operations) return 'match';
+  if (
+    [
+      'SITE_INVALID_RESPONSE',
+      'SITE_UNAVAILABLE',
+      'SITE_TIMEOUT',
+      'SITE_RATE_LIMITED',
+      'UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE',
+      'DOWNLOADER_UNAVAILABLE',
+      'DOWNLOADER_CONNECTION_FAILED',
+    ].includes(item.last_error_code ?? '')
+  )
+    return 'resume';
+  return 'reconcile';
+}
+
+export interface UnpackProgressCounts {
+  matchedAutoCount: number;
+  noMatchCount: number;
+  reviewCount: number;
+  contentVerifiedCount: number;
+  contentMismatchCount: number;
+  timeoutCount: number;
+  errorCount: number;
+  completedCount: number;
+}
+
+export function unpackProgressCount(totalCount: number, counts: UnpackProgressCounts): number {
+  if (totalCount <= 0) return 0;
+  const progressed = Object.values(counts).reduce(
+    (sum, count) => sum + (Number.isFinite(count) ? Math.max(0, count) : 0),
+    0,
+  );
+  return Math.min(totalCount, progressed);
 }
 
 export function unpackProgressPercent(totalCount: number, completedCount: number): number {

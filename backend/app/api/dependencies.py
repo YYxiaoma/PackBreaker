@@ -15,7 +15,9 @@ from backend.app.application.sites import SiteService
 from backend.app.application.unpack_definitions import UnpackDefinitionService
 from backend.app.application.unpack_executions import UnpackExecutionQueryService
 from backend.app.application.unpack_item_actions import UnpackItemActionService
+from backend.app.application.unpack_manual_candidates import UnpackManualCandidateService
 from backend.app.application.unpack_source_scans import UnpackSourceScanService
+from backend.app.application.unpack_templates import UnpackTemplateService
 
 SESSION_COOKIE = "packbreaker_session"
 CSRF_COOKIE = "packbreaker_csrf"
@@ -71,12 +73,20 @@ def unpack_source_scan_service(request: Request) -> UnpackSourceScanService:
     return cast(UnpackSourceScanService, request.app.state.unpack_source_scan_service)
 
 
+def unpack_template_service(request: Request) -> UnpackTemplateService:
+    return cast(UnpackTemplateService, request.app.state.unpack_template_service)
+
+
 def unpack_execution_query_service(request: Request) -> UnpackExecutionQueryService:
     return cast(UnpackExecutionQueryService, request.app.state.unpack_execution_query_service)
 
 
 def unpack_item_action_service(request: Request) -> UnpackItemActionService:
     return cast(UnpackItemActionService, request.app.state.unpack_item_action_service)
+
+
+def unpack_manual_candidate_service(request: Request) -> UnpackManualCandidateService:
+    return cast(UnpackManualCandidateService, request.app.state.unpack_manual_candidate_service)
 
 
 def client_source(request: Request) -> str:

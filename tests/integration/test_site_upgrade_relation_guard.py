@@ -106,7 +106,7 @@ def test_site_relation_guard_preserves_real_historic_rows_during_upgrade(
 def test_v110_formal_adjacent_sqlite_upgrade_preserves_existing_site_task_and_secret(
     tmp_path: Path,
 ) -> None:
-    """Official v1.1.0 schema (0044) → current v1.1.4 head (0046), with real FK rows."""
+    """Official v1.1.0 schema (0044) → current v1.1.5 head (0051), with real FK rows."""
     database = tmp_path / "v110-adjacent.db"
     _historic_linked_database(database)
     config = Config("alembic.ini")
@@ -129,7 +129,7 @@ def test_v110_formal_adjacent_sqlite_upgrade_preserves_existing_site_task_and_se
     assert _identity(database) == before
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0046_site_user_profile_v114",
+            "0051_unpack_template_match_acceptance",
         )
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -403,7 +403,7 @@ def test_v114_site_profile_migration_downgrade_and_reupgrade_are_isolated(
     command.upgrade(config, "head")
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0046_site_user_profile_v114",
+            "0051_unpack_template_match_acceptance",
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)

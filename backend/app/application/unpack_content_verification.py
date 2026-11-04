@@ -12,6 +12,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
+from backend.app.application.unpack_manual_torrents import (
+    ManualTorrentStore,
+    ManualTorrentStoreError,
+)
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.file_mapping import AutoMappingDecision, SourceFileCandidate, auto_map_files
 from backend.app.domain.torrent import TorrentKind, TorrentMeta
@@ -79,6 +83,8 @@ class _VerificationClaim:
     site_config_version: int
     adapter_site_id: str
     torrent_id: str
+    manual_torrent_storage_key: str | None
+    expected_metainfo_digest: str | None
     source_path: str
     source_relative_path: str
     source_snapshot: dict[str, object]
@@ -108,6 +114,7 @@ class UnpackContentVerificationService:
         *,
         path_scope: AuthorizedPathScope,
         fetch_timeout_seconds: float = 30.0,
+        manual_torrent_store: ManualTorrentStore | None = None,
     ) -> None:
         if fetch_timeout_seconds <= 0:
             raise ValueError("torrent 获取超时必须大于 0")
@@ -115,6 +122,7 @@ class UnpackContentVerificationService:
         self._site_provider = site_provider
         self._path_scope = path_scope
         self._fetch_timeout_seconds = fetch_timeout_seconds
+        self._manual_torrent_store = manual_torrent_store
 
     def list_verifiable_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
         if limit < 1 or limit > 500:
@@ -241,6 +249,7 @@ class UnpackContentVerificationService:
             adapter_site_id = raw_ref.get("adapter_site_id")
             torrent_id = raw_ref.get("torrent_id")
             config_version = raw_ref.get("site_config_version")
+            manual_torrent_storage_key = raw_ref.get("manual_torrent_storage_key")
             if (
                 raw_ref.get("site_config_id") != candidate.site_id
                 or torrent_id != candidate.candidate_key
@@ -251,6 +260,10 @@ class UnpackContentVerificationService:
                 or not isinstance(config_version, int)
                 or isinstance(config_version, bool)
                 or config_version < 1
+                or (
+                    manual_torrent_storage_key is not None
+                    and not ManualTorrentStore.is_valid_key(manual_torrent_storage_key)
+                )
             ):
                 self._mark_claim_error(
                     session,
@@ -293,6 +306,8 @@ class UnpackContentVerificationService:
                 site_config_version=config_version,
                 adapter_site_id=adapter_site_id,
                 torrent_id=torrent_id,
+                manual_torrent_storage_key=manual_torrent_storage_key,
+                expected_metainfo_digest=candidate.metainfo_digest,
                 source_path=source_path,
                 source_relative_path=relative_path,
                 source_snapshot=source,
@@ -302,16 +317,50 @@ class UnpackContentVerificationService:
         try:
             binding = self._binding_for(claim)
             source = self._current_source(claim)
-            async with asyncio.timeout(self._fetch_timeout_seconds):
-                payload = await binding.adapter.fetch_torrent(claim.torrent_id)
-            if payload.site_id != claim.adapter_site_id or payload.torrent_id != claim.torrent_id:
-                raise ApplicationError(
-                    code="UNPACK_VERIFY_TORRENT_IDENTITY_MISMATCH",
-                    status=409,
-                    title="候选 torrent 身份不一致",
-                    detail="站点返回的 torrent 身份与选中候选不一致",
-                )
-            meta = parse_torrent(payload.content)
+            if claim.manual_torrent_storage_key is not None:
+                if self._manual_torrent_store is None:
+                    raise ApplicationError(
+                        code="UNPACK_MANUAL_TORRENT_STORE_UNAVAILABLE",
+                        status=409,
+                        title="手动种子文件不可用",
+                        detail="当前实例未配置手动种子文件存储",
+                    )
+                try:
+                    torrent_content = self._manual_torrent_store.load(
+                        claim.manual_torrent_storage_key
+                    )
+                except ManualTorrentStoreError as exc:
+                    raise ApplicationError(
+                        code="UNPACK_MANUAL_TORRENT_UNAVAILABLE",
+                        status=409,
+                        title="手动种子文件不可用",
+                        detail="已确认的手动种子文件不存在或完整性校验失败",
+                    ) from exc
+                meta = parse_torrent(torrent_content)
+                if (
+                    claim.expected_metainfo_digest is not None
+                    and meta.metainfo_digest != claim.expected_metainfo_digest
+                ):
+                    raise ApplicationError(
+                        code="UNPACK_MANUAL_TORRENT_CHANGED",
+                        status=409,
+                        title="手动种子文件已变化",
+                        detail="手动种子的元信息摘要与审核时记录不一致",
+                    )
+            else:
+                async with asyncio.timeout(self._fetch_timeout_seconds):
+                    payload = await binding.adapter.fetch_torrent(claim.torrent_id)
+                if (
+                    payload.site_id != claim.adapter_site_id
+                    or payload.torrent_id != claim.torrent_id
+                ):
+                    raise ApplicationError(
+                        code="UNPACK_VERIFY_TORRENT_IDENTITY_MISMATCH",
+                        status=409,
+                        title="候选 torrent 身份不一致",
+                        detail="站点返回的 torrent 身份与选中候选不一致",
+                    )
+                meta = parse_torrent(payload.content)
             # A torrent may contain several existing movie files in the same
             # authorized directory, even though discovery created one task
             # item for just one video. Inspect only direct regular siblings
@@ -721,19 +770,7 @@ class UnpackContentVerificationService:
 
     @staticmethod
     def _refresh_execution_state(session: Session, execution: UnpackExecution) -> None:
-        statuses = (
-            UnpackItemStatus.MATCHED_AUTO,
-            UnpackItemStatus.MATCHED_MANUAL,
-            UnpackItemStatus.TORRENT_FETCHING,
-            UnpackItemStatus.AUXILIARY_FETCHING,
-            UnpackItemStatus.CONTENT_VERIFYING,
-            UnpackItemStatus.CONTENT_VERIFIED,
-            UnpackItemStatus.CONTENT_MISMATCH,
-            UnpackItemStatus.REVIEW_REQUIRED,
-            UnpackItemStatus.MATCH_TIMEOUT,
-            UnpackItemStatus.MATCH_ERROR,
-            UnpackItemStatus.NO_MATCH,
-        )
+        statuses = tuple(UnpackItemStatus)
         counts = {
             status: int(
                 session.scalar(
@@ -745,11 +782,15 @@ class UnpackContentVerificationService:
             )
             for status in statuses
         }
+        execution.matched_auto_count = counts[UnpackItemStatus.MATCHED_AUTO]
         execution.content_verified_count = counts[UnpackItemStatus.CONTENT_VERIFIED]
         execution.content_mismatch_count = counts[UnpackItemStatus.CONTENT_MISMATCH]
         execution.review_count = counts[UnpackItemStatus.REVIEW_REQUIRED]
         execution.timeout_count = counts[UnpackItemStatus.MATCH_TIMEOUT]
-        execution.error_count = counts[UnpackItemStatus.MATCH_ERROR]
+        execution.error_count = (
+            counts[UnpackItemStatus.MATCH_ERROR] + counts[UnpackItemStatus.EXECUTION_ERROR]
+        )
+        execution.completed_count = counts[UnpackItemStatus.COMPLETED]
         active_content = sum(
             counts[status]
             for status in (

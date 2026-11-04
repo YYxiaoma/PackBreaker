@@ -94,6 +94,7 @@ class UnpackDriver:
         execution_plan_batch_size: int = 5,
         materialization_batch_size: int = 5,
         seeding_batch_size: int = 5,
+        pause_after_matching: bool = False,
         logger: logging.Logger | None = None,
     ) -> None:
         if interval_seconds <= 0:
@@ -127,6 +128,7 @@ class UnpackDriver:
         self._execution_plan_batch_size = execution_plan_batch_size
         self._materialization_batch_size = materialization_batch_size
         self._seeding_batch_size = seeding_batch_size
+        self._pause_after_matching = pause_after_matching
         self._logger = logger or logging.getLogger("packbreaker.unpack_driver")
         self._tick_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
@@ -250,6 +252,30 @@ class UnpackDriver:
                         )
                         continue
                     advanced += 1
+
+            if self._pause_after_matching:
+                touched_execution_ids = tuple(
+                    sorted(set(execution_ids) | set(matching_execution_ids))
+                )
+                if self._result_notification_service is not None and touched_execution_ids:
+                    try:
+                        await asyncio.to_thread(
+                            self._result_notification_service.project_unpack_execution_results,
+                            touched_execution_ids,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        self._last_error_type = type(exc).__name__
+                        self._logger.exception(
+                            "匹配阶段暂停模式下的终态通知投影失败 execution_count=%s error_type=%s",
+                            len(touched_execution_ids),
+                            self._last_error_type,
+                        )
+                self._ticks_completed += 1
+                if advanced:
+                    self._last_error_type = None
+                return advanced
 
             if self._content_verification_service is not None:
                 verifying_execution_ids = await asyncio.to_thread(

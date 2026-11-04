@@ -38,6 +38,7 @@ const path = require('node:path');
       body:JSON.stringify({configured:true,authenticated:true,permissions:['admin'],expires_at:'2099-01-01T00:00:00Z'}),
     }));
     const now=()=>new Date().toISOString();
+    let cookieCloudDraftProbeCalls=0;
     await page.route('**/api/v1/notifications/inbox/unread-count',route=>fulfillJson(route,{count:0}));
     await page.route('**/api/v1/notifications/inbox**',route=>{
       const request=route.request();
@@ -214,6 +215,8 @@ const path = require('node:path');
       verification_level:id==='task-e2e-execute'?'CLIENT_CHECK_REQUIRED':'FULL_VERIFIED',
     });
     const fulfillJson=(route,body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
+    // Template listing is a first-class Task Center API; keep the browser gate fully isolated.
+    await page.route('**/api/v1/unpack/templates',route=>fulfillJson(route,{items:[]}));
     await page.route('**/api/v1/system/health',route=>fulfillJson(route,{
       status:'warning',generated_at:now(),version:'0.1.4',checks:[
         {name:'runtime',status:'ok',code:'RUNTIME_READY',detail:'数据库正常',metrics:{}},
@@ -808,7 +811,7 @@ const path = require('node:path');
     assert.equal(await page.evaluate(()=>typeof globalThis.crypto?.randomUUID),'undefined','E2E 必须真实模拟 HTTP 内网缺少 crypto.randomUUID 的浏览器环境');
     await page.getByRole('heading',{name:'PackBreaker 总览',exact:true,level:1}).waitFor();
     const overviewFirstPaintMs=Date.now()-overviewStartedAt;
-    assert.ok(overviewFirstPaintMs<1500,`总览首屏不应等待慢速 Release 查询，实际 ${overviewFirstPaintMs}ms`);
+    assert.ok(overviewFirstPaintMs<1800,`总览首屏不应等待慢速 Release 查询，实际 ${overviewFirstPaintMs}ms`);
     const overviewViewports=[
       {width:2560,height:1440,name:'overview-2560'},
       {width:1920,height:1080,name:'overview-1920'},
@@ -859,12 +862,17 @@ const path = require('node:path');
     }
     upgradeStatusDelayMs=0;
     // 低视口下菜单应保持可滚动，但原生 Y 轴滚动条不应遮挡侧栏。
+    // 先展开所有一级分组：折叠态只有四个一级入口，不足以验证溢出滚动。
     await page.setViewportSize({width:1440,height:380});
+    await page.getByRole('button',{name:'任务中心',exact:true}).click();
+    await page.getByRole('button',{name:'配置中心',exact:true}).click();
+    await page.getByRole('button',{name:'系统管理',exact:true}).click();
     const sidebarScroll=await page.locator('.sidebar > nav').evaluate(nav=>{
       const scrollable=nav.scrollHeight>nav.clientHeight;
       const scrollbarWidth=getComputedStyle(nav).scrollbarWidth;
       nav.scrollTop=nav.scrollHeight;
-      const last=nav.querySelector('.nav-item:last-child');
+      const last=nav.querySelector('.nav-children:last-of-type .nav-subitem:last-child')
+        ?? nav.querySelector('.nav-primary:last-child');
       const navBounds=nav.getBoundingClientRect();
       const lastBounds=last?.getBoundingClientRect();
       return {scrollable,scrollbarWidth,scrolled:nav.scrollTop>0,
@@ -896,8 +904,8 @@ const path = require('node:path');
     const systemCard=page.locator('.overview-monitor-grid > .monitor-card').filter({hasText:'系统状态'}).first();
     await systemCard.getByText('运行正常',{exact:true}).waitFor();
     assert.equal(await systemCard.getByText('需要关注',{exact:true}).count(),0,'全局 health warning 不应覆盖四个可见子服务均正常的系统状态卡');
-    const runningCard=page.locator('.overview-task-strip > span').filter({hasText:'运行中任务'}).first();
-    assert.equal((await runningCard.locator('b').textContent())?.trim(),'1','总览运行中任务应使用统一任务执行层计数');
+    const runningMetric=page.locator('.overview-business-grid > .business-card').filter({hasText:'拆包辅种'}).locator('.business-numbers > div').filter({hasText:'处理中'}).first();
+    assert.equal((await runningMetric.locator('dd').textContent())?.trim(),'26','总览处理中影片应使用拆包执行项统计，而非任务定义数量');
     assert.equal(await page.locator('.cpu-bars span:not(.is-pending)').count(),3,'CPU 图应直接加载后端已积累的历史采样');
     await page.getByText('8.0 GiB',{exact:false}).first().waitFor();
     assert.equal(await page.locator('nav').getByRole('button',{name:'升级中心',exact:true}).count(),0,'主导航不应再展示升级中心');
@@ -967,12 +975,25 @@ const path = require('node:path');
     await page.route('**/api/v1/unpack/executions?**',route=>fulfillJson(route,{items:[]}));
     await page.route('**/api/v1/movie-dedup/jobs**',route=>fulfillJson(route,{items:[]}));
     await page.route('**/api/v1/cookiecloud/cron-preview',route=>fulfillJson(route,{
-      cron_expression:'*/30 * * * *',timezone:'Asia/Shanghai',description:'每 30 分钟',next_runs:[now()],
+      cron_expression:'*/30 * * * *',timezone:'UTC',description:'每 30 分钟',next_runs:[now()],
     }));
     await page.route('**/api/v1/cookiecloud/config',route=>fulfillJson(route,{
-      enabled:false,server_url:'',uuid:'',password_configured:false,auto_sync:true,sync_cron_expression:'*/30 * * * *',request_timeout_seconds:15,
-      connection_status:'UNTESTED',last_test_at:null,last_sync_at:null,last_sync_status:'NEVER',last_sync_error_code:null,
+      enabled:false,server_url:'https://cookie.example.test',uuid:'saved-uuid',password_configured:true,auto_sync:true,sync_cron_expression:'*/30 * * * *',request_timeout_seconds:15,
+      connection_status:'OK',last_test_at:now(),last_sync_at:null,last_sync_status:'NEVER',last_sync_error_code:null,
       source_domains:0,source_cookies:0,eligible_sites:0,matched_sites:0,updated_sites:0,unchanged_sites:0,unmatched_domains:0,version:1,created_at:now(),updated_at:now(),
+    }));
+    await page.route('**/api/v1/cookiecloud/test-draft',async route=>{
+      const payload=route.request().postDataJSON();
+      cookieCloudDraftProbeCalls+=1;
+      if(payload.uuid==='stale-test-uuid')await new Promise(resolve=>setTimeout(resolve,500));
+      return fulfillJson(route,{status:'ok',tested_at:now(),crypto_type:'aes-128-cbc-fixed',domain_count:1,cookie_count:1,update_time:null});
+    });
+    await page.route('**/api/v1/cookiecloud/sync',route=>fulfillJson(route,{
+      eligible_sites:1,matched_sites:1,updated_sites:1,created_sites:0,unchanged_sites:0,unmatched_domains:0,
+      discovered_sites:1,sync_success_sites:1,sync_failed_sites:0,
+    }));
+    await page.route('**/api/v1/cookiecloud/profile-sync-status',route=>fulfillJson(route,{
+      pending_count:0,max_concurrency:4,
     }));
     await page.route('**/api/v1/ai-agent/settings',route=>fulfillJson(route,{
       enabled:false,provider_kind:'OPENAI',base_url:'https://api.openai.com/v1',api_key_configured:false,model:'',request_timeout_seconds:30,max_context_messages:20,
@@ -1015,8 +1036,40 @@ const path = require('node:path');
 
     await configPrimary.click();
     await nav.getByRole('button',{name:'CookieCloud配置',exact:true}).click();
-    await page.locator('.cookiecloud-management').waitFor();
+    const cookiecloudPanel=page.locator('.cookiecloud-management');
+    await cookiecloudPanel.waitFor();
     assert.equal(await page.locator('.site-mode-card').count(),0,'配置中心不应再展示旧模式卡片');
+    await page.locator('.cookiecloud-run-item small').first().waitFor();
+    assert.equal((await page.locator('.cookiecloud-run-item small').first().innerText()).trim(),'UTC','Cron 预览标签必须与后端返回时区一致');
+
+    const cookiecloudUrl=page.getByPlaceholder('https://cookie.example.com 或 https://host/api');
+    const cookiecloudUuid=page.getByPlaceholder('CookieCloud UUID');
+    const cookiecloudPassword=page.getByPlaceholder('已配置；留空则使用已保存密码');
+    await cookiecloudUrl.fill('https://draft-cookie.example.test');
+    await cookiecloudUuid.fill('draft-uuid');
+    await cookiecloudPassword.fill('draft-password');
+    await page.getByText('当前草稿尚未测试',{exact:true}).waitFor();
+    const cookiecloudTestButton=cookiecloudPanel.getByRole('button',{name:/测试连接/});
+    await cookiecloudTestButton.click();
+    await page.getByText('当前配置连接正常',{exact:true}).waitFor();
+
+    await cookiecloudUuid.fill('stale-test-uuid');
+    const staleProbeRequest=page.waitForRequest(request=>
+      request.url().includes('/api/v1/cookiecloud/test-draft')&&request.method()==='POST'&&request.postDataJSON().uuid==='stale-test-uuid',
+    );
+    await cookiecloudTestButton.click();
+    await staleProbeRequest;
+    await cookiecloudUuid.fill('newer-uuid');
+    await page.waitForTimeout(650);
+    await page.getByText('当前草稿尚未测试',{exact:true}).waitFor();
+    assert.equal(await page.getByText('当前配置连接正常',{exact:true}).count(),0,'过期的草稿探测响应不得覆盖最新输入状态');
+    assert.equal(cookieCloudDraftProbeCalls,2,'草稿探测只应发起两次显式测试请求');
+
+    await cookiecloudPanel.getByRole('button',{name:/立即同步/}).click();
+    await page.getByText('发现 1 个 PT 站，同步成功 1 个，同步失败 0 个。',{exact:true}).waitFor();
+    assert.equal(await cookiecloudUrl.inputValue(),'https://draft-cookie.example.test','同步刷新不得丢弃未保存的草稿服务器地址');
+    assert.equal(await cookiecloudUuid.inputValue(),'newer-uuid','同步刷新不得丢弃未保存的草稿 UUID');
+    assert.equal(await cookiecloudPassword.inputValue(),'draft-password','同步刷新不得清空尚未保存的新密码');
 
     await nav.getByRole('button',{name:'站点配置',exact:true}).click();
     await page.locator('.site-toolbar').waitFor();

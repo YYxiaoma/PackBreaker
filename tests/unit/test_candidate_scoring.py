@@ -7,6 +7,7 @@ from backend.app.domain.candidate_scoring import (
     score_candidate,
 )
 from backend.app.domain.media_matching import MediaDescriptor, MediaFileSummary, parse_media_name
+from backend.app.domain.unpack_matching import assess_unpack_candidate
 
 
 def _descriptor(name: str, *, size: int = 1000, group: str | None = "grp") -> MediaDescriptor:
@@ -28,7 +29,7 @@ def test_perfect_known_candidate_scores_100_but_never_allows_action() -> None:
     assert result.rejected is False
     assert result.automatic_action_allowed is False
     assert result.algorithm_version
-    assert result.config_version == "initial-100-v1"
+    assert result.config_version == "source-known-size-penalty-v3"
 
 
 def test_external_id_year_and_episode_conflicts_are_hard_rejections() -> None:
@@ -58,7 +59,33 @@ def test_size_score_degrades_within_configured_tolerance() -> None:
     assert 0 < size_dimension.earned < 10
 
 
-def test_missing_release_group_is_neutral() -> None:
+def test_missing_candidate_size_is_zero_points_but_not_claimed_as_evidence() -> None:
+    source = parse_media_name(
+        "Movie.2024.1080p.WEB-DL.x265",
+        total_size=1_000_000,
+    )
+    candidate = parse_media_name("Movie.2024.1080p.WEB-DL.x265")
+
+    score = score_candidate(source, candidate)
+    assessment = assess_unpack_candidate(source, candidate)
+    dimensions = {item.dimension: item for item in score.dimensions}
+    size_dimension = dimensions[ScoreDimension.TOTAL_SIZE]
+
+    assert size_dimension.maximum == 10
+    assert size_dimension.earned == 0
+    assert size_dimension.coverage_maximum == 0
+    assert score.score < 100
+    assert assessment.score_bps < 10_000
+    assert assessment.evidence["evidence_coverage_bps"] == 5_000
+    persisted_size = next(
+        item for item in assessment.evidence["dimensions"] if item["dimension"] == "TOTAL_SIZE"
+    )
+    assert persisted_size["maximum"] == 10
+    assert persisted_size["coverage_maximum"] == 0
+    assert "未提供可比较的影片大小" in persisted_size["evidence"]
+
+
+def test_missing_release_group_is_not_counted_as_matching_evidence() -> None:
     source = _descriptor("Movie.2024", group="grp")
     candidate = _descriptor("Movie.2024", group=None)
 
@@ -67,7 +94,8 @@ def test_missing_release_group_is_neutral() -> None:
     group_dimension = next(
         item for item in result.dimensions if item.dimension is ScoreDimension.RELEASE_GROUP
     )
-    assert group_dimension.earned == 5
+    assert group_dimension.earned == 0
+    assert group_dimension.maximum == 0
 
 
 def test_ranking_is_deterministic_and_rejected_candidates_are_last() -> None:
@@ -85,6 +113,27 @@ def test_ranking_is_deterministic_and_rejected_candidates_are_last() -> None:
     assert ranking[-1].result.rejected is True
 
 
+def test_missing_external_ids_and_file_list_do_not_cap_match_score() -> None:
+    source = parse_media_name(
+        "The.Usual.Suspects.1995.BluRay.1080p.x265.10bit.2Audio.MNHD-FRDS",
+        release_group="frds",
+        total_size=10_000_000,
+    )
+    candidate = parse_media_name(
+        "The Usual Suspects 1995 1080p BluRay x265 DDP5.1 2Audios-MNHD-FRDS",
+        release_group="frds",
+        total_size=9_995_100,
+    )
+
+    result = score_candidate(source, candidate)
+    dimensions = {item.dimension: item for item in result.dimensions}
+
+    assert result.score > 99.0
+    assert dimensions[ScoreDimension.EXTERNAL_ID].maximum == 0
+    assert dimensions[ScoreDimension.FILE_LIST].maximum == 0
+    assert dimensions[ScoreDimension.RELEASE_GROUP].earned == 5
+
+
 def test_search_relevance_rejects_unrelated_site_noise_before_review() -> None:
     source = _descriptor("The Great Movie.2024.1080p")
     relevant = _descriptor("The Great Movie Extended.2024.2160p")
@@ -99,3 +148,21 @@ def test_search_relevance_accepts_exact_external_id_even_when_title_differs() ->
     localized = _descriptor("完全不同的本地化标题.2024.tt1234567")
 
     assert candidate_search_relevant(source, localized) is True
+
+
+def test_matching_release_watermark_supplies_coverage_without_lowering_threshold() -> None:
+    source = parse_media_name(
+        "Movie.2024.1080p.WEB-DL.x265.10bit.AC3￡cXcY@FRDS",
+        total_size=10_000_000,
+    )
+    candidate = parse_media_name(
+        "Movie 2024 1080p WEB-DL x265 AC3￡cXcY@FRDS",
+        total_size=9_999_000,
+    )
+
+    result = assess_unpack_candidate(source, candidate)
+
+    assert result.score_bps >= 9900
+    assert result.evidence["evidence_coverage_bps"] == 6500
+    assert result.evidence["exact"]["release_group"] is True
+    assert result.rejected is False

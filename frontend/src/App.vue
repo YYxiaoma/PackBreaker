@@ -335,11 +335,17 @@ function openVersionPopover(): void {
           </div>
         </template>
       </nav>
-      <div class="sidebar-slogan">
-        <strong>更自动，更自由</strong>
-        <small>PACK MORE POSSIBILITIES</small>
-        <span aria-hidden="true"></span>
-      </div>
+      <button
+        type="button"
+        class="nav-item sidebar-about"
+        :class="{ active: route === '关于' }"
+        aria-label="关于 PackBreaker"
+        :aria-current="route === '关于' ? 'page' : undefined"
+        @click="route = '关于'"
+      >
+        <Info :size="19" aria-hidden="true" />
+        <span>关于</span>
+      </button>
     </aside>
     <div class="main-shell">
       <header class="topbar">
@@ -412,20 +418,8 @@ function openVersionPopover(): void {
         <TaskCenterV2 v-else-if="route === '任务中心/数据拆包'" />
         <MovieDedupPanel v-else-if="route === '任务中心/数据去重'" />
         <WorkspaceManagement v-else :page="route" />
-        <footer><span>PackBreaker</span></footer>
       </main>
     </div>
-    <button
-      type="button"
-      class="about-corner-button"
-      :class="{ active: route === '关于' }"
-      aria-label="关于 PackBreaker"
-      :aria-current="route === '关于' ? 'page' : undefined"
-      @click="route = '关于'"
-    >
-      <Info :size="17" aria-hidden="true" />
-      <span>关于</span>
-    </button>
     <UserMenuDrawer
       v-model="userDrawerVisible"
       :username="auth.username || 'admin'"
