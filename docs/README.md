@@ -38,6 +38,8 @@
 
 ## 部署与首次配置
 
+完整的部署方案（Compose、`docker run`、群晖 Container Manager、反向代理、升级回滚与备份）见 [Docker 部署指南](deployment.md)。以下为最短路径。
+
 推荐 Docker Compose。将以下内容保存为 `compose.yaml`，替换媒体路径、UID 和 GID：
 
 ```yaml

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <rect width="1600" height="900" fill="#f8fafc"/>
+  <rect x="2" y="2" width="1596" height="896" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="12 8"/>
+  <text x="800" y="430" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="44" fill="#475569" text-anchor="middle">数据拆包 · 任务与执行记录</text>
+  <text x="800" y="492" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" font-size="26" fill="#94a3b8" text-anchor="middle">截图占位 · 待替换为真实界面（建议 1600 × 900）</text>
+</svg>
