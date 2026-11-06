@@ -20,7 +20,7 @@
   <a href="#本地开发">本地开发</a>
 </p>
 
-![PackBreaker 总览仪表盘](docs/images/overview.svg)
+![PackBreaker 总览仪表盘](docs/images/overview.png)
 
 ## 一句话理解
 
@@ -42,29 +42,31 @@ PackBreaker 把「拆包 → 搜站 → 验证 → 复用 → 辅种」这条原
 
 ## 界面速览
 
+以下截图来自当前主工作区的 v1.1.5 前端生产构建，使用脱敏演示数据展示典型场景；实际站点、任务与统计以部署实例为准。
+
 ### 任务中心：手动与监控拆包
 
 一次创建、持续运行；任务列表直接展示成功、失败与待审核数量，执行记录可下钻到每一步。
 
-![数据拆包任务列表](docs/images/unpack.svg)
+![数据拆包任务列表](docs/images/unpack.jpg)
 
 ### 候选审核：匹配证据与内容验证
 
 每个候选都带标题、大小、站点来源与验证结果；只有证据完整的候选才允许进入执行计划。
 
-![候选审核与内容验证](docs/images/review.svg)
+![候选审核与内容验证](docs/images/review.jpg)
 
 ### 数据去重：重复影片与回收估算
 
 按完整内容哈希确认重复关系，人工确认后复用文件，并区分「已完成」与「待执行」的回收空间。
 
-![数据去重](docs/images/dedup.svg)
+![数据去重](docs/images/dedup.jpg)
 
 ### 配置中心：站点、下载器与 CookieCloud
 
 站点凭证加密保存、连接测试与状态可视；下载器路径映射一眼看清。
 
-![站点与下载器配置](docs/images/config.svg)
+![站点与下载器配置](docs/images/config.png)
 
 ## 工作流
 
