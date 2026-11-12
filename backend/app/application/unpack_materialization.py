@@ -14,6 +14,12 @@ from backend.app.application.unpack_acceptance import (
     is_write_blocked_acceptance_execution,
 )
 from backend.app.application.unpack_existing_reuse import verify_existing_reuse
+from backend.app.application.unpack_lifecycle import (
+    PIPELINE_ACTIVE_EXECUTION_STATUSES,
+    refresh_unpack_execution_state,
+    unpack_execution_has_pending_match_work,
+    unpack_execution_has_unresolved_review_work,
+)
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_definition import TaskStorageMode
@@ -86,6 +92,9 @@ class UnpackMaterializationService:
             return tuple(
                 session.scalars(
                     select(UnpackExecution.id)
+                    .where(UnpackExecution.status.in_(PIPELINE_ACTIVE_EXECUTION_STATUSES))
+                    .where(~unpack_execution_has_pending_match_work())
+                    .where(~unpack_execution_has_unresolved_review_work())
                     .where(
                         func.json_type(UnpackExecution.config_snapshot).is_("object"),
                         func.json_type(UnpackExecution.config_snapshot, "$.acceptance_mode").is_(
@@ -1203,41 +1212,7 @@ def _filesystem_snapshot_from_payload(value: object) -> FilesystemSnapshot | Non
 
 
 def _refresh_execution_state(session: Session, execution: UnpackExecution) -> None:
-    def count(status: UnpackItemStatus) -> int:
-        return int(
-            session.scalar(
-                select(func.count(UnpackExecutionItem.id))
-                .where(UnpackExecutionItem.execution_id == execution.id)
-                .where(UnpackExecutionItem.status == status.value)
-            )
-            or 0
-        )
-
-    execution.error_count = count(UnpackItemStatus.MATCH_ERROR) + count(
-        UnpackItemStatus.EXECUTION_ERROR
-    )
-    execution.completed_count = count(UnpackItemStatus.COMPLETED)
-    active = sum(
-        count(status)
-        for status in (
-            UnpackItemStatus.CONTENT_VERIFIED,
-            UnpackItemStatus.PLAN_PENDING,
-            UnpackItemStatus.EXECUTING,
-            UnpackItemStatus.CLIENT_VERIFYING,
-        )
-    )
-    now = utc_now()
-    if active:
-        execution.status = UnpackExecutionStatus.EXECUTING.value
-        execution.finished_at = None
-    elif execution.error_count:
-        execution.status = UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value
-        execution.finished_at = now
-    elif execution.completed_count == execution.total_count:
-        execution.status = UnpackExecutionStatus.COMPLETED.value
-        execution.finished_at = now
-    execution.updated_at = now
-    execution.version += 1
+    refresh_unpack_execution_state(session, execution)
 
 
 def _safe_error(exc: ApplicationError | DomainViolation | ValueError) -> tuple[str, str]:

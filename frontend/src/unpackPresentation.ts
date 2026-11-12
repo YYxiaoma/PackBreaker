@@ -24,7 +24,7 @@ const EXECUTION_STATUS_LABELS: Record<UnpackExecutionStatus, string> = {
   REVIEW_REQUIRED: '待人工审核',
   CONTENT_VERIFYING: '内容校验中',
   EXECUTING: '执行中',
-  CLIENT_VERIFYING: '下载器校验中',
+  CLIENT_VERIFYING: '下载器处理中',
   COMPLETED: '已完成',
   COMPLETED_WITH_ERRORS: '部分完成',
   PAUSED: '已暂停',
@@ -42,6 +42,7 @@ const ITEM_STATUS_LABELS: Record<UnpackItemStatus, string> = {
   NO_MATCH: '无匹配',
   MATCH_TIMEOUT: '匹配超时',
   MATCH_ERROR: '匹配错误',
+  CONTENT_VERIFY_ERROR: '校验错误',
   TORRENT_FETCHING: '获取种子中',
   AUXILIARY_FETCHING: '补齐辅助文件',
   CONTENT_VERIFYING: '内容校验中',
@@ -49,7 +50,7 @@ const ITEM_STATUS_LABELS: Record<UnpackItemStatus, string> = {
   CONTENT_MISMATCH: '内容不一致',
   PLAN_PENDING: '执行计划待处理',
   EXECUTING: '执行中',
-  CLIENT_VERIFYING: '下载器校验中',
+  CLIENT_VERIFYING: '下载器处理中',
   COMPLETED: '已完成',
   EXECUTION_ERROR: '执行错误',
   CANCELLED: '已取消',
@@ -122,6 +123,7 @@ export function unpackErrorLabel(code: string | null, message: string | null): s
   const known: Record<string, string> = {
     UNPACK_MATCH_TIMEOUT: '站点匹配超时，可重试该影片',
     UNPACK_MATCH_ERROR: '影片匹配失败，可重试该影片',
+    UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT: '获取候选 torrent 超时，可重试内容校验',
     SITE_RISK_CONTROL_LIMIT_REACHED: '站点在 10 分钟内触发风控次数上限，已自动停用',
     SITE_RISK_CONTROL_COOLDOWN: '站点触发风控，任务已按配置间隔延后重试',
     UNPACK_EXECUTION_PLAN_BLOCKED: '执行计划被安全检查阻断',
@@ -221,9 +223,10 @@ export function unpackReconciliationGuidance(
 export function unpackExecutionStageLabel(stage: string | null): string {
   const names: Record<string, string> = {
     FILES_MATERIALIZED: '文件已准备好',
+    ADD_RESUME_CHECKING: '等待 qBittorrent 恢复种子数据（不执行完整文件校验）',
     TORRENT_ADDED: '种子已添加到下载器',
-    CLIENT_VERIFYING: '等待下载器检查文件',
-    CLIENT_VERIFIED: '下载器已检查文件',
+    CLIENT_VERIFYING: '等待下载器完成文件校验',
+    CLIENT_VERIFIED: '下载器文件校验已完成',
     STARTING: '准备启动做种',
     COMPLETED: '已经完成',
   };
@@ -284,44 +287,20 @@ export function unpackLiveStateLabel(state: string | null): string {
 }
 
 export function unpackItemRetryAvailability(
-  item: Pick<UnpackExecutionItem, 'status' | 'has_external_operations' | 'last_error_code'>,
-): 'match' | 'resume' | 'reconcile' | 'none' {
-  if (['NO_MATCH', 'MATCH_TIMEOUT', 'MATCH_ERROR'].includes(item.status)) return 'match';
-  if (item.status !== 'EXECUTION_ERROR') return 'none';
-  if (!item.has_external_operations) return 'match';
-  if (
-    [
-      'SITE_INVALID_RESPONSE',
-      'SITE_UNAVAILABLE',
-      'SITE_TIMEOUT',
-      'SITE_RATE_LIMITED',
-      'UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE',
-      'DOWNLOADER_UNAVAILABLE',
-      'DOWNLOADER_CONNECTION_FAILED',
-    ].includes(item.last_error_code ?? '')
-  )
-    return 'resume';
-  return 'reconcile';
-}
-
-export interface UnpackProgressCounts {
-  matchedAutoCount: number;
-  noMatchCount: number;
-  reviewCount: number;
-  contentVerifiedCount: number;
-  contentMismatchCount: number;
-  timeoutCount: number;
-  errorCount: number;
-  completedCount: number;
-}
-
-export function unpackProgressCount(totalCount: number, counts: UnpackProgressCounts): number {
-  if (totalCount <= 0) return 0;
-  const progressed = Object.values(counts).reduce(
-    (sum, count) => sum + (Number.isFinite(count) ? Math.max(0, count) : 0),
-    0,
-  );
-  return Math.min(totalCount, progressed);
+  item: Pick<UnpackExecutionItem, 'retry_capability'>,
+): 'match' | 'verification' | 'plan' | 'resume' | 'reconcile' | 'none' {
+  const capabilities: Record<
+    UnpackExecutionItem['retry_capability'],
+    'match' | 'verification' | 'plan' | 'resume' | 'reconcile' | 'none'
+  > = {
+    MATCH: 'match',
+    VERIFICATION: 'verification',
+    PLAN: 'plan',
+    RESUME: 'resume',
+    RECONCILE: 'reconcile',
+    NONE: 'none',
+  };
+  return capabilities[item.retry_capability] ?? 'none';
 }
 
 export function unpackProgressPercent(totalCount: number, completedCount: number): number {

@@ -3437,8 +3437,15 @@ export interface components {
       media_identity: {
         [key: string]: unknown;
       };
+      /**
+       * Retry Capability
+       * @enum {string}
+       */
+      retry_capability: 'MATCH' | 'VERIFICATION' | 'PLAN' | 'RESUME' | 'RECONCILE' | 'NONE';
       /** Retry Count */
       retry_count: number;
+      /** Retry Reason */
+      retry_reason: string | null;
       /** Review Allowed */
       review_allowed: boolean;
       /** Selected Candidate Id */
@@ -3490,8 +3497,14 @@ export interface components {
       finished_at: string | null;
       /** Id */
       id: string;
+      /** Match Pending Count */
+      match_pending_count: number;
+      /** Match Progress Count */
+      match_progress_count: number;
       /** Matched Auto Count */
       matched_auto_count: number;
+      /** Matching Count */
+      matching_count: number;
       /** No Match Count */
       no_match_count: number;
       /** Review Count */
@@ -3541,9 +3554,9 @@ export interface components {
     UnpackItemActionRequest: {
       /**
        * Action
-       * @constant
+       * @enum {string}
        */
-      action: 'retry_match';
+      action: 'retry_match' | 'retry_content_verification';
     };
     /** UnpackItemActionResponse */
     UnpackItemActionResponse: {
@@ -3611,6 +3624,7 @@ export interface components {
       | 'CONTENT_VERIFYING'
       | 'CONTENT_VERIFIED'
       | 'CONTENT_MISMATCH'
+      | 'CONTENT_VERIFY_ERROR'
       | 'PLAN_PENDING'
       | 'EXECUTING'
       | 'CLIENT_VERIFYING'

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -9,15 +11,18 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.errors import ApplicationError
 from backend.app.application.unpack_acceptance import assert_unmarked_execution_for_write
 from backend.app.application.unpack_deletion_audit import archive_deleted_item_operations
+from backend.app.application.unpack_lifecycle import refresh_unpack_execution_state
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.unpack import (
     BULK_REMATCHABLE_ITEM_STATUSES,
     REVIEWABLE_ITEM_STATUSES,
+    UnpackCandidateVerificationStatus,
     UnpackExecutionStatus,
     UnpackItemStatus,
     UnpackReviewDecision,
     item_transition_allowed,
 )
+from backend.app.domain.unpack_execution_plan import unpack_execution_plan_from_payload
 from backend.app.infrastructure.persistence.database import begin_immediate_write
 from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
@@ -29,6 +34,8 @@ from backend.app.infrastructure.persistence.models import (
     new_uuid,
     utc_now,
 )
+
+RetryCapability = Literal["MATCH", "VERIFICATION", "PLAN", "RESUME", "RECONCILE", "NONE"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +260,102 @@ class UnpackItemActionService:
                 item_status=UnpackItemStatus(item.status),
             )
 
+    def retry_content_verification(
+        self,
+        item_id: str,
+        *,
+        expected_item_version: int,
+    ) -> UnpackRetryResult:
+        """Retry content verification, rematching only when the selected candidate is stale."""
+        if expected_item_version < 1:
+            raise self._invalid("If-Match item version 必须大于等于 1")
+        with self._session_factory() as session:
+            begin_immediate_write(session)
+            item = session.get(UnpackExecutionItem, item_id)
+            if item is None:
+                raise self._item_not_found()
+            if item.version != expected_item_version:
+                raise self._version_conflict(item.version)
+            if item.status != UnpackItemStatus.CONTENT_VERIFY_ERROR.value:
+                raise self._conflict("只有内容校验错误的影片才允许重试内容校验")
+
+            external_operation = session.scalar(
+                select(UnpackExternalOperationJournal.id)
+                .where(UnpackExternalOperationJournal.item_id == item.id)
+                .limit(1)
+            )
+            if external_operation is not None:
+                raise self._conflict("影片已有外部操作记录，不能重新执行内容校验")
+
+            execution = session.get(UnpackExecution, item.execution_id)
+            if execution is None:
+                raise self._execution_not_found()
+            candidate = (
+                session.get(UnpackMatchCandidate, item.selected_candidate_id)
+                if item.selected_candidate_id is not None
+                else None
+            )
+            candidate_is_current = (
+                item.match_origin in {"AUTO", "MANUAL"}
+                and candidate is not None
+                and candidate.item_id == item.id
+                and candidate.generation == item.candidate_generation
+            )
+            now = utc_now()
+            if not candidate_is_current:
+                if not item_transition_allowed(
+                    UnpackItemStatus.CONTENT_VERIFY_ERROR,
+                    UnpackItemStatus.MATCH_PENDING,
+                ):
+                    raise self._conflict("当前影片状态不允许重新进入匹配队列")
+                # A missing or superseded candidate cannot be fetched safely.
+                # Start a fresh match generation instead of retaining a dead ID.
+                _reset_item_for_match_retry(item, now)
+                session.flush()
+                _refresh_execution_state(session, execution)
+                session.commit()
+                return UnpackRetryResult(
+                    item_id=item.id,
+                    generation=item.candidate_generation,
+                    retry_count=item.retry_count,
+                    item_version=item.version,
+                    item_status=UnpackItemStatus(item.status),
+                )
+
+            assert candidate is not None
+            target_status = (
+                UnpackItemStatus.MATCHED_AUTO
+                if item.match_origin == "AUTO"
+                else UnpackItemStatus.MATCHED_MANUAL
+            )
+            if not item_transition_allowed(UnpackItemStatus.CONTENT_VERIFY_ERROR, target_status):
+                raise self._conflict("当前影片状态不允许重新进入内容校验")
+
+            candidate.verification_status = UnpackCandidateVerificationStatus.NOT_CHECKED.value
+            candidate.verification_level = None
+            candidate.verification_error_code = None
+            candidate.metainfo_digest = None
+            evidence = dict(candidate.evidence or {})
+            evidence.pop("content_verification", None)
+            candidate.evidence = evidence
+            item.status = target_status.value
+            item.content_verification_level = None
+            item.torrent_metainfo_digest = None
+            item.last_error_code = None
+            item.last_error_message = None
+            item.updated_at = now
+            item.version += 1
+            session.flush()
+            _refresh_execution_state(session, execution)
+            session.commit()
+            return UnpackRetryResult(
+                item_id=item.id,
+                generation=item.candidate_generation,
+                retry_count=item.retry_count,
+                item_version=item.version,
+                item_status=UnpackItemStatus(item.status),
+            )
+
     def retry_eligible_items(
         self,
         execution_id: str,
@@ -317,9 +420,12 @@ class UnpackItemActionService:
             for item in items:
                 if item.id in unsafe_item_ids:
                     continue
-                # A fresh matching generation safely discards earlier candidate
-                # selections. It does NOT erase journal history or media files.
-                _reset_item_for_match_retry(item, now)
+                if item.status == UnpackItemStatus.EXECUTION_ERROR.value:
+                    _retry_failed_execution_item(session, item, now)
+                else:
+                    # A fresh matching generation safely discards earlier candidate
+                    # selections. It does NOT erase journal history or media files.
+                    _reset_item_for_match_retry(item, now)
                 retried += 1
             if retried:
                 session.flush()
@@ -519,6 +625,7 @@ _SAFE_SEED_RETRY_ERRORS = frozenset(
         "SITE_UNAVAILABLE",
         "SITE_TIMEOUT",
         "SITE_RATE_LIMITED",
+        "SITE_CIRCUIT_OPEN",
         "UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE",
         "DOWNLOADER_UNAVAILABLE",
         "DOWNLOADER_CONNECTION_FAILED",
@@ -530,74 +637,88 @@ _MATERIALIZED_OPERATIONS = frozenset(
         "UNPACK_EXEC_MATERIALIZE_HARDLINK",
         "UNPACK_EXEC_MATERIALIZE_SYMLINK",
         "UNPACK_EXEC_MATERIALIZE_COPY",
+        "UNPACK_EXEC_REUSE_EXISTING",
     }
 )
 _ADD_OPERATIONS = frozenset({"UNPACK_EXEC_QBITTORRENT_ADD", "UNPACK_EXEC_TRANSMISSION_ADD"})
 
 
-def _retry_failed_execution_item(
-    session: Session, item: UnpackExecutionItem, now: datetime
-) -> None:
-    """Safely requeue a failed item without throwing away external operation evidence.
+def _plan_retry_allowed(session: Session, item: UnpackExecutionItem) -> bool:
+    if (
+        item.content_verification_level != "FULL_VERIFIED"
+        or item.selected_candidate_id is None
+        or not isinstance(item.torrent_metainfo_digest, str)
+        or item.execution_plan is not None
+        or item.execution_plan_digest is not None
+    ):
+        return False
+    checkpoint = dict(item.execution_state or {})
+    if checkpoint.get("stage") not in {None, "PLAN_PENDING"}:
+        return False
+    candidate = session.get(UnpackMatchCandidate, item.selected_candidate_id)
+    return bool(
+        candidate is not None
+        and candidate.item_id == item.id
+        and candidate.generation == item.candidate_generation
+        and candidate.verification_status == UnpackCandidateVerificationStatus.VERIFIED.value
+        and candidate.verification_level == "FULL_VERIFIED"
+        and candidate.metainfo_digest == item.torrent_metainfo_digest
+    )
 
-    No external effects: restart matching from scratch.
-    Materialized stage with strictly proven records: resume the SAME plan and
-    generation; the seeding worker revalidates file identities, downloader
-    ownership and frozen plan before any further side effect.
-    Unknown/pending/conflicting effects or later stages: fail closed.
-    """
-    journals = session.scalars(
-        select(UnpackExternalOperationJournal).where(
-            UnpackExternalOperationJournal.item_id == item.id
-        )
-    ).all()
-    if not journals:
-        _reset_item_for_match_retry(item, now)
-        return
 
-    assert_unmarked_execution_for_write(session, item.execution_id)
+def _materialization_resume_allowed(item: UnpackExecutionItem) -> bool:
+    if (
+        item.content_verification_level != "FULL_VERIFIED"
+        or item.selected_candidate_id is None
+        or not isinstance(item.execution_plan, dict)
+        or not isinstance(item.execution_plan_digest, str)
+    ):
+        return False
+    checkpoint = dict(item.execution_state or {})
+    if checkpoint.get("stage") not in {None, "PLAN_PENDING"}:
+        return False
+    try:
+        plan = unpack_execution_plan_from_payload(item.execution_plan)
+    except ValueError:
+        return False
+    return bool(
+        plan.ready
+        and plan.plan_digest == item.execution_plan_digest
+        and plan.item_id == item.id
+        and plan.candidate_id == item.selected_candidate_id
+        and plan.candidate_generation == item.candidate_generation
+        and plan.metainfo_digest == item.torrent_metainfo_digest
+    )
+
+
+def _safe_seed_resume_allowed(
+    item: UnpackExecutionItem,
+    journals: Sequence[UnpackExternalOperationJournal],
+) -> bool:
     checkpoint = dict(item.execution_state or {})
     seen_ops = {row.operation_type for row in journals}
-    resume_allowed = (
+    return bool(
         item.last_error_code in _SAFE_SEED_RETRY_ERRORS
-        and checkpoint.get("stage") == "FILES_MATERIALIZED"
+        and checkpoint.get("stage") in {"FILES_MATERIALIZED", "ADD_RESUME_CHECKING"}
         and isinstance(item.execution_plan, dict)
         and isinstance(item.execution_plan_digest, str)
         and checkpoint.get("plan_digest") == item.execution_plan_digest
         and item.selected_candidate_id is not None
         and item.torrent_metainfo_digest is not None
+        and journals
         and all(row.status == OperationStatus.APPLIED.value for row in journals)
-        and len(seen_ops) == len(journals)
+        and len({row.idempotency_key for row in journals}) == len(journals)
         and bool(seen_ops & _MATERIALIZED_OPERATIONS)
         and seen_ops.issubset(_MATERIALIZED_OPERATIONS | _ADD_OPERATIONS)
         and len(seen_ops & _ADD_OPERATIONS) <= 1
     )
-    if not resume_allowed:
-        raise ApplicationError(
-            code="UNPACK_RETRY_EXTERNAL_RECONCILE_REQUIRED",
-            status=409,
-            title="需要先核对已执行的文件或下载器操作",
-            detail="该影片已经操作过文件或下载器，现有记录不足以安全继续。请在“对账证据”中核对，不会清空历史记录或重新添加种子。",
-        )
-    # Do not change the plan, candidate, checkpoint or APPLIED journal. The
-    # seeding worker must revalidate all frozen identities during _prepare().
-    item.status = UnpackItemStatus.EXECUTING.value
-    item.last_error_code = None
-    item.last_error_message = None
-    item.updated_at = now
-    item.version += 1
 
 
-def _queue_failed_item(session: Session, item: UnpackExecutionItem, now: datetime) -> None:
-    operations = session.scalars(
-        select(UnpackExternalOperationJournal).where(
-            UnpackExternalOperationJournal.item_id == item.id
-        )
-    ).all()
-    if not operations:
-        _reset_item_for_match_retry(item, now)
-        return
-
+def _auxiliary_resume_allowed(
+    session: Session,
+    item: UnpackExecutionItem,
+    operations: Sequence[UnpackExternalOperationJournal],
+) -> bool:
     state = dict(item.auxiliary_state or {})
     candidate = (
         session.get(UnpackMatchCandidate, item.selected_candidate_id)
@@ -616,6 +737,7 @@ def _queue_failed_item(session: Session, item: UnpackExecutionItem, now: datetim
         "SITE_UNAVAILABLE",
         "SITE_TIMEOUT",
         "SITE_RATE_LIMITED",
+        "SITE_CIRCUIT_OPEN",
     } and len(operations) == len(_AUXILIARY_STARTED_OPERATIONS)
     stop_reconciliation_resume = (
         item.last_error_code == "UNPACK_AUXILIARY_CONFLICT"
@@ -625,7 +747,7 @@ def _queue_failed_item(session: Session, item: UnpackExecutionItem, now: datetim
         and stop.status == OperationStatus.RECONCILE_REQUIRED.value
         and stop.last_error_code == "UNPACK_AUX_STOP_NOT_OBSERVED"
     )
-    if (
+    return bool(
         item.status == UnpackItemStatus.MATCH_ERROR.value
         and (ordinary_resume or stop_reconciliation_resume)
         and state.get("state") == "DOWNLOADING"
@@ -648,7 +770,131 @@ def _queue_failed_item(session: Session, item: UnpackExecutionItem, now: datetim
         and not isinstance(state.get("downloader_version"), bool)
         and started_intents_complete
         and len(by_type) == len(operations)
-    ):
+    )
+
+
+def unpack_item_retry_capability(
+    session: Session,
+    item: UnpackExecutionItem,
+    journals: Sequence[UnpackExternalOperationJournal] | None = None,
+) -> tuple[RetryCapability, str | None]:
+    """Return the single backend-authoritative retry decision and its safe reason."""
+    operations = journals
+    if operations is None:
+        operations = session.scalars(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.item_id == item.id
+            )
+        ).all()
+    status = UnpackItemStatus(item.status)
+    if status is UnpackItemStatus.CONTENT_VERIFY_ERROR:
+        return (
+            ("VERIFICATION", None)
+            if not operations
+            else (
+                "RECONCILE",
+                "内容校验失败的影片已经存在外部操作记录，不能重新校验或重新匹配；请先查看执行明细。",
+            )
+        )
+    if status in {UnpackItemStatus.NO_MATCH, UnpackItemStatus.MATCH_TIMEOUT}:
+        return (
+            ("MATCH", None)
+            if not operations
+            else (
+                "RECONCILE",
+                "该影片存在外部操作记录，不能按普通匹配任务重试；请先查看执行明细。",
+            )
+        )
+    if status is UnpackItemStatus.MATCH_ERROR:
+        if not operations:
+            return "MATCH", None
+        if _auxiliary_resume_allowed(session, item, operations):
+            return "RESUME", None
+        return (
+            "RECONCILE",
+            "辅助文件补齐的下载器操作未全部得到可验证的结果，不能自动重新添加或继续；请先查看执行明细。",
+        )
+    if status is UnpackItemStatus.EXECUTION_ERROR:
+        if not operations:
+            if _plan_retry_allowed(session, item):
+                return "PLAN", None
+            if _materialization_resume_allowed(item):
+                return "RESUME", None
+            return "MATCH", None
+        if _safe_seed_resume_allowed(item, operations):
+            return "RESUME", None
+        return (
+            "RECONCILE",
+            "存在未确认或不完整的文件/下载器操作记录，无法安全自动续跑。请先在“执行明细”中核对操作结果；不会清空历史记录或重复添加种子。",
+        )
+    return "NONE", None
+
+
+def _retry_failed_execution_item(
+    session: Session, item: UnpackExecutionItem, now: datetime
+) -> None:
+    """Safely resume the failed pipeline stage without throwing away evidence.
+
+    No reusable candidate or plan: restart matching. FULL_VERIFIED without a
+    frozen plan: rebuild only the execution plan. A frozen plan with no external
+    effects: resume materialization. Proven APPLIED file operations: resume the
+    same plan and generation; the seeding worker revalidates every identity.
+    Unknown, pending, conflicting or later-stage effects fail closed.
+    """
+    journals = session.scalars(
+        select(UnpackExternalOperationJournal).where(
+            UnpackExternalOperationJournal.item_id == item.id
+        )
+    ).all()
+    capability, reason = unpack_item_retry_capability(session, item, journals)
+    if capability == "MATCH":
+        _reset_item_for_match_retry(item, now)
+        return
+    if capability not in {"PLAN", "RESUME"}:
+        raise ApplicationError(
+            code="UNPACK_RETRY_EXTERNAL_RECONCILE_REQUIRED",
+            status=409,
+            title="需要先核对已执行的文件或下载器操作",
+            detail=reason or "当前执行证据不足以安全恢复，请先在“执行明细”中核对操作记录。",
+        )
+
+    assert_unmarked_execution_for_write(session, item.execution_id)
+    if capability == "PLAN":
+        # The candidate and FULL_VERIFIED evidence remain intact. The plan worker
+        # will rebuild only the frozen plan; matching and Piece Hash are not repeated.
+        item.status = UnpackItemStatus.CONTENT_VERIFIED.value
+        item.execution_state = {
+            **dict(item.execution_state or {}),
+            "stage": "PLAN_PENDING",
+            "candidate_id": item.selected_candidate_id,
+            "candidate_generation": item.candidate_generation,
+            "metainfo_digest": item.torrent_metainfo_digest,
+        }
+    elif journals:
+        # The same frozen plan and APPLIED materialization journals are retained.
+        # The seeding worker rechecks all file identities and downloader ownership.
+        item.status = UnpackItemStatus.EXECUTING.value
+    else:
+        # A frozen plan exists but no external operation was recorded; resume
+        # materialization from the plan rather than throwing away the match.
+        item.status = UnpackItemStatus.PLAN_PENDING.value
+    item.last_error_code = None
+    item.last_error_message = None
+    item.updated_at = now
+    item.version += 1
+
+
+def _queue_failed_item(session: Session, item: UnpackExecutionItem, now: datetime) -> None:
+    operations = session.scalars(
+        select(UnpackExternalOperationJournal).where(
+            UnpackExternalOperationJournal.item_id == item.id
+        )
+    ).all()
+    if not operations:
+        _reset_item_for_match_retry(item, now)
+        return
+
+    if _auxiliary_resume_allowed(session, item, operations):
         # Keep the original candidate, generation, remote torrent ownership,
         # hashes and journal. On STOP reconciliation, the worker must observe
         # the owned remote torrent already stopped before marking STOP applied;
@@ -706,88 +952,4 @@ def _reset_item_for_match_retry(
 
 
 def _refresh_execution_state(session: Session, execution: UnpackExecution) -> None:
-    counts = {
-        status: int(
-            session.scalar(
-                select(func.count(UnpackExecutionItem.id))
-                .where(UnpackExecutionItem.execution_id == execution.id)
-                .where(UnpackExecutionItem.status == status.value)
-            )
-            or 0
-        )
-        for status in UnpackItemStatus
-    }
-    execution.matched_auto_count = counts[UnpackItemStatus.MATCHED_AUTO]
-    execution.review_count = counts[UnpackItemStatus.REVIEW_REQUIRED]
-    execution.content_verified_count = counts[UnpackItemStatus.CONTENT_VERIFIED]
-    execution.content_mismatch_count = counts[UnpackItemStatus.CONTENT_MISMATCH]
-    execution.timeout_count = counts[UnpackItemStatus.MATCH_TIMEOUT]
-    execution.error_count = (
-        counts[UnpackItemStatus.MATCH_ERROR] + counts[UnpackItemStatus.EXECUTION_ERROR]
-    )
-    execution.completed_count = counts[UnpackItemStatus.COMPLETED]
-
-    matching_active = counts[UnpackItemStatus.MATCH_PENDING] + counts[UnpackItemStatus.MATCHING]
-    content_active = sum(
-        counts[status]
-        for status in (
-            UnpackItemStatus.MATCHED_AUTO,
-            UnpackItemStatus.MATCHED_MANUAL,
-            UnpackItemStatus.TORRENT_FETCHING,
-            UnpackItemStatus.AUXILIARY_FETCHING,
-            UnpackItemStatus.CONTENT_VERIFYING,
-            UnpackItemStatus.CONTENT_VERIFIED,
-        )
-    )
-    execution_active = counts[UnpackItemStatus.PLAN_PENDING] + counts[UnpackItemStatus.EXECUTING]
-    client_active = counts[UnpackItemStatus.CLIENT_VERIFYING]
-    now = utc_now()
-
-    if matching_active:
-        execution.status = UnpackExecutionStatus.MATCHING.value
-        execution.finished_at = None
-    elif counts[UnpackItemStatus.REVIEW_REQUIRED]:
-        execution.status = UnpackExecutionStatus.REVIEW_REQUIRED.value
-        execution.finished_at = None
-    elif content_active:
-        execution.status = UnpackExecutionStatus.CONTENT_VERIFYING.value
-        execution.finished_at = None
-    elif execution_active:
-        execution.status = UnpackExecutionStatus.EXECUTING.value
-        execution.finished_at = None
-    elif client_active:
-        execution.status = UnpackExecutionStatus.CLIENT_VERIFYING.value
-        execution.finished_at = None
-    elif execution.completed_count == execution.total_count:
-        execution.status = UnpackExecutionStatus.COMPLETED.value
-        execution.finished_at = now
-    elif (
-        execution.total_count > 0
-        and sum(
-            counts[status]
-            for status in (
-                UnpackItemStatus.NO_MATCH,
-                UnpackItemStatus.MATCH_TIMEOUT,
-                UnpackItemStatus.MATCH_ERROR,
-                UnpackItemStatus.CONTENT_MISMATCH,
-                UnpackItemStatus.EXECUTION_ERROR,
-            )
-        )
-        == execution.total_count
-    ):
-        execution.status = UnpackExecutionStatus.FAILED.value
-        execution.finished_at = now
-    elif any(
-        counts[status]
-        for status in (
-            UnpackItemStatus.NO_MATCH,
-            UnpackItemStatus.MATCH_TIMEOUT,
-            UnpackItemStatus.MATCH_ERROR,
-            UnpackItemStatus.CONTENT_MISMATCH,
-            UnpackItemStatus.EXECUTION_ERROR,
-        )
-    ):
-        execution.status = UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value
-        execution.finished_at = now
-    execution.updated_at = now
-    execution.version += 1
+    refresh_unpack_execution_state(session, execution)

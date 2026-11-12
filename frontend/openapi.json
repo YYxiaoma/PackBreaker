@@ -5708,9 +5708,32 @@
             "title": "Media Identity",
             "type": "object"
           },
+          "retry_capability": {
+            "enum": [
+              "MATCH",
+              "VERIFICATION",
+              "PLAN",
+              "RESUME",
+              "RECONCILE",
+              "NONE"
+            ],
+            "title": "Retry Capability",
+            "type": "string"
+          },
           "retry_count": {
             "title": "Retry Count",
             "type": "integer"
+          },
+          "retry_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Reason"
           },
           "review_allowed": {
             "title": "Review Allowed",
@@ -5777,6 +5800,8 @@
           "auxiliary_state",
           "review_allowed",
           "has_external_operations",
+          "retry_capability",
+          "retry_reason",
           "last_error_code",
           "last_error_message",
           "match_started_at",
@@ -5862,8 +5887,20 @@
             "title": "Id",
             "type": "string"
           },
+          "match_pending_count": {
+            "title": "Match Pending Count",
+            "type": "integer"
+          },
+          "match_progress_count": {
+            "title": "Match Progress Count",
+            "type": "integer"
+          },
           "matched_auto_count": {
             "title": "Matched Auto Count",
+            "type": "integer"
+          },
+          "matching_count": {
+            "title": "Matching Count",
             "type": "integer"
           },
           "no_match_count": {
@@ -5912,6 +5949,9 @@
           "discovery_complete",
           "discovery_cursor",
           "total_count",
+          "match_pending_count",
+          "matching_count",
+          "match_progress_count",
           "matched_auto_count",
           "no_match_count",
           "review_count",
@@ -5957,7 +5997,10 @@
       "UnpackItemActionRequest": {
         "properties": {
           "action": {
-            "const": "retry_match",
+            "enum": [
+              "retry_match",
+              "retry_content_verification"
+            ],
             "title": "Action",
             "type": "string"
           }
@@ -6134,6 +6177,7 @@
           "CONTENT_VERIFYING",
           "CONTENT_VERIFIED",
           "CONTENT_MISMATCH",
+          "CONTENT_VERIFY_ERROR",
           "PLAN_PENDING",
           "EXECUTING",
           "CLIENT_VERIFYING",

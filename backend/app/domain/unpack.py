@@ -66,6 +66,7 @@ class UnpackItemStatus(StrEnum):
     CONTENT_VERIFYING = "CONTENT_VERIFYING"
     CONTENT_VERIFIED = "CONTENT_VERIFIED"
     CONTENT_MISMATCH = "CONTENT_MISMATCH"
+    CONTENT_VERIFY_ERROR = "CONTENT_VERIFY_ERROR"
     PLAN_PENDING = "PLAN_PENDING"
     EXECUTING = "EXECUTING"
     CLIENT_VERIFYING = "CLIENT_VERIFYING"
@@ -131,7 +132,6 @@ TERMINAL_ITEM_STATUSES = frozenset(
 REVIEWABLE_ITEM_STATUSES = frozenset(
     {
         UnpackItemStatus.REVIEW_REQUIRED,
-        UnpackItemStatus.MATCHED_AUTO,
         UnpackItemStatus.TORRENT_FETCHING,
         UnpackItemStatus.CONTENT_VERIFYING,
         UnpackItemStatus.CONTENT_VERIFIED,
@@ -268,6 +268,7 @@ _ITEM_TRANSITIONS: dict[UnpackItemStatus, frozenset[UnpackItemStatus]] = {
             UnpackItemStatus.MATCHED_MANUAL,
             UnpackItemStatus.NO_MATCH,
             UnpackItemStatus.MATCH_ERROR,
+            UnpackItemStatus.CONTENT_VERIFY_ERROR,
             UnpackItemStatus.CANCELLED,
         }
     ),
@@ -303,6 +304,14 @@ _ITEM_TRANSITIONS: dict[UnpackItemStatus, frozenset[UnpackItemStatus]] = {
         {
             UnpackItemStatus.REVIEW_REQUIRED,
             UnpackItemStatus.MATCH_PENDING,
+            UnpackItemStatus.CANCELLED,
+        }
+    ),
+    UnpackItemStatus.CONTENT_VERIFY_ERROR: frozenset(
+        {
+            UnpackItemStatus.MATCH_PENDING,
+            UnpackItemStatus.MATCHED_AUTO,
+            UnpackItemStatus.MATCHED_MANUAL,
             UnpackItemStatus.CANCELLED,
         }
     ),

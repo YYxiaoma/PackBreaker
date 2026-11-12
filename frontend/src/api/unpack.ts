@@ -555,6 +555,25 @@ export async function retryUnpackItemMatch(
   }
 }
 
+export async function retryUnpackItemContentVerification(
+  itemId: string,
+  itemVersion: number,
+): Promise<UnpackItemActionResponse> {
+  if (!Number.isInteger(itemVersion) || itemVersion < 1) {
+    throw new Error('itemVersion 必须是正整数');
+  }
+  try {
+    const response = await apiClient.post<UnpackItemActionResponse>(
+      `/unpack/items/${requiredId(itemId, 'itemId')}/actions`,
+      { action: 'retry_content_verification' },
+      { headers: { 'If-Match': String(itemVersion) } },
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
 export async function deleteUnpackExecutionItem(
   itemId: string,
   itemVersion: number,

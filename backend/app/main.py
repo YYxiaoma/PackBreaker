@@ -318,6 +318,12 @@ def create_app(
             max_candidates_per_item=resolved_settings.unpack_match_candidate_limit,
         )
         app.state.unpack_match_coordinator = unpack_match_coordinator
+        recovered_match_count = unpack_match_coordinator.recover_interrupted_matches()
+        if recovered_match_count:
+            _recovery_logger.warning(
+                "已恢复上次进程中断的数据拆包匹配 item_count=%d",
+                recovered_match_count,
+            )
         unpack_content_verification_service = UnpackContentVerificationService(
             resolved_runtime.session_factory,
             site_service,
@@ -326,6 +332,14 @@ def create_app(
             manual_torrent_store=manual_torrent_store,
         )
         app.state.unpack_content_verification_service = unpack_content_verification_service
+        recovered_verification_count = (
+            unpack_content_verification_service.recover_interrupted_verifications()
+        )
+        if recovered_verification_count:
+            _recovery_logger.warning(
+                "已恢复上次进程中断的数据拆包内容验证 item_count=%d",
+                recovered_verification_count,
+            )
         unpack_auxiliary_service = UnpackAuxiliaryStagingService(
             resolved_runtime.session_factory,
             site_service,

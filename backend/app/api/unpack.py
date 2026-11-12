@@ -255,6 +255,9 @@ class UnpackExecutionResponse(BaseModel):
     discovery_complete: bool
     discovery_cursor: str | None
     total_count: int
+    match_pending_count: int
+    matching_count: int
+    match_progress_count: int
     matched_auto_count: int
     no_match_count: int
     review_count: int
@@ -291,6 +294,8 @@ class UnpackExecutionItemResponse(BaseModel):
     auxiliary_state: dict[str, Any] | None
     review_allowed: bool
     has_external_operations: bool
+    retry_capability: Literal["MATCH", "VERIFICATION", "PLAN", "RESUME", "RECONCILE", "NONE"]
+    retry_reason: str | None
     last_error_code: str | None
     last_error_message: str | None
     match_started_at: datetime | None
@@ -451,7 +456,7 @@ class UnpackReviewResponse(BaseModel):
 
 
 class UnpackItemActionRequest(BaseModel):
-    action: Literal["retry_match"]
+    action: Literal["retry_match", "retry_content_verification"]
 
 
 class UnpackItemActionResponse(BaseModel):
@@ -532,6 +537,9 @@ def _execution_response(view: UnpackExecutionView) -> UnpackExecutionResponse:
         discovery_complete=view.discovery_complete,
         discovery_cursor=view.discovery_cursor,
         total_count=view.total_count,
+        match_pending_count=view.match_pending_count,
+        matching_count=view.matching_count,
+        match_progress_count=view.match_progress_count,
         matched_auto_count=view.matched_auto_count,
         no_match_count=view.no_match_count,
         review_count=view.review_count,
@@ -566,6 +574,8 @@ def _execution_item_response(view: UnpackExecutionItemView) -> UnpackExecutionIt
         auxiliary_state=view.auxiliary_state,
         review_allowed=view.review_allowed,
         has_external_operations=view.has_external_operations,
+        retry_capability=view.retry_capability,
+        retry_reason=view.retry_reason,
         last_error_code=view.last_error_code,
         last_error_message=view.last_error_message,
         match_started_at=view.match_started_at,
@@ -1325,12 +1335,17 @@ async def act_on_unpack_item(
     _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
     if_match: Annotated[str | None, Header(alias="If-Match")] = None,
 ) -> UnpackItemActionResponse:
-    if payload.action != "retry_match":
-        raise AssertionError("Pydantic 已限制 action")
-    result = unpack_item_action_service(request).retry_match(
-        item_id,
-        expected_item_version=_required_item_version(if_match),
-    )
+    service = unpack_item_action_service(request)
+    if payload.action == "retry_content_verification":
+        result = service.retry_content_verification(
+            item_id,
+            expected_item_version=_required_item_version(if_match),
+        )
+    else:
+        result = service.retry_match(
+            item_id,
+            expected_item_version=_required_item_version(if_match),
+        )
     return UnpackItemActionResponse(
         item_id=result.item_id,
         generation=result.generation,

@@ -51,9 +51,11 @@ class AppSettings(BaseSettings):
     unpack_match_site_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
     unpack_match_candidate_limit: int = Field(default=50, ge=1, le=500)
     unpack_content_verify_batch_size: int = Field(default=5, ge=1, le=100)
-    unpack_content_fetch_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    # M-Team enforces a 90-second minimum request interval. This budget must
+    # include the rate-limit wait plus the bounded token/download HTTP requests.
+    unpack_content_fetch_timeout_seconds: float = Field(default=180.0, ge=1.0, le=300.0)
     unpack_auxiliary_batch_size: int = Field(default=2, ge=1, le=50)
-    unpack_auxiliary_fetch_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    unpack_auxiliary_fetch_timeout_seconds: float = Field(default=180.0, ge=1.0, le=300.0)
     unpack_execution_plan_batch_size: int = Field(default=5, ge=1, le=100)
     unpack_materialization_batch_size: int = Field(default=5, ge=1, le=100)
     unpack_seeding_batch_size: int = Field(default=5, ge=1, le=100)

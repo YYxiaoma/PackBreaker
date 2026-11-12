@@ -43,6 +43,7 @@ import {
   listUnpackSourceScanItems,
   listUnpackTreeRoots,
   retryUnpackItemMatch,
+  retryUnpackItemContentVerification,
   retryUnpackExecutionItems,
   reviewUnpackItem,
   runUnpackDefinition,
@@ -71,13 +72,8 @@ import {
   unpackReconciliationGuidance,
   unpackOperationTypeLabel,
   unpackOperationStatusLabel,
-  unpackExecutionStageLabel,
-  unpackItemStatusLabel,
   unpackItemStatusSummary,
-  unpackPlanStatusLabel,
-  unpackPlanBlockReasonLabel,
   unpackErrorLabel,
-  unpackProgressCount,
   unpackProgressPercent,
   unpackSourceKindLabel,
   unpackTriggerLabel,
@@ -85,7 +81,6 @@ import {
 } from '../unpackPresentation';
 import {
   unpackExecutionDetailTimeline,
-  unpackExecutionDetailSummary,
   unpackExecutionDetailRecordNote,
 } from '../unpackExecutionDetail';
 import { createUnpackDiagnosticsGuard } from '../unpackDiagnosticsGuard';
@@ -125,6 +120,7 @@ interface Draft {
   targetDownloaderId: string;
   targetCategory: string;
   targetTags: string[];
+  skipDownloaderCheck: boolean;
   extensions: string;
   minSizeMb: number | null;
   maxSizeMb: number | null;
@@ -253,9 +249,6 @@ const diagnostics = ref<UnpackItemDiagnostics | null>(null);
 const detailTimeline = computed(() =>
   diagnostics.value ? unpackExecutionDetailTimeline(diagnostics.value) : [],
 );
-const detailSummary = computed(() =>
-  diagnostics.value ? unpackExecutionDetailSummary(diagnostics.value) : null,
-);
 
 const diagnosticsGuard = createUnpackDiagnosticsGuard();
 // Invalidate immediately on close, including requests that finish before the
@@ -279,6 +272,17 @@ const itemPageSize = ref(20);
 const itemPageIndex = ref(1);
 const executionItemStatusFilter = ref('');
 const executionItemKeyword = ref('');
+let executionItemsRequestId = 0;
+watch(
+  executionVisible,
+  (visible) => {
+    if (!visible) {
+      executionItemsRequestId += 1;
+      executionLoading.value = false;
+    }
+  },
+  { flush: 'sync' },
+);
 
 const reviewVisible = ref(false);
 const reviewLoading = ref(false);
@@ -407,7 +411,7 @@ const pipelineSteps = [
   '自动匹配 / 人工审核',
   '种子内容校验',
   '辅种执行',
-  '客户端校验 / 完成',
+  '下载器处理 / 完成',
 ];
 
 const activePipelineIndex = computed(() => {
@@ -442,6 +446,7 @@ function freshDraft(): Draft {
     targetDownloaderId: '',
     targetCategory: '',
     targetTags: [],
+    skipDownloaderCheck: false,
     extensions: '.mkv, .mp4, .ts, .m2ts',
     minSizeMb: 0,
     maxSizeMb: null,
@@ -527,9 +532,14 @@ function itemStatusTag(
   if (status === 'COMPLETED' || status === 'CONTENT_VERIFIED') return 'success';
   if (status === 'REVIEW_REQUIRED') return 'warning';
   if (
-    ['NO_MATCH', 'MATCH_TIMEOUT', 'MATCH_ERROR', 'CONTENT_MISMATCH', 'EXECUTION_ERROR'].includes(
-      status,
-    )
+    [
+      'NO_MATCH',
+      'MATCH_TIMEOUT',
+      'MATCH_ERROR',
+      'CONTENT_VERIFY_ERROR',
+      'CONTENT_MISMATCH',
+      'EXECUTION_ERROR',
+    ].includes(status)
   ) {
     return 'danger';
   }
@@ -561,16 +571,7 @@ function resultText(row: TaskRow): string {
 }
 
 function progressCount(execution: UnpackExecution): number {
-  return unpackProgressCount(execution.total_count, {
-    matchedAutoCount: execution.matched_auto_count,
-    noMatchCount: execution.no_match_count,
-    reviewCount: execution.review_count,
-    contentVerifiedCount: execution.content_verified_count,
-    contentMismatchCount: execution.content_mismatch_count,
-    timeoutCount: execution.timeout_count,
-    errorCount: execution.error_count,
-    completedCount: execution.completed_count,
-  });
+  return execution.match_progress_count;
 }
 
 function progressText(execution: UnpackExecution | null): string {
@@ -663,6 +664,7 @@ function openEdit(row: TaskRow): void {
     targetDownloaderId: stringValue(output.target_downloader_id),
     targetCategory: stringValue(output.target_category),
     targetTags: stringList(output.target_tags),
+    skipDownloaderCheck: output.skip_downloader_check === true,
     extensions: stringList(filter.extensions).join(', '),
     minSizeMb: typeof filter.min_size_bytes === 'number' ? filter.min_size_bytes / 1048576 : null,
     maxSizeMb: typeof filter.max_size_bytes === 'number' ? filter.max_size_bytes / 1048576 : null,
@@ -1227,6 +1229,7 @@ function createPayload(
       target_downloader_id: draft.targetDownloaderId,
       target_category: draft.targetCategory.trim() || null,
       target_tags: [...new Set(draft.targetTags.map((tag) => tag.trim()).filter(Boolean))],
+      skip_downloader_check: draft.skipDownloaderCheck,
     },
     retry_enabled: draft.retryEnabled,
     max_retries: draft.maxRetries,
@@ -1457,42 +1460,71 @@ async function runDefinition(row: TaskRow): Promise<void> {
   }
 }
 
-async function openExecution(row: TaskRow): Promise<void> {
+function openExecution(row: TaskRow): void {
   const execution = row.execution;
   if (!execution) {
     ElMessage.info('该任务尚未产生执行记录');
     return;
   }
+  executionItemsRequestId += 1;
   activeDefinition.value = row.definition;
-  activeExecution.value = await getUnpackExecution(execution.id);
+  // The task list already carries the latest execution summary. Render the
+  // dialog immediately, then fetch only its first item page in the background.
+  activeExecution.value = execution;
+  executionItems.value = [];
+  itemCursor.value = undefined;
+  itemNextCursor.value = null;
   itemCursorHistory.value = [];
   itemPageSize.value = 20;
   itemPageIndex.value = 1;
   executionItemStatusFilter.value = '';
   executionItemKeyword.value = '';
-  await loadExecutionItems();
   executionVisible.value = true;
+  void loadExecutionItems();
 }
 
 async function loadExecutionItems(cursor?: string): Promise<void> {
-  if (!activeExecution.value) return;
+  const execution = activeExecution.value;
+  if (!execution) return;
+  const executionId = execution.id;
+  const requestId = ++executionItemsRequestId;
   executionLoading.value = true;
   try {
-    const result = await listUnpackExecutionItems(activeExecution.value.id, {
+    const result = await listUnpackExecutionItems(executionId, {
       cursor,
       limit: itemPageSize.value,
       status: (executionItemStatusFilter.value || undefined) as UnpackItemStatus | undefined,
       q: executionItemKeyword.value.trim() || undefined,
     });
+    if (requestId !== executionItemsRequestId || activeExecution.value?.id !== executionId) return;
     itemCursor.value = cursor;
     executionItems.value = result.items;
     itemNextCursor.value = result.next_cursor;
-    activeExecution.value = await getUnpackExecution(activeExecution.value.id);
   } catch (caught) {
-    ElMessage.error(toApiProblem(caught).message);
+    if (requestId === executionItemsRequestId && activeExecution.value?.id === executionId) {
+      ElMessage.error(toApiProblem(caught).message);
+    }
   } finally {
-    executionLoading.value = false;
+    if (requestId === executionItemsRequestId) executionLoading.value = false;
   }
+}
+
+async function refreshExecutionSummary(): Promise<void> {
+  const executionId = activeExecution.value?.id;
+  if (!executionId) return;
+  try {
+    const result = await getUnpackExecution(executionId);
+    if (activeExecution.value?.id === executionId) activeExecution.value = result;
+  } catch (caught) {
+    if (activeExecution.value?.id === executionId) ElMessage.error(toApiProblem(caught).message);
+  }
+}
+
+function syncActiveExecutionFromList(): void {
+  const executionId = activeExecution.value?.id;
+  if (!executionId) return;
+  const latest = executions.value.find((execution) => execution.id === executionId);
+  if (latest) activeExecution.value = latest;
 }
 
 async function nextItemPage(): Promise<void> {
@@ -1523,7 +1555,7 @@ async function applyExecutionItemFilters(): Promise<void> {
 }
 
 async function refreshExecutionItems(): Promise<void> {
-  await loadExecutionItems(itemCursor.value);
+  await Promise.all([loadExecutionItems(itemCursor.value), refreshExecutionSummary()]);
 }
 
 function mediaTitle(item: UnpackExecutionItem): string {
@@ -1555,43 +1587,63 @@ function itemCanReview(item: UnpackExecutionItem): boolean {
 }
 
 function itemCanRetry(item: UnpackExecutionItem): boolean {
-  return ['match', 'resume'].includes(unpackItemRetryAvailability(item));
+  return ['match', 'verification', 'plan', 'resume'].includes(unpackItemRetryAvailability(item));
 }
 
 function itemRetryLabel(item: UnpackExecutionItem): string {
-  if (unpackItemRetryAvailability(item) === 'resume') return '继续执行';
+  const retryAvailability = unpackItemRetryAvailability(item);
+  if (retryAvailability === 'verification') return '重试内容校验';
+  if (retryAvailability === 'plan') return '重试执行计划';
   const state = asRecord(item.auxiliary_state);
   if (
+    retryAvailability === 'resume' &&
     item.status === 'MATCH_ERROR' &&
-    item.has_external_operations &&
     item.last_error_code === 'UNPACK_AUXILIARY_CONFLICT' &&
     state.state === 'DOWNLOADING'
   ) {
     return '核对后续跑';
   }
-  return item.status === 'MATCH_ERROR' &&
+  if (
+    retryAvailability === 'resume' &&
+    item.status === 'MATCH_ERROR' &&
     [
       'DOWNLOADER_UNAVAILABLE',
       'DOWNLOADER_CONNECTION_FAILED',
       'SITE_UNAVAILABLE',
       'SITE_RATE_LIMITED',
+      'SITE_CIRCUIT_OPEN',
     ].includes(item.last_error_code ?? '') &&
     state.state === 'DOWNLOADING'
-    ? '继续补齐'
-    : '重新匹配';
+  ) {
+    return '继续补齐';
+  }
+  if (retryAvailability === 'resume') return '继续执行';
+  return '重新匹配';
 }
 
 async function retryItem(item: UnpackExecutionItem): Promise<void> {
   try {
-    const result = await retryUnpackItemMatch(item.id, item.version);
+    const retryAvailability = unpackItemRetryAvailability(item);
+    const result =
+      retryAvailability === 'verification'
+        ? await retryUnpackItemContentVerification(item.id, item.version)
+        : await retryUnpackItemMatch(item.id, item.version);
     ElMessage.success(
-      result.item_status === 'AUXILIARY_FETCHING'
-        ? '已恢复原有辅助文件补齐，将校验已下载文件，不会重复添加种子'
-        : result.item_status === 'EXECUTING'
-          ? '已保留原执行计划和操作记录，等待执行器重新核对后继续'
-          : '已重新进入匹配队列',
+      retryAvailability === 'verification'
+        ? result.item_status === 'MATCH_PENDING'
+          ? '原候选已失效，已重新进入匹配队列；匹配成功后将重新校验内容'
+          : '已保留原候选，重新进入内容校验队列'
+        : retryAvailability === 'plan'
+          ? '已保留原候选和内容校验结果，重新进入执行计划生成队列'
+          : result.item_status === 'AUXILIARY_FETCHING'
+            ? '已恢复原有辅助文件补齐，将校验已下载文件，不会重复添加种子'
+            : result.item_status === 'EXECUTING'
+              ? '已保留原执行计划和操作记录，等待执行器重新核对后继续'
+              : result.item_status === 'PLAN_PENDING'
+                ? '已保留原候选和执行计划，重新进入文件落位队列'
+                : '已重新进入匹配队列',
     );
-    await loadExecutionItems(itemCursor.value);
+    await Promise.all([loadExecutionItems(itemCursor.value), refreshExecutionSummary()]);
   } catch (caught) {
     ElMessage.error(toApiProblem(caught).message);
   }
@@ -1637,6 +1689,7 @@ async function deleteExecutionItem(item: UnpackExecutionItem): Promise<void> {
     itemPageIndex.value = 1;
     await loadExecutionItems();
     await refresh();
+    syncActiveExecutionFromList();
   } catch (error) {
     ElMessage.error(toApiProblem(error).message);
   }
@@ -1973,6 +2026,7 @@ async function submitReview(decision: 'APPROVE' | 'NO_MATCH'): Promise<void> {
     reviewVisible.value = false;
     await loadExecutionItems(itemCursor.value);
     await refresh();
+    syncActiveExecutionFromList();
   } catch (caught) {
     ElMessage.error(toApiProblem(caught).message);
   } finally {
@@ -2054,7 +2108,7 @@ onMounted(() => {
           <el-option label="待人工审核" value="REVIEW_REQUIRED" />
           <el-option label="内容校验中" value="CONTENT_VERIFYING" />
           <el-option label="执行中" value="EXECUTING" />
-          <el-option label="下载器校验中" value="CLIENT_VERIFYING" />
+          <el-option label="下载器处理中" value="CLIENT_VERIFYING" />
           <el-option label="已完成" value="COMPLETED" />
           <el-option label="完成但有异常" value="COMPLETED_WITH_ERRORS" />
           <el-option label="失败" value="FAILED" />
@@ -2640,6 +2694,29 @@ onMounted(() => {
               Transmission 不区分分类和标签，分类与标签会作为标签一并写入。
             </small>
           </section>
+
+          <section class="form-section skip-downloader-check-panel">
+            <div class="skip-downloader-check-row">
+              <div class="skip-downloader-check-copy">
+                <b>跳过下载器检查</b>
+                <p>仅在 PackBreaker 已完成完整内容验证后，跳过可省略的下载器重复校验。</p>
+              </div>
+              <el-switch
+                v-model="draft.skipDownloaderCheck"
+                active-text="开启"
+                inactive-text="关闭"
+                aria-label="跳过下载器检查"
+              />
+            </div>
+            <small v-if="selectedTargetDownloader?.type === 'TRANSMISSION'">
+              Transmission 不支持单任务原生跳检；开启后仅跳过额外 VERIFY，启动时仍可能执行
+              Transmission 自身检查。
+            </small>
+            <small v-else>
+              QB 仅在 API 支持且存放方式满足安全条件时启用
+              skip_checking；不满足条件会自动回退为正常检查。
+            </small>
+          </section>
         </div>
 
         <section
@@ -3114,91 +3191,7 @@ onMounted(() => {
         </div>
       </template>
       <div v-loading="diagnosticsLoading" class="execution-detail-body">
-        <template v-if="diagnostics && detailSummary">
-          <div class="execution-detail-overview" aria-label="执行结果概览">
-            <div
-              class="detail-summary-card"
-              :class="{
-                result: [
-                  'EXECUTION_ERROR',
-                  'MATCH_ERROR',
-                  'MATCH_TIMEOUT',
-                  'CONTENT_MISMATCH',
-                ].includes(diagnostics.status),
-              }"
-              data-detail-card="result"
-            >
-              <div class="detail-card-icon"><Info :size="20" /></div>
-              <div class="detail-card-copy">
-                <small>当前结果</small>
-                <b>{{ unpackItemStatusLabel(diagnostics.status) }}</b>
-                <span>来自本次任务记录</span>
-              </div>
-            </div>
-            <div class="detail-summary-card" data-detail-card="stage">
-              <div class="detail-card-icon"><FolderOpen :size="20" /></div>
-              <div class="detail-card-copy">
-                <small>停止阶段</small>
-                <b>{{ unpackExecutionStageLabel(diagnostics.execution_stage) }}</b>
-                <span>历史记录的最后阶段</span>
-              </div>
-            </div>
-            <div
-              class="detail-summary-card"
-              :class="{ caution: diagnostics.requires_manual_reconciliation }"
-              data-detail-card="risk"
-            >
-              <div class="detail-card-icon"><Info :size="20" /></div>
-              <div class="detail-card-copy">
-                <small>风险状态</small>
-                <b>{{
-                  diagnostics.requires_manual_reconciliation ? '需要人工核对' : '未标记强制核对'
-                }}</b>
-                <span>不代表实时核验已通过</span>
-              </div>
-            </div>
-            <div class="detail-summary-card" data-detail-card="advice">
-              <div class="detail-card-icon"><Info :size="20" /></div>
-              <div class="detail-card-copy">
-                <small>可执行建议</small>
-                <b>{{ detailSummary.recommendationLabel }}</b>
-                <span>不会自动操作下载器</span>
-              </div>
-            </div>
-          </div>
-
-          <section
-            class="execution-detail-explanation"
-            :class="{
-              warning: diagnostics.requires_manual_reconciliation,
-              'is-success':
-                !diagnostics.last_error_code && !diagnostics.requires_manual_reconciliation,
-            }"
-            aria-label="执行结果说明"
-          >
-            <div class="detail-explanation-heading">
-              <Info :size="20" />
-              <h3>{{ detailSummary.title }}</h3>
-            </div>
-            <p>{{ detailSummary.description }}</p>
-            <p class="detail-recommendation"><b>建议：</b>{{ detailSummary.recommendation }}</p>
-            <p v-if="diagnostics.acceptance_read_only" class="detail-security-warning">
-              这是只读验收任务：不可创建文件，也不可向下载器添加、校验或启动种子。
-            </p>
-            <p
-              v-if="diagnostics.plan_status === 'BLOCKED' || diagnostics.plan_status === 'INVALID'"
-              class="detail-security-warning"
-            >
-              上次执行计划存在问题：{{
-                diagnostics.plan_blocked_reasons.map(unpackPlanBlockReasonLabel).join('、') ||
-                unpackPlanStatusLabel(diagnostics.plan_status)
-              }}。不能凭历史记录跳过安全检查。
-            </p>
-            <p v-if="diagnostics.requires_manual_reconciliation" class="detail-security-warning">
-              部分文件或下载器操作的结果仍不明确，必须先核对，不允许直接重复执行这些操作。
-            </p>
-          </section>
-
+        <template v-if="diagnostics">
           <section class="execution-detail-stages" aria-label="执行阶段">
             <div class="detail-section-title">
               <h3>执行阶段</h3>
@@ -3340,16 +3333,33 @@ onMounted(() => {
         <aside>
           <b>当前选择</b>
           <p>{{ selectedTreeNode?.path || '请选择目录节点' }}</p>
-          <small>目录选择使用后端授权根与 opaque token；保存时仍会重新校验路径权限。</small>
+          <small>目录树可浏览当前进程有读取权限的目录；任务创建与执行仍会校验目录操作权限。</small>
         </aside>
       </div>
     </el-dialog>
 
-    <el-dialog
-      v-model="executionVisible"
-      :title="'执行详情 · ' + (activeDefinition?.name ?? '')"
-      width="min(1180px, 97vw)"
-    >
+    <el-dialog v-model="executionVisible" width="min(1180px, 97vw)">
+      <template #header>
+        <div class="execution-dialog-header">
+          <strong class="execution-dialog-title" :title="activeDefinition?.name ?? ''">
+            执行详情 · {{ activeDefinition?.name ?? '' }}
+          </strong>
+          <div class="execution-matching-notice-wrap">
+            <el-tooltip
+              content="系统会等待本任务全部影片完成匹配（匹配成功或匹配失败）后，再统一将匹配成功的影片送入种子内容验证。自动匹配成功的影片无需人工审核；匹配失败或需要人工处理的影片仍按原流程处理。"
+              placement="bottom-start"
+            >
+              <el-alert
+                type="info"
+                title="匹配阶段：全部影片匹配结束后，成功项统一进入种子内容验证；自动匹配成功无需人工审核。"
+                :closable="false"
+                show-icon
+                class="execution-matching-notice"
+              />
+            </el-tooltip>
+          </div>
+        </div>
+      </template>
       <div v-if="activeExecution" class="execution-detail">
         <div class="pipeline">
           <div
@@ -3367,6 +3377,14 @@ onMounted(() => {
           <div>
             <b>{{ activeExecution.total_count }}</b
             ><small>影片总数</small>
+          </div>
+          <div>
+            <b>{{ activeExecution.match_pending_count ?? 0 }}</b
+            ><small>待匹配</small>
+          </div>
+          <div>
+            <b>{{ activeExecution.matching_count ?? 0 }}</b
+            ><small>匹配中</small>
           </div>
           <div>
             <b>{{ activeExecution.matched_auto_count }}</b
@@ -3419,9 +3437,11 @@ onMounted(() => {
             style="width: 170px"
             @change="applyExecutionItemFilters"
           >
-            <el-option label="无匹配" value="NO_MATCH" />
+            <el-option label="待匹配" value="MATCH_PENDING" />
             <el-option label="匹配中" value="MATCHING" />
+            <el-option label="无匹配" value="NO_MATCH" />
             <el-option label="匹配错误" value="MATCH_ERROR" />
+            <el-option label="校验错误" value="CONTENT_VERIFY_ERROR" />
             <el-option label="匹配超时" value="MATCH_TIMEOUT" />
             <el-option label="人工审核" value="REVIEW_REQUIRED" />
             <el-option label="自动匹配" value="MATCHED_AUTO" />
@@ -3491,9 +3511,9 @@ onMounted(() => {
               </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="400" fixed="right">
+          <el-table-column label="操作" width="300" fixed="right">
             <template #default="{ row }">
-              <div class="task-row-actions">
+              <div class="task-row-actions execution-item-actions">
                 <el-button
                   v-if="row.has_external_operations || unpackItemExternalRiskLabel(row)"
                   link
@@ -3508,14 +3528,33 @@ onMounted(() => {
                     title="本轮候选队列中的最高匹配度，仅供审核参考，不代表已完成内容校验"
                     >最高 {{ (row.highest_candidate_score_bps / 100).toFixed(1) }}%</span
                   >
-                  <el-button link type="primary" @click="openReview(row)">审核</el-button>
+                  <el-tooltip
+                    :content="
+                      row.match_origin === 'AUTO' && row.status !== 'REVIEW_REQUIRED'
+                        ? '自动匹配结果会自动进入内容验证；此处仅用于主动更换候选，不需要人工确认。'
+                        : row.status === 'REVIEW_REQUIRED'
+                          ? '该影片需要人工处理，请选择并确认候选。'
+                          : '可在外部操作开始前主动更换候选。'
+                    "
+                    placement="top"
+                  >
+                    <el-button link type="primary" @click="openReview(row)">
+                      {{
+                        row.match_origin === 'AUTO' && row.status !== 'REVIEW_REQUIRED'
+                          ? '更换候选'
+                          : '审核'
+                      }}
+                    </el-button>
+                  </el-tooltip>
                 </div>
                 <el-button v-if="itemCanRetry(row)" link type="warning" @click="retryItem(row)"
                   ><RotateCcw :size="14" />{{ itemRetryLabel(row) }}</el-button
                 >
                 <el-tooltip
                   v-else-if="unpackItemRetryAvailability(row) === 'reconcile'"
-                  content="这部影片已经进行过文件或下载器操作，现有记录不足以证明可以安全继续，请先查看执行明细。"
+                  :content="
+                    row.retry_reason || '当前执行记录不满足安全恢复条件，请先查看执行明细。'
+                  "
                   placement="top"
                 >
                   <span class="blocked-retry"><el-button link disabled>暂不可重试</el-button></span>
@@ -3549,11 +3588,16 @@ onMounted(() => {
       <template #footer><el-button @click="executionVisible = false">关闭</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="reviewVisible" width="min(1040px, 96vw)">
+    <el-dialog v-model="reviewVisible" class="unpack-review-dialog" width="min(1040px, 96vw)">
       <template #header>
         <div class="review-dialog-header">
           <strong class="review-dialog-title"
-            >人工审核候选 · {{ reviewItem ? mediaTitle(reviewItem) : '' }}</strong
+            >{{
+              reviewItem?.match_origin === 'AUTO' && reviewItem.status !== 'REVIEW_REQUIRED'
+                ? '更换匹配候选'
+                : '人工审核候选'
+            }}
+            · {{ reviewItem ? mediaTitle(reviewItem) : '' }}</strong
           >
         </div>
       </template>
@@ -3566,10 +3610,19 @@ onMounted(() => {
         </div>
         <div class="review-heading">
           <div class="review-heading-description">
-            <b>候选列表</b><small>默认选中匹配度最高的一条，但必须点击确认后才会继续。</small>
+            <b>候选列表</b
+            ><small>{{
+              reviewItem?.match_origin === 'AUTO' && reviewItem.status !== 'REVIEW_REQUIRED'
+                ? '自动匹配结果会自动进入内容验证；只有需要更换候选时才需要确认。'
+                : '默认选中匹配度最高的一条，但必须点击确认后才会继续。'
+            }}</small>
           </div>
           <div class="review-heading-actions">
-            <el-tag type="warning">人工审核</el-tag>
+            <el-tag type="warning">{{
+              reviewItem?.match_origin === 'AUTO' && reviewItem.status !== 'REVIEW_REQUIRED'
+                ? '主动更换候选'
+                : '人工审核'
+            }}</el-tag>
             <el-button
               type="primary"
               plain
@@ -3854,6 +3907,44 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+.execution-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-right: 34px;
+}
+.execution-dialog-title {
+  flex: 0 1 auto;
+  max-width: 32%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--el-text-color-primary);
+  font-size: 18px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution-matching-notice-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.execution-matching-notice-wrap :deep(.el-alert) {
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 4px 8px;
+}
+.execution-matching-notice-wrap :deep(.el-alert__content) {
+  min-width: 0;
+  overflow: hidden;
+}
+.execution-matching-notice-wrap :deep(.el-alert__title) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 20px;
 }
 .execution-detail-body {
   display: grid;
@@ -4150,6 +4241,25 @@ onMounted(() => {
     justify-content: flex-end;
   }
 }
+:deep(.el-dialog.unpack-review-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+  overflow: hidden;
+  margin-top: 6vh !important;
+}
+:deep(.el-dialog.unpack-review-dialog .el-dialog__header),
+:deep(.el-dialog.unpack-review-dialog .el-dialog__footer) {
+  flex: 0 0 auto;
+}
+:deep(.el-dialog.unpack-review-dialog .el-dialog__body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: calc(88vh - 168px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .review-dialog-header {
   display: flex;
   align-items: center;
@@ -4351,6 +4461,18 @@ onMounted(() => {
 .task-row-actions :deep(.el-button) {
   flex-shrink: 0;
   margin: 0;
+}
+.execution-item-actions {
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 2px;
+  white-space: nowrap;
+}
+.execution-item-actions :deep(.el-button.is-link) {
+  padding: 0 2px !important;
+}
+.execution-item-actions .review-action-group {
+  gap: 2px;
 }
 .task-more-trigger {
   width: 32px;
@@ -4905,6 +5027,35 @@ onMounted(() => {
 }
 .wizard-source-target .form-section {
   padding: 15px;
+}
+.skip-downloader-check-panel {
+  display: grid;
+  gap: 8px;
+}
+.skip-downloader-check-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.skip-downloader-check-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.skip-downloader-check-copy b {
+  font-size: 14px;
+}
+.skip-downloader-check-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.skip-downloader-check-panel > small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .wizard-section-title {
   display: flex;

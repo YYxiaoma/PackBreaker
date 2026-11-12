@@ -16,7 +16,7 @@ class ManualTorrentStoreError(RuntimeError):
 
 
 class ManualTorrentStore:
-    """Private, content-addressed storage for user-confirmed .torrent payloads."""
+    """Private, content-addressed storage for manual and fetched .torrent payloads."""
 
     def __init__(self, data_root: Path, *, max_bytes: int = MAX_MANUAL_TORRENT_BYTES) -> None:
         if max_bytes < 1:

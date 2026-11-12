@@ -315,7 +315,7 @@ class UnpackDefinitionService:
 
     def delete(self, definition_id: str, *, expected_version: int) -> None:
         """Delete definitions with no pending/matching item; retain external history."""
-        manual_torrent_keys: set[str] = set()
+        torrent_storage_keys: set[str] = set()
         with self._session_factory() as session:
             begin_immediate_write(session)
             definition = self._require_definition(session, definition_id)
@@ -364,9 +364,10 @@ class UnpackDefinitionService:
                 ).all()
                 for candidate in candidates:
                     raw_ref = candidate.raw_ref if isinstance(candidate.raw_ref, dict) else {}
-                    key = raw_ref.get("manual_torrent_storage_key")
-                    if isinstance(key, str) and self._manual_torrent_store.is_valid_key(key):
-                        manual_torrent_keys.add(key)
+                    for field in ("manual_torrent_storage_key", "verified_torrent_storage_key"):
+                        key = raw_ref.get(field)
+                        if isinstance(key, str) and self._manual_torrent_store.is_valid_key(key):
+                            torrent_storage_keys.add(key)
 
             # Explicitly clear all dependent rows; some SQLite connections
             # may not enforce FK ON DELETE CASCADE, and orphaned evidence must
@@ -406,15 +407,17 @@ class UnpackDefinitionService:
             session.delete(definition)
             session.commit()
 
-        if manual_torrent_keys:
+        if torrent_storage_keys:
             with self._session_factory() as session:
                 remaining = session.scalars(select(UnpackMatchCandidate)).all()
                 referenced = {
-                    candidate.raw_ref.get("manual_torrent_storage_key")
+                    value
                     for candidate in remaining
                     if isinstance(candidate.raw_ref, dict)
+                    for field in ("manual_torrent_storage_key", "verified_torrent_storage_key")
+                    if isinstance((value := candidate.raw_ref.get(field)), str)
                 }
-            for key in manual_torrent_keys - referenced:
+            for key in torrent_storage_keys - referenced:
                 try:
                     self._manual_torrent_store.delete(key)
                 except ManualTorrentStoreError:
@@ -758,6 +761,11 @@ class UnpackDefinitionService:
         ):
             raise self._invalid("目标下载器标签最多 100 项，每项最多 128 个字符")
         result["target_tags"] = list(target_tags)
+
+        skip_downloader_check = result.get("skip_downloader_check", False)
+        if not isinstance(skip_downloader_check, bool):
+            raise self._invalid("跳过下载器检查必须是布尔值")
+        result["skip_downloader_check"] = skip_downloader_check
         return result
 
     def _normalize_selected_source(

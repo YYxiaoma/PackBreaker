@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.application.unpack_acceptance import READ_ONLY_ACCEPTANCE_MARKER
+from backend.app.application.unpack_item_actions import (
+    RetryCapability,
+    unpack_item_retry_capability,
+)
 from backend.app.domain.unpack import (
     REVIEWABLE_ITEM_STATUSES,
     UnpackExecutionStatus,
@@ -31,6 +35,9 @@ class UnpackExecutionView:
     discovery_complete: bool
     discovery_cursor: str | None
     total_count: int
+    match_pending_count: int
+    matching_count: int
+    match_progress_count: int
     matched_auto_count: int
     no_match_count: int
     review_count: int
@@ -64,6 +71,8 @@ class UnpackExecutionItemView:
     auxiliary_state: dict[str, object] | None
     review_allowed: bool
     has_external_operations: bool
+    retry_capability: RetryCapability
+    retry_reason: str | None
     last_error_code: str | None
     last_error_message: str | None
     match_started_at: datetime | None
@@ -250,17 +259,29 @@ class UnpackExecutionQueryService:
             has_more = len(records) > limit
             visible = records[:limit]
             visible_ids = [item.id for item in visible]
-            side_effect_item_ids = (
-                set(
-                    session.scalars(
-                        select(UnpackExternalOperationJournal.item_id).where(
-                            UnpackExternalOperationJournal.item_id.in_(visible_ids)
-                        )
-                    ).all()
-                )
+            journal_rows = (
+                session.scalars(
+                    select(UnpackExternalOperationJournal)
+                    .where(UnpackExternalOperationJournal.item_id.in_(visible_ids))
+                    .order_by(
+                        UnpackExternalOperationJournal.item_id,
+                        UnpackExternalOperationJournal.created_at,
+                        UnpackExternalOperationJournal.id,
+                    )
+                ).all()
                 if visible_ids
-                else set()
+                else []
             )
+            journals_by_item: dict[str, list[UnpackExternalOperationJournal]] = {}
+            for journal in journal_rows:
+                journals_by_item.setdefault(journal.item_id, []).append(journal)
+            side_effect_item_ids = set(journals_by_item)
+            retry_capabilities = {
+                item.id: unpack_item_retry_capability(
+                    session, item, journals_by_item.get(item.id, [])
+                )
+                for item in visible
+            }
             # Read the highest score only from the item's current candidate
             # generation. Historical retry candidates must never leak into
             # the visible review badge. One bounded query serves the page.
@@ -291,6 +312,8 @@ class UnpackExecutionQueryService:
                             and item.id not in side_effect_item_ids
                         ),
                         has_external_operations=item.id in side_effect_item_ids,
+                        retry_capability=retry_capabilities[item.id][0],
+                        retry_reason=retry_capabilities[item.id][1],
                         highest_candidate_score_bps=highest_scores.get(item.id),
                     )
                     for item in visible
@@ -522,6 +545,16 @@ class UnpackExecutionQueryService:
             discovery_complete=record.discovery_complete,
             discovery_cursor=record.discovery_cursor,
             total_count=record.total_count,
+            match_pending_count=count(UnpackItemStatus.MATCH_PENDING),
+            matching_count=count(UnpackItemStatus.MATCHING),
+            # Only terminal matching decisions count as progress. Both queued and
+            # actively matching items remain outstanding until matching finishes.
+            match_progress_count=max(
+                0,
+                record.total_count
+                - count(UnpackItemStatus.MATCH_PENDING)
+                - count(UnpackItemStatus.MATCHING),
+            ),
             matched_auto_count=count(UnpackItemStatus.MATCHED_AUTO),
             no_match_count=count(UnpackItemStatus.NO_MATCH),
             review_count=count(UnpackItemStatus.REVIEW_REQUIRED),
@@ -529,6 +562,7 @@ class UnpackExecutionQueryService:
             content_mismatch_count=count(UnpackItemStatus.CONTENT_MISMATCH),
             timeout_count=count(UnpackItemStatus.MATCH_TIMEOUT),
             error_count=count(UnpackItemStatus.MATCH_ERROR)
+            + count(UnpackItemStatus.CONTENT_VERIFY_ERROR)
             + count(UnpackItemStatus.EXECUTION_ERROR),
             completed_count=count(UnpackItemStatus.COMPLETED),
             started_at=record.started_at,
@@ -544,6 +578,8 @@ class UnpackExecutionQueryService:
         *,
         review_allowed: bool,
         has_external_operations: bool,
+        retry_capability: RetryCapability,
+        retry_reason: str | None,
         highest_candidate_score_bps: int | None,
     ) -> UnpackExecutionItemView:
         return UnpackExecutionItemView(
@@ -565,6 +601,8 @@ class UnpackExecutionQueryService:
             ),
             review_allowed=review_allowed,
             has_external_operations=has_external_operations,
+            retry_capability=retry_capability,
+            retry_reason=retry_reason,
             last_error_code=record.last_error_code,
             last_error_message=record.last_error_message,
             match_started_at=record.match_started_at,

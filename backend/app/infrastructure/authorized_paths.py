@@ -23,7 +23,7 @@ _PROTECTED_NAMESPACE_ROOTS = (
     Path("/usr"),
     Path("/var"),
 )
-_PROTECTED_EXACT_ROOTS = (Path("/tmp"),)
+_PROTECTED_EXACT_ROOTS = (Path("/tmp"), Path("/ssh"), Path("/workspace"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,22 +144,47 @@ class AuthorizedPathScope:
     def assert_authorized(self, path: Path) -> Path:
         return self.authorization_root(path)
 
+    def resolve_browsable_directory(self, value: str) -> tuple[str, Path]:
+        """Resolve a read-only picker path without granting file-operation authority."""
+        normalized = unicodedata.normalize("NFC", value.strip()) or "/"
+        has_windows_drive = (
+            len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":"
+        )
+        if "\x00" in normalized or "\\" in normalized or has_windows_drive:
+            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "路径必须是安全 POSIX 路径")
+
+        parsed = PurePosixPath(normalized)
+        if ".." in parsed.parts:
+            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "路径不能包含 ..")
+        if normalized == ".":
+            absolute = self.legacy_data_root
+        elif parsed.is_absolute():
+            absolute = Path(parsed.as_posix())
+        else:
+            if any(part in {"", "."} for part in parsed.parts):
+                raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "路径包含不安全路径段")
+            absolute = self.legacy_data_root.joinpath(*parsed.parts)
+
+        absolute = absolute.absolute()
+        resolved, exists = _assert_real_directory_chain(Path("/"), absolute, allow_missing=False)
+        if not exists:
+            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "所选目录不存在或不可读取")
+        return absolute.as_posix(), resolved
+
     def browse_directories(
         self, value: str = "/"
     ) -> tuple[str, tuple[AuthorizedDirectoryEntry, ...]]:
-        normalized = unicodedata.normalize("NFC", value.strip()) or "/"
-        if normalized in {".", "/"}:
-            return "/", tuple(
-                AuthorizedDirectoryEntry(name=root.as_posix(), path=root.as_posix())
-                for root in self.authorized_roots
-            )
-
-        reference, resolved = self.resolve_existing_directory(normalized)
+        # The picker is read-only: browse every real directory the process can
+        # access, not just the mounts allowed for file operations. Symlink
+        # traversal is still rejected. resolve_existing_directory,
+        # authorization_root and the filesystem gateways continue to enforce
+        # the explicit operation roots when a task is created or executed.
+        reference, resolved = self.resolve_browsable_directory(value)
         entries: list[AuthorizedDirectoryEntry] = []
         try:
             children = tuple(os.scandir(resolved))
         except OSError as exc:
-            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "无法读取所选授权目录") from exc
+            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "无法读取所选目录") from exc
         for child in sorted(children, key=lambda item: item.name.casefold()):
             try:
                 child_stat = child.stat(follow_symlinks=False)

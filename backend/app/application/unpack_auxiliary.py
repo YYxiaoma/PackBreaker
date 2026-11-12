@@ -21,9 +21,19 @@ from backend.app.application.unpack_acceptance import (
     assert_unmarked_execution_for_write,
     is_write_blocked_acceptance_execution,
 )
+from backend.app.application.unpack_lifecycle import (
+    PIPELINE_ACTIVE_EXECUTION_STATUSES,
+    refresh_unpack_execution_state,
+    unpack_execution_has_pending_match_work,
+    unpack_execution_has_unresolved_review_work,
+)
 from backend.app.application.unpack_manual_torrents import (
     ManualTorrentStore,
     ManualTorrentStoreError,
+)
+from backend.app.application.unpack_torrent_storage import (
+    candidate_torrent_storage_key,
+    persist_candidate_torrent_storage_key,
 )
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.file_mapping import AutoMappingDecision, SourceFileCandidate, auto_map_files
@@ -133,7 +143,7 @@ class _Context:
     site_config_version: int
     adapter_site_id: str
     torrent_id: str
-    manual_torrent_storage_key: str | None
+    torrent_storage_key: str | None
     expected_metainfo_digest: str
     target_downloader_id: str
     output_directory: str
@@ -168,7 +178,7 @@ class UnpackAuxiliaryStagingService:
         downloader_provider: UnpackAuxiliaryDownloaderProvider,
         *,
         path_scope: AuthorizedPathScope,
-        fetch_timeout_seconds: float = 30.0,
+        fetch_timeout_seconds: float = 180.0,
         manual_torrent_store: ManualTorrentStore | None = None,
     ) -> None:
         if fetch_timeout_seconds <= 0:
@@ -178,7 +188,9 @@ class UnpackAuxiliaryStagingService:
         self._downloader_provider = downloader_provider
         self._path_scope = path_scope
         self._fetch_timeout_seconds = fetch_timeout_seconds
-        self._manual_torrent_store = manual_torrent_store
+        self._manual_torrent_store = manual_torrent_store or ManualTorrentStore(
+            path_scope.legacy_data_root
+        )
 
     def list_auxiliary_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
         if limit < 1 or limit > 500:
@@ -193,7 +205,9 @@ class UnpackAuxiliaryStagingService:
                             None
                         ),
                     )
-                    .where(UnpackExecution.status == UnpackExecutionStatus.CONTENT_VERIFYING.value)
+                    .where(UnpackExecution.status.in_(PIPELINE_ACTIVE_EXECUTION_STATUSES))
+                    .where(~unpack_execution_has_pending_match_work())
+                    .where(~unpack_execution_has_unresolved_review_work())
                     .where(
                         select(UnpackExecutionItem.id)
                         .where(UnpackExecutionItem.execution_id == UnpackExecution.id)
@@ -354,7 +368,13 @@ class UnpackAuxiliaryStagingService:
             site_config_version = raw_ref.get("site_config_version")
             adapter_site_id = raw_ref.get("adapter_site_id")
             torrent_id = raw_ref.get("torrent_id")
-            manual_torrent_storage_key = raw_ref.get("manual_torrent_storage_key")
+            try:
+                torrent_storage_key = candidate_torrent_storage_key(raw_ref)
+            except ValueError:
+                torrent_storage_key = None
+                invalid_torrent_storage_key = True
+            else:
+                invalid_torrent_storage_key = False
             if (
                 raw_ref.get("site_config_id") != candidate.site_id
                 or torrent_id != candidate.candidate_key
@@ -365,10 +385,7 @@ class UnpackAuxiliaryStagingService:
                 or not adapter_site_id
                 or not isinstance(torrent_id, str)
                 or not torrent_id
-                or (
-                    manual_torrent_storage_key is not None
-                    and not ManualTorrentStore.is_valid_key(manual_torrent_storage_key)
-                )
+                or invalid_torrent_storage_key
             ):
                 raise self._conflict("辅助文件补齐候选缺少安全站点引用")
             expected_digest = item.torrent_metainfo_digest or candidate.metainfo_digest
@@ -412,7 +429,7 @@ class UnpackAuxiliaryStagingService:
                 site_config_version=site_config_version,
                 adapter_site_id=adapter_site_id,
                 torrent_id=torrent_id,
-                manual_torrent_storage_key=manual_torrent_storage_key,
+                torrent_storage_key=torrent_storage_key,
                 expected_metainfo_digest=expected_digest,
                 target_downloader_id=target_downloader_id,
                 output_directory=output_directory,
@@ -421,42 +438,33 @@ class UnpackAuxiliaryStagingService:
             )
 
     async def _prepare(self, context: _Context) -> _Prepared:
-        resolver = getattr(self._site_provider, "bindings_for_unpack_execution", None)
-        active = (
-            resolver(context.execution_id)
-            if callable(resolver)
-            else self._site_provider.enabled_adapters()
-        )
-        site_binding = next(
-            (item for item in active if item.config_id == context.site_config_id),
-            None,
-        )
-        if site_binding is None:
-            raise self._conflict("候选站点当前不可用")
-        if (
-            site_binding.config_version != context.site_config_version
-            or site_binding.site_id != context.adapter_site_id
-        ):
-            raise self._conflict("候选站点配置已变化，请重新匹配")
-
-        if context.manual_torrent_storage_key is not None:
-            if self._manual_torrent_store is None:
-                raise self._conflict("手动种子文件存储当前不可用")
+        if context.torrent_storage_key is not None:
             try:
-                torrent_content = self._manual_torrent_store.load(
-                    context.manual_torrent_storage_key
-                )
+                torrent_content = self._manual_torrent_store.load(context.torrent_storage_key)
             except ManualTorrentStoreError as exc:
-                raise self._conflict("已确认的手动种子文件不存在或完整性校验失败") from exc
+                raise self._conflict("已验证的候选 torrent 不存在或完整性校验失败") from exc
         else:
+            resolver = getattr(self._site_provider, "bindings_for_unpack_execution", None)
+            active = (
+                resolver(context.execution_id)
+                if callable(resolver)
+                else self._site_provider.enabled_adapters()
+            )
+            site_binding = next(
+                (item for item in active if item.config_id == context.site_config_id),
+                None,
+            )
+            if site_binding is None:
+                raise self._conflict("候选站点当前不可用，且本地没有可复用的 torrent")
+            if (
+                site_binding.config_version != context.site_config_version
+                or site_binding.site_id != context.adapter_site_id
+            ):
+                raise self._conflict("候选站点配置已变化，且本地没有可复用的 torrent")
             try:
                 async with asyncio.timeout(self._fetch_timeout_seconds):
                     payload = await site_binding.adapter.fetch_torrent(context.torrent_id)
             except TimeoutError as exc:
-                # Only the site's metadata read is safe to classify as transient.
-                # Do not swallow a raw TimeoutError from a downloader ADD/STOP/
-                # REMOVE write: its remote result may be unknown and requires
-                # explicit journal reconciliation rather than a silent retry.
                 raise SiteAdapterError(
                     "SITE_UNAVAILABLE",
                     "辅助文件 torrent 元信息读取超时",
@@ -475,6 +483,19 @@ class UnpackAuxiliaryStagingService:
                 status=409,
                 title="候选 torrent 已变化",
                 detail="当前 metainfo digest 与内容验证阶段绑定值不一致",
+            )
+        if context.torrent_storage_key is None:
+            try:
+                storage_key = self._manual_torrent_store.store(torrent_content)
+            except ManualTorrentStoreError as exc:
+                raise self._conflict("无法安全保存候选 torrent，暂不补齐辅助文件") from exc
+            persist_candidate_torrent_storage_key(
+                self._session_factory,
+                item_id=context.item_id,
+                candidate_id=context.candidate_id,
+                generation=context.generation,
+                expected_item_version=context.item_version,
+                storage_key=storage_key,
             )
         try:
             plan = build_auxiliary_fetch_plan(meta, context.missing_paths)
@@ -1412,7 +1433,10 @@ class UnpackAuxiliaryStagingService:
                 downloading_count=count(UnpackItemStatus.AUXILIARY_FETCHING),
                 verified_count=count(UnpackItemStatus.CONTENT_VERIFIED),
                 mismatch_count=count(UnpackItemStatus.CONTENT_MISMATCH),
-                error_count=count(UnpackItemStatus.MATCH_ERROR),
+                error_count=(
+                    count(UnpackItemStatus.MATCH_ERROR)
+                    + count(UnpackItemStatus.CONTENT_VERIFY_ERROR)
+                ),
                 execution_status=UnpackExecutionStatus(execution.status),
             )
 
@@ -1716,43 +1740,7 @@ def _current_records(
 
 
 def _refresh_execution_state(session: Session, execution: UnpackExecution) -> None:
-    def count(status: UnpackItemStatus) -> int:
-        return int(
-            session.scalar(
-                select(func.count(UnpackExecutionItem.id))
-                .where(UnpackExecutionItem.execution_id == execution.id)
-                .where(UnpackExecutionItem.status == status.value)
-            )
-            or 0
-        )
-
-    execution.content_verified_count = count(UnpackItemStatus.CONTENT_VERIFIED)
-    execution.content_mismatch_count = count(UnpackItemStatus.CONTENT_MISMATCH)
-    execution.error_count = count(UnpackItemStatus.MATCH_ERROR)
-    execution.review_count = count(UnpackItemStatus.REVIEW_REQUIRED)
-    active = sum(
-        count(status)
-        for status in (
-            UnpackItemStatus.MATCHED_AUTO,
-            UnpackItemStatus.MATCHED_MANUAL,
-            UnpackItemStatus.TORRENT_FETCHING,
-            UnpackItemStatus.AUXILIARY_FETCHING,
-            UnpackItemStatus.CONTENT_VERIFYING,
-            UnpackItemStatus.CONTENT_VERIFIED,
-        )
-    )
-    now = utc_now()
-    if active:
-        execution.status = UnpackExecutionStatus.CONTENT_VERIFYING.value
-        execution.finished_at = None
-    elif execution.review_count:
-        execution.status = UnpackExecutionStatus.REVIEW_REQUIRED.value
-        execution.finished_at = None
-    elif execution.content_mismatch_count or execution.error_count:
-        execution.status = UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value
-        execution.finished_at = now
-    execution.updated_at = now
-    execution.version += 1
+    refresh_unpack_execution_state(session, execution)
 
 
 def _snapshot_matches(expected: dict[str, Any], observed: FileSnapshot) -> bool:

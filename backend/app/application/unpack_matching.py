@@ -23,6 +23,7 @@ from backend.app.application.sites import (
     SiteRiskControlOutcome,
 )
 from backend.app.application.unpack_item_actions import _reset_item_for_match_retry
+from backend.app.application.unpack_lifecycle import refresh_unpack_execution_state
 from backend.app.application.unpack_templates import _digest, descriptor_from_payload
 from backend.app.domain.candidate_scoring import candidate_search_relevant
 from backend.app.domain.errors import DomainViolation
@@ -32,7 +33,7 @@ from backend.app.domain.media_matching import (
     MediaFileSummary,
     parse_media_name,
 )
-from backend.app.domain.site_search import CandidateMeta, SearchQuery
+from backend.app.domain.site_search import CandidateMeta, SearchPage, SearchQuery
 from backend.app.domain.task_units import (
     TaskUnit,
     TaskUnitKind,
@@ -68,6 +69,35 @@ from backend.app.infrastructure.torrent_parser import parse_torrent
 
 MIN_AUTO_MATCH_EVIDENCE_COVERAGE_BPS = 6500
 _MAX_TEMPLATE_METADATA_HYDRATIONS_PER_ITEM = 3
+
+
+def _has_sufficient_exact_match_evidence(
+    assessment: UnpackCandidateAssessment,
+    source: MediaDescriptor,
+    candidate: MediaDescriptor,
+) -> bool:
+    """Allow a primary-title exact match below the general coverage floor with core evidence.
+
+    `is_exact_match` tolerates nullable fields and title aliases, so sparse or
+    alias-only matches can appear exact without enough identifying context. Require
+    the primary title, year/episode, size, and an exact release attribute.
+    """
+    exact = assessment.evidence.get("exact")
+    if assessment.rejected or not assessment.is_exact_match or not isinstance(exact, dict):
+        return False
+    return (
+        exact.get("title") is True
+        and bool(source.title_tokens)
+        and source.title_tokens == candidate.title_tokens
+        and (exact.get("year") is True or exact.get("episode") is True)
+        and exact.get("size") is True
+        and any(
+            exact.get(field) is True
+            for field in ("resolution", "source_medium", "codec", "hdr", "audio")
+        )
+    )
+
+
 _VIDEO_FILE_SUFFIXES = frozenset(
     {
         ".mkv",
@@ -245,6 +275,45 @@ class UnpackMatchCoordinator:
                     .limit(limit)
                 ).all()
             )
+
+    def recover_interrupted_matches(self) -> int:
+        """Requeue match claims left active when the previous process stopped.
+
+        This is a startup-only recovery step. Call it after RuntimeManager has
+        acquired the exclusive instance lock and before any unpack worker starts;
+        at that point no live process can still own a MATCHING item.
+        """
+        with self._session_factory() as session:
+            begin_immediate_write(session)
+            items = session.scalars(
+                select(UnpackExecutionItem)
+                .join(UnpackExecution, UnpackExecution.id == UnpackExecutionItem.execution_id)
+                .where(UnpackExecution.status == UnpackExecutionStatus.MATCHING.value)
+                .where(UnpackExecutionItem.status == UnpackItemStatus.MATCHING.value)
+                .order_by(UnpackExecutionItem.execution_id, UnpackExecutionItem.id)
+            ).all()
+            if not items:
+                session.rollback()
+                return 0
+
+            now = utc_now()
+            execution_ids = {item.execution_id for item in items}
+            for item in items:
+                item.status = UnpackItemStatus.MATCH_PENDING.value
+                item.match_started_at = None
+                item.match_finished_at = None
+                item.last_error_code = "UNPACK_MATCH_INTERRUPTED"
+                item.last_error_message = "上次服务退出时匹配尚未完成，已自动重新排队"
+                item.updated_at = now
+                item.version += 1
+
+            for execution_id in sorted(execution_ids):
+                execution = session.get(UnpackExecution, execution_id)
+                if execution is not None:
+                    self._refresh_execution_state(session, execution)
+
+            session.commit()
+            return len(items)
 
     async def match_next_batch(
         self,
@@ -1406,21 +1475,25 @@ class UnpackMatchCoordinator:
                 active_query_stage = "CAPABILITIES"
                 active_page_number = 1
                 try:
-                    # Global 30s timeout used to include intentional waits.
-                    # Time individual calls with a deadline that accounts for
-                    # configured request time and one rate-limit spacing wait.
-                    call_timeout = (
-                        max(
-                            self._site_timeout_seconds,
-                            float(binding.request_timeout_seconds),
-                        )
-                        + float(binding.search_interval_seconds)
-                        + 1.0
+                    base_call_timeout = max(
+                        self._site_timeout_seconds,
+                        float(binding.request_timeout_seconds),
                     )
                     capabilities = await _await_site_request(
                         binding.adapter.capabilities(),
-                        timeout_seconds=call_timeout,
+                        timeout_seconds=(
+                            base_call_timeout + float(binding.search_interval_seconds) + 1.0
+                        ),
                     )
+                    # The reliability wrapper enforces the maximum of the
+                    # configured interval and the adapter's own minimum. Include
+                    # that full wait in the request deadline, otherwise MTEAM's
+                    # 90-second throttle is misreported as a 30-second timeout.
+                    interval = max(
+                        float(binding.search_interval_seconds),
+                        float(capabilities.min_request_interval_seconds),
+                    )
+                    call_timeout = base_call_timeout + interval + 1.0
                     queries = build_unpack_search_queries(
                         unit.descriptor,
                         unit_kind=unit.kind,
@@ -1429,7 +1502,32 @@ class UnpackMatchCoordinator:
                     )
                     # The query builder preserves the intended order:
                     # external IDs > English title > Chinese title > release fallback.
-                    interval = capabilities.min_request_interval_seconds
+
+                    async def search_page(
+                        query: SearchQuery, *, refresh_cache: bool = False
+                    ) -> SearchPage:
+                        # Site-level retries are intentionally disabled for a
+                        # persisted unpack attempt. The item retry budget is
+                        # already durable; the reliability wrapper still keeps
+                        # caching, circuit breaking, and the site's rate limit.
+                        fresh_search = (
+                            getattr(binding.adapter, "search_for_unpack_fresh", None)
+                            if refresh_cache
+                            else None
+                        )
+                        search_for_unpack = getattr(binding.adapter, "search_for_unpack", None)
+                        operation = (
+                            fresh_search(query)
+                            if callable(fresh_search)
+                            else search_for_unpack(query)
+                            if callable(search_for_unpack)
+                            else binding.adapter.search(query)
+                        )
+                        return await _await_site_request(
+                            operation,
+                            timeout_seconds=call_timeout,
+                        )
+
                     empty_page_retry_used = False
                     found: dict[str, _FoundCandidate] = {}
                     empty_queries: list[SearchQuery] = []
@@ -1457,9 +1555,7 @@ class UnpackMatchCoordinator:
                             active_page_number = page_number
                             started = time.perf_counter()
                             try:
-                                page = await _await_site_request(
-                                    binding.adapter.search(query), timeout_seconds=call_timeout
-                                )
+                                page = await search_page(query)
                                 if (
                                     page_number == 1
                                     and not page.items
@@ -1472,10 +1568,7 @@ class UnpackMatchCoordinator:
                                     empty_page_retry_used = True
                                     await asyncio.sleep(max(interval, 0.25))
                                     try:
-                                        page = await _await_site_request(
-                                            binding.adapter.search(query),
-                                            timeout_seconds=call_timeout,
-                                        )
+                                        page = await search_page(query, refresh_cache=True)
                                     except SiteAdapterError as retry_exc:
                                         failures.append(
                                             self._search_failure_for_site(
@@ -1750,9 +1843,8 @@ class UnpackMatchCoordinator:
                         await asyncio.sleep(max(interval, 0.25))
                         retry_started = time.perf_counter()
                         try:
-                            retry_page = await _await_site_request(
-                                binding.adapter.search(replace(retry_query, page=1)),
-                                timeout_seconds=call_timeout,
+                            retry_page = await search_page(
+                                replace(retry_query, page=1), refresh_cache=True
                             )
                         except SiteAdapterError as retry_exc:
                             failures.append(
@@ -2113,10 +2205,16 @@ class UnpackMatchCoordinator:
                 if claimed.auto_match_enabled and (
                     top_found.template_mapping_authoritative
                     or (
-                        top_found.assessment.score_bps >= claimed.auto_match_threshold_bps
+                        not top_found.assessment.rejected
+                        and top_found.assessment.score_bps >= claimed.auto_match_threshold_bps
                         and (
                             claimed.auto_match_threshold_bps <= 0
                             or evidence_coverage_bps >= MIN_AUTO_MATCH_EVIDENCE_COVERAGE_BPS
+                            or _has_sufficient_exact_match_evidence(
+                                top_found.assessment,
+                                claimed.unit.descriptor,
+                                top_found.candidate.descriptor,
+                            )
                         )
                     )
                 ):
@@ -2344,63 +2442,13 @@ class UnpackMatchCoordinator:
             session.commit()
 
     def _refresh_execution_state(self, session: Session, execution: UnpackExecution) -> None:
-        counts = {
-            status: int(
-                session.scalar(
-                    select(func.count(UnpackExecutionItem.id))
-                    .where(UnpackExecutionItem.execution_id == execution.id)
-                    .where(UnpackExecutionItem.status == status.value)
-                )
-                or 0
-            )
-            for status in (
-                UnpackItemStatus.MATCH_PENDING,
-                UnpackItemStatus.MATCHING,
-                UnpackItemStatus.MATCHED_AUTO,
-                UnpackItemStatus.REVIEW_REQUIRED,
-                UnpackItemStatus.NO_MATCH,
-                UnpackItemStatus.MATCH_TIMEOUT,
-                UnpackItemStatus.MATCH_ERROR,
-            )
-        }
-        execution.matched_auto_count = counts[UnpackItemStatus.MATCHED_AUTO]
-        execution.review_count = counts[UnpackItemStatus.REVIEW_REQUIRED]
-        execution.timeout_count = counts[UnpackItemStatus.MATCH_TIMEOUT]
-        execution.error_count = counts[UnpackItemStatus.MATCH_ERROR]
-        now = utc_now()
-        if self._pause_after_match:
+        refresh_unpack_execution_state(session, execution)
+        if self._pause_after_match and execution.status not in {
+            UnpackExecutionStatus.PAUSED.value,
+            UnpackExecutionStatus.CANCELLED.value,
+        }:
             execution.status = UnpackExecutionStatus.MATCHING.value
             execution.finished_at = None
-            execution.updated_at = now
-            execution.version += 1
-            return
-        if counts[UnpackItemStatus.MATCH_PENDING] or counts[UnpackItemStatus.MATCHING]:
-            execution.status = UnpackExecutionStatus.MATCHING.value
-            execution.finished_at = None
-        elif counts[UnpackItemStatus.REVIEW_REQUIRED]:
-            execution.status = UnpackExecutionStatus.REVIEW_REQUIRED.value
-            execution.finished_at = None
-        elif counts[UnpackItemStatus.MATCHED_AUTO]:
-            execution.status = UnpackExecutionStatus.CONTENT_VERIFYING.value
-            execution.finished_at = None
-        else:
-            failed_count = sum(
-                counts[status]
-                for status in (
-                    UnpackItemStatus.NO_MATCH,
-                    UnpackItemStatus.MATCH_TIMEOUT,
-                    UnpackItemStatus.MATCH_ERROR,
-                )
-            )
-            if execution.total_count > 0 and failed_count == execution.total_count:
-                execution.status = UnpackExecutionStatus.FAILED.value
-            elif failed_count:
-                execution.status = UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value
-            else:
-                execution.status = UnpackExecutionStatus.COMPLETED.value
-            execution.finished_at = now
-        execution.updated_at = now
-        execution.version += 1
 
     def _report(self, execution_id: str, *, processed_count: int) -> UnpackMatchReport:
         with self._session_factory() as session:

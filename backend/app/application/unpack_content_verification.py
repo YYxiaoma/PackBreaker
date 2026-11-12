@@ -12,9 +12,19 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
+from backend.app.application.unpack_lifecycle import (
+    PIPELINE_ACTIVE_EXECUTION_STATUSES,
+    refresh_unpack_execution_state,
+    unpack_execution_has_pending_match_work,
+    unpack_execution_has_unresolved_review_work,
+)
 from backend.app.application.unpack_manual_torrents import (
     ManualTorrentStore,
     ManualTorrentStoreError,
+)
+from backend.app.application.unpack_torrent_storage import (
+    candidate_torrent_storage_key,
+    persist_candidate_torrent_storage_key,
 )
 from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.file_mapping import AutoMappingDecision, SourceFileCandidate, auto_map_files
@@ -83,7 +93,7 @@ class _VerificationClaim:
     site_config_version: int
     adapter_site_id: str
     torrent_id: str
-    manual_torrent_storage_key: str | None
+    torrent_storage_key: str | None
     expected_metainfo_digest: str | None
     source_path: str
     source_relative_path: str
@@ -113,7 +123,7 @@ class UnpackContentVerificationService:
         site_provider: UnpackContentSiteProvider,
         *,
         path_scope: AuthorizedPathScope,
-        fetch_timeout_seconds: float = 30.0,
+        fetch_timeout_seconds: float = 180.0,
         manual_torrent_store: ManualTorrentStore | None = None,
     ) -> None:
         if fetch_timeout_seconds <= 0:
@@ -122,7 +132,9 @@ class UnpackContentVerificationService:
         self._site_provider = site_provider
         self._path_scope = path_scope
         self._fetch_timeout_seconds = fetch_timeout_seconds
-        self._manual_torrent_store = manual_torrent_store
+        self._manual_torrent_store = manual_torrent_store or ManualTorrentStore(
+            path_scope.legacy_data_root
+        )
 
     def list_verifiable_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
         if limit < 1 or limit > 500:
@@ -144,19 +156,102 @@ class UnpackContentVerificationService:
             return tuple(
                 session.scalars(
                     select(UnpackExecution.id)
-                    .where(
-                        UnpackExecution.status.in_(
-                            (
-                                UnpackExecutionStatus.CONTENT_VERIFYING.value,
-                                UnpackExecutionStatus.REVIEW_REQUIRED.value,
-                            )
-                        )
-                    )
+                    .where(UnpackExecution.status.in_(PIPELINE_ACTIVE_EXECUTION_STATUSES))
                     .where(eligible_item)
+                    .where(~unpack_execution_has_pending_match_work())
+                    .where(~unpack_execution_has_unresolved_review_work())
                     .order_by(UnpackExecution.updated_at, UnpackExecution.id)
                     .limit(limit)
                 ).all()
             )
+
+    def recover_interrupted_verifications(self) -> int:
+        """Requeue read-only verification claims left active by a stopped process.
+
+        This runs during startup after the exclusive runtime lock is held and
+        before UnpackDriver starts. Auxiliary staging is deliberately excluded
+        because it may already have external downloader side effects.
+        """
+        with self._session_factory() as session:
+            begin_immediate_write(session)
+            items = session.scalars(
+                select(UnpackExecutionItem)
+                .where(
+                    UnpackExecutionItem.status.in_(
+                        (
+                            UnpackItemStatus.TORRENT_FETCHING.value,
+                            UnpackItemStatus.CONTENT_VERIFYING.value,
+                        )
+                    )
+                )
+                .order_by(UnpackExecutionItem.execution_id, UnpackExecutionItem.id)
+            ).all()
+            execution_ids = {item.execution_id for item in items}
+            now = utc_now()
+            for item in items:
+                candidate = (
+                    session.get(UnpackMatchCandidate, item.selected_candidate_id)
+                    if item.selected_candidate_id is not None
+                    else None
+                )
+                if (
+                    candidate is not None
+                    and candidate.item_id == item.id
+                    and candidate.generation == item.candidate_generation
+                ):
+                    item.status = (
+                        UnpackItemStatus.MATCHED_AUTO.value
+                        if item.match_origin == "AUTO"
+                        else UnpackItemStatus.MATCHED_MANUAL.value
+                    )
+                    candidate.verification_status = (
+                        UnpackCandidateVerificationStatus.NOT_CHECKED.value
+                    )
+                    candidate.verification_level = None
+                    candidate.verification_error_code = None
+                    candidate.metainfo_digest = None
+                    evidence = dict(candidate.evidence or {})
+                    evidence.pop("content_verification", None)
+                    candidate.evidence = evidence
+                    item.content_verification_level = None
+                    item.torrent_metainfo_digest = None
+                    item.last_error_code = None
+                    item.last_error_message = None
+                else:
+                    item.status = UnpackItemStatus.REVIEW_REQUIRED.value
+                    item.selected_candidate_id = None
+                    item.match_origin = None
+                    item.content_verification_level = None
+                    item.torrent_metainfo_digest = None
+                    item.last_error_code = "UNPACK_VERIFY_INTERRUPTED_CANDIDATE_STALE"
+                    item.last_error_message = (
+                        "服务中断时内容验证尚未完成，且原候选已失效，请重新审核匹配结果"
+                    )
+                item.updated_at = now
+                item.version += 1
+
+            matching_review_execution_ids = session.scalars(
+                select(UnpackExecution.id)
+                .where(UnpackExecution.status == UnpackExecutionStatus.CONTENT_VERIFYING.value)
+                .where(
+                    select(UnpackExecutionItem.id)
+                    .where(UnpackExecutionItem.execution_id == UnpackExecution.id)
+                    .where(UnpackExecutionItem.status == UnpackItemStatus.REVIEW_REQUIRED.value)
+                    .where(UnpackExecutionItem.selected_candidate_id.is_(None))
+                    .exists()
+                )
+            ).all()
+            execution_ids.update(matching_review_execution_ids)
+            if not execution_ids:
+                session.rollback()
+                return 0
+
+            for execution_id in sorted(execution_ids):
+                execution = session.get(UnpackExecution, execution_id)
+                if execution is not None:
+                    self._refresh_execution_state(session, execution)
+            session.commit()
+            return len(items)
 
     async def verify_next_batch(
         self,
@@ -181,10 +276,35 @@ class UnpackContentVerificationService:
             execution = session.get(UnpackExecution, execution_id)
             if execution is None:
                 raise self._not_found()
-            if execution.status not in {
-                UnpackExecutionStatus.CONTENT_VERIFYING.value,
-                UnpackExecutionStatus.REVIEW_REQUIRED.value,
-            }:
+            if execution.status not in PIPELINE_ACTIVE_EXECUTION_STATUSES:
+                return None
+            matching_work_pending = session.scalar(
+                select(UnpackExecutionItem.id)
+                .where(UnpackExecutionItem.execution_id == execution_id)
+                .where(
+                    UnpackExecutionItem.status.in_(
+                        (
+                            UnpackItemStatus.MATCH_PENDING.value,
+                            UnpackItemStatus.MATCHING.value,
+                        )
+                    )
+                )
+                .limit(1)
+            )
+            if matching_work_pending:
+                self._refresh_execution_state(session, execution)
+                session.commit()
+                return None
+            matching_review_pending = session.scalar(
+                select(UnpackExecutionItem.id)
+                .where(UnpackExecutionItem.execution_id == execution_id)
+                .where(UnpackExecutionItem.status == UnpackItemStatus.REVIEW_REQUIRED.value)
+                .where(UnpackExecutionItem.selected_candidate_id.is_(None))
+                .limit(1)
+            )
+            if matching_review_pending is not None:
+                self._refresh_execution_state(session, execution)
+                session.commit()
                 return None
 
             item = session.scalar(
@@ -249,7 +369,13 @@ class UnpackContentVerificationService:
             adapter_site_id = raw_ref.get("adapter_site_id")
             torrent_id = raw_ref.get("torrent_id")
             config_version = raw_ref.get("site_config_version")
-            manual_torrent_storage_key = raw_ref.get("manual_torrent_storage_key")
+            try:
+                torrent_storage_key = candidate_torrent_storage_key(raw_ref)
+            except ValueError:
+                torrent_storage_key = None
+                invalid_torrent_storage_key = True
+            else:
+                invalid_torrent_storage_key = False
             if (
                 raw_ref.get("site_config_id") != candidate.site_id
                 or torrent_id != candidate.candidate_key
@@ -260,10 +386,7 @@ class UnpackContentVerificationService:
                 or not isinstance(config_version, int)
                 or isinstance(config_version, bool)
                 or config_version < 1
-                or (
-                    manual_torrent_storage_key is not None
-                    and not ManualTorrentStore.is_valid_key(manual_torrent_storage_key)
-                )
+                or invalid_torrent_storage_key
             ):
                 self._mark_claim_error(
                     session,
@@ -306,7 +429,7 @@ class UnpackContentVerificationService:
                 site_config_version=config_version,
                 adapter_site_id=adapter_site_id,
                 torrent_id=torrent_id,
-                manual_torrent_storage_key=manual_torrent_storage_key,
+                torrent_storage_key=torrent_storage_key,
                 expected_metainfo_digest=candidate.metainfo_digest,
                 source_path=source_path,
                 source_relative_path=relative_path,
@@ -315,39 +438,19 @@ class UnpackContentVerificationService:
 
     async def _verify_claim(self, claim: _VerificationClaim) -> None:
         try:
-            binding = self._binding_for(claim)
             source = self._current_source(claim)
-            if claim.manual_torrent_storage_key is not None:
-                if self._manual_torrent_store is None:
-                    raise ApplicationError(
-                        code="UNPACK_MANUAL_TORRENT_STORE_UNAVAILABLE",
-                        status=409,
-                        title="手动种子文件不可用",
-                        detail="当前实例未配置手动种子文件存储",
-                    )
+            if claim.torrent_storage_key is not None:
                 try:
-                    torrent_content = self._manual_torrent_store.load(
-                        claim.manual_torrent_storage_key
-                    )
+                    torrent_content = self._manual_torrent_store.load(claim.torrent_storage_key)
                 except ManualTorrentStoreError as exc:
                     raise ApplicationError(
-                        code="UNPACK_MANUAL_TORRENT_UNAVAILABLE",
+                        code="UNPACK_TORRENT_PAYLOAD_UNAVAILABLE",
                         status=409,
-                        title="手动种子文件不可用",
-                        detail="已确认的手动种子文件不存在或完整性校验失败",
+                        title="已验证的 torrent 不可用",
+                        detail="候选关联的私有 torrent 文件不存在或完整性校验失败",
                     ) from exc
-                meta = parse_torrent(torrent_content)
-                if (
-                    claim.expected_metainfo_digest is not None
-                    and meta.metainfo_digest != claim.expected_metainfo_digest
-                ):
-                    raise ApplicationError(
-                        code="UNPACK_MANUAL_TORRENT_CHANGED",
-                        status=409,
-                        title="手动种子文件已变化",
-                        detail="手动种子的元信息摘要与审核时记录不一致",
-                    )
             else:
+                binding = self._binding_for(claim)
                 async with asyncio.timeout(self._fetch_timeout_seconds):
                     payload = await binding.adapter.fetch_torrent(claim.torrent_id)
                 if (
@@ -360,7 +463,36 @@ class UnpackContentVerificationService:
                         title="候选 torrent 身份不一致",
                         detail="站点返回的 torrent 身份与选中候选不一致",
                     )
-                meta = parse_torrent(payload.content)
+                torrent_content = payload.content
+            meta = parse_torrent(torrent_content)
+            if (
+                claim.expected_metainfo_digest is not None
+                and meta.metainfo_digest != claim.expected_metainfo_digest
+            ):
+                raise ApplicationError(
+                    code="UNPACK_VERIFY_TORRENT_CHANGED",
+                    status=409,
+                    title="候选 torrent 已变化",
+                    detail="候选 torrent 的元信息摘要与此前记录不一致",
+                )
+            if claim.torrent_storage_key is None:
+                try:
+                    storage_key = self._manual_torrent_store.store(torrent_content)
+                except ManualTorrentStoreError as exc:
+                    raise ApplicationError(
+                        code="UNPACK_TORRENT_STORE_UNAVAILABLE",
+                        status=409,
+                        title="torrent 暂存失败",
+                        detail="无法安全保存已获取的候选 torrent，暂不继续内容校验",
+                    ) from exc
+                persist_candidate_torrent_storage_key(
+                    self._session_factory,
+                    item_id=claim.item_id,
+                    candidate_id=claim.candidate_id,
+                    generation=claim.generation,
+                    expected_item_version=claim.item_version,
+                    storage_key=storage_key,
+                )
             # A torrent may contain several existing movie files in the same
             # authorized directory, even though discovery created one task
             # item for just one video. Inspect only direct regular siblings
@@ -707,6 +839,13 @@ class UnpackContentVerificationService:
             item.status = (
                 UnpackItemStatus.REVIEW_REQUIRED.value
                 if item.status == UnpackItemStatus.CONTENT_VERIFYING.value
+                else UnpackItemStatus.CONTENT_VERIFY_ERROR.value
+                if item.status == UnpackItemStatus.TORRENT_FETCHING.value
+                and (
+                    code == "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT"
+                    or code.startswith("SITE_")
+                    or code == "UNPACK_VERIFY_TORRENT_IDENTITY_MISMATCH"
+                )
                 else UnpackItemStatus.MATCH_ERROR.value
             )
             item.content_verification_level = None
@@ -769,56 +908,9 @@ class UnpackContentVerificationService:
         session.commit()
 
     @staticmethod
+    @staticmethod
     def _refresh_execution_state(session: Session, execution: UnpackExecution) -> None:
-        statuses = tuple(UnpackItemStatus)
-        counts = {
-            status: int(
-                session.scalar(
-                    select(func.count(UnpackExecutionItem.id))
-                    .where(UnpackExecutionItem.execution_id == execution.id)
-                    .where(UnpackExecutionItem.status == status.value)
-                )
-                or 0
-            )
-            for status in statuses
-        }
-        execution.matched_auto_count = counts[UnpackItemStatus.MATCHED_AUTO]
-        execution.content_verified_count = counts[UnpackItemStatus.CONTENT_VERIFIED]
-        execution.content_mismatch_count = counts[UnpackItemStatus.CONTENT_MISMATCH]
-        execution.review_count = counts[UnpackItemStatus.REVIEW_REQUIRED]
-        execution.timeout_count = counts[UnpackItemStatus.MATCH_TIMEOUT]
-        execution.error_count = (
-            counts[UnpackItemStatus.MATCH_ERROR] + counts[UnpackItemStatus.EXECUTION_ERROR]
-        )
-        execution.completed_count = counts[UnpackItemStatus.COMPLETED]
-        active_content = sum(
-            counts[status]
-            for status in (
-                UnpackItemStatus.MATCHED_AUTO,
-                UnpackItemStatus.MATCHED_MANUAL,
-                UnpackItemStatus.TORRENT_FETCHING,
-                UnpackItemStatus.AUXILIARY_FETCHING,
-                UnpackItemStatus.CONTENT_VERIFYING,
-                UnpackItemStatus.CONTENT_VERIFIED,
-            )
-        )
-        now = utc_now()
-        if active_content:
-            execution.status = UnpackExecutionStatus.CONTENT_VERIFYING.value
-            execution.finished_at = None
-        elif counts[UnpackItemStatus.REVIEW_REQUIRED]:
-            execution.status = UnpackExecutionStatus.REVIEW_REQUIRED.value
-            execution.finished_at = None
-        elif (
-            counts[UnpackItemStatus.CONTENT_MISMATCH]
-            or counts[UnpackItemStatus.MATCH_TIMEOUT]
-            or counts[UnpackItemStatus.MATCH_ERROR]
-            or counts[UnpackItemStatus.NO_MATCH]
-        ):
-            execution.status = UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value
-            execution.finished_at = now
-        execution.updated_at = now
-        execution.version += 1
+        refresh_unpack_execution_state(session, execution)
 
     def _report(
         self,
@@ -848,7 +940,10 @@ class UnpackContentVerificationService:
                 content_mismatch_count=count(UnpackItemStatus.CONTENT_MISMATCH),
                 auxiliary_pending_count=count(UnpackItemStatus.AUXILIARY_FETCHING),
                 review_count=count(UnpackItemStatus.REVIEW_REQUIRED),
-                error_count=count(UnpackItemStatus.MATCH_ERROR),
+                error_count=(
+                    count(UnpackItemStatus.MATCH_ERROR)
+                    + count(UnpackItemStatus.CONTENT_VERIFY_ERROR)
+                ),
                 execution_status=UnpackExecutionStatus(execution.status),
             )
 
