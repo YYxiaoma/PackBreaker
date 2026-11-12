@@ -26,11 +26,13 @@ def _service(tmp_path: Path) -> tuple[UnpackSourceScanService, Path]:
 
 
 def _movies_token(service: UnpackSourceScanService, root: Path) -> str:
+    parts = root.parts[1:]
     roots = service.list_tree_roots()
-    root_token = next(
-        item.selection_token for item in roots if item.display_path == root.as_posix()
-    )
-    browsed = service.browse_tree(root_token)
+    current = next(item for item in roots if item.name == parts[0])
+    for part in parts[1:]:
+        browsed = service.browse_tree(current.selection_token)
+        current = next(item for item in browsed.entries if item.name == part)
+    browsed = service.browse_tree(current.selection_token)
     return next(item.selection_token for item in browsed.entries if item.name == "movies")
 
 
@@ -88,14 +90,23 @@ def test_source_scan_persists_media_and_supports_filters_and_selection(tmp_path:
     assert [item.source_object_key for item in selected.items] == [selected_key]
 
 
-def test_tree_token_is_revalidated_and_cannot_escape_authorized_root(tmp_path: Path) -> None:
-    service, root = _service(tmp_path)
-    (root / "movies").mkdir()
+def test_tree_can_browse_outside_operation_roots_but_scan_cannot_use_them(
+    tmp_path: Path,
+) -> None:
+    service, _root = _service(tmp_path)
+    outside = tmp_path / "outside"
+    (outside / "nested").mkdir(parents=True)
 
-    forged = service._encode_selection_token("/etc")  # noqa: SLF001
+    selection = service._encode_selection_token(outside.as_posix())  # noqa: SLF001
+    browsed = service.browse_tree(selection)
+    assert browsed.display_path == outside.as_posix()
+    assert [item.name for item in browsed.entries] == ["nested"]
+
     with pytest.raises(ApplicationError) as caught:
-        service.browse_tree(forged)
-
+        service.create_scan(
+            selection_token=selection,
+            file_filter={"extensions": [".mkv"]},
+        )
     assert caught.value.code == "UNPACK_DIRECTORY_SELECTION_INVALID"
 
 

@@ -129,7 +129,7 @@ def test_v110_formal_adjacent_sqlite_upgrade_preserves_existing_site_task_and_se
     assert _identity(database) == before
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0051_unpack_template_match_acceptance",
+            "0052_unpack_content_verify_error",
         )
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -403,7 +403,7 @@ def test_v114_site_profile_migration_downgrade_and_reupgrade_are_isolated(
     command.upgrade(config, "head")
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0051_unpack_template_match_acceptance",
+            "0052_unpack_content_verify_error",
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)

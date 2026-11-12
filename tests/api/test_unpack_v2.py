@@ -190,7 +190,7 @@ def _seed_item_action_fixture(
                 content_verified_count=0,
                 content_mismatch_count=0,
                 timeout_count=1 if item_status == "MATCH_TIMEOUT" else 0,
-                error_count=1 if item_status == "MATCH_ERROR" else 0,
+                error_count=1 if item_status in {"MATCH_ERROR", "CONTENT_VERIFY_ERROR"} else 0,
                 completed_count=0,
                 started_at=now,
                 finished_at=(now if item_status in {"MATCH_TIMEOUT", "MATCH_ERROR"} else None),
@@ -207,12 +207,29 @@ def _seed_item_action_fixture(
                 source_snapshot={},
                 media_identity={"title": "Movie"},
                 status=item_status,
-                selected_candidate_id=(candidate_id if item_status == "MATCHED_AUTO" else None),
+                selected_candidate_id=(
+                    candidate_id
+                    if item_status in {"MATCHED_AUTO", "CONTENT_VERIFY_ERROR"}
+                    else None
+                ),
+                match_origin=(
+                    "AUTO" if item_status in {"MATCHED_AUTO", "CONTENT_VERIFY_ERROR"} else None
+                ),
                 candidate_generation=2,
                 retry_count=0,
-                last_error_code=("UNPACK_MATCH_ERROR" if item_status == "MATCH_ERROR" else None),
+                last_error_code=(
+                    "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT"
+                    if item_status == "CONTENT_VERIFY_ERROR"
+                    else "UNPACK_MATCH_ERROR"
+                    if item_status == "MATCH_ERROR"
+                    else None
+                ),
                 last_error_message=(
-                    "匹配失败，可重试该影片" if item_status == "MATCH_ERROR" else None
+                    "获取候选 torrent 超时，可稍后重试"
+                    if item_status == "CONTENT_VERIFY_ERROR"
+                    else "匹配失败，可重试该影片"
+                    if item_status == "MATCH_ERROR"
+                    else None
                 ),
                 match_finished_at=now,
                 version=3,
@@ -232,7 +249,14 @@ def _seed_item_action_fixture(
                 score_bps=9800,
                 is_exact_match=False,
                 evidence={"hard_conflicts": []},
-                verification_status="NOT_CHECKED",
+                verification_status=(
+                    "UNAVAILABLE" if item_status == "CONTENT_VERIFY_ERROR" else "NOT_CHECKED"
+                ),
+                verification_error_code=(
+                    "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT"
+                    if item_status == "CONTENT_VERIFY_ERROR"
+                    else None
+                ),
                 raw_ref={"torrent_id": "torrent-synthetic"},
                 created_at=now,
             )
@@ -524,14 +548,18 @@ def test_manual_selected_media_api_flow_saves_pending_then_runs(tmp_path: Path) 
 
         roots = client.get("/api/v1/files/tree/roots")
         assert roots.status_code == 200
-        root = next(
-            item
-            for item in roots.json()["items"]
-            if item["display_path"] == app.state.settings.data_dir.as_posix()
-        )
+        path_parts = app.state.settings.data_dir.parts[1:]
+        current = next(item for item in roots.json()["items"] if item["name"] == path_parts[0])
+        for part in path_parts[1:]:
+            parent_tree = client.get(
+                "/api/v1/files/tree",
+                params={"selection_token": current["selection_token"]},
+            )
+            assert parent_tree.status_code == 200
+            current = next(item for item in parent_tree.json()["entries"] if item["name"] == part)
         tree = client.get(
             "/api/v1/files/tree",
-            params={"selection_token": root["selection_token"]},
+            params={"selection_token": current["selection_token"]},
         )
         assert tree.status_code == 200
         movies_entry = next(item for item in tree.json()["entries"] if item["name"] == "movies")
@@ -629,6 +657,9 @@ def test_manual_selected_media_api_flow_saves_pending_then_runs(tmp_path: Path) 
         assert execution_response.status_code == 200
         assert execution_response.json()["status"] == "MATCHING"
         assert execution_response.json()["total_count"] == 1
+        assert execution_response.json()["match_pending_count"] == 1
+        assert execution_response.json()["matching_count"] == 0
+        assert execution_response.json()["match_progress_count"] == 0
         assert execution_response.json()["discovery_complete"] is True
 
         items_response = client.get(f"/api/v1/unpack/executions/{execution_id}/items")
@@ -1229,6 +1260,123 @@ def test_bulk_retry_no_match_api_uses_execution_version(tmp_path: Path) -> None:
         client.__exit__(None, None, None)
 
 
+def test_unpack_item_content_verification_retry_keeps_the_existing_candidate(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, candidate_id = _seed_item_action_fixture(
+            app,
+            item_status="CONTENT_VERIFY_ERROR",
+        )
+        response = client.post(
+            f"/api/v1/unpack/items/{item_id}/actions",
+            headers={**_csrf(client), "If-Match": "3"},
+            json={"action": "retry_content_verification"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "item_id": item_id,
+            "generation": 2,
+            "retry_count": 0,
+            "item_version": 4,
+            "item_status": "MATCHED_AUTO",
+        }
+        with app.state.runtime.session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            candidate = session.get(UnpackMatchCandidate, candidate_id)
+            assert item is not None and candidate is not None
+            assert item.selected_candidate_id == candidate_id
+            assert item.candidate_generation == candidate.generation == 2
+            assert candidate.verification_status == "NOT_CHECKED"
+            assert candidate.verification_error_code is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_unpack_item_content_verification_retry_rematches_if_candidate_is_missing(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        item_id, candidate_id = _seed_item_action_fixture(
+            app,
+            item_status="CONTENT_VERIFY_ERROR",
+        )
+        with app.state.runtime.session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            candidate = session.get(UnpackMatchCandidate, candidate_id)
+            assert item is not None and candidate is not None
+            session.delete(candidate)
+            session.commit()
+
+        response = client.post(
+            f"/api/v1/unpack/items/{item_id}/actions",
+            headers={**_csrf(client), "If-Match": "3"},
+            json={"action": "retry_content_verification"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "item_id": item_id,
+            "generation": 3,
+            "retry_count": 0,
+            "item_version": 4,
+            "item_status": "MATCH_PENDING",
+        }
+        with app.state.runtime.session_factory() as session:
+            item = session.get(UnpackExecutionItem, item_id)
+            execution = (
+                session.scalar(
+                    select(UnpackExecution).where(UnpackExecution.id == item.execution_id)
+                )
+                if item
+                else None
+            )
+            assert item is not None and execution is not None
+            assert item.selected_candidate_id is None
+            assert item.match_origin is None
+            assert item.candidate_generation == 3
+            assert execution.status == "MATCHING"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_unpack_execution_match_progress_excludes_pending_and_matching_items(
+    tmp_path: Path,
+) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        for item_status in (
+            "MATCH_PENDING",
+            "MATCHING",
+            "MATCHED_AUTO",
+            "MATCHED_MANUAL",
+            "NO_MATCH",
+            "MATCH_ERROR",
+            "CONTENT_VERIFY_ERROR",
+            "TORRENT_FETCHING",
+            "CONTENT_VERIFIED",
+        ):
+            item_id, _candidate_id = _seed_item_action_fixture(app, item_status=item_status)
+            with app.state.runtime.session_factory() as session:
+                item = session.get(UnpackExecutionItem, item_id)
+                assert item is not None
+                execution_id = item.execution_id
+            response = client.get(f"/api/v1/unpack/executions/{execution_id}")
+            assert response.status_code == 200
+            assert response.json()["match_pending_count"] == (
+                1 if item_status == "MATCH_PENDING" else 0
+            )
+            assert response.json()["matching_count"] == (1 if item_status == "MATCHING" else 0)
+            assert response.json()["match_progress_count"] == (
+                0 if item_status in {"MATCH_PENDING", "MATCHING"} else 1
+            )
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_unpack_item_retry_api_reopens_matching_with_new_generation(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
@@ -1332,7 +1480,7 @@ def test_item_list_marks_external_journal_and_archives_on_deletion(tmp_path: Pat
         client.__exit__(None, None, None)
 
 
-def test_unpack_auto_matched_item_can_enter_manual_review_api(tmp_path: Path) -> None:
+def test_unpack_auto_matched_item_cannot_enter_manual_review_api(tmp_path: Path) -> None:
     client, app = _authenticated_client(tmp_path)
     try:
         item_id, candidate_id = _seed_item_action_fixture(
@@ -1353,14 +1501,11 @@ def test_unpack_auto_matched_item_can_enter_manual_review_api(tmp_path: Path) ->
             },
         )
 
-        assert response.status_code == 200
-        assert response.json()["item_status"] == "MATCHED_MANUAL"
+        assert response.status_code == 409
         with app.state.runtime.session_factory() as session:
             item = session.get(UnpackExecutionItem, item_id)
-            execution = session.get(UnpackExecution, item.execution_id) if item else None
-            assert item is not None and execution is not None
-            assert item.match_origin == "MANUAL"
-            assert execution.status == "CONTENT_VERIFYING"
+            assert item is not None
+            assert item.status == "MATCHED_AUTO"
     finally:
         client.__exit__(None, None, None)
 

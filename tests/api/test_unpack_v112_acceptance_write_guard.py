@@ -114,6 +114,7 @@ def test_normal_execution_without_acceptance_mode_remains_schedulable(tmp_path: 
             execution = session.get(UnpackExecution, execution_id)
             assert execution is not None
             execution.config_snapshot = {"definition_id": "normal-synthetic"}
+            execution.status = "EXECUTING"
             item.execution_plan = {"ready": True, "blocked_reasons": []}
             session.commit()
         assert not is_write_blocked_acceptance_execution(

@@ -6,6 +6,7 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.unpack_item_actions import UnpackItemActionService
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.unpack import (
+    UnpackCandidateVerificationStatus,
     UnpackExecutionStatus,
     UnpackItemStatus,
     UnpackReviewDecision,
@@ -203,29 +204,29 @@ def test_review_approve_moves_item_to_manual_match_and_is_idempotent() -> None:
         assert session.scalar(select(UnpackReviewDecisionModel)) is not None
 
 
-def test_review_auto_match_can_be_rejected_as_no_match() -> None:
+def test_auto_matched_item_does_not_require_manual_review() -> None:
     service, factory = _fixture(
         item_status=UnpackItemStatus.MATCHED_AUTO,
         selected_candidate_id="candidate-1",
     )
 
-    result = service.review(
-        "item-1",
-        decision=UnpackReviewDecision.NO_MATCH,
-        candidate_id=None,
-        generation=2,
-        expected_item_version=3,
-        idempotency_key="review-no-match",
-    )
+    with pytest.raises(ApplicationError) as failure:
+        service.review(
+            "item-1",
+            decision=UnpackReviewDecision.NO_MATCH,
+            candidate_id=None,
+            generation=2,
+            expected_item_version=3,
+            idempotency_key="review-auto-match",
+        )
 
-    assert result.item_status is UnpackItemStatus.NO_MATCH
+    assert failure.value.code == "UNPACK_ITEM_ACTION_CONFLICT"
     with factory() as session:
         item = session.get(UnpackExecutionItem, "item-1")
-        execution = session.get(UnpackExecution, "execution-1")
-        assert item is not None and execution is not None
-        assert item.selected_candidate_id is None
-        assert item.match_origin is None
-        assert execution.status == UnpackExecutionStatus.FAILED.value
+        assert item is not None
+        assert item.status == UnpackItemStatus.MATCHED_AUTO.value
+        assert item.selected_candidate_id == "candidate-1"
+        assert session.scalar(select(UnpackReviewDecisionModel)) is None
 
 
 @pytest.mark.parametrize(
@@ -388,6 +389,206 @@ def test_retry_match_post_start_failure_requires_manual_reconciliation(
         assert item.selected_candidate_id == "candidate-1"
         assert (item.execution_state or {}).get("stage") == "STARTING"
         assert journal.status == OperationStatus.APPLIED.value
+
+
+def test_retry_plan_failure_preserves_full_verified_candidate_and_requeues_plan() -> None:
+    service, factory = _fixture(
+        item_status=UnpackItemStatus.EXECUTION_ERROR,
+        selected_candidate_id="candidate-1",
+    )
+    digest = "a" * 64
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert item is not None and candidate is not None
+        item.last_error_code = "SITE_UNAVAILABLE"
+        item.content_verification_level = "FULL_VERIFIED"
+        item.torrent_metainfo_digest = digest
+        item.execution_state = {"stage": "PLAN_PENDING"}
+        candidate.verification_status = UnpackCandidateVerificationStatus.VERIFIED.value
+        candidate.verification_level = "FULL_VERIFIED"
+        candidate.metainfo_digest = digest
+        session.commit()
+
+    result = service.retry_match("item-1", expected_item_version=3)
+
+    assert result.item_status is UnpackItemStatus.CONTENT_VERIFIED
+    assert result.generation == 2
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert item is not None and candidate is not None
+        assert item.status == UnpackItemStatus.CONTENT_VERIFIED.value
+        assert item.selected_candidate_id == "candidate-1"
+        assert item.candidate_generation == 2
+        assert item.content_verification_level == "FULL_VERIFIED"
+        assert item.torrent_metainfo_digest == digest
+        assert item.execution_plan is None
+        assert (item.execution_state or {}).get("stage") == "PLAN_PENDING"
+        assert candidate.verification_status == UnpackCandidateVerificationStatus.VERIFIED.value
+        assert candidate.metainfo_digest == digest
+
+
+def test_retry_resumes_applied_reuse_operations_after_site_circuit_opens() -> None:
+    service, factory = _fixture(
+        item_status=UnpackItemStatus.EXECUTION_ERROR,
+        selected_candidate_id="candidate-1",
+    )
+    now = utc_now()
+    plan_digest = "d" * 64
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.last_error_code = "SITE_CIRCUIT_OPEN"
+        item.execution_plan = {"plan_digest": plan_digest}
+        item.execution_plan_digest = plan_digest
+        item.torrent_metainfo_digest = "e" * 64
+        item.execution_state = {"stage": "FILES_MATERIALIZED", "plan_digest": plan_digest}
+        session.add(
+            UnpackExternalOperationJournal(
+                id="reuse-applied",
+                item_id="item-1",
+                idempotency_key="f" * 64,
+                operation_type="UNPACK_EXEC_REUSE_EXISTING",
+                target={"path": "/data/seeding/Movie.mkv"},
+                intent={"plan_digest": plan_digest},
+                status=OperationStatus.APPLIED.value,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+        initial_version = item.version
+
+    result = service.retry_match("item-1", expected_item_version=initial_version)
+
+    assert result.item_status is UnpackItemStatus.EXECUTING
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        journal = session.get(UnpackExternalOperationJournal, "reuse-applied")
+        assert item is not None and journal is not None
+        assert item.selected_candidate_id == "candidate-1"
+        assert item.candidate_generation == 2
+        assert item.execution_plan_digest == plan_digest
+        assert journal.status == OperationStatus.APPLIED.value
+
+
+def test_retry_content_verification_preserves_candidate_and_requeues_verification() -> None:
+    service, factory = _fixture(
+        item_status=UnpackItemStatus.CONTENT_VERIFY_ERROR,
+        selected_candidate_id="candidate-1",
+    )
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert item is not None and candidate is not None
+        item.match_origin = "AUTO"
+        item.last_error_code = "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT"
+        item.last_error_message = "获取候选 torrent 超时，可稍后重试"
+        item.content_verification_level = None
+        candidate.verification_status = UnpackCandidateVerificationStatus.UNAVAILABLE.value
+        candidate.verification_error_code = "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT"
+        candidate.evidence = {
+            "hard_conflicts": [],
+            "content_verification": {"error_code": "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT"},
+        }
+        session.commit()
+
+    result = service.retry_content_verification("item-1", expected_item_version=3)
+
+    assert result.item_status is UnpackItemStatus.MATCHED_AUTO
+    assert result.generation == 2
+    assert result.retry_count == 0
+    assert result.item_version == 4
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        execution = session.get(UnpackExecution, "execution-1")
+        assert item is not None and candidate is not None and execution is not None
+        assert item.selected_candidate_id == candidate.id
+        assert item.candidate_generation == candidate.generation == 2
+        assert item.last_error_code is None
+        assert item.last_error_message is None
+        assert candidate.verification_status == UnpackCandidateVerificationStatus.NOT_CHECKED.value
+        assert candidate.verification_error_code is None
+        assert "content_verification" not in candidate.evidence
+        assert execution.status == UnpackExecutionStatus.CONTENT_VERIFYING.value
+
+
+@pytest.mark.parametrize("stale_candidate", ["missing", "wrong_generation"])
+def test_retry_content_verification_rematches_when_selected_candidate_is_stale(
+    stale_candidate: str,
+) -> None:
+    service, factory = _fixture(
+        item_status=UnpackItemStatus.CONTENT_VERIFY_ERROR,
+        selected_candidate_id="candidate-1",
+    )
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert item is not None and candidate is not None
+        item.match_origin = "AUTO"
+        item.last_error_code = "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT"
+        if stale_candidate == "missing":
+            session.delete(candidate)
+        else:
+            candidate.generation = 1
+        session.commit()
+
+    result = service.retry_content_verification("item-1", expected_item_version=3)
+
+    assert result.item_status is UnpackItemStatus.MATCH_PENDING
+    assert result.generation == 3
+    assert result.retry_count == 0
+    assert result.item_version == 4
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        execution = session.get(UnpackExecution, "execution-1")
+        assert item is not None and execution is not None
+        assert item.selected_candidate_id is None
+        assert item.match_origin is None
+        assert item.candidate_generation == 3
+        assert item.last_error_code is None
+        assert execution.status == UnpackExecutionStatus.MATCHING.value
+
+
+def test_retry_content_verification_does_not_rematch_after_external_operation() -> None:
+    service, factory = _fixture(
+        item_status=UnpackItemStatus.CONTENT_VERIFY_ERROR,
+        selected_candidate_id="candidate-1",
+    )
+    now = utc_now()
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert item is not None and candidate is not None
+        item.match_origin = "AUTO"
+        session.delete(candidate)
+        session.add(
+            UnpackExternalOperationJournal(
+                id="verification-retry-start",
+                item_id="item-1",
+                idempotency_key="c" * 64,
+                operation_type="UNPACK_EXEC_QBITTORRENT_START",
+                target={"downloader_id": "downloader-1", "torrent_hash": "a" * 40},
+                intent={"reason": "synthetic safety guard"},
+                status=OperationStatus.APPLIED.value,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    with pytest.raises(ApplicationError) as failure:
+        service.retry_content_verification("item-1", expected_item_version=3)
+
+    assert failure.value.code == "UNPACK_ITEM_ACTION_CONFLICT"
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.CONTENT_VERIFY_ERROR.value
+        assert item.selected_candidate_id == "candidate-1"
+        assert item.candidate_generation == 2
 
 
 def test_retry_match_reopens_execution_and_advances_generation() -> None:
@@ -992,6 +1193,59 @@ def test_failed_execution_resume_requires_safe_frozen_stage_and_applied_journal(
             item = session.get(UnpackExecutionItem, "item-1")
             assert item is not None
             assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
+
+
+@pytest.mark.parametrize("stage", ("FILES_MATERIALIZED", "ADD_RESUME_CHECKING"))
+def test_failed_execution_resume_allows_multiple_materialization_journals_of_same_type(
+    stage: str,
+) -> None:
+    service, factory = _fixture(
+        item_status=UnpackItemStatus.EXECUTION_ERROR,
+        selected_candidate_id="candidate-1",
+    )
+    now = utc_now()
+    operation_types = (
+        "UNPACK_EXEC_CREATE_DIRECTORY",
+        "UNPACK_EXEC_MATERIALIZE_HARDLINK",
+        "UNPACK_EXEC_MATERIALIZE_HARDLINK",
+        "UNPACK_EXEC_MATERIALIZE_HARDLINK",
+        "UNPACK_EXEC_QBITTORRENT_ADD",
+    )
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.last_error_code = "UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE"
+        item.execution_plan = {"synthetic": "frozen-plan"}
+        item.execution_plan_digest = "digest-1"
+        item.torrent_metainfo_digest = "torrent-digest-1"
+        item.execution_state = {"stage": stage, "plan_digest": "digest-1"}
+        for index, operation_type in enumerate(operation_types):
+            session.add(
+                UnpackExternalOperationJournal(
+                    id=f"materialized-operation-{index}",
+                    item_id="item-1",
+                    idempotency_key=f"operation-{index}".ljust(64, "x"),
+                    operation_type=operation_type,
+                    target={"path": f"/data/seeding/file-{index}"},
+                    intent={"reason": "synthetic applied proof"},
+                    status=OperationStatus.APPLIED.value,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        session.commit()
+
+    result = service.retry_match("item-1", expected_item_version=3)
+
+    assert result.item_status is UnpackItemStatus.EXECUTING
+    assert result.generation == 2
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.execution_plan_digest == "digest-1"
+        assert item.selected_candidate_id == "candidate-1"
+        assert item.execution_state == {"stage": stage, "plan_digest": "digest-1"}
+        assert session.scalar(select(func.count(UnpackExternalOperationJournal.id))) == 5
 
 
 def test_failed_execution_resume_never_accepts_mixed_client_add_journals() -> None:

@@ -164,40 +164,6 @@ def test_unpack_driver_advances_matching_after_discovery() -> None:
     assert matching.calls == [("matching-1", 7)]
 
 
-def test_unpack_driver_pause_after_matching_skips_every_later_stage() -> None:
-    discovery = _FakeDiscoveryService()
-    matching = _FakeMatchService()
-    content = _FakeContentVerificationService()
-    auxiliary = _FakeAuxiliaryService()
-    planning = _FakeExecutionPlanService()
-    materialization = _FakeMaterializationService()
-    seeding = _FakeSeedingService()
-    driver = UnpackDriver(
-        discovery,
-        None,
-        matching,
-        content,
-        auxiliary,
-        planning,
-        materialization,
-        seeding,
-        interval_seconds=10,
-        execution_limit=2,
-        discovery_batch_size=50,
-        pause_after_matching=True,
-    )
-
-    advanced = asyncio.run(driver.run_once())
-
-    assert advanced == 3
-    assert matching.calls == [("matching-1", 20)]
-    assert content.calls == []
-    assert auxiliary.calls == []
-    assert planning.calls == []
-    assert materialization.calls == []
-    assert seeding.calls == []
-
-
 def test_unpack_driver_advances_content_verification_after_matching() -> None:
     discovery = _FakeDiscoveryService()
     matching = _FakeMatchService()
@@ -278,6 +244,10 @@ def test_unpack_driver_advances_plan_materialization_and_seeding_in_order() -> N
     advanced = asyncio.run(driver.run_once())
 
     assert advanced == 8
+    assert discovery.calls == [("execution-1", 50), ("execution-2", 50)]
+    assert matching.calls == [("matching-1", 7)]
+    assert content.calls == [("verify-1", 3)]
+    assert auxiliary.calls == [("auxiliary-1", 1)]
     assert planning.calls == [("plan-1", 4)]
     assert materialization.calls == [("materialize-1", 5)]
     assert seeding.calls == [("seed-1", 6)]

@@ -607,6 +607,145 @@ def test_existing_auxiliary_operation_disables_automatic_candidate_switch(tmp_pa
         assert second.verification_status == UnpackCandidateVerificationStatus.NOT_CHECKED.value
 
 
+def test_matching_stage_waits_for_all_children_before_content_verification(
+    tmp_path: Path,
+) -> None:
+    content = b"abcdefgh"
+    service, factory, _source = _service(
+        tmp_path,
+        source_content=content,
+        torrent=_v1_single("movie.mkv", content),
+    )
+    now = utc_now()
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        execution.status = UnpackExecutionStatus.MATCHING.value
+        execution.total_count = 2
+        session.add(
+            UnpackExecutionItem(
+                id="item-2",
+                execution_id="execution-1",
+                source_object_key="source-2",
+                source_snapshot={},
+                media_identity={"title": "Sibling movie"},
+                status=UnpackItemStatus.MATCH_PENDING.value,
+                selected_candidate_id=None,
+                candidate_generation=1,
+                retry_count=0,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    # Even though item-1 is already MATCHED_AUTO, the parent remains in the
+    # matching stage until item-2 has also reached a terminal matching result.
+    assert service.list_verifiable_execution_ids() == ()
+
+
+def test_matching_review_blocks_content_verification_until_resolved(
+    tmp_path: Path,
+) -> None:
+    content = b"abcdefgh"
+    service, factory, _source = _service(
+        tmp_path,
+        source_content=content,
+        torrent=_v1_single("movie.mkv", content),
+    )
+    now = utc_now()
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        execution.status = UnpackExecutionStatus.CONTENT_VERIFYING.value
+        execution.total_count = 2
+        execution.review_count = 1
+        session.add(
+            UnpackExecutionItem(
+                id="item-2",
+                execution_id="execution-1",
+                source_object_key="source-2",
+                source_snapshot={},
+                media_identity={"title": "Needs manual matching review"},
+                status=UnpackItemStatus.REVIEW_REQUIRED.value,
+                selected_candidate_id=None,
+                candidate_generation=1,
+                retry_count=0,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    # An auto-matched sibling must not enter content verification while any
+    # sibling is still waiting for a matching-stage human decision.
+    assert service.list_verifiable_execution_ids() == ()
+    report = asyncio.run(service.verify_next_batch("execution-1", limit=1))
+    assert report.processed_count == 0
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        execution = session.get(UnpackExecution, "execution-1")
+        assert item is not None and execution is not None
+        assert item.status == UnpackItemStatus.MATCHED_AUTO.value
+        assert execution.status == UnpackExecutionStatus.REVIEW_REQUIRED.value
+
+
+def test_startup_recovery_requeues_interrupted_verification_before_driver_starts(
+    tmp_path: Path,
+) -> None:
+    content = b"abcdefgh"
+    service, factory, _source = _service(
+        tmp_path,
+        source_content=content,
+        torrent=_v1_single("movie.mkv", content),
+    )
+    now = utc_now()
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert execution is not None and item is not None and candidate is not None
+        execution.status = UnpackExecutionStatus.CONTENT_VERIFYING.value
+        execution.total_count = 2
+        execution.review_count = 1
+        item.status = UnpackItemStatus.TORRENT_FETCHING.value
+        item.match_origin = "AUTO"
+        candidate.verification_status = UnpackCandidateVerificationStatus.VERIFYING.value
+        session.add(
+            UnpackExecutionItem(
+                id="item-2",
+                execution_id="execution-1",
+                source_object_key="source-2",
+                source_snapshot={},
+                media_identity={"title": "Needs manual matching review"},
+                status=UnpackItemStatus.REVIEW_REQUIRED.value,
+                selected_candidate_id=None,
+                candidate_generation=1,
+                retry_count=0,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    assert service.recover_interrupted_verifications() == 1
+    assert service.recover_interrupted_verifications() == 0
+
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert execution is not None and item is not None and candidate is not None
+        assert execution.status == UnpackExecutionStatus.REVIEW_REQUIRED.value
+        assert item.status == UnpackItemStatus.MATCHED_AUTO.value
+        assert candidate.verification_status == UnpackCandidateVerificationStatus.NOT_CHECKED.value
+        assert candidate.verification_level is None
+        assert candidate.metainfo_digest is None
+
+
 def test_human_review_during_fallback_prevents_stale_verification_from_overwriting(
     tmp_path: Path,
 ) -> None:
@@ -641,6 +780,36 @@ def test_human_review_during_fallback_prevents_stale_verification_from_overwriti
         assert second.verification_status == UnpackCandidateVerificationStatus.NOT_CHECKED.value
 
 
+def test_torrent_fetch_timeout_is_classified_as_content_verification_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"abcdefgh"
+    service, factory, _source = _service(
+        tmp_path,
+        source_content=content,
+        torrent=_v1_single("movie.mkv", content),
+    )
+
+    async def timeout_fetch(_torrent_id: str) -> TorrentPayload:
+        raise TimeoutError
+
+    provider = cast(_FakeSiteProvider, service._site_provider)
+    monkeypatch.setattr(provider._adapter, "fetch_torrent", timeout_fetch)
+    report = asyncio.run(service.verify_next_batch("execution-1", limit=1))
+
+    assert report.processed_count == 1
+    assert report.error_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert item is not None and candidate is not None
+        assert item.status == UnpackItemStatus.CONTENT_VERIFY_ERROR.value
+        assert item.selected_candidate_id == candidate.id
+        assert item.last_error_code == "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT"
+        assert candidate.verification_status == UnpackCandidateVerificationStatus.UNAVAILABLE.value
+        assert candidate.verification_error_code == "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT"
+
+
 def test_full_verified_single_file_candidate(tmp_path: Path) -> None:
     content = b"abcdefgh"
     service, factory, _source = _service(
@@ -663,6 +832,10 @@ def test_full_verified_single_file_candidate(tmp_path: Path) -> None:
         assert item.torrent_metainfo_digest
         assert candidate.verification_status == UnpackCandidateVerificationStatus.VERIFIED.value
         assert candidate.verification_level == VerificationLevel.FULL_VERIFIED.value
+        storage_key = candidate.raw_ref.get("verified_torrent_storage_key")
+        assert isinstance(storage_key, str)
+        assert service._manual_torrent_store.load(storage_key) == _v1_single("movie.mkv", content)
+    assert cast(_FakeSiteProvider, service._site_provider)._adapter.fetched_ids == ["torrent-1"]
 
 
 def test_review_during_read_only_verification_makes_old_claim_stale_without_overwrite(
@@ -1230,3 +1403,112 @@ def test_multifile_verified_content_plan_and_copy_materialization_bridge(
         assert all(row.status == "APPLIED" for row in records)
     assert asyncio.run(seeding.advance_next_batch("execution-1")).processed_count == 0
     assert client.calls == ["add", "verify", "start"]
+
+
+def test_content_verification_resumes_when_execution_already_has_completed_siblings(
+    tmp_path: Path,
+) -> None:
+    content = b"video-content"
+    service, factory, _source = _service(
+        tmp_path,
+        source_content=content,
+        torrent=_v1_single("movie.mkv", content),
+    )
+    now = utc_now()
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        execution.status = UnpackExecutionStatus.EXECUTING.value
+        execution.total_count = 34
+        for index in range(14):
+            session.add(
+                UnpackExecutionItem(
+                    id=f"item-completed-{index:02d}",
+                    execution_id="execution-1",
+                    source_object_key=f"source-completed-{index:02d}",
+                    source_snapshot={},
+                    media_identity={},
+                    status=UnpackItemStatus.COMPLETED.value,
+                    candidate_generation=0,
+                    retry_count=0,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        for index in range(19):
+            session.add(
+                UnpackExecutionItem(
+                    id=f"item-matched-{index:02d}",
+                    execution_id="execution-1",
+                    source_object_key=f"source-matched-{index:02d}",
+                    source_snapshot={},
+                    media_identity={},
+                    status=UnpackItemStatus.MATCHED_AUTO.value,
+                    candidate_generation=0,
+                    retry_count=0,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        session.commit()
+
+    # Reproduce the reported 34-item mixed phase: 14 completed, 20 still
+    # MATCHED_AUTO, while the parent was incorrectly left at EXECUTING.
+    assert service.list_verifiable_execution_ids() == ("execution-1",)
+    report = asyncio.run(service.verify_next_batch("execution-1", limit=1))
+    assert report.processed_count == 1
+    assert report.content_verified_count == 1
+
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        pending = session.get(UnpackExecutionItem, "item-1")
+        completed = session.get(UnpackExecutionItem, "item-completed-00")
+        assert execution is not None and pending is not None and completed is not None
+        assert pending.status == UnpackItemStatus.CONTENT_VERIFIED.value
+        assert completed.status == UnpackItemStatus.COMPLETED.value
+        assert execution.status == UnpackExecutionStatus.CONTENT_VERIFYING.value
+        assert execution.completed_count == 14
+        assert execution.matched_auto_count == 19
+
+
+def test_content_verification_waits_for_all_matching_items_to_resolve(tmp_path: Path) -> None:
+    content = b"video-content"
+    service, factory, _source = _service(
+        tmp_path,
+        source_content=content,
+        torrent=_v1_single("movie.mkv", content),
+    )
+    now = utc_now()
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        execution.status = UnpackExecutionStatus.EXECUTING.value
+        execution.total_count = 2
+        session.add(
+            UnpackExecutionItem(
+                id="item-matching",
+                execution_id="execution-1",
+                source_object_key="source-matching",
+                source_snapshot={},
+                media_identity={},
+                status=UnpackItemStatus.MATCH_PENDING.value,
+                candidate_generation=0,
+                retry_count=0,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    assert service.list_verifiable_execution_ids() == ()
+    report = asyncio.run(service.verify_next_batch("execution-1"))
+    assert report.processed_count == 0
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert execution is not None and item is not None
+        assert execution.status == UnpackExecutionStatus.MATCHING.value
+        assert item.status == UnpackItemStatus.MATCHED_AUTO.value

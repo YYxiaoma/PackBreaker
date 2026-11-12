@@ -195,7 +195,7 @@ async def test_hddolby_http_client_details_timeout_is_90s_without_extending_torr
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         assert request.method == "GET"
-        assert request.url.host == "www.hddolby.com"
+        assert request.url.host == "www.uhddolby.com"
         assert request.headers.get("cookie") == "synthetic-cookie"
         timeout = request.extensions.get("timeout")
         assert isinstance(timeout, dict)

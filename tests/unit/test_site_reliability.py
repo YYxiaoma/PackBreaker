@@ -22,6 +22,7 @@ from backend.app.domain.site_search import (
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.adapters.sites import MTeamAdapter
 from backend.app.infrastructure.site_reliability import (
+    ReliableSiteAdapter,
     SiteReliabilityEvent,
     SiteReliabilityPolicy,
     SiteReliabilityRegistry,
@@ -32,12 +33,19 @@ class _FakeTime:
     def __init__(self) -> None:
         self.now = 0.0
         self.sleeps: list[float] = []
+        self.sleep_started: asyncio.Event | None = None
+        self.release_sleep: asyncio.Event | None = None
 
     def monotonic(self) -> float:
         return self.now
 
     async def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
+        if self.sleep_started is not None:
+            self.sleep_started.set()
+            if self.release_sleep is None:
+                raise RuntimeError("blocking sleep 缺少 release event")
+            await self.release_sleep.wait()
         self.now += seconds
 
     def advance(self, seconds: float) -> None:
@@ -465,6 +473,38 @@ async def test_site_reliability_cancelled_half_open_probe_does_not_stick_breaker
 
 
 @pytest.mark.asyncio
+async def test_cancelled_rate_wait_does_not_consume_or_push_the_next_slot() -> None:
+    fake_time = _FakeTime()
+    raw = _FakeSiteAdapter(interval=90.0)
+    raw.clock = fake_time
+    registry = _registry(fake_time)
+    adapter = registry.wrap(config_id="site-cancelled-rate-wait", config_version=1, adapter=raw)
+
+    await adapter.search(SearchQuery(("first",), SearchMediaType.MOVIE))
+    fake_time.advance(30.0)
+    fake_time.sleep_started = asyncio.Event()
+    fake_time.release_sleep = asyncio.Event()
+    cancelled = asyncio.create_task(
+        adapter.search(SearchQuery(("cancelled",), SearchMediaType.MOVIE))
+    )
+    await fake_time.sleep_started.wait()
+    health = await registry.health(config_id="site-cancelled-rate-wait", config_version=1)
+    assert health.rate_limit_wait_seconds == 60.0
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+
+    # Cancellation during the remaining 60-second wait must not reserve a
+    # second 90-second interval. The next request should still start at t=90.
+    fake_time.sleep_started = None
+    fake_time.release_sleep = None
+    await adapter.search(SearchQuery(("recovered",), SearchMediaType.MOVIE))
+
+    assert raw.search_times == [0.0, 90.0]
+    assert fake_time.sleeps == [60.0, 60.0]
+
+
+@pytest.mark.asyncio
 async def test_site_reliability_health_reports_cache_request_and_rate_metrics() -> None:
     fake_time = _FakeTime()
     raw = _FakeSiteAdapter(interval=5.0)
@@ -605,3 +645,92 @@ async def test_mteam_mocktransport_uses_shared_retry_and_rate_limit_without_secr
     assert fake_time.sleeps == [0.5, 89.5]
     assert all(request.headers.get("x-api-key") == api_key for request in requests)
     assert api_key not in repr(adapter)
+
+
+@pytest.mark.asyncio
+async def test_unpack_search_uses_one_attempt_and_keeps_mteam_minimum_interval() -> None:
+    fake_time = _FakeTime()
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx2.Response(503)
+        return httpx2.Response(200, json={"code": "0", "data": {"data": [], "total": "0"}})
+
+    raw = MTeamAdapter("synthetic-api-key", transport=httpx2.MockTransport(handler))
+    policy = SiteReliabilityPolicy(
+        max_attempts=3,
+        retry_base_seconds=0.5,
+        retry_max_seconds=0.5,
+        retry_jitter_ratio=0.0,
+        search_cache_ttl_seconds=0.0,
+    )
+    adapter = _registry(fake_time, policy=policy).wrap(
+        config_id="mteam-unpack-config", config_version=1, adapter=raw
+    )
+    assert isinstance(adapter, ReliableSiteAdapter)
+    query = SearchQuery(("synthetic",), SearchMediaType.MOVIE)
+
+    with pytest.raises(SiteAdapterError):
+        await adapter.search_for_unpack(query)
+
+    assert len(requests) == 1
+    page = await adapter.search_for_unpack(query)
+
+    assert page.site_id == "mteam"
+    assert len(requests) == 2
+    assert fake_time.sleeps == [90.0]
+
+
+@pytest.mark.asyncio
+async def test_unpack_fresh_search_bypasses_and_replaces_cached_page() -> None:
+    fake_time = _FakeTime()
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(200, json={"code": "0", "data": {"data": [], "total": "0"}})
+
+    raw = MTeamAdapter("synthetic-api-key", transport=httpx2.MockTransport(handler))
+    policy = SiteReliabilityPolicy(search_cache_ttl_seconds=60.0)
+    adapter = _registry(fake_time, policy=policy).wrap(
+        config_id="mteam-unpack-fresh-config", config_version=1, adapter=raw
+    )
+    assert isinstance(adapter, ReliableSiteAdapter)
+    query = SearchQuery(("synthetic",), SearchMediaType.MOVIE)
+
+    first = await adapter.search_for_unpack(query)
+    refreshed = await adapter.search_for_unpack_fresh(query)
+    cached = await adapter.search_for_unpack(query)
+
+    assert first.site_id == refreshed.site_id == cached.site_id == "mteam"
+    assert len(requests) == 2
+    assert fake_time.sleeps == [90.0]
+
+
+@pytest.mark.asyncio
+async def test_unpack_fresh_search_invalidates_stale_cache_when_request_fails() -> None:
+    fake_time = _FakeTime()
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if len(requests) == 2:
+            return httpx2.Response(503)
+        return httpx2.Response(200, json={"code": "0", "data": {"data": [], "total": "0"}})
+
+    raw = MTeamAdapter("synthetic-api-key", transport=httpx2.MockTransport(handler))
+    policy = SiteReliabilityPolicy(search_cache_ttl_seconds=60.0)
+    adapter = _registry(fake_time, policy=policy).wrap(
+        config_id="mteam-unpack-refresh-failure-config", config_version=1, adapter=raw
+    )
+    assert isinstance(adapter, ReliableSiteAdapter)
+    query = SearchQuery(("synthetic",), SearchMediaType.MOVIE)
+
+    await adapter.search_for_unpack(query)
+    with pytest.raises(SiteAdapterError):
+        await adapter.search_for_unpack_fresh(query)
+    await adapter.search_for_unpack(query)
+
+    assert len(requests) == 3

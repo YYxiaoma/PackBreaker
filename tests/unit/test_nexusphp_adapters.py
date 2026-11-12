@@ -16,6 +16,7 @@ from backend.app.infrastructure.adapters.nexusphp import (
     NexusPhpProfile,
     NexusPhpWebAdapter,
     _parse_html,
+    _parse_nexus_ajax_seeding_summary,
     _parse_nexus_ajax_total_count,
     _profile_named_level,
 )
@@ -58,21 +59,35 @@ async def test_springsunday_profile_uses_site_specific_bonus_and_ajax_totals() -
             return httpx2.Response(
                 200,
                 text=(
-                    '<a href="usercp.php">settings</a><a href="userdetails.php?id=99">YYxiaoma</a>'
+                    '<div id="info_block"><a href="usercp.php">settings</a>'
+                    '<a href="userdetails.php?id=99"></a></div>'
+                    '<a href="userdetails.php?id=100">OtherUser</a>'
                 ),
             )
         if request.url.path == "/userdetails.php":
             return httpx2.Response(
                 200,
                 text=(
-                    '<a href="usercp.php">settings</a><table>'
+                    '<div id="info_block"><a href="userdetails.php?id=99">YYxiaoma</a></div>'
+                    '<a href="messages.php"><b style="background: darkorange">8</b></a>'
+                    "<table>"
+                    '<tr><td class="rowhead">Join date</td><td>2021-02-03 04:05:06</td></tr>'
+                    '<tr><td class="rowhead">Last Action</td>'
+                    "<td>2026-11-04 10:11:12 (today)</td></tr>"
                     '<tr><td class="rowhead">传输</td>'
                     "<td>上传量 <b>644.07 GiB</b> 下载量 <b>0 B</b> 分享率 <b>∞</b></td></tr>"
                     '<tr><td class="rowhead">积分</td><td>10,577.70</td></tr>'
                     '<tr><td class="rowhead">做种积分</td><td>10,544.90</td></tr>'
-                    '<tr class="nowrap"><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td>'
-                    "<td>6</td><td>7</td><td>8</td><td>12.345</td></tr>"
                     "</table>"
+                ),
+            )
+        if request.url.path == "/mybonus.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<table><tbody><tr class="nowrap"><td>1</td><td>2</td><td>3</td>'
+                    "<td>4</td><td>5</td><td>6</td><td>7</td><td>8</td><td>12.345</td>"
+                    "</tr></tbody></table>"
                 ),
             )
         if request.url.path == "/getusertorrentlistajax.php":
@@ -101,6 +116,12 @@ async def test_springsunday_profile_uses_site_specific_bonus_and_ajax_totals() -
         transport=httpx2.MockTransport(handler),
     )
     profile = await adapter.fetch_user_profile()
+    assert profile.username == "YYxiaoma"
+    assert profile.join_time is not None
+    assert profile.join_time.strftime("%Y-%m-%dT%H:%M:%S") == "2021-02-03T04:05:06"
+    assert profile.last_access_at is not None
+    assert profile.last_access_at.strftime("%Y-%m-%dT%H:%M:%S") == "2026-11-04T10:11:12"
+    assert profile.message_count == 8
     assert profile.uploaded_bytes == int(644.07 * 1024**3)
     assert profile.downloaded_bytes == 0
     assert profile.torrents_posted == 0
@@ -112,6 +133,7 @@ async def test_springsunday_profile_uses_site_specific_bonus_and_ajax_totals() -
     assert [path for path, _params in requests] == [
         "/index.php",
         "/userdetails.php",
+        "/mybonus.php",
         "/getusertorrentlistajax.php",
         "/getusertorrentlistajax.php",
     ]
@@ -1344,6 +1366,15 @@ def test_nexusphp_upload_count_matches_pt_depiler_empty_and_aggregate_markers(
     assert _parse_nexus_ajax_total_count(html, _parse_html(html)) == expected
 
 
+@pytest.mark.parametrize("html", ["没有记录", "No records.", "No record."])
+def test_nexusphp_seeding_summary_treats_explicit_empty_marker_as_zero(html: str) -> None:
+    assert _parse_nexus_ajax_seeding_summary(
+        html,
+        _parse_html(html),
+        spring_sunday=True,
+    ) == (0, 0)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("total", [37, 0])
 async def test_hhclub_reads_current_users_full_published_count_from_confirmed_ajax(
@@ -2295,23 +2326,38 @@ async def test_pterclub_uses_profile_seeding_count_and_site_specific_published_q
             return httpx2.Response(
                 200,
                 text=(
-                    '<a href="usercp.php">settings</a><a href="userdetails.php?id=99">YYxiaoma</a>'
+                    '<span id="info_block"><div><a href="usercp.php">settings</a></div>'
+                    '<a href="userdetails.php?id=99"></a></span>'
+                    '<a href="userdetails.php?id=100">OtherUser</a>'
                 ),
             )
         if request.url.path == "/userdetails.php":
             return httpx2.Response(
                 200,
                 text=(
-                    '<a href="usercp.php">settings</a>'
+                    '<span id="info_block"><div>profile</div>'
+                    '<a href="userdetails.php?id=99">YYxiaoma</a></span>'
+                    '<div style="background: red"><a href="messages.php">6</a></div>'
                     '<a href="getusertorrentlist.php?userid=99&amp;type=seeding">607</a>'
                     "<table>"
                     '<tr><td>用户等级</td><td><img title="伯曼猫 User" alt="伯曼猫 User"></td></tr>'
+                    "<tr><td>Join date</td><td>2020-03-04 05:06:07</td></tr>"
+                    "<tr><td>最近動向</td><td>2026-11-04 12:13:14 (today)</td></tr>"
+                    "<tr><td>猫粮</td><td>1,234.50</td></tr>"
                     "<tr><td>上传量</td><td>886.73 GiB</td></tr>"
                     "<tr><td>下载量</td><td>1.66 TiB</td></tr>"
                     "<tr><td>分享率</td><td>534.17</td></tr>"
                     "<tr><td>发种数</td><td>9</td></tr>"
                     "</table>"
                 ),
+            )
+        if request.url.path == "/mybonus.php":
+            timeout = request.extensions.get("timeout")
+            assert isinstance(timeout, dict)
+            assert timeout.get("read") == 60.0
+            return httpx2.Response(
+                200,
+                text='<table id="outer"><tr><td rowspan="2">12.5</td></tr></table>',
             )
         if request.url.path == "/getusertorrentlistajax.php":
             assert dict(request.url.params) == {"userid": "99", "type": "seeding"}
@@ -2351,16 +2397,152 @@ async def test_pterclub_uses_profile_seeding_count_and_site_specific_published_q
         transport=httpx2.MockTransport(handler),
     ).fetch_user_profile()
 
+    assert profile.uid == "99"
+    assert profile.username == "YYxiaoma"
     assert profile.user_level == "伯曼猫 User"
+    assert profile.join_time is not None
+    assert profile.join_time.strftime("%Y-%m-%dT%H:%M:%S") == "2020-03-04T05:06:07"
+    assert profile.last_access_at is not None
+    assert profile.last_access_at.strftime("%Y-%m-%dT%H:%M:%S") == "2026-11-04T12:13:14"
+    assert profile.message_count == 6
+    assert profile.bonus == 1234.5
+    assert profile.bonus_per_hour == 12.5
     assert profile.seeding_count == 607
     assert profile.seeding_size_bytes == int(7.52 * 1024**4)
     assert profile.torrents_posted == 22  # prechecked + checked, not generic AJAX total
     assert [request.url.path for request in requests] == [
         "/index.php",
         "/userdetails.php",
+        "/mybonus.php",
         "/getusertorrentlistajax.php",
         "/torrents.php",
         "/torrents.php",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hdhome_profile_uses_custom_hourly_bonus_and_uploaded_ajax_total() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<div id="info_block"><a href="usercp.php">settings</a>'
+                    '<a href="userdetails.php?id=88">HDUser</a></div>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<div id="info_block"><a href="userdetails.php?id=88">HDUser</a></div>'
+                    '<table><tr><td class="text"><h1>魔力统计</h1>'
+                    '<div align="center">1</div><div align="center">2</div>'
+                    '<div align="center">3</div><div align="center">4</div>'
+                    '<div align="center">5</div><div align="center">6</div>'
+                    '<div align="center">7</div><div align="center">8</div>'
+                    '<div align="center">9</div><div align="center">10</div>'
+                    "</td></tr></table>"
+                ),
+            )
+        assert request.url.path == "/getusertorrentlistajax.php"
+        params = dict(request.url.params)
+        assert params["userid"] == "88"
+        timeout = request.extensions.get("timeout")
+        assert isinstance(timeout, dict)
+        assert timeout.get("read") == 60.0
+        if params["type"] == "seeding":
+            return httpx2.Response(
+                200,
+                text="<div><b>5</b>条记录 / 总大小 <b>1.5 TiB</b></div><table></table>",
+            )
+        assert params["type"] == "uploaded"
+        return httpx2.Response(
+            200,
+            text="<div><b>31</b>条记录</div><table><tr><td>Title</td></tr></table>",
+        )
+
+    profile = await NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="hdhome",
+            default_base_url="https://hdhome.org",
+            min_request_interval_seconds=0,
+        ),
+        transport=httpx2.MockTransport(handler),
+    ).fetch_user_profile()
+
+    assert profile.uid == "88"
+    assert profile.username == "HDUser"
+    assert profile.bonus_per_hour == 16.0
+    assert profile.seeding_count == 5
+    assert profile.seeding_size_bytes == int(1.5 * 1024**4)
+    assert profile.torrents_posted == 31
+    assert [request.url.path for request in requests] == [
+        "/index.php",
+        "/userdetails.php",
+        "/getusertorrentlistajax.php",
+        "/getusertorrentlistajax.php",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hdhome_uses_mybonus_hourly_rate_when_profile_block_is_absent() -> None:
+    requests: list[tuple[str, dict[str, str]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append((request.url.path, dict(request.url.params)))
+        if request.url.path == "/index.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<div id="info_block"><a href="usercp.php">settings</a>'
+                    '<a href="userdetails.php?id=88">HDUser</a></div>'
+                ),
+            )
+        if request.url.path == "/userdetails.php":
+            return httpx2.Response(
+                200,
+                text=(
+                    '<div id="info_block"><a href="userdetails.php?id=88">HDUser</a></div>'
+                    "<table><tr><td>用户等级</td><td>Power User</td></tr></table>"
+                ),
+            )
+        if request.url.path == "/mybonus.php":
+            return httpx2.Response(
+                200,
+                text="<div>你当前每小时能获取100.741个魔力值</div>",
+            )
+        if request.url.path == "/getusertorrentlistajax.php":
+            assert request.url.params.get("userid") == "88"
+            return httpx2.Response(200, text="没有记录")
+        raise AssertionError(f"Unexpected HDHome request: {request.url}")
+
+    profile = await NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="hdhome",
+            default_base_url="https://hdhome.org",
+            min_request_interval_seconds=0,
+        ),
+        transport=httpx2.MockTransport(handler),
+    ).fetch_user_profile()
+
+    assert profile.uid == "88"
+    assert profile.username == "HDUser"
+    assert profile.bonus_per_hour == 100.741
+    assert profile.seeding_count == 0
+    assert profile.seeding_size_bytes == 0
+    assert profile.torrents_posted == 0
+    assert [path for path, _params in requests] == [
+        "/index.php",
+        "/userdetails.php",
+        "/mybonus.php",
+        "/getusertorrentlistajax.php",
+        "/getusertorrentlistajax.php",
     ]
 
 
@@ -2457,6 +2639,8 @@ async def test_springsunday_total_timeout_preserves_profile_on_slow_uploaded_sum
                         "<tr><td>积分</td><td>100</td></tr></table>"
                     ),
                 )
+            if path == "/mybonus.php":
+                return httpx2.Response(200, text="<table></table>")
             if path == "/getusertorrentlistajax.php" and request_type == "seeding":
                 return httpx2.Response(
                     200,
@@ -2493,6 +2677,7 @@ async def test_springsunday_total_timeout_preserves_profile_on_slow_uploaded_sum
     assert profile.torrents_posted is None
     assert requests.count(("/index.php", None)) == 1
     assert requests.count(("/userdetails.php", None)) == 1
+    assert requests.count(("/mybonus.php", None)) == 1
     assert requests.count(("/getusertorrentlistajax.php", "seeding")) == 1
     assert requests.count(("/getusertorrentlistajax.php", "uploaded")) == 1
 
@@ -2521,6 +2706,8 @@ async def test_springsunday_optional_stat_timeout_does_not_retry_whole_profile()
                     "<tr><td>积分</td><td>10,577.70</td></tr></table>"
                 ),
             )
+        if request.url.path == "/mybonus.php":
+            return httpx2.Response(200, text="<table></table>")
         if request.url.path == "/getusertorrentlistajax.php":
             raise httpx2.ReadTimeout("synthetic slow optional endpoint")
         raise AssertionError(f"Unexpected SpringSunday request: {request.url}")
@@ -2540,4 +2727,5 @@ async def test_springsunday_optional_stat_timeout_does_not_retry_whole_profile()
     assert profile.bonus == 10577.70
     assert requests.count("/index.php") == 1
     assert requests.count("/userdetails.php") == 1
+    assert requests.count("/mybonus.php") == 1
     assert requests.count("/getusertorrentlistajax.php") == 2

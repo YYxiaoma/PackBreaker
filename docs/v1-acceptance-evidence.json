@@ -200,12 +200,16 @@
     },
     {
       "id": "V1-016",
-      "criterion": "数据拆包 v2 前端公开动作控制必须覆盖：保存与执行分离；仅 `review_allowed=true` 的影片显示“审核”；匹配超时 / 匹配错误只暴露 item 级“重试”；审核弹窗默认选中最高候选但不自动提交；全部可见业务状态保持中文。",
+      "criterion": "数据拆包 v2 前端公开动作控制必须覆盖：保存与执行分离；自动匹配成功的影片自动进入内容验证且仅提供可选的“更换候选”，需要人工处理的影片显示“审核”；匹配超时 / 匹配错误只暴露 item 级“重试”；候选确认不自动提交；全部可见业务状态保持中文。",
       "status": "covered",
       "evidence": [
         {
           "path": "scripts/check-unpack-v2-ui.cjs",
-          "contains": "自动匹配成功与待人工审核都必须提供审核按钮"
+          "contains": "自动匹配成功的影片只提供可选的更换候选入口"
+        },
+        {
+          "path": "scripts/check-unpack-v2-ui.cjs",
+          "contains": "只有需要人工处理的影片显示审核入口"
         },
         {
           "path": "scripts/check-unpack-v2-ui.cjs",
@@ -231,8 +235,8 @@
           "contains": "project_unpack_execution_results"
         },
         {
-          "path": "scripts/check-unpack-v2-ui.cjs",
-          "contains": "客户端校验 / 完成"
+          "path": "frontend/src/unpackPresentation.test.ts",
+          "contains": "unpackExecutionStageLabel('CLIENT_VERIFYING')"
         }
       ]
     },

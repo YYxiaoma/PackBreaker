@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.downloaders import (
@@ -14,6 +14,9 @@ from backend.app.application.downloaders import (
     TransmissionWriteBinding,
 )
 from backend.app.application.sites import EnabledSiteAdapter
+from backend.app.application.unpack_content_verification import (
+    UnpackContentVerificationService,
+)
 from backend.app.application.unpack_execution_plans import UnpackExecutionPlanService
 from backend.app.domain.downloader import PathMappingRule
 from backend.app.domain.execution_plan import ExecutionPlanBlockReason
@@ -134,6 +137,7 @@ def _fixture(
     downloader_kind: str = "qb",
     target_category: str | None = None,
     target_tags: tuple[str, ...] = (),
+    skip_downloader_check: bool = False,
 ) -> tuple[
     UnpackExecutionPlanService,
     sessionmaker[Session],
@@ -180,6 +184,7 @@ def _fixture(
                     "target_downloader_id": "downloader-target",
                     "target_category": target_category,
                     "target_tags": list(target_tags),
+                    "skip_downloader_check": skip_downloader_check,
                 },
                 retry_enabled=True,
                 max_retries=3,
@@ -204,6 +209,7 @@ def _fixture(
                         "target_downloader_id": "downloader-target",
                         "target_category": target_category,
                         "target_tags": list(target_tags),
+                        "skip_downloader_check": skip_downloader_check,
                     },
                 },
                 discovery_complete=True,
@@ -344,6 +350,25 @@ def test_planner_rejects_changed_candidate_identity_before_fetch(
         assert item.execution_plan is None
 
 
+def test_planner_reuses_content_verified_torrent_without_site_request(tmp_path: Path) -> None:
+    service, factory, _source, _output, site = _fixture(tmp_path)
+    storage_key = service._manual_torrent_store.store(site._torrent)
+    with factory() as session:
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert candidate is not None
+        candidate.raw_ref = {
+            **dict(candidate.raw_ref),
+            "verified_torrent_storage_key": storage_key,
+        }
+        session.commit()
+
+    report = asyncio.run(service.plan_next_batch("execution-1"))
+
+    assert report.ready_count == 1
+    assert report.error_count == 0
+    assert site.fetch_calls == []
+
+
 @pytest.mark.parametrize("mutation", ("version", "candidate", "generation"))
 def test_planner_site_fetch_stale_error_must_not_fail_newer_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
@@ -392,6 +417,37 @@ def test_planner_site_fetch_stale_error_must_not_fail_newer_candidate(
             assert item.candidate_generation == 2
 
 
+@pytest.mark.parametrize(
+    ("downloader_kind", "skip_downloader_check", "client_check_required"),
+    (
+        ("qb", False, True),
+        ("qb", True, False),
+        ("transmission", False, True),
+        ("transmission", True, False),
+    ),
+)
+def test_downloader_check_setting_is_frozen_into_execution_plan(
+    tmp_path: Path,
+    downloader_kind: str,
+    skip_downloader_check: bool,
+    client_check_required: bool,
+) -> None:
+    service, factory, _source, _output, _site = _fixture(
+        tmp_path,
+        downloader_kind=downloader_kind,
+        skip_downloader_check=skip_downloader_check,
+    )
+
+    report = asyncio.run(service.plan_next_batch("execution-1"))
+
+    assert report.ready_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None and item.execution_plan is not None
+        plan = unpack_execution_plan_from_payload(item.execution_plan)
+        assert plan.client_check_required is client_check_required
+
+
 def test_planner_freezes_verified_mapping_and_qb_hardlink_can_skip_client_check(
     tmp_path: Path,
 ) -> None:
@@ -399,6 +455,7 @@ def test_planner_freezes_verified_mapping_and_qb_hardlink_can_skip_client_check(
         tmp_path,
         target_category="Movie Library",
         target_tags=("4K", "seed"),
+        skip_downloader_check=True,
     )
 
     report = asyncio.run(service.plan_next_batch("execution-1"))
@@ -536,3 +593,118 @@ def test_hardlink_cross_device_is_blocked_but_symlink_layout_is_not(tmp_path: Pa
 
     assert ExecutionPlanBlockReason.CROSS_DEVICE in hardlink.blocked_reasons
     assert ExecutionPlanBlockReason.CROSS_DEVICE not in symlink.blocked_reasons
+
+
+def test_planner_preserves_content_phase_with_34_mixed_children(tmp_path: Path) -> None:
+    service, factory, source, _output, site = _fixture(tmp_path)
+    now = utc_now()
+
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        execution.total_count = 34
+
+        for index in range(14):
+            session.add(
+                UnpackExecutionItem(
+                    id=f"completed-{index:02d}",
+                    execution_id="execution-1",
+                    source_object_key=f"source-completed-{index:02d}",
+                    source_snapshot={},
+                    media_identity={},
+                    status=UnpackItemStatus.COMPLETED.value,
+                    candidate_generation=0,
+                    retry_count=0,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        for index in range(19):
+            item_id = f"sibling-{index:02d}"
+            candidate_id = f"candidate-sibling-{index:02d}"
+            item_status = (
+                UnpackItemStatus.MATCHED_AUTO if index % 2 == 0 else UnpackItemStatus.MATCHED_MANUAL
+            )
+            origin = "AUTO" if item_status is UnpackItemStatus.MATCHED_AUTO else "MANUAL"
+            session.add(
+                UnpackExecutionItem(
+                    id=item_id,
+                    execution_id="execution-1",
+                    source_object_key=f"source-{item_id}",
+                    source_snapshot={},
+                    media_identity={"title": f"Sibling movie {index:02d}"},
+                    status=item_status.value,
+                    selected_candidate_id=candidate_id,
+                    match_origin=origin,
+                    candidate_generation=1,
+                    retry_count=0,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                UnpackMatchCandidate(
+                    id=candidate_id,
+                    item_id=item_id,
+                    generation=1,
+                    site_id="site-config-1",
+                    candidate_key=f"torrent-sibling-{index:02d}",
+                    title=f"Sibling movie {index:02d}",
+                    size_bytes=8,
+                    score_bps=9000,
+                    is_exact_match=False,
+                    evidence={},
+                    verification_status=UnpackCandidateVerificationStatus.NOT_CHECKED.value,
+                    raw_ref={
+                        "torrent_id": f"torrent-sibling-{index:02d}",
+                        "adapter_site_id": "fake-site",
+                        "site_config_id": "site-config-1",
+                        "site_config_version": 7,
+                    },
+                    created_at=now,
+                )
+            )
+        session.commit()
+
+    # One CONTENT_VERIFIED child may enter planning, but it must not move the
+    # parent past the 19 siblings that still need content verification.
+    report = asyncio.run(service.plan_next_batch("execution-1", limit=1))
+    assert report.ready_count == 1
+
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        planned = session.get(UnpackExecutionItem, "item-1")
+        completed = session.scalars(
+            select(UnpackExecutionItem).where(
+                UnpackExecutionItem.execution_id == "execution-1",
+                UnpackExecutionItem.status == UnpackItemStatus.COMPLETED.value,
+            )
+        ).all()
+        matched = session.scalars(
+            select(UnpackExecutionItem).where(
+                UnpackExecutionItem.execution_id == "execution-1",
+                UnpackExecutionItem.status.in_(
+                    (
+                        UnpackItemStatus.MATCHED_AUTO.value,
+                        UnpackItemStatus.MATCHED_MANUAL.value,
+                    )
+                ),
+            )
+        ).all()
+        assert execution is not None and planned is not None
+        assert planned.status == UnpackItemStatus.PLAN_PENDING.value
+        assert len(completed) == 14
+        assert len(matched) == 19
+        assert execution.completed_count == 14
+        assert execution.matched_auto_count == 10
+        assert execution.status == UnpackExecutionStatus.CONTENT_VERIFYING.value
+
+    content_service = UnpackContentVerificationService(
+        factory,
+        _SiteProvider(site),
+        path_scope=AuthorizedPathScope.legacy_only(legacy_data_root=source.parents[1]),
+    )
+    assert content_service.list_verifiable_execution_ids() == ("execution-1",)
