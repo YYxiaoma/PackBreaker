@@ -94,7 +94,9 @@ def test_cross_image_gate_restores_baseline_backup_instead_of_downgrading_databa
 def test_native_arm64_updater_gate_keeps_formal_amd64_baseline_unchanged() -> None:
     script = (ROOT / "scripts" / "check-updater-e2e.sh").read_text(encoding="utf-8")
     assert 'baseline_mode="${2:-formal}"' in script
-    assert 'docker pull "$baseline_image"' in script
+    # 基线镜像走 pull 重试通道（ghcr 匿名 token 偶发 EOF）。
+    assert 'docker_pull_with_retry "$baseline_image"' in script
+    assert "docker_pull_with_retry()" in script
     assert 'if [[ "$baseline_mode" == --synthetic-arm64-baseline ]]; then' in script
     assert 'baseline_version="$candidate_version"' in script
     assert 'test "$(uname -m)" = aarch64' in script
