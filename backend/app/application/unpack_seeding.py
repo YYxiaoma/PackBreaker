@@ -23,8 +23,6 @@ from backend.app.application.unpack_acceptance import (
 from backend.app.application.unpack_lifecycle import (
     PIPELINE_ACTIVE_EXECUTION_STATUSES,
     refresh_unpack_execution_state,
-    unpack_execution_has_pending_match_work,
-    unpack_execution_has_unresolved_review_work,
 )
 from backend.app.application.unpack_manual_torrents import (
     ManualTorrentStore,
@@ -44,7 +42,7 @@ from backend.app.domain.unpack_execution_plan import (
     UnpackExecutionPlan,
     unpack_execution_plan_from_payload,
 )
-from backend.app.domain.verification import VerificationLevel
+from backend.app.domain.verification import EVIDENCE_VERIFIED_LEVELS
 from backend.app.infrastructure.adapters.downloaders import (
     DownloaderAdapterError,
     QbittorrentAddRequest,
@@ -370,8 +368,6 @@ class UnpackSeedingService:
             executions = session.scalars(
                 select(UnpackExecution)
                 .where(UnpackExecution.status.in_(PIPELINE_ACTIVE_EXECUTION_STATUSES))
-                .where(~unpack_execution_has_pending_match_work())
-                .where(~unpack_execution_has_unresolved_review_work())
                 .where(
                     func.json_type(UnpackExecution.config_snapshot).is_("object"),
                     func.json_type(UnpackExecution.config_snapshot, "$.acceptance_mode").is_(None),
@@ -761,13 +757,17 @@ class UnpackSeedingService:
                 )
                 stage = "CLIENT_VERIFIED"
             else:
-                if not _verification_complete(state):
-                    raise ApplicationError(
-                        code="UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE",
-                        status=409,
-                        title="下载器尚未确认文件完整",
-                        detail="下载器添加种子后尚未确认文件完整且处于停止状态。若仍在恢复检查，系统会等待检查结束；否则请检查下载器状态后继续执行。不会重复添加种子。",
+                if not _skip_check_files_complete(state):
+                    # qBittorrent 在 skip_checking 添加后会短暂停在 pausedDL，
+                    # 进度尚未回填；先转入有界的等待阶段，由下一次轮询再判定。
+                    self._set_stage(
+                        prepared,
+                        "ADD_RESUME_CHECKING",
+                        status=UnpackItemStatus.CLIENT_VERIFYING,
+                        torrent_hash=_torrent_hash(state),
+                        extra=self._resume_check_marker(prepared),
                     )
+                    return
                 self._set_stage(
                     prepared,
                     "CLIENT_VERIFIED",
@@ -784,13 +784,20 @@ class UnpackSeedingService:
             state = self._require_owned_state(prepared, await self._states(prepared))
             if _checking(state):
                 return
-            if not _verification_complete(state):
-                raise ApplicationError(
-                    code="UNPACK_SEED_SKIP_CHECK_NOT_COMPLETE",
-                    status=409,
-                    title="下载器尚未确认文件完整",
-                    detail="下载器恢复检查已结束，但尚未确认文件完整且处于停止状态。请核对下载器状态后继续执行；不会重复添加种子。",
-                )
+            if not _skip_check_files_complete(state):
+                if self._resume_check_within_grace(prepared):
+                    return
+                # 宽限期内进度始终没有回填：降级为一次带 journal 的真实重检，
+                # 用来区分“下载器还在恢复”和“下载器根本看不到这些文件”。
+                verified = await self._ensure_verified(prepared)
+                if _verification_complete(verified):
+                    state = verified
+                elif _checking(verified) or self._fallback_verify_within_grace(
+                    prepared, _torrent_hash(verified)
+                ):
+                    return
+                else:
+                    raise self._save_path_invisible_error(prepared)
             self._set_stage(
                 prepared,
                 "CLIENT_VERIFIED",
@@ -915,16 +922,32 @@ class UnpackSeedingService:
         return (
             isinstance(prepared.binding, TransmissionWriteBinding)
             and not prepared.plan.client_check_required
-            and prepared.plan.verification_level is VerificationLevel.FULL_VERIFIED
+            and prepared.plan.verification_level in EVIDENCE_VERIFIED_LEVELS
+        )
+
+    @staticmethod
+    def _qb_skip_check_requested(prepared: _Prepared) -> bool:
+        return (
+            isinstance(prepared.binding, QbittorrentWriteBinding)
+            and not prepared.plan.client_check_required
+            and prepared.plan.verification_level in EVIDENCE_VERIFIED_LEVELS
         )
 
     @classmethod
     def _start_snapshot_precondition_proven(
         cls, prepared: _Prepared, snapshot: dict[str, Any]
     ) -> bool:
-        return snapshot.get("verification_complete") is True or (
-            cls._transmission_skip_check_requested(prepared)
-            and snapshot.get("packbreaker_full_verified") is True
+        return (
+            snapshot.get("verification_complete") is True
+            or (
+                cls._transmission_skip_check_requested(prepared)
+                and snapshot.get("packbreaker_full_verified") is True
+            )
+            or (
+                cls._qb_skip_check_requested(prepared)
+                and snapshot.get("progress") == 1.0
+                and snapshot.get("checking") is False
+            )
         )
 
     @classmethod
@@ -933,10 +956,93 @@ class UnpackSeedingService:
         prepared: _Prepared,
         state: QbittorrentTorrentState | TransmissionTorrentState,
     ) -> bool:
-        return _verification_complete(state) or (
-            cls._transmission_skip_check_requested(prepared)
-            and isinstance(state, TransmissionTorrentState)
-            and state.stopped
+        return (
+            _verification_complete(state)
+            or (
+                cls._transmission_skip_check_requested(prepared)
+                and isinstance(state, TransmissionTorrentState)
+                and state.stopped
+            )
+            or (
+                cls._qb_skip_check_requested(prepared)
+                and isinstance(state, QbittorrentTorrentState)
+                and not state.checking
+                and state.progress == 1.0
+            )
+        )
+
+    def _resume_check_marker(self, prepared: _Prepared) -> dict[str, Any]:
+        """记录首次等待下载器回填进度的时间，避免阻塞过久。"""
+
+        checkpoint = self._checkpoint(prepared)
+        existing = checkpoint.get("resume_check_started_at")
+        if isinstance(existing, str) and existing:
+            return {"resume_check_started_at": existing}
+        return {"resume_check_started_at": datetime.now(UTC).isoformat()}
+
+    def _resume_check_within_grace(self, prepared: _Prepared, *, seconds: float = 300.0) -> bool:
+        raw = self._checkpoint(prepared).get("resume_check_started_at")
+        if not isinstance(raw, str):
+            return False
+        try:
+            started = datetime.fromisoformat(raw)
+        except ValueError:
+            return False
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - started).total_seconds() < seconds
+
+    def _checkpoint(self, prepared: _Prepared) -> dict[str, Any]:
+        with self._session_factory() as session:
+            item = session.get(UnpackExecutionItem, prepared.item_id)
+            if item is None:
+                raise self._item_not_found()
+            return dict(item.execution_state or {})
+
+    def _fallback_verify_within_grace(
+        self, prepared: _Prepared, torrent_hash: str, *, seconds: float = 90.0
+    ) -> bool:
+        """重检请求发出后的有界观察窗口，避免把“正在校验”误判成“看不到文件”。"""
+
+        checkpoint = self._checkpoint(prepared)
+        raw = checkpoint.get("fallback_verify_started_at")
+        if not isinstance(raw, str):
+            self._set_stage(
+                prepared,
+                "ADD_RESUME_CHECKING",
+                status=UnpackItemStatus.CLIENT_VERIFYING,
+                torrent_hash=torrent_hash,
+                extra={
+                    **self._resume_check_marker(prepared),
+                    "fallback_verify_started_at": datetime.now(UTC).isoformat(),
+                },
+            )
+            return True
+        try:
+            started = datetime.fromisoformat(raw)
+        except ValueError:
+            return False
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - started).total_seconds() < seconds
+
+    @staticmethod
+    def _save_path_invisible_error(prepared: _Prepared) -> ApplicationError:
+        rules = "、".join(
+            f"{rule.remote_prefix} ↔ {rule.container_prefix}"
+            for rule in prepared.binding.path_mappings
+        )
+        return ApplicationError(
+            code="DOWNLOADER_SAVE_PATH_INVISIBLE",
+            status=409,
+            title="下载器看不到已落位的文件",
+            detail=(
+                "下载器已接受该种子，但强制重检后命中 0 个分片：它读取的 "
+                f"{prepared.plan.target_remote_save_path} 与 PackBreaker 落位的 "
+                f"{prepared.plan.output_directory} 不是同一份数据。"
+                f"当前路径映射：{rules or '（未配置）'}。"
+                "请检查下载器的挂载路径与映射配置是否指向同一个 NAS 目录。"
+            ),
         )
 
     def _require_applied_start(
@@ -1059,7 +1165,7 @@ class UnpackSeedingService:
                     QbittorrentAddRequest(
                         torrent_content=torrent_content,
                         save_path=prepared.plan.target_remote_save_path,
-                        verification_level=VerificationLevel.FULL_VERIFIED,
+                        verification_level=prepared.plan.verification_level,
                         skip_checking=not prepared.plan.client_check_required,
                         tags=tuple((*prepared.plan.target_tags, prepared.ownership_tag)),
                         category=prepared.plan.target_category,
@@ -1619,6 +1725,7 @@ class UnpackSeedingService:
         *,
         status: UnpackItemStatus,
         torrent_hash: str,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         with self._session_factory() as session:
             begin_immediate_write(session)
@@ -1666,6 +1773,7 @@ class UnpackSeedingService:
                 "plan_digest": prepared.plan.plan_digest,
                 "torrent_hash": torrent_hash,
                 "ownership_tag": prepared.ownership_tag,
+                **(extra or {}),
             }
             item.updated_at = utc_now()
             item.version += 1
@@ -2047,6 +2155,21 @@ def _checking(state: QbittorrentTorrentState | TransmissionTorrentState) -> bool
 
 def _stopped(state: QbittorrentTorrentState | TransmissionTorrentState) -> bool:
     return state.stopped
+
+
+def _skip_check_files_complete(
+    state: QbittorrentTorrentState | TransmissionTorrentState,
+) -> bool:
+    """跳过下载器校验时，qBittorrent 的“文件已完整”判定。
+
+    ``skip_checking`` 添加后 qBittorrent 会直接采信现有文件（progress=1.0），
+    但在显式 START 之前可能停在 ``pausedDL``；此时 ``verification_complete``
+    仍然是 False。只要恢复数据检查已结束且进度为 1.0，就足以进入下一步 START。
+    """
+
+    if isinstance(state, TransmissionTorrentState):
+        return state.verification_complete
+    return not state.checking and state.progress == 1.0
 
 
 def _verification_complete(

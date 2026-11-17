@@ -135,9 +135,11 @@ class AuthorizedPathScope:
             if absolute == root or absolute.is_relative_to(root)
         ]
         if not matches:
+            allowed = ", ".join(root.as_posix() for root in sorted(self.authorized_roots, key=str))
             raise DomainViolation(
                 ErrorCode.PATH_MAPPING_INVALID,
-                "路径不在 PackBreaker 显式挂载的授权目录内",
+                f"路径 {absolute.as_posix()} 不在 PackBreaker 显式挂载的授权目录内；"
+                f"可用根目录：{allowed}",
             )
         return max(matches, key=lambda item: len(item.parts))
 

@@ -4,10 +4,11 @@ import asyncio
 import os
 import stat
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
@@ -15,8 +16,6 @@ from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.unpack_lifecycle import (
     PIPELINE_ACTIVE_EXECUTION_STATUSES,
     refresh_unpack_execution_state,
-    unpack_execution_has_pending_match_work,
-    unpack_execution_has_unresolved_review_work,
 )
 from backend.app.application.unpack_manual_torrents import (
     ManualTorrentStore,
@@ -64,6 +63,11 @@ from backend.app.infrastructure.piece_verifier import (
 )
 from backend.app.infrastructure.source_inventory import current_file_snapshot
 from backend.app.infrastructure.torrent_parser import parse_torrent
+from backend.app.infrastructure.verification_cache import (
+    DEFAULT_ALGORITHM_VERSION,
+    VerificationResultCache,
+    build_verification_cache_key,
+)
 
 
 class UnpackContentSiteProvider(Protocol):
@@ -125,16 +129,26 @@ class UnpackContentVerificationService:
         path_scope: AuthorizedPathScope,
         fetch_timeout_seconds: float = 180.0,
         manual_torrent_store: ManualTorrentStore | None = None,
+        verification_cache: VerificationResultCache[TorrentVerificationResult] | None = None,
+        sample_pieces: int = 0,
     ) -> None:
         if fetch_timeout_seconds <= 0:
             raise ValueError("torrent 获取超时必须大于 0")
+        if sample_pieces < 0:
+            raise ValueError("抽样分片数不能为负数")
         self._session_factory = session_factory
         self._site_provider = site_provider
         self._path_scope = path_scope
         self._fetch_timeout_seconds = fetch_timeout_seconds
+        self._sample_pieces = sample_pieces
         self._manual_torrent_store = manual_torrent_store or ManualTorrentStore(
             path_scope.legacy_data_root
         )
+        # 同一 torrent + 同一源文件快照的重复校验（重试、重复任务、同一影片多条目）
+        # 直接复用结果；命中仍会复查全部映射源快照，语义与重新校验一致。
+        self._verification_cache = verification_cache or VerificationResultCache[
+            TorrentVerificationResult
+        ](max_entries=32)
 
     def list_verifiable_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
         if limit < 1 or limit > 500:
@@ -158,8 +172,6 @@ class UnpackContentVerificationService:
                     select(UnpackExecution.id)
                     .where(UnpackExecution.status.in_(PIPELINE_ACTIVE_EXECUTION_STATUSES))
                     .where(eligible_item)
-                    .where(~unpack_execution_has_pending_match_work())
-                    .where(~unpack_execution_has_unresolved_review_work())
                     .order_by(UnpackExecution.updated_at, UnpackExecution.id)
                     .limit(limit)
                 ).all()
@@ -253,6 +265,29 @@ class UnpackContentVerificationService:
             session.commit()
             return len(items)
 
+    def _verify_with_cache(
+        self,
+        meta: TorrentMeta,
+        mappings: tuple[AutoMappingDecision, ...],
+    ) -> TorrentVerificationResult:
+        # 抽样与全量是不同强度的证据，缓存键必须区分，否则抽样结果会满足全量请求。
+        algorithm_version = (
+            f"{DEFAULT_ALGORITHM_VERSION}-sampled-{self._sample_pieces}"
+            if self._sample_pieces > 0
+            else DEFAULT_ALGORITHM_VERSION
+        )
+        cached = self._verification_cache.get_if_current(
+            meta, mappings, algorithm_version=algorithm_version
+        )
+        if cached is not None:
+            return cached
+        result = _verify_torrent(meta, mappings, sample_pieces=self._sample_pieces)
+        self._verification_cache.put(
+            build_verification_cache_key(meta, mappings, algorithm_version=algorithm_version),
+            result,
+        )
+        return result
+
     async def verify_next_batch(
         self,
         execution_id: str,
@@ -278,35 +313,6 @@ class UnpackContentVerificationService:
                 raise self._not_found()
             if execution.status not in PIPELINE_ACTIVE_EXECUTION_STATUSES:
                 return None
-            matching_work_pending = session.scalar(
-                select(UnpackExecutionItem.id)
-                .where(UnpackExecutionItem.execution_id == execution_id)
-                .where(
-                    UnpackExecutionItem.status.in_(
-                        (
-                            UnpackItemStatus.MATCH_PENDING.value,
-                            UnpackItemStatus.MATCHING.value,
-                        )
-                    )
-                )
-                .limit(1)
-            )
-            if matching_work_pending:
-                self._refresh_execution_state(session, execution)
-                session.commit()
-                return None
-            matching_review_pending = session.scalar(
-                select(UnpackExecutionItem.id)
-                .where(UnpackExecutionItem.execution_id == execution_id)
-                .where(UnpackExecutionItem.status == UnpackItemStatus.REVIEW_REQUIRED.value)
-                .where(UnpackExecutionItem.selected_candidate_id.is_(None))
-                .limit(1)
-            )
-            if matching_review_pending is not None:
-                self._refresh_execution_state(session, execution)
-                session.commit()
-                return None
-
             item = session.scalar(
                 select(UnpackExecutionItem)
                 .where(UnpackExecutionItem.execution_id == execution_id)
@@ -316,6 +322,16 @@ class UnpackContentVerificationService:
                             UnpackItemStatus.MATCHED_AUTO.value,
                             UnpackItemStatus.MATCHED_MANUAL.value,
                         )
+                    )
+                )
+                # 站点类失败会进入指数退避，退避未到期前不重新领取。
+                .where(
+                    or_(
+                        UnpackExecutionItem.auxiliary_state["auto_retry_not_before"]
+                        .as_string()
+                        .is_(None),
+                        UnpackExecutionItem.auxiliary_state["auto_retry_not_before"].as_string()
+                        <= utc_now().isoformat(),
                     )
                 )
                 .order_by(UnpackExecutionItem.id)
@@ -506,7 +522,7 @@ class UnpackContentVerificationService:
                 else UnpackItemStatus.CONTENT_VERIFYING
             )
             self._mark_verification_phase(claim, phase)
-            verification = await asyncio.to_thread(_verify_torrent, meta, mappings)
+            verification = await asyncio.to_thread(self._verify_with_cache, meta, mappings)
             # Never persist FULL_VERIFIED if a media file changed during the
             # potentially lengthy torrent download or piece hashing.
             self._current_source(claim)
@@ -836,6 +852,40 @@ class UnpackContentVerificationService:
             candidate.verification_status = UnpackCandidateVerificationStatus.UNAVAILABLE.value
             candidate.verification_level = None
             candidate.verification_error_code = code
+
+            retry_delay = self._auto_retry_delay(execution, item, code)
+            if retry_delay is not None:
+                # 站点限流/超时/熔断属于瞬时故障：按定义的重试配置进入指数退避，
+                # 退避结束后重新领取，避免每条影片都要求人工点重试。
+                not_before = now + timedelta(seconds=retry_delay)
+                state = dict(item.auxiliary_state or {})
+                state["auto_retry_not_before"] = not_before.isoformat()
+                state["verify_auto_retry"] = {
+                    "attempt": item.retry_count + 1,
+                    "not_before": not_before.isoformat(),
+                    "error_code": code,
+                }
+                item.auxiliary_state = state
+                item.retry_count += 1
+                item.status = (
+                    UnpackItemStatus.MATCHED_AUTO.value
+                    if item.match_origin == "AUTO"
+                    else UnpackItemStatus.MATCHED_MANUAL.value
+                )
+                candidate.verification_status = UnpackCandidateVerificationStatus.NOT_CHECKED.value
+                candidate.verification_error_code = None
+                item.content_verification_level = None
+                item.last_error_code = code
+                item.last_error_message = (
+                    f"{message}（第 {item.retry_count} 次自动重试将在 {int(retry_delay)} 秒后开始）"
+                )
+                item.updated_at = now
+                item.version += 1
+                session.flush()
+                self._refresh_execution_state(session, execution)
+                session.commit()
+                return
+
             item.status = (
                 UnpackItemStatus.REVIEW_REQUIRED.value
                 if item.status == UnpackItemStatus.CONTENT_VERIFYING.value
@@ -856,6 +906,28 @@ class UnpackContentVerificationService:
             session.flush()
             self._refresh_execution_state(session, execution)
             session.commit()
+
+    _RETRYABLE_VERIFY_CODES = frozenset({"UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT"})
+
+    def _auto_retry_delay(
+        self,
+        execution: UnpackExecution,
+        item: UnpackExecutionItem,
+        code: str,
+    ) -> float | None:
+        """瞬时站点故障按定义的 retry 配置做指数退避；返回 None 表示不再自动重试。"""
+
+        if code not in self._RETRYABLE_VERIFY_CODES and not code.startswith("SITE_"):
+            return None
+        retry = execution.config_snapshot.get("retry")
+        if not isinstance(retry, dict) or retry.get("enabled") is False:
+            return None
+        limit = retry.get("max_retries")
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return None
+        if item.retry_count >= limit:
+            return None
+        return float(min(300, 15 * (2**item.retry_count)))
 
     def _require_claim_current(
         self,
@@ -978,6 +1050,8 @@ class UnpackContentVerificationService:
 def _verify_torrent(
     meta: TorrentMeta,
     mappings: tuple[AutoMappingDecision, ...],
+    *,
+    sample_pieces: int = 0,
 ) -> TorrentVerificationResult:
     piece_mappings = tuple(
         V1FileMapping(
@@ -988,7 +1062,8 @@ def _verify_torrent(
         for mapping in mappings
     )
     if meta.torrent_kind is TorrentKind.V1:
-        return verify_v1_pieces(meta, piece_mappings)
+        return verify_v1_pieces(meta, piece_mappings, sample_pieces=sample_pieces)
+    # v2/hybrid 使用 Merkle 层校验，抽样无法省掉叶子读取，保持全量语义。
     if meta.torrent_kind is TorrentKind.V2:
         return verify_v2_files(meta, piece_mappings)
     return verify_hybrid(meta, piece_mappings)
@@ -1089,6 +1164,21 @@ def _build_outcome(
         return _VerificationOutcome(
             candidate_status=UnpackCandidateVerificationStatus.VERIFIED,
             verification_level=VerificationLevel.FULL_VERIFIED,
+            item_status=UnpackItemStatus.CONTENT_VERIFIED,
+            metainfo_digest=meta.metainfo_digest,
+            error_code=None,
+            error_message=None,
+            evidence=evidence,
+            auxiliary_state=None,
+        )
+    if verifier_level is VerificationLevel.SAMPLED_VERIFIED:
+        # 抽样通过：允许进入执行准备，但证据里必须明确标注覆盖范围，
+        # 不能与逐片校验的 FULL_VERIFIED 混为一谈。
+        evidence["verification_scope"] = "SAMPLED"
+        evidence["sampled_piece_count"] = len(getattr(verification, "pieces", ()) or ())
+        return _VerificationOutcome(
+            candidate_status=UnpackCandidateVerificationStatus.VERIFIED,
+            verification_level=VerificationLevel.SAMPLED_VERIFIED,
             item_status=UnpackItemStatus.CONTENT_VERIFIED,
             metainfo_digest=meta.metainfo_digest,
             error_code=None,

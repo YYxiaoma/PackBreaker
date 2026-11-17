@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -41,12 +42,15 @@ from backend.app.infrastructure.persistence.models import (
     SiteUserProfileSync,
     UnpackExecution,
     new_uuid,
+    utc_now,
 )
 from backend.app.infrastructure.persistence.site_repositories import SiteRepository
 from backend.app.infrastructure.site_reliability import (
     SiteReliabilityHealth,
     SiteReliabilityRegistry,
 )
+
+_recovery_logger = logging.getLogger("packbreaker.recovery")
 
 SITE_RISK_CONTROL_ERROR_CODES = frozenset(
     {
@@ -195,6 +199,45 @@ class SiteConfigReference:
     config_version: int
     site_id: str
     enabled: bool
+
+
+def sync_fixed_site_base_urls(session_factory: sessionmaker[Session]) -> int:
+    """把固定域名类型的站点地址对齐到受信任 Profile。
+
+    非 M-Team 站点的 base URL 由 Profile 固定，用户无法自定义；一旦 Profile 更新而
+    库记录没跟上，界面会显示新地址（视图取的是 Profile），但真实请求仍然打旧域名。
+    这里在启动时做一次自愈。M-Team 允许 ``*.m-team.cc`` 镜像，不在自愈范围内。
+    """
+
+    with session_factory() as session:
+        begin_immediate_write(session)
+        records = session.scalars(select(Site)).all()
+        now = utc_now()
+        changed = 0
+        for record in records:
+            try:
+                kind = SiteKind(record.type)
+            except ValueError:
+                continue
+            if kind is SiteKind.MTEAM:
+                continue
+            trusted = trusted_site_base_url(kind)
+            if record.base_url == trusted:
+                continue
+            _recovery_logger.info(
+                "站点地址已按受信任 Profile 同步 site=%s %s -> %s",
+                record.name,
+                record.base_url,
+                trusted,
+            )
+            record.base_url = trusted
+            record.connection_status = SiteProbeStatus.UNTESTED.value
+            record.version += 1
+            record.updated_at = now
+            changed += 1
+        session.flush()
+        session.commit()
+        return changed
 
 
 class SiteService:
@@ -411,7 +454,9 @@ class SiteService:
         self, site_keys: tuple[str, ...]
     ) -> tuple[SiteConfigReference, ...]:
         """Map portable adapter site keys to enabled local configurations, without secrets."""
-        keys = frozenset(value for value in site_keys if value)
+        # 模板侧存的是 SiteKind 名称（如 KEEPFRDS），这里比较的是适配器规范站点 ID
+        # （keepfrds）；两边大小写不同，必须忽略大小写，否则模板永远匹配不到站点。
+        keys = frozenset(value.strip().upper() for value in site_keys if value and value.strip())
         if not keys:
             return ()
         with self._session_factory() as session:
@@ -419,7 +464,7 @@ class SiteService:
             result: list[SiteConfigReference] = []
             for record in records:
                 key = self._expected_site_id(SiteKind(record.type))
-                if key in keys:
+                if key.upper() in keys:
                     result.append(
                         SiteConfigReference(
                             config_id=record.id,
@@ -934,6 +979,11 @@ class SiteService:
                 detail="连接测试需要已配置的站点凭证",
             )
         credential = self._read_primary_credential(snapshot)
+        # 手动「测试连接」是一次显式探测：先清空熔断，否则上一次失败留下的
+        # 熔断窗口会把测试直接挡掉，用户只能看到「熔断保护」而看不到真实原因。
+        await self._reliability_registry.reset_circuit(
+            config_id=snapshot.id, config_version=snapshot.version
+        )
         adapter = self._reliability_registry.wrap(
             config_id=snapshot.id,
             config_version=snapshot.version,

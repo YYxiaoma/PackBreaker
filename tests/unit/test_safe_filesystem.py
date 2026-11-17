@@ -451,3 +451,113 @@ def test_movie_dedup_symlink_exchange_uses_stable_data_root_path(tmp_path: Path)
         expected_original_snapshot=result.original_target_snapshot,
     )
     assert not temporary.exists()
+
+
+def test_publish_noreplace_falls_back_to_link_when_renameat2_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backend.app.infrastructure import safe_filesystem
+
+    source = tmp_path / "temporary.bin"
+    source.write_bytes(b"synthetic")
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    def unsupported(**_kwargs: object) -> None:
+        raise safe_filesystem._NoReplaceUnsupportedError("nfs")
+
+    monkeypatch.setattr(safe_filesystem, "_rename_noreplace", unsupported)
+    try:
+        safe_filesystem._publish_noreplace(
+            source_dir_fd=directory_fd,
+            source_name="temporary.bin",
+            target_dir_fd=directory_fd,
+            target_name="final.bin",
+        )
+    finally:
+        os.close(directory_fd)
+
+    target = tmp_path / "final.bin"
+    assert target.read_bytes() == b"synthetic"
+    assert target.stat().st_ino == os.stat(target).st_ino
+    # 发布成功后临时条目必须被清理，目标保持完整。
+    assert not source.exists()
+
+
+def test_publish_noreplace_fallback_never_overwrites_existing_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backend.app.infrastructure import safe_filesystem
+
+    source = tmp_path / "temporary.bin"
+    source.write_bytes(b"new")
+    existing = tmp_path / "final.bin"
+    existing.write_bytes(b"old")
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    def unsupported(**_kwargs: object) -> None:
+        raise safe_filesystem._NoReplaceUnsupportedError("nfs")
+
+    monkeypatch.setattr(safe_filesystem, "_rename_noreplace", unsupported)
+    try:
+        with pytest.raises(DomainViolation) as failure:
+            safe_filesystem._publish_noreplace(
+                source_dir_fd=directory_fd,
+                source_name="temporary.bin",
+                target_dir_fd=directory_fd,
+                target_name="final.bin",
+            )
+    finally:
+        os.close(directory_fd)
+
+    assert failure.value.code is ErrorCode.TARGET_CONFLICT
+    assert existing.read_bytes() == b"old"
+
+
+def test_movie_dedup_hardlink_falls_back_to_rename_when_exchange_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NFS 不支持 RENAME_EXCHANGE（EINVAL）时必须退回 rename 原子覆盖，而不是直接失败。"""
+
+    from backend.app.infrastructure import safe_filesystem
+
+    source = tmp_path / "a" / "movie.mkv"
+    target = tmp_path / "b" / "movie.mkv"
+    source.parent.mkdir()
+    target.parent.mkdir()
+    source.write_bytes(b"same-content")
+    target.write_bytes(b"same-content")
+    source_expected = _filesystem_snapshot(source)
+    target_expected = _filesystem_snapshot(target)
+    gateway = SafeFilesystemGateway(tmp_path)
+
+    def unsupported(**_: object) -> None:
+        raise safe_filesystem._ExchangeUnsupported("nfs")
+
+    monkeypatch.setattr(safe_filesystem, "_rename_exchange", unsupported)
+
+    result = gateway.exchange_duplicate_with_hardlink(
+        source_relative_path="a/movie.mkv",
+        target_relative_path="b/movie.mkv",
+        expected_source_snapshot=source_expected,
+        expected_target_snapshot=target_expected,
+        operation_token="c" * 64,
+    )
+
+    # rename 覆盖后没有保留旧目标的临时文件
+    assert result.temporary_relative_path == ""
+    assert result.recovered_after_exchange is False
+    assert source.stat(follow_symlinks=False).st_ino == target.stat(follow_symlinks=False).st_ino
+    assert target.read_bytes() == b"same-content"
+    # 旧 B inode 已经解除引用，临时链接不会残留
+    assert not (tmp_path / "b" / f".packbreaker-dedup-{'c' * 64}.swap").exists()
+
+    # 再跑一次（模拟崩溃后重试）应识别为已应用，而不是报冲突
+    again = gateway.exchange_duplicate_with_hardlink(
+        source_relative_path="a/movie.mkv",
+        target_relative_path="b/movie.mkv",
+        expected_source_snapshot=source_expected,
+        expected_target_snapshot=target_expected,
+        operation_token="c" * 64,
+    )
+    assert again.recovered_after_exchange is True
+    assert again.temporary_relative_path == ""

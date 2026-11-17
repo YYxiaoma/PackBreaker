@@ -574,3 +574,34 @@ def test_materialization_blocks_source_change_before_any_target_file_write(
         assert item is not None
         assert item.status == UnpackItemStatus.EXECUTION_ERROR.value
         assert item.last_error_code == "SOURCE_CHANGED"
+
+
+def test_pending_review_does_not_block_materialization(tmp_path: Path) -> None:
+    """待审核只阻塞自己：同执行内已就绪的影片仍可落位。"""
+
+    service, factory, _source, _output = _fixture(tmp_path, TaskStorageMode.HARDLINK)
+    now = utc_now()
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        execution.status = UnpackExecutionStatus.CONTENT_VERIFYING.value
+        execution.total_count = 2
+        session.add(
+            UnpackExecutionItem(
+                id="item-review",
+                execution_id="execution-1",
+                source_object_key="source-review",
+                source_snapshot={},
+                media_identity={"title": "Needs manual review"},
+                status=UnpackItemStatus.REVIEW_REQUIRED.value,
+                selected_candidate_id=None,
+                candidate_generation=1,
+                retry_count=0,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    assert "execution-1" in service.list_materializable_execution_ids()

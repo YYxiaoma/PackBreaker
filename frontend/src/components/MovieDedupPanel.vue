@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { Plus, RefreshCw, Search } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
@@ -64,8 +64,6 @@ interface DirectoryTreeNode {
 }
 const selectedTreeNode = ref<DirectoryTreeNode | null>(null);
 const directoryLoading = ref(false);
-const autoRefreshEnabled = ref(false);
-let pollTimer: ReturnType<typeof setInterval> | undefined;
 
 const draft = reactive<Draft>(freshDraft());
 
@@ -142,21 +140,6 @@ function searchFilters(): void {
 
 function openCreate(): void {
   Object.assign(draft, freshDraft());
-  precheckResult.value = null;
-  createVisible.value = true;
-}
-
-function cloneJob(job: MovieDedupJob): void {
-  Object.assign(draft, {
-    name: `${job.name} - 副本`,
-    sourceRoot: job.source_root,
-    targetRoot: job.target_root,
-    mode: job.mode,
-    crossFilesystemPolicy: job.cross_filesystem_policy,
-    includeSubdirectories: job.include_subdirectories,
-    minSizeMb: job.min_size_bytes / 1024 / 1024,
-    videoExtensions: job.video_extensions.join(', '),
-  });
   precheckResult.value = null;
   createVisible.value = true;
 }
@@ -247,12 +230,13 @@ async function runJob(job: MovieDedupJob): Promise<void> {
 }
 
 function canDeleteJob(job: MovieDedupJob): boolean {
-  return !['RUNNING', 'REVIEW_REQUIRED', 'RECOVERY_REQUIRED'].includes(job.status);
+  // RECOVERY_REQUIRED 允许删除，避免恢复路径走不通时任务既不能执行也不能清理。
+  return !['RUNNING', 'REVIEW_REQUIRED'].includes(job.status);
 }
 
 async function removeJob(job: MovieDedupJob): Promise<void> {
   if (!canDeleteJob(job)) {
-    ElMessage.warning('运行中、待审核或待恢复任务不能删除');
+    ElMessage.warning('运行中或待审核任务不能删除');
     return;
   }
   try {
@@ -495,15 +479,6 @@ function metadataText(metadata: Record<string, string>): string {
 
 onMounted(() => {
   void refresh();
-  pollTimer = setInterval(() => {
-    if (autoRefreshEnabled.value && jobs.value.some((item) => item.status === 'RUNNING')) {
-      void refresh();
-    }
-  }, 2000);
-});
-
-onBeforeUnmount(() => {
-  if (pollTimer) clearInterval(pollTimer);
 });
 
 defineExpose({ openCreate, refresh });
@@ -558,12 +533,6 @@ defineExpose({ openCreate, refresh });
         </el-input>
       </div>
       <div class="table-card-actions">
-        <el-tooltip
-          content="开启后，仅在存在运行中任务时每 2 秒自动刷新任务和候选列表"
-          placement="top"
-        >
-          <el-switch v-model="autoRefreshEnabled" active-text="自动刷新" />
-        </el-tooltip>
         <el-button :loading="loading" @click="refresh"><RefreshCw :size="15" />刷新</el-button>
         <el-button type="primary" @click="openCreate()"><Plus :size="15" />新增任务</el-button>
       </div>
@@ -621,7 +590,7 @@ defineExpose({ openCreate, refresh });
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="210" fixed="right">
+        <el-table-column label="操作" width="170" fixed="right">
           <template #default="scope">
             <el-button
               link
@@ -637,14 +606,6 @@ defineExpose({ openCreate, refresh });
               @click="removeJob(scope.row)"
               >删除</el-button
             >
-            <el-dropdown trigger="click">
-              <el-button link>更多</el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item @click="cloneJob(scope.row)">复制任务</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -732,6 +693,20 @@ defineExpose({ openCreate, refresh });
             `A device ${precheckResult.source_device} · B device ${precheckResult.target_device}`
           "
         />
+        <el-alert
+          v-for="warning in precheckResult?.warnings ?? []"
+          :key="warning"
+          class="precheck-warning"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="warning"
+          :description="
+            precheckResult && precheckResult.target_shared_link_bytes > 0
+              ? `采样中已共享的部分约 ${formatBytes(precheckResult.target_shared_link_bytes)}`
+              : ''
+          "
+        />
       </div>
       <template #footer>
         <el-button :loading="precheckLoading" @click="runPrecheck">检查目录</el-button>
@@ -796,10 +771,22 @@ defineExpose({ openCreate, refresh });
           <div>
             <small>预计可释放</small><b>{{ formatBytes(activeJob.estimated_reclaimable_bytes) }}</b>
           </div>
+          <div v-if="activeJob.shared_link_bytes > 0">
+            <small>已硬链接共享</small><b>{{ formatBytes(activeJob.shared_link_bytes) }}</b>
+          </div>
           <div>
             <small>已完成去重</small><b>{{ activeJob.deduplicated_count }}</b>
           </div>
         </div>
+        <el-alert
+          v-if="activeJob.shared_link_bytes > 0"
+          class="shared-link-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`另有 ${formatBytes(activeJob.shared_link_bytes)} 已与媒体库或其它目录硬链接共享，删除或替换单一路径不会释放空间`"
+          description="这类文件在磁盘上只有一份数据，去重不会带来额外空间收益。若要真正回收，需要先确认并移除多余的那条链接。"
+        />
         <el-alert
           type="info"
           :closable="false"
@@ -1005,6 +992,13 @@ defineExpose({ openCreate, refresh });
 }
 .movie-job-table .primary-cell > small {
   margin-left: 6px;
+}
+/* 已硬链接共享的提示单独占一行，避免和「预计释放」挤在一起被截断。 */
+.shared-link-alert {
+  margin-bottom: 8px;
+}
+.precheck-warning {
+  margin-top: 8px;
 }
 .create-form {
   display: grid;

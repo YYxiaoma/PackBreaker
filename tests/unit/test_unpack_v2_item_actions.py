@@ -1442,3 +1442,45 @@ def test_bulk_retry_rejects_empty_duplicate_or_unsafe_status_selection(
         item = session.get(UnpackExecutionItem, "item-1")
         assert item is not None and item.status == UnpackItemStatus.NO_MATCH.value
         assert item.candidate_generation == 2
+
+
+def test_bulk_retry_requeues_content_verify_error_without_rematching() -> None:
+    """校验错误批量重试只重做内容校验，保留已选候选，不重新搜索站点。"""
+
+    service, factory = _fixture(
+        item_status=UnpackItemStatus.CONTENT_VERIFY_ERROR,
+        selected_candidate_id="candidate-1",
+        generation=2,
+    )
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        execution = session.get(UnpackExecution, "execution-1")
+        assert item is not None and execution is not None
+        item.retry_count = 2
+        item.last_error_code = "SITE_CIRCUIT_OPEN"
+        item.content_verification_level = "CLIENT_CHECK_REQUIRED"
+        item.auxiliary_state = {"auto_retry_not_before": "2030-01-01T00:00:00+00:00"}
+        session.commit()
+        expected_version = execution.version
+
+    result = service.retry_eligible_items(
+        "execution-1",
+        expected_execution_version=expected_version,
+        selected_statuses=(UnpackItemStatus.CONTENT_VERIFY_ERROR,),
+    )
+
+    assert result.retried_count == 1
+    assert result.skipped_unsafe_count == 0
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        candidate = session.get(UnpackMatchCandidate, "candidate-1")
+        assert item is not None and candidate is not None
+        assert item.status == UnpackItemStatus.MATCHED_MANUAL.value
+        # 保留候选与 generation：校验重试不应触发重新匹配。
+        assert item.selected_candidate_id == "candidate-1"
+        assert item.candidate_generation == 2
+        assert item.retry_count == 0
+        assert item.auxiliary_state is None
+        assert item.last_error_code is None
+        assert item.content_verification_level is None
+        assert candidate.verification_status == "NOT_CHECKED"

@@ -42,6 +42,10 @@ class MovieDedupPrecheckResponse(BaseModel):
     same_filesystem: bool
     resolved_action: str
     blocked_reasons: list[str]
+    target_sampled_files: int
+    target_shared_link_files: int
+    target_shared_link_bytes: int
+    warnings: list[str]
 
 
 class MovieDedupJobCreateRequest(MovieDedupPrecheckRequest):
@@ -77,6 +81,7 @@ class MovieDedupJobResponse(BaseModel):
     failed_count: int
     logical_duplicate_bytes: int
     estimated_reclaimable_bytes: int
+    shared_link_bytes: int
     version: int
     error_code: str | None
     created_at: datetime
@@ -148,6 +153,7 @@ def _job_response(view: MovieDedupJobView) -> MovieDedupJobResponse:
         failed_count=view.failed_count,
         logical_duplicate_bytes=view.logical_duplicate_bytes,
         estimated_reclaimable_bytes=view.estimated_reclaimable_bytes,
+        shared_link_bytes=view.shared_link_bytes,
         version=view.version,
         error_code=view.error_code,
         created_at=view.created_at,
@@ -207,6 +213,10 @@ async def precheck_movie_dedup(
         same_filesystem=result.same_filesystem,
         resolved_action=result.resolved_action.value,
         blocked_reasons=list(result.blocked_reasons),
+        target_sampled_files=result.target_sampled_files,
+        target_shared_link_files=result.target_shared_link_files,
+        target_shared_link_bytes=result.target_shared_link_bytes,
+        warnings=list(result.warnings),
     )
 
 

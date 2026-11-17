@@ -15,7 +15,7 @@ from backend.app.domain.downloader import normalize_remote_path
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.idempotency import downloader_operation_key
 from backend.app.domain.operation import OperationStatus
-from backend.app.domain.verification import VerificationLevel
+from backend.app.domain.verification import EVIDENCE_VERIFIED_LEVELS, VerificationLevel
 from backend.app.infrastructure.adapters.downloaders import (
     DownloaderAdapterError,
     QbittorrentAddRequest,
@@ -420,15 +420,12 @@ class QbittorrentAddOperationService:
     def _prepare(self, request: QbittorrentAddOperationRequest) -> _PreparedAdd:
         if request.downloader_version < 1:
             raise ValueError("downloader version 必须大于等于 1")
-        if (
-            request.skip_checking
-            and request.verification_level is not VerificationLevel.FULL_VERIFIED
-        ):
+        if request.skip_checking and request.verification_level not in EVIDENCE_VERIFIED_LEVELS:
             raise ApplicationError(
                 code="DOWNLOADER_SKIP_CHECKING_BLOCKED",
                 status=409,
                 title="qBittorrent 跳过校验被阻断",
-                detail="只有 FULL_VERIFIED execution plan 才允许 skip_checking",
+                detail="只有具备内容证据等级的 execution plan 才允许 skip_checking",
             )
         try:
             meta = parse_torrent(request.torrent_content)

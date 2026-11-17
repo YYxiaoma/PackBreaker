@@ -23,6 +23,8 @@ export interface UnpackTemplate {
   mapped_media_count: number;
   site_keys: string[];
   site_ids: string[];
+  available_site_ids: string[];
+  origin: 'USER' | 'EXPORTED' | 'BUILTIN' | 'COMMUNITY' | string;
   content_digest: string;
   source_provenance: Record<string, unknown>;
   created_at: string;
@@ -250,6 +252,100 @@ export async function getUnpackSourceScanSelectionSummary(
       `/unpack/source-scans/${requiredId(scanId, 'scanId')}/selection-summary`,
     );
     return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export type UnpackTemplateFilePreview = {
+  name: string;
+  description: string | null;
+  site_key: string;
+  seed_count: number;
+  mapped_media_count: number;
+  resolved_name: string;
+  renamed: boolean;
+  warnings: string[];
+};
+
+export type UnpackTemplateFileImportResult = {
+  template_id: string;
+  template_version: number;
+  name: string;
+  site_key: string;
+  seed_count: number;
+  status: string;
+  renamed: boolean;
+};
+
+async function postTemplateFile<T>(path: string, file: File): Promise<T> {
+  try {
+    const response = await apiClient.post<T>(path, file, {
+      headers: { 'Content-Type': 'application/octet-stream' },
+    });
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export async function previewUnpackTemplateFile(file: File): Promise<UnpackTemplateFilePreview> {
+  return postTemplateFile<UnpackTemplateFilePreview>('/unpack/templates/import-file/preview', file);
+}
+
+export async function importUnpackTemplateFile(
+  file: File,
+): Promise<UnpackTemplateFileImportResult> {
+  return postTemplateFile<UnpackTemplateFileImportResult>('/unpack/templates/import-file', file);
+}
+
+export type UnpackTemplateExportResult = {
+  blob: Blob;
+  filename: string;
+  seedCount: number;
+  skippedCount: number;
+};
+
+function filenameFromDisposition(value: string | undefined, fallback: string): string {
+  if (!value) return fallback;
+  const utf8 = /filename\*=UTF-8''([^;]+)/i.exec(value);
+  if (utf8?.[1]) {
+    try {
+      return decodeURIComponent(utf8[1]);
+    } catch {
+      return fallback;
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(value);
+  return plain?.[1] ?? fallback;
+}
+
+export async function exportUnpackExecutionTemplate(
+  executionId: string,
+  options: { siteKey?: string; collectionRoot?: string } = {},
+): Promise<UnpackTemplateExportResult> {
+  try {
+    const response = await apiClient.post(
+      `/unpack/executions/${requiredId(executionId, 'executionId')}/template-export`,
+      {},
+      {
+        params: {
+          site_key: options.siteKey || undefined,
+          collection_root: options.collectionRoot || undefined,
+        },
+        responseType: 'blob',
+      },
+    );
+    const headers = response.headers as Record<string, string>;
+    return {
+      blob: response.data as Blob,
+      filename: filenameFromDisposition(
+        headers['content-disposition'],
+        'packbreaker-template.pbtemplate',
+      ),
+      seedCount: Number(headers['x-packbreaker-template-seeds'] ?? 0),
+      skippedCount: Number(headers['x-packbreaker-template-skipped'] ?? 0),
+    };
   } catch (error) {
     throw toApiProblem(error);
   }
@@ -566,6 +662,61 @@ export async function retryUnpackItemContentVerification(
     const response = await apiClient.post<UnpackItemActionResponse>(
       `/unpack/items/${requiredId(itemId, 'itemId')}/actions`,
       { action: 'retry_content_verification' },
+      { headers: { 'If-Match': String(itemVersion) } },
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export type UnpackExecutionReconcileResult = {
+  execution_id: string;
+  processed_count: number;
+  resolved_count: number;
+  manual_count: number;
+  failed_count: number;
+  failed_reasons: string[];
+};
+
+export async function reconcileUnpackExecution(
+  executionId: string,
+): Promise<UnpackExecutionReconcileResult> {
+  try {
+    const response = await apiClient.post<UnpackExecutionReconcileResult>(
+      `/unpack/executions/${requiredId(executionId, 'executionId')}/reconcile`,
+    );
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
+export type UnpackItemReconcileResult = {
+  item_id: string;
+  item_status: string;
+  resumed_stage: string | null;
+  resolved_count: number;
+  manual_count: number;
+  outcomes: {
+    journal_id: string;
+    operation_type: string;
+    resolution: 'APPLIED' | 'NO_EFFECT' | 'MANUAL' | 'PLAN_RESET';
+    note: string;
+  }[];
+};
+
+export async function reconcileUnpackExecutionItem(
+  itemId: string,
+  itemVersion: number,
+): Promise<UnpackItemReconcileResult> {
+  if (!Number.isInteger(itemVersion) || itemVersion < 1) {
+    throw new Error('itemVersion 必须是正整数');
+  }
+  try {
+    const response = await apiClient.post<UnpackItemReconcileResult>(
+      `/unpack/items/${requiredId(itemId, 'itemId')}/reconcile`,
+      {},
       { headers: { 'If-Match': String(itemVersion) } },
     );
     return response.data;

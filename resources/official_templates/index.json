@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "templates": [
+    {
+      "builtin_key": "stephen-chow-keepfrds",
+      "name": "周星驰合集 1988-2017 1080p x265",
+      "description": "周星驰 26 部合集（MNHD-FRDS），绑定 PT@KEEPFRDS",
+      "site_key": "KEEPFRDS",
+      "version": 1,
+      "file": "stephen-chow-keepfrds.pbtemplate",
+      "sha256": "8cf5bc1e4fcd40f28c18f1e19dd27fba74a33e97f6eb70511724af3e559d29dd",
+      "seed_count": 26,
+      "min_app_version": "1.1.5"
+    },
+    {
+      "builtin_key": "jackie-chan-keepfrds",
+      "name": "成龙电影合集 1980s-2010s 1080p x265",
+      "description": "成龙 65 部合集（MNHD-FRDS），绑定 PT@KEEPFRDS",
+      "site_key": "KEEPFRDS",
+      "version": 1,
+      "file": "jackie-chan-keepfrds.pbtemplate",
+      "sha256": "34500bca0a70b3bdac57766169e022b657b93ff442712990beaefa2df2e79c11",
+      "seed_count": 65,
+      "min_app_version": "1.1.5"
+    },
+    {
+      "builtin_key": "disney-keepfrds",
+      "name": "迪士尼动画收集 77 部 1080p x265",
+      "description": "迪士尼动画 77 部合集（MNHD-FRDS），绑定 PT@KEEPFRDS",
+      "site_key": "KEEPFRDS",
+      "version": 1,
+      "file": "disney-keepfrds.pbtemplate",
+      "sha256": "c21c1ec410b82fab284138452a1d0e8d8e29f635cedeb0b715b3095879f48fa9",
+      "seed_count": 77,
+      "min_app_version": "1.1.5"
+    },
+    {
+      "builtin_key": "top250-keepfrds",
+      "name": "豆瓣 IMDb TOP250 合集 430 部",
+      "description": "TOP250 混合合集 430 部（含子合集），绑定 PT@KEEPFRDS",
+      "site_key": "KEEPFRDS",
+      "version": 2,
+      "file": "top250-keepfrds.pbtemplate",
+      "sha256": "55e402adf6abbc2ae52ee63d22fc66033d04c49088df124ba528b6b1ad2bb0d6",
+      "seed_count": 430,
+      "min_app_version": "1.1.5"
+    },
+    {
+      "builtin_key": "marvel-pterclub",
+      "name": "漫威电影合集 2008-2023 4K REMUX",
+      "description": "漫威 21 部 UHD REMUX 合集，绑定 PTerClub",
+      "site_key": "PTERCLUB",
+      "version": 1,
+      "file": "marvel-pterclub.pbtemplate",
+      "sha256": "452bb5acbadbd2216ea2de8bde160c7f46d54648cead4c7a43ff3a3fdbe53b94",
+      "seed_count": 21,
+      "min_app_version": "1.1.5"
+    }
+  ]
+}

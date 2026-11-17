@@ -129,6 +129,8 @@ class UnpackTemplateView:
     mapped_media_count: int
     site_keys: tuple[str, ...]
     site_ids: tuple[str, ...]
+    available_site_ids: tuple[str, ...]
+    origin: str
     content_digest: str
     source_provenance: dict[str, Any]
     created_at: datetime
@@ -532,6 +534,9 @@ class UnpackTemplateService:
                     mapped_media_count=mapped_media_count,
                     site_keys=site_keys,
                     site_ids=site_ids,
+                    # 用户当前可用的同类型站点：为空时前端需要提示「先配置站点」。
+                    available_site_ids=site_ids,
+                    origin=(template.origin or "USER"),
                     content_digest=version.content_digest,
                     source_provenance=dict(template.source_provenance or {}),
                     created_at=template.created_at,
@@ -634,7 +639,10 @@ class UnpackTemplateService:
                     )
                     .where(UnpackTemplateSeed.template_version_id == current.id)
                 ).all()
-                if any(metadata.site_key != binding.site_id for _seed, metadata in existing_rows):
+                if any(
+                    metadata.site_key.casefold() != binding.site_id.casefold()
+                    for _seed, metadata in existing_rows
+                ):
                     raise self._conflict("模板现有种子包含其他站点，拒绝跨站追加")
                 existing_keys = {
                     (metadata.site_key, metadata.remote_torrent_id)

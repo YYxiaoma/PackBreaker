@@ -460,3 +460,64 @@ def test_movie_dedup_scan_only_completes_without_replacing_target(tmp_path: Path
         assert (target_root / name).stat(follow_symlinks=False).st_ino == target_inode
     finally:
         engine.dispose()
+
+
+def test_precheck_warns_when_target_files_are_already_hardlinked(tmp_path: Path) -> None:
+    """B 侧文件已与别处共享同一份数据时，预检必须提前说明「去重不释放空间」。"""
+
+    data_root = tmp_path / "data"
+    source = data_root / "movies-a"
+    target = data_root / "movies-b"
+    library = data_root / "library"
+    source.mkdir(parents=True)
+    target.mkdir()
+    library.mkdir()
+    original = target / "movie-b.mkv"
+    original.write_bytes(b"synthetic-movie")
+    # 媒体库里再挂一条硬链接，模拟「已经入库」的常态。
+    (library / "movie-b.mkv").hardlink_to(original)
+
+    engine = create_sqlite_engine(tmp_path / "movie-dedup-precheck.db")
+    Base.metadata.create_all(engine)
+    service = MovieDedupService(create_session_factory(engine), data_root=data_root)
+    try:
+        precheck = service.precheck(
+            source_root="movies-a",
+            target_root="movies-b",
+            mode=MovieDedupMode.AUTO,
+            cross_filesystem_policy=MovieDedupCrossFilesystemPolicy.STOP,
+        )
+    finally:
+        engine.dispose()
+
+    assert precheck.target_sampled_files == 1
+    assert precheck.target_shared_link_files == 1
+    assert precheck.target_shared_link_bytes > 0
+    assert precheck.warnings
+    assert "硬链接" in precheck.warnings[0]
+
+
+def test_precheck_reports_no_warning_for_single_link_targets(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    (data_root / "movies-a").mkdir(parents=True)
+    target = data_root / "movies-b"
+    target.mkdir()
+    (target / "movie-b.mkv").write_bytes(b"synthetic-movie")
+
+    engine = create_sqlite_engine(tmp_path / "movie-dedup-precheck-clean.db")
+    Base.metadata.create_all(engine)
+    service = MovieDedupService(create_session_factory(engine), data_root=data_root)
+    try:
+        precheck = service.precheck(
+            source_root="movies-a",
+            target_root="movies-b",
+            mode=MovieDedupMode.AUTO,
+            cross_filesystem_policy=MovieDedupCrossFilesystemPolicy.STOP,
+        )
+    finally:
+        engine.dispose()
+
+    assert precheck.target_sampled_files == 1
+    assert precheck.target_shared_link_files == 0
+    assert precheck.target_shared_link_bytes == 0
+    assert precheck.warnings == ()

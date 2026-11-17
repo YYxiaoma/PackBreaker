@@ -211,3 +211,60 @@ def test_v1_verification_checks_cooperative_cancel_between_piece_batches(tmp_pat
             cancel_check=cancel_check,
         )
     assert calls == 4
+
+
+def test_v1_sampled_verification_only_reads_sampled_pieces(tmp_path: Path) -> None:
+    content = b"abcdefghijklmnopqrstuvwxyz0123456789"
+    media = tmp_path / "a.bin"
+    media.write_bytes(content)
+    meta = _meta((_file("a.bin", len(content), 0),), content)
+
+    result = verify_v1_pieces(
+        meta,
+        (V1FileMapping("a.bin", FileMappingState.MAPPED, media),),
+        sample_pieces=3,
+    )
+
+    assert result.level is VerificationLevel.SAMPLED_VERIFIED
+    assert [piece.index for piece in result.pieces] == [0, 4, 8]
+    assert all(piece.status is PieceStatus.VERIFIED for piece in result.pieces)
+
+
+def test_v1_sampled_verification_detects_corrupted_sampled_piece(tmp_path: Path) -> None:
+    content = b"abcdefghijklmnopqrstuvwxyz0123456789"
+    media = tmp_path / "a.bin"
+    # 破坏最后一个分片（index 8），它一定在抽样范围内。
+    media.write_bytes(content[:-1] + b"X")
+    meta = _meta((_file("a.bin", len(content), 0),), content)
+
+    result = verify_v1_pieces(
+        meta,
+        (V1FileMapping("a.bin", FileMappingState.MAPPED, media),),
+        sample_pieces=3,
+    )
+
+    assert result.level is VerificationLevel.CLIENT_CHECK_REQUIRED
+    assert [piece.status for piece in result.pieces] == [
+        PieceStatus.VERIFIED,
+        PieceStatus.VERIFIED,
+        PieceStatus.MISMATCH,
+    ]
+
+
+def test_v1_sampled_verification_ignores_unsampled_piece_corruption(tmp_path: Path) -> None:
+    """抽样等级的已知边界：未抽中的分片损坏不会在本轮被发现。"""
+
+    content = b"abcdefghijklmnopqrstuvwxyz0123456789"
+    media = tmp_path / "a.bin"
+    # 破坏 index 2 的分片（偏移 8-11），抽样集合是 [0, 4, 8]。
+    media.write_bytes(content[:9] + b"X" + content[10:])
+    meta = _meta((_file("a.bin", len(content), 0),), content)
+
+    result = verify_v1_pieces(
+        meta,
+        (V1FileMapping("a.bin", FileMappingState.MAPPED, media),),
+        sample_pieces=3,
+    )
+
+    assert result.level is VerificationLevel.SAMPLED_VERIFIED
+    assert [piece.index for piece in result.pieces] == [0, 4, 8]

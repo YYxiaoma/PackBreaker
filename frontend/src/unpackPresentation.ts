@@ -107,6 +107,7 @@ export function unpackSourceKindLabel(value: UnpackSourceKind): string {
 
 export function unpackVerificationLevelLabel(value: string | null): string {
   if (value === 'FULL_VERIFIED') return '完整内容校验通过';
+  if (value === 'SAMPLED_VERIFIED') return '抽样内容校验通过';
   if (value === 'CLIENT_CHECK_REQUIRED') return '需要下载器校验';
   if (value === 'BLOCKED') return '内容校验阻断';
   return '尚未校验';

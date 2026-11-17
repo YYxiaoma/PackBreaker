@@ -262,7 +262,8 @@ def test_another_execution_cannot_reuse_a_ledger(tmp_path: Path) -> None:
         ((_COPY, _ADD, _VERIFY), 1, None, {"expected_hashes": ["invalid-hash"]}),
         ((_COPY, _ADD, _VERIFY), 2, {"torrent_hash": "Z" * 40}, None),
         ((_COPY, _ADD, _VERIFY), 2, None, {"remote_save_path": "/other"}),
-        ((_COPY, _ADD, _VERIFY), 1, None, {"skip_checking": True}),
+        # skip_checking=True 现在只要有内容证据等级就合法；仍然拦截非法类型。
+        ((_COPY, _ADD, _VERIFY), 1, None, {"skip_checking": "yes"}),
         ((_COPY, _ADD, _VERIFY), 2, {"downloader_id": "unauthorized"}, None),
     ],
 )

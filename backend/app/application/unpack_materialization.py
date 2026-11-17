@@ -17,10 +17,8 @@ from backend.app.application.unpack_existing_reuse import verify_existing_reuse
 from backend.app.application.unpack_lifecycle import (
     PIPELINE_ACTIVE_EXECUTION_STATUSES,
     refresh_unpack_execution_state,
-    unpack_execution_has_pending_match_work,
-    unpack_execution_has_unresolved_review_work,
 )
-from backend.app.domain.errors import DomainViolation
+from backend.app.domain.errors import DomainViolation, ErrorCode
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.task_definition import TaskStorageMode
 from backend.app.domain.unpack import UnpackExecutionStatus, UnpackItemStatus
@@ -93,8 +91,6 @@ class UnpackMaterializationService:
                 session.scalars(
                     select(UnpackExecution.id)
                     .where(UnpackExecution.status.in_(PIPELINE_ACTIVE_EXECUTION_STATUSES))
-                    .where(~unpack_execution_has_pending_match_work())
-                    .where(~unpack_execution_has_unresolved_review_work())
                     .where(
                         func.json_type(UnpackExecution.config_snapshot).is_("object"),
                         func.json_type(UnpackExecution.config_snapshot, "$.acceptance_mode").is_(
@@ -1219,5 +1215,52 @@ def _safe_error(exc: ApplicationError | DomainViolation | ValueError) -> tuple[s
     if isinstance(exc, ApplicationError):
         return exc.code, exc.detail
     if isinstance(exc, DomainViolation):
-        return exc.code.value, "文件落位安全校验失败"
+        # 稳定错误码保持不变，只把笼统的“安全校验失败”替换成可操作的说明，
+        # 便于用户区分跨设备硬链接、目标冲突、源文件变化等完全不同的处置方式。
+        guidance = _DOMAIN_VIOLATION_GUIDANCE.get(exc.code)
+        raw_message = str(exc).strip()
+        if guidance is None:
+            return exc.code.value, raw_message or "文件落位安全校验失败"
+        if raw_message and raw_message not in guidance:
+            return exc.code.value, f"{guidance}（原始信息：{raw_message}）"
+        return exc.code.value, guidance
     return "UNPACK_MATERIALIZE_INVALID", str(exc)
+
+
+_DOMAIN_VIOLATION_GUIDANCE: dict[ErrorCode, str] = {
+    ErrorCode.CROSS_DEVICE_LINK: (
+        "源文件与落位目录不在同一磁盘或挂载点，硬链接无法跨设备创建。"
+        "请把落位目录放到与下载目录同一块磁盘，或改用复制/软链接的存储模式。"
+    ),
+    ErrorCode.TARGET_CONFLICT: (
+        "目标位置已存在同名但内容不同的文件，为避免覆盖已停止落位。"
+        "请确认该文件归属，或更换落位目录后重试。"
+    ),
+    ErrorCode.SOURCE_CHANGED: (
+        "源文件在计划冻结后发生变化（大小、修改时间或 inode 不一致），"
+        "通常是下载器仍在写入或文件被移动/替换。请停止该任务的下载与校验后重试。"
+    ),
+    ErrorCode.SOURCE_NOT_STABLE: (
+        "源文件状态不稳定（仍在写入或被其它进程占用），无法取得一致快照。"
+        "请等待下载完成并停止后重试。"
+    ),
+    ErrorCode.SOURCE_WRITE_RISK: (
+        "落位目标可能与源文件共用同一 inode，存在被下载器写入并破坏源数据的风险，已阻止落位。"
+        "请确认存储模式与目标目录归属后重试。"
+    ),
+    ErrorCode.INSUFFICIENT_SPACE: "目标磁盘可用空间不足，无法完成落位。请清理空间或更换落位目录。",
+    ErrorCode.UNSAFE_TORRENT_PATH: (
+        "种子内文件路径越界（绝对路径、包含 .. 或符号链接逃逸），已拒绝落位。"
+        "请检查该种子的文件结构是否合法。"
+    ),
+    ErrorCode.PATH_MAPPING_INVALID: (
+        "源文件与种子文件路径映射不一致（文件缺失、长度不符或映射歧义）。"
+        "请检查任务的目录映射设置后重试。"
+    ),
+    ErrorCode.MAPPING_AMBIGUOUS: (
+        "同一个源文件匹配到多个种子文件条目，映射存在歧义，需要人工确认后再落位。"
+    ),
+    ErrorCode.ROLLBACK_BLOCKED: (
+        "回滚被阻断：目标文件已不属于本次操作创建的对象，需要人工对账后再处理。"
+    ),
+}

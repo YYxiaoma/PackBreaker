@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 class AppSettings(BaseSettings):
     """只包含应用启动前必须知道的非业务配置。"""
@@ -21,6 +23,8 @@ class AppSettings(BaseSettings):
     config_dir: Path = Path("/config")
     data_dir: Path = Path("/data")
     unpack_template_mapping_root: Path | None = None
+    # 镜像内置官方模板目录；可由 PACKBREAKER_OFFICIAL_TEMPLATE_DIR 覆盖。
+    official_template_dir: Path = _REPO_ROOT / "resources" / "official_templates"
     frontend_dir: Path | None = None
     secret_key_file: Path | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
@@ -48,14 +52,21 @@ class AppSettings(BaseSettings):
         "sp.,featurette,behind the scenes,making of,"
         "deleted scene,short film,bonus feature,interview"
     )
-    unpack_match_site_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    # 站点最小请求间隔可能长达 90 秒（M-Team），这里的超时预算必须覆盖
+    # 「排队等待若干次请求间隔 + 单次请求耗时」，否则会把排队误判成站点故障。
+    unpack_match_site_timeout_seconds: float = Field(default=180.0, ge=1.0, le=1800.0)
     unpack_match_candidate_limit: int = Field(default=50, ge=1, le=500)
     unpack_content_verify_batch_size: int = Field(default=5, ge=1, le=100)
+    # v1 torrent 抽样校验分片数：>0 时只校验首/末片与均匀间隔分片，结论记为
+    # SAMPLED_VERIFIED；0 表示逐片全量校验。v2/hybrid torrent 始终全量校验。
+    unpack_verify_sample_pieces: int = Field(default=24, ge=0, le=200)
     # M-Team enforces a 90-second minimum request interval. This budget must
     # include the rate-limit wait plus the bounded token/download HTTP requests.
-    unpack_content_fetch_timeout_seconds: float = Field(default=180.0, ge=1.0, le=300.0)
+    # 取种是「详情页 + 下载」两次请求，90 秒间隔下光间隔就要 180 秒，
+    # 180 秒的旧默认值必然超时；这里放宽到覆盖两次请求与排队。
+    unpack_content_fetch_timeout_seconds: float = Field(default=600.0, ge=1.0, le=1800.0)
     unpack_auxiliary_batch_size: int = Field(default=2, ge=1, le=50)
-    unpack_auxiliary_fetch_timeout_seconds: float = Field(default=180.0, ge=1.0, le=300.0)
+    unpack_auxiliary_fetch_timeout_seconds: float = Field(default=600.0, ge=1.0, le=1800.0)
     unpack_execution_plan_batch_size: int = Field(default=5, ge=1, le=100)
     unpack_materialization_batch_size: int = Field(default=5, ge=1, le=100)
     unpack_seeding_batch_size: int = Field(default=5, ge=1, le=100)

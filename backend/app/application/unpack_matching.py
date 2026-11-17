@@ -789,6 +789,7 @@ class UnpackMatchCoordinator:
             if verification_level not in {
                 None,
                 "FULL_VERIFIED",
+                "SAMPLED_VERIFIED",
                 "CLIENT_CHECK_REQUIRED",
                 "BLOCKED",
             }:
@@ -903,9 +904,15 @@ class UnpackMatchCoordinator:
             for site_id in claimed.site_config_ids
             if site_id in by_site_config and by_site_config[site_id].enabled
         )
-        if active_refs and any(reference.site_id != bound_site_key for reference in active_refs):
+        # 模板里存的是 SiteKind 名称（KEEPFRDS），站点引用暴露的是适配器规范 ID
+        # （keepfrds）：两边大小写不同，必须忽略大小写比较，否则模板任务全部判为绑定失效。
+        if active_refs and any(
+            reference.site_id.casefold() != bound_site_key.casefold() for reference in active_refs
+        ):
             return (), (_SearchFailure("", "UNPACK_TEMPLATE_SITE_BINDING_INVALID", False),)
-        if any(metadata.site_key != bound_site_key for _seed, metadata in rows):
+        if any(
+            metadata.site_key.casefold() != bound_site_key.casefold() for _seed, metadata in rows
+        ):
             return (), (_SearchFailure("", "UNPACK_TEMPLATE_SITE_BINDING_INVALID", False),)
         if not rows:
             return (), tuple(failures or [_SearchFailure("", "UNPACK_TEMPLATE_EMPTY", False)])
@@ -975,7 +982,8 @@ class UnpackMatchCoordinator:
                         "relative_file_name"
                     )
             for reference in active_refs:
-                if reference.site_id != metadata.site_key:
+                # 模板元数据存 SiteKind 名（MTEAM），引用是规范 ID（mteam），忽略大小写。
+                if reference.site_id.casefold() != metadata.site_key.casefold():
                     continue
                 metadata_descriptor_payload = dict(metadata.descriptor or {})
                 metadata_total_size = metadata.total_size
@@ -1548,9 +1556,9 @@ class UnpackMatchCoordinator:
                         query_had_results = False
 
                         for page_number in range(1, self._max_pages_per_query + 1):
-                            if (query_index > 0 or page_number > 1) and interval > 0:
-                                await asyncio.sleep(interval)
-
+                            # 请求节流统一由站点级速率槽（site_reliability 的
+                            # next_request_at）负责；这里再 sleep 属于重复节流，
+                            # 会让同一站点的请求间隔被放大并空转等待。
                             query = replace(base_query, page=page_number)
                             active_page_number = page_number
                             started = time.perf_counter()
@@ -1566,7 +1574,6 @@ class UnpackMatchCoordinator:
                                     # that the title has no match. Retry one page per
                                     # site before moving through the query variants.
                                     empty_page_retry_used = True
-                                    await asyncio.sleep(max(interval, 0.25))
                                     try:
                                         page = await search_page(query, refresh_cache=True)
                                     except SiteAdapterError as retry_exc:
@@ -1840,7 +1847,6 @@ class UnpackMatchCoordinator:
                         )
                         active_query_stage = _diagnostic_query_stage(retry_query, unit.descriptor)
                         active_page_number = 1
-                        await asyncio.sleep(max(interval, 0.25))
                         retry_started = time.perf_counter()
                         try:
                             retry_page = await search_page(

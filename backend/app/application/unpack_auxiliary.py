@@ -24,8 +24,6 @@ from backend.app.application.unpack_acceptance import (
 from backend.app.application.unpack_lifecycle import (
     PIPELINE_ACTIVE_EXECUTION_STATUSES,
     refresh_unpack_execution_state,
-    unpack_execution_has_pending_match_work,
-    unpack_execution_has_unresolved_review_work,
 )
 from backend.app.application.unpack_manual_torrents import (
     ManualTorrentStore,
@@ -206,8 +204,6 @@ class UnpackAuxiliaryStagingService:
                         ),
                     )
                     .where(UnpackExecution.status.in_(PIPELINE_ACTIVE_EXECUTION_STATUSES))
-                    .where(~unpack_execution_has_pending_match_work())
-                    .where(~unpack_execution_has_unresolved_review_work())
                     .where(
                         select(UnpackExecutionItem.id)
                         .where(UnpackExecutionItem.execution_id == UnpackExecution.id)

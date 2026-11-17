@@ -46,6 +46,9 @@ class UnpackExecutionView:
     timeout_count: int
     error_count: int
     completed_count: int
+    executing_count: int
+    # 当前执行里各影片状态的真实数量，供前端只展示存在的状态。
+    item_status_counts: dict[str, int]
     started_at: datetime
     finished_at: datetime | None
     version: int
@@ -565,6 +568,12 @@ class UnpackExecutionQueryService:
             + count(UnpackItemStatus.CONTENT_VERIFY_ERROR)
             + count(UnpackItemStatus.EXECUTION_ERROR),
             completed_count=count(UnpackItemStatus.COMPLETED),
+            # 执行中 = 已进入外部写入链路但尚未完成：文件落位/客户端校验/做种启动。
+            executing_count=count(UnpackItemStatus.EXECUTING)
+            + count(UnpackItemStatus.CLIENT_VERIFYING),
+            item_status_counts={
+                status.value: amount for status, amount in item_counts.items() if amount > 0
+            },
             started_at=record.started_at,
             finished_at=record.finished_at,
             version=record.version,

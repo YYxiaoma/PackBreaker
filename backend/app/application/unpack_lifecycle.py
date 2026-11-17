@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
-from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.domain.unpack import UnpackExecutionStatus, UnpackItemStatus
+from backend.app.infrastructure.persistence.database import begin_immediate_write
 from backend.app.infrastructure.persistence.models import (
     UnpackExecution,
     UnpackExecutionItem,
@@ -12,36 +12,33 @@ from backend.app.infrastructure.persistence.models import (
 )
 
 PIPELINE_ACTIVE_EXECUTION_STATUSES = (
+    # 流水线推进：匹配尚未全部结束时，已确定候选的影片项也可以继续校验/落位/辅种。
+    UnpackExecutionStatus.MATCHING.value,
     UnpackExecutionStatus.CONTENT_VERIFYING.value,
     UnpackExecutionStatus.EXECUTING.value,
     UnpackExecutionStatus.CLIENT_VERIFYING.value,
 )
 
 
-def unpack_execution_has_pending_match_work() -> ColumnElement[bool]:
-    return (
-        select(UnpackExecutionItem.id)
-        .where(UnpackExecutionItem.execution_id == UnpackExecution.id)
-        .where(
-            UnpackExecutionItem.status.in_(
-                (
-                    UnpackItemStatus.MATCH_PENDING.value,
-                    UnpackItemStatus.MATCHING.value,
-                )
+def refresh_stale_review_executions(session_factory: sessionmaker[Session]) -> int:
+    """启动时重算停留在 REVIEW_REQUIRED 的执行。
+
+    旧版本把“有未决审核”当作整批阻塞，执行状态会被固定成 ``REVIEW_REQUIRED``；
+    该状态不在活跃集合里，驱动永远不会再调度它。新的推导把待审核降到“只剩它时
+    才生效”，因此这里做一次性归一化，避免升级后旧执行卡死。
+    """
+
+    with session_factory() as session:
+        begin_immediate_write(session)
+        executions = session.scalars(
+            select(UnpackExecution).where(
+                UnpackExecution.status == UnpackExecutionStatus.REVIEW_REQUIRED.value
             )
-        )
-        .exists()
-    )
-
-
-def unpack_execution_has_unresolved_review_work() -> ColumnElement[bool]:
-    return (
-        select(UnpackExecutionItem.id)
-        .where(UnpackExecutionItem.execution_id == UnpackExecution.id)
-        .where(UnpackExecutionItem.status == UnpackItemStatus.REVIEW_REQUIRED.value)
-        .where(UnpackExecutionItem.selected_candidate_id.is_(None))
-        .exists()
-    )
+        ).all()
+        for execution in executions:
+            refresh_unpack_execution_state(session, execution)
+        session.commit()
+        return len(executions)
 
 
 def refresh_unpack_execution_state(session: Session, execution: UnpackExecution) -> None:
@@ -119,14 +116,16 @@ def refresh_unpack_execution_state(session: Session, execution: UnpackExecution)
         next_status = UnpackExecutionStatus.DISCOVERING
     elif matching_active:
         next_status = UnpackExecutionStatus.MATCHING
-    elif counts[UnpackItemStatus.REVIEW_REQUIRED]:
-        next_status = UnpackExecutionStatus.REVIEW_REQUIRED
     elif content_active:
         next_status = UnpackExecutionStatus.CONTENT_VERIFYING
     elif execution_active:
         next_status = UnpackExecutionStatus.EXECUTING
     elif client_active:
         next_status = UnpackExecutionStatus.CLIENT_VERIFYING
+    elif counts[UnpackItemStatus.REVIEW_REQUIRED]:
+        # 待审核只阻塞自己：只要还有其它影片可推进，执行状态就保持活跃阶段；
+        # 只剩待审核时才落到 REVIEW_REQUIRED（因此必须排在“已完成”之前）。
+        next_status = UnpackExecutionStatus.REVIEW_REQUIRED
     elif execution.completed_count == execution.total_count:
         next_status = UnpackExecutionStatus.COMPLETED
     elif failure_count:

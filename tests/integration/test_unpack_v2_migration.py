@@ -2,9 +2,17 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
 from backend.app.infrastructure.persistence.database import sqlite_database_url
+
+
+def _head_revision(config: Config) -> str:
+    head = ScriptDirectory.from_config(config).get_current_head()
+    if head is None:  # pragma: no cover - 迁移链必须始终有 head
+        raise RuntimeError("alembic 迁移链缺少 head")
+    return head
 
 
 def test_unpack_v2_foundation_migration_creates_new_model(tmp_path: Path) -> None:
@@ -60,10 +68,9 @@ def test_unpack_content_verify_error_migration_expands_item_status_check(tmp_pat
         }
         assert "CONTENT_VERIFY_ERROR" in checks["ck_unpack_execution_item_status"]
         with engine.connect() as connection:
-            assert (
-                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                == "0052_unpack_content_verify_error"
-            )
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == _head_revision(config)
     finally:
         engine.dispose()
 
@@ -388,10 +395,9 @@ def test_template_library_migration_preserves_existing_unpack_history(tmp_path: 
     engine = create_engine(sqlite_database_url(database))
     try:
         with engine.connect() as connection:
-            assert (
-                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                == "0052_unpack_content_verify_error"
-            )
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == _head_revision(config)
             template_import_columns = {
                 item["name"] for item in inspect(engine).get_columns("unpack_template_import_job")
             }
@@ -535,5 +541,35 @@ def test_legacy_task_runtime_retirement_disables_telegram_approval(tmp_path: Pat
                 connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
                 == "0044_retire_legacy_task_runtime"
             )
+    finally:
+        engine.dispose()
+
+
+def test_sampled_verification_level_is_accepted_for_items_and_candidates(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "unpack-sampled.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database)
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(sqlite_database_url(database))
+    try:
+        inspector = inspect(engine)
+        item_checks = {
+            item["name"]: item["sqltext"]
+            for item in inspector.get_check_constraints("unpack_execution_item")
+        }
+        candidate_checks = {
+            item["name"]: item["sqltext"]
+            for item in inspector.get_check_constraints("unpack_match_candidate")
+        }
+        assert (
+            "SAMPLED_VERIFIED" in item_checks["ck_unpack_execution_item_content_verification_level"]
+        )
+        assert (
+            "SAMPLED_VERIFIED" in candidate_checks["ck_unpack_match_candidate_verification_level"]
+        )
     finally:
         engine.dispose()

@@ -130,3 +130,22 @@ def test_ambiguous_candidate_evidence_changes_cache_key() -> None:
         build_verification_cache_key(_meta(), (first,)).digest
         != build_verification_cache_key(_meta(), (second,)).digest
     )
+
+
+def test_cache_evicts_least_recently_used_entry(tmp_path: Path) -> None:
+    _, mappings = _mapped(tmp_path)
+    first_meta = _meta("11" * 32)
+    second_meta = _meta("22" * 32)
+    cache: VerificationResultCache[str] = VerificationResultCache(max_entries=1)
+
+    cache.put(build_verification_cache_key(first_meta, mappings), "FULL_VERIFIED")
+    cache.put(build_verification_cache_key(second_meta, mappings), "BLOCKED")
+
+    assert cache.get_if_current(second_meta, mappings) == "BLOCKED"
+    # 有界缓存必须淘汰最旧条目，避免整部影片的分片证据常驻内存。
+    assert cache.get_if_current(first_meta, mappings) is None
+
+
+def test_cache_rejects_non_positive_max_entries() -> None:
+    with pytest.raises(ValueError, match="缓存条目上限"):
+        VerificationResultCache(max_entries=0)

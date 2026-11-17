@@ -15,8 +15,12 @@ from backend.app.application.sites import SiteService
 from backend.app.application.unpack_definitions import UnpackDefinitionService
 from backend.app.application.unpack_executions import UnpackExecutionQueryService
 from backend.app.application.unpack_item_actions import UnpackItemActionService
+from backend.app.application.unpack_item_reconcile import UnpackItemReconcileService
 from backend.app.application.unpack_manual_candidates import UnpackManualCandidateService
 from backend.app.application.unpack_source_scans import UnpackSourceScanService
+from backend.app.application.unpack_template_transfer import (
+    UnpackTemplateTransferService,
+)
 from backend.app.application.unpack_templates import UnpackTemplateService
 
 SESSION_COOKIE = "packbreaker_session"
@@ -83,6 +87,17 @@ def unpack_execution_query_service(request: Request) -> UnpackExecutionQueryServ
 
 def unpack_item_action_service(request: Request) -> UnpackItemActionService:
     return cast(UnpackItemActionService, request.app.state.unpack_item_action_service)
+
+
+def unpack_item_reconcile_service(request: Request) -> UnpackItemReconcileService:
+    return cast(UnpackItemReconcileService, request.app.state.unpack_item_reconcile_service)
+
+
+def unpack_template_transfer_service(request: Request) -> UnpackTemplateTransferService:
+    return cast(
+        UnpackTemplateTransferService,
+        request.app.state.unpack_template_transfer_service,
+    )
 
 
 def unpack_manual_candidate_service(request: Request) -> UnpackManualCandidateService:

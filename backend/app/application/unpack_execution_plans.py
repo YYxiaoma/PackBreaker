@@ -19,8 +19,6 @@ from backend.app.application.unpack_existing_reuse import verify_existing_reuse
 from backend.app.application.unpack_lifecycle import (
     PIPELINE_ACTIVE_EXECUTION_STATUSES,
     refresh_unpack_execution_state,
-    unpack_execution_has_pending_match_work,
-    unpack_execution_has_unresolved_review_work,
 )
 from backend.app.application.unpack_manual_torrents import (
     ManualTorrentStore,
@@ -44,7 +42,11 @@ from backend.app.domain.unpack_execution_plan import (
     UnpackExecutionPlan,
     unpack_execution_plan_to_payload,
 )
-from backend.app.domain.verification import FileSnapshot, VerificationLevel
+from backend.app.domain.verification import (
+    EVIDENCE_VERIFIED_LEVEL_VALUES,
+    FileSnapshot,
+    VerificationLevel,
+)
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.database import begin_immediate_write
@@ -100,6 +102,7 @@ class _PlanContext:
     target_category: str | None
     target_tags: tuple[str, ...]
     skip_downloader_check: bool
+    verification_level: VerificationLevel
     mapping_evidence: tuple[dict[str, Any], ...]
 
 
@@ -141,8 +144,6 @@ class UnpackExecutionPlanService:
                 session.scalars(
                     select(UnpackExecution.id)
                     .where(UnpackExecution.status.in_(PIPELINE_ACTIVE_EXECUTION_STATUSES))
-                    .where(~unpack_execution_has_pending_match_work())
-                    .where(~unpack_execution_has_unresolved_review_work())
                     .where(
                         select(UnpackExecutionItem.id)
                         .where(UnpackExecutionItem.execution_id == UnpackExecution.id)
@@ -213,8 +214,8 @@ class UnpackExecutionPlanService:
                 raise self._item_not_found()
             if item.status != UnpackItemStatus.CONTENT_VERIFIED.value:
                 raise self._conflict("影片项当前不处于可生成执行计划状态")
-            if item.content_verification_level != VerificationLevel.FULL_VERIFIED.value:
-                raise self._conflict("只有 FULL_VERIFIED 影片项可以生成执行计划")
+            if item.content_verification_level not in EVIDENCE_VERIFIED_LEVEL_VALUES:
+                raise self._conflict("只有内容证据已通过的影片项可以生成执行计划")
             if item.execution_plan is not None or item.execution_plan_digest is not None:
                 raise self._conflict("影片项已经存在冻结执行计划")
             if item.selected_candidate_id is None or item.torrent_metainfo_digest is None:
@@ -226,7 +227,7 @@ class UnpackExecutionPlanService:
                 or candidate.item_id != item.id
                 or candidate.generation != item.candidate_generation
                 or candidate.verification_status != UnpackCandidateVerificationStatus.VERIFIED.value
-                or candidate.verification_level != VerificationLevel.FULL_VERIFIED.value
+                or candidate.verification_level not in EVIDENCE_VERIFIED_LEVEL_VALUES
                 or candidate.metainfo_digest != item.torrent_metainfo_digest
             ):
                 raise self._conflict("候选验证证据与影片项不一致")
@@ -243,7 +244,7 @@ class UnpackExecutionPlanService:
             target_downloader_id = output.get("target_downloader_id")
             raw_target_category = output.get("target_category")
             raw_target_tags = output.get("target_tags", [])
-            raw_skip_downloader_check = output.get("skip_downloader_check", False)
+            raw_skip_downloader_check = output.get("skip_downloader_check", True)
             if (
                 (raw_target_category is not None and not isinstance(raw_target_category, str))
                 or not isinstance(raw_target_tags, list)
@@ -352,6 +353,7 @@ class UnpackExecutionPlanService:
                 target_category=target_category,
                 target_tags=target_tags,
                 skip_downloader_check=raw_skip_downloader_check,
+                verification_level=VerificationLevel(item.content_verification_level),
                 mapping_evidence=tuple(dict(entry) for entry in raw_mappings),
             )
 
@@ -460,7 +462,7 @@ class UnpackExecutionPlanService:
             candidate_id=context.candidate_id,
             candidate_generation=context.generation,
             metainfo_digest=context.metainfo_digest,
-            verification_level=VerificationLevel.FULL_VERIFIED,
+            verification_level=context.verification_level,
             output_directory=output_path.as_posix(),
             storage_mode=context.storage_mode,
             conflict_policy=context.conflict_policy,

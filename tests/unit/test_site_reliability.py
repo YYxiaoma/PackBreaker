@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from typing import cast
 
 import httpx2
 import pytest
@@ -734,3 +735,31 @@ async def test_unpack_fresh_search_invalidates_stale_cache_when_request_fails() 
     await adapter.search_for_unpack(query)
 
     assert len(requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_parallel_stages_share_one_rate_slot_per_site() -> None:
+    """并行阶段各自 wrap 的适配器共用同一站点配额，不会同时发请求。"""
+    fake_time = _FakeTime()
+    raw = _FakeSiteAdapter(interval=2.0)
+    raw.clock = fake_time
+    registry = _registry(fake_time)
+    matching_stage = cast(
+        ReliableSiteAdapter,
+        registry.wrap(config_id="site-1", config_version=1, adapter=raw),
+    )
+    verification_stage = cast(
+        ReliableSiteAdapter,
+        registry.wrap(config_id="site-1", config_version=1, adapter=raw),
+    )
+
+    await asyncio.gather(
+        matching_stage.search_for_unpack(SearchQuery(("alpha",), SearchMediaType.MOVIE)),
+        verification_stage.search_for_unpack(SearchQuery(("beta",), SearchMediaType.MOVIE)),
+        matching_stage.search_for_unpack(SearchQuery(("gamma",), SearchMediaType.MOVIE)),
+    )
+
+    # 限速状态按 (config_id, config_version) 进程内共享：三个并发请求被严格按
+    # 2 秒间隔排队发出，同一个时间点不会出现两次站点请求。
+    assert raw.search_calls == 3
+    assert raw.search_times == [0.0, 2.0, 4.0]

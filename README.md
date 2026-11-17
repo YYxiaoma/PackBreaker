@@ -5,7 +5,7 @@
 <p align="center">从媒体目录或 qBittorrent / Transmission 任务出发，自动完成影片发现、跨站匹配、内容验证、文件复用与做种管理。</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/release-v1.1.5-2563EB" alt="release v1.1.5">
+  <img src="https://img.shields.io/badge/release-v1.1.6-2563EB" alt="release v1.1.6">
   <img src="https://img.shields.io/badge/platform-linux%2Famd64%20%7C%20linux%2Farm64-2496ED" alt="linux/amd64 | linux/arm64">
   <img src="https://img.shields.io/badge/license-MIT-16A34A" alt="MIT">
 </p>
@@ -42,7 +42,7 @@ PackBreaker 把「拆包 → 搜站 → 验证 → 复用 → 辅种」这条原
 
 ## 界面速览
 
-以下截图来自当前主工作区的 v1.1.5 前端生产构建，使用脱敏演示数据展示典型场景；实际站点、任务与统计以部署实例为准。
+以下截图来自当前主工作区的 v1.1.6 前端生产构建，使用脱敏演示数据展示典型场景；实际站点、任务与统计以部署实例为准。
 
 ### 任务中心：手动与监控拆包
 
@@ -140,6 +140,18 @@ docker logs packbreaker
 
 部署指南同时覆盖：目录与权限、Hardlink 文件系统要求、升级与回滚、`/config` 备份、健康检查与常见故障。
 
+## 模板文件（.pbtemplate）
+
+模板拆包支持把已完成的任务导出为模板文件，供其他实例导入复用；文件内不含 Cookie、站点配置、下载器与本机路径。
+
+- **导出**：任务列表操作列的「导出模板」。仅当任务已结束、全部影片处理完毕、且至少有一条「已完成」时可用，只导出已完成影片
+- **导入**：新建任务 →「选择模板」步骤 →「导入模板」，先预览（种子数、目录映射、重名处理）再确认
+- **内置官方模板**：随镜像放在 `resources/official_templates/`，启动时自动安装且只读（不可删除/修改/复制），可由 `PACKBREAKER_OFFICIAL_TEMPLATE_DIR` 覆盖
+- **从下载器反向生成**：如果拆包不是在当前实例完成的（数据库没有执行记录），但下载器里已有拆包后的种子在保种，可用
+  `uv run python scripts/build_template_from_transmission.py --collection <大包目录名> --site <站点类型> --name <模板名> --output <路径>`
+  从 Transmission 还原模板。种子 ID 只认 torrent comment 里的目标站详情链接，指向别站或缺少链接的影片会被跳过并报告
+- 文件格式、目录映射口径与实现细节见 [设计文档](docs/design/official-templates-and-file-portability.md)
+
 ## 安全边界
 
 PackBreaker 的自动化建立在三条不可交换的前提下：
@@ -191,6 +203,7 @@ uv run python scripts/test.py    # 后端测试、前端测试与构建
 | --- | --- |
 | [Docker 部署指南](docs/deployment.md) | Compose、docker run、群晖、反向代理、升级回滚与备份 |
 | [项目文档索引](docs/README.md) | 功能入口、统计口径、架构导航与故障排查 |
+| [官方模板与模板文件](docs/design/official-templates-and-file-portability.md) | 内置官方模板、`.pbtemplate` 导入导出与目录映射口径 |
 | [支持矩阵](docs/support-matrix.md) | 平台、下载器、站点与文件系统边界 |
 | [已知限制](docs/known-limitations.md) | 当前有意保留的限制 |
 | [测试说明](docs/testing.md) | 质量门与测试范围 |

@@ -87,6 +87,9 @@ BULK_REMATCHABLE_ITEM_STATUSES = frozenset(
         UnpackItemStatus.MATCH_TIMEOUT,
         UnpackItemStatus.MATCH_ERROR,
         UnpackItemStatus.CONTENT_MISMATCH,
+        # 内容校验错误（站点限流/超时/熔断导致）允许批量重试；重试只重做校验，
+        # 保留已选候选，不重新搜索站点。
+        UnpackItemStatus.CONTENT_VERIFY_ERROR,
         UnpackItemStatus.EXECUTION_ERROR,
     }
 )
@@ -102,6 +105,7 @@ class UnpackCandidateVerificationStatus(StrEnum):
 
 class UnpackContentVerificationLevel(StrEnum):
     FULL_VERIFIED = "FULL_VERIFIED"
+    SAMPLED_VERIFIED = "SAMPLED_VERIFIED"
     CLIENT_CHECK_REQUIRED = "CLIENT_CHECK_REQUIRED"
     BLOCKED = "BLOCKED"
 
@@ -166,6 +170,7 @@ _EXECUTION_TRANSITIONS: dict[UnpackExecutionStatus, frozenset[UnpackExecutionSta
             UnpackExecutionStatus.MATCHING,
             UnpackExecutionStatus.CONTENT_VERIFYING,
             UnpackExecutionStatus.EXECUTING,
+            UnpackExecutionStatus.CLIENT_VERIFYING,
             UnpackExecutionStatus.COMPLETED,
             UnpackExecutionStatus.COMPLETED_WITH_ERRORS,
             UnpackExecutionStatus.PAUSED,

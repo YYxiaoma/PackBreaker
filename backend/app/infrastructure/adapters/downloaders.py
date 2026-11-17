@@ -18,7 +18,11 @@ from backend.app.domain.downloader import (
     DownloaderRuntimeMetrics,
     normalize_remote_path,
 )
-from backend.app.domain.verification import DownloaderKind, VerificationLevel
+from backend.app.domain.verification import (
+    EVIDENCE_VERIFIED_LEVELS,
+    DownloaderKind,
+    VerificationLevel,
+)
 
 _MAX_TORRENT_UPLOAD_BYTES = 20 * 1024 * 1024
 _QBITTORRENT_JSON_ADD_API_MIN = (2, 14, 0)
@@ -91,8 +95,11 @@ class QbittorrentAddRequest:
         object.__setattr__(self, "save_path", normalize_remote_path(self.save_path))
         if not self.paused:
             raise ValueError("PackBreaker 安全添加必须以暂停状态创建 qBittorrent 任务")
-        if self.skip_checking and self.verification_level is not VerificationLevel.FULL_VERIFIED:
-            raise ValueError("只有 FULL_VERIFIED 才允许 qBittorrent skip_checking")
+        # 跳过校验要求“已有内容证据等级”：逐片全量（FULL_VERIFIED）或
+        # 按确定性规则抽样（SAMPLED_VERIFIED）。CLIENT_CHECK_REQUIRED / BLOCKED
+        # 仍然禁止跳过，交给下载器做全量校验。
+        if self.skip_checking and self.verification_level not in EVIDENCE_VERIFIED_LEVELS:
+            raise ValueError("只有具备内容证据等级的 torrent 才允许 qBittorrent skip_checking")
         normalized_tags = tuple(dict.fromkeys(tag.strip() for tag in self.tags if tag.strip()))
         if any(len(tag) > 128 or "," in tag for tag in normalized_tags):
             raise ValueError("qBittorrent tag 格式无效")
@@ -389,13 +396,10 @@ class QbittorrentAdapter:
         )
 
     async def add_torrent(self, request: QbittorrentAddRequest) -> QbittorrentAddResult:
-        if (
-            request.skip_checking
-            and request.verification_level is not VerificationLevel.FULL_VERIFIED
-        ):
+        if request.skip_checking and request.verification_level not in EVIDENCE_VERIFIED_LEVELS:
             raise DownloaderAdapterError(
                 "DOWNLOADER_SKIP_CHECKING_BLOCKED",
-                "只有 FULL_VERIFIED 才允许 qBittorrent skip_checking",
+                "只有具备内容证据等级的 torrent 才允许 qBittorrent skip_checking",
             )
         async with self._authenticated_client() as client:
             webapi_response = await client.get(f"{self._base_url}/api/v2/app/webapiVersion")

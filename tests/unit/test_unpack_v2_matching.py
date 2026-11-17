@@ -279,9 +279,14 @@ def _candidate(
 
 
 @pytest.mark.parametrize("duplicate_mapping", [False, True])
+@pytest.mark.parametrize("upper_case_site_key", [False, True])
 def test_template_task_uses_unique_saved_mapping_without_querying_site_adapters(
     duplicate_mapping: bool,
+    upper_case_site_key: bool,
 ) -> None:
+    # 模板侧写 SiteKind 名称（MTEAM），站点引用暴露规范 ID（mteam）：
+    # 大小写不同也必须匹配，否则模板任务整批判成「站点绑定无效」。
+    site_key = "MTEAM" if upper_case_site_key else "mteam"
     collection_root = "DouBan_IMDB.TOP250.Movies.Mixed.Collection.20240501.FRDS"
     movie_directory = "Movie.2024.1080p.WEB-DL.x265.tt1234567"
     source_filename = f"{movie_directory}.mkv"
@@ -323,7 +328,7 @@ def test_template_task_uses_unique_saved_mapping_without_querying_site_adapters(
                 status="READY",
                 expected_seed_count=2,
                 seed_count=2,
-                site_keys=["mteam"],
+                site_keys=[site_key],
                 content_digest="a" * 64,
                 source_provenance={"source": "test"},
                 created_at=now,
@@ -333,7 +338,7 @@ def test_template_task_uses_unique_saved_mapping_without_querying_site_adapters(
         session.add(
             UnpackTorrentMetadata(
                 id="metadata-1",
-                site_key="mteam",
+                site_key=site_key,
                 remote_torrent_id="torrent-template-1",
                 display_name=display_name,
                 descriptor=_descriptor_payload(descriptor),
@@ -365,7 +370,7 @@ def test_template_task_uses_unique_saved_mapping_without_querying_site_adapters(
         session.add(
             UnpackTorrentMetadata(
                 id="metadata-2",
-                site_key="mteam",
+                site_key=site_key,
                 remote_torrent_id="torrent-template-2",
                 display_name=display_name,
                 descriptor=_descriptor_payload(descriptor),

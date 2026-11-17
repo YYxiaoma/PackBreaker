@@ -131,6 +131,7 @@ def _service(
     *,
     source_content: bytes,
     torrent: bytes | dict[str, bytes],
+    sample_pieces: int = 0,
 ) -> tuple[
     UnpackContentVerificationService,
     sessionmaker[Session],
@@ -245,6 +246,7 @@ def _service(
         factory,
         _FakeSiteProvider(torrent),
         path_scope=AuthorizedPathScope.legacy_only(legacy_data_root=data_root),
+        sample_pieces=sample_pieces,
     )
     return service, factory, source
 
@@ -607,7 +609,7 @@ def test_existing_auxiliary_operation_disables_automatic_candidate_switch(tmp_pa
         assert second.verification_status == UnpackCandidateVerificationStatus.NOT_CHECKED.value
 
 
-def test_matching_stage_waits_for_all_children_before_content_verification(
+def test_matching_stage_no_longer_blocks_auto_matched_siblings(
     tmp_path: Path,
 ) -> None:
     content = b"abcdefgh"
@@ -640,12 +642,19 @@ def test_matching_stage_waits_for_all_children_before_content_verification(
         )
         session.commit()
 
-    # Even though item-1 is already MATCHED_AUTO, the parent remains in the
-    # matching stage until item-2 has also reached a terminal matching result.
-    assert service.list_verifiable_execution_ids() == ()
+    # 流水线推进：item-1 的候选已确定，就不必等 item-2 匹配结束即可校验。
+    assert service.list_verifiable_execution_ids() == ("execution-1",)
+    report = asyncio.run(service.verify_next_batch("execution-1", limit=1))
+    assert report.processed_count == 1
+    with factory() as session:
+        verified = session.get(UnpackExecutionItem, "item-1")
+        sibling = session.get(UnpackExecutionItem, "item-2")
+        assert verified is not None and sibling is not None
+        assert verified.status == UnpackItemStatus.CONTENT_VERIFIED.value
+        assert sibling.status == UnpackItemStatus.MATCH_PENDING.value
 
 
-def test_matching_review_blocks_content_verification_until_resolved(
+def test_pending_review_no_longer_blocks_other_items_verification(
     tmp_path: Path,
 ) -> None:
     content = b"abcdefgh"
@@ -679,17 +688,19 @@ def test_matching_review_blocks_content_verification_until_resolved(
         )
         session.commit()
 
-    # An auto-matched sibling must not enter content verification while any
-    # sibling is still waiting for a matching-stage human decision.
-    assert service.list_verifiable_execution_ids() == ()
+    # 待审核只阻塞自己：已匹配的兄弟项必须继续进入内容校验。
+    assert service.list_verifiable_execution_ids() == ("execution-1",)
     report = asyncio.run(service.verify_next_batch("execution-1", limit=1))
-    assert report.processed_count == 0
+    assert report.processed_count == 1
     with factory() as session:
         item = session.get(UnpackExecutionItem, "item-1")
-        execution = session.get(UnpackExecution, "execution-1")
-        assert item is not None and execution is not None
-        assert item.status == UnpackItemStatus.MATCHED_AUTO.value
-        assert execution.status == UnpackExecutionStatus.REVIEW_REQUIRED.value
+        sibling = session.get(UnpackExecutionItem, "item-2")
+        assert item is not None and sibling is not None
+        assert item.status == UnpackItemStatus.CONTENT_VERIFIED.value
+        # 待审核的那条保持不动，等人工处理。
+        assert sibling.status == UnpackItemStatus.REVIEW_REQUIRED.value
+        # 待审核只阻塞自己：其它影片仍有活干时执行状态保持活跃阶段。
+        assert execution.status == UnpackExecutionStatus.CONTENT_VERIFYING.value
 
 
 def test_startup_recovery_requeues_interrupted_verification_before_driver_starts(
@@ -739,7 +750,8 @@ def test_startup_recovery_requeues_interrupted_verification_before_driver_starts
         item = session.get(UnpackExecutionItem, "item-1")
         candidate = session.get(UnpackMatchCandidate, "candidate-1")
         assert execution is not None and item is not None and candidate is not None
-        assert execution.status == UnpackExecutionStatus.REVIEW_REQUIRED.value
+        # 待审核只阻塞自己：其它影片仍有活干时执行状态保持活跃阶段。
+        assert execution.status == UnpackExecutionStatus.CONTENT_VERIFYING.value
         assert item.status == UnpackItemStatus.MATCHED_AUTO.value
         assert candidate.verification_status == UnpackCandidateVerificationStatus.NOT_CHECKED.value
         assert candidate.verification_level is None
@@ -1066,8 +1078,8 @@ def test_multifile_source_change_during_hashing_fails_closed(
     sibling.write_bytes(second)
     original_verify = verification_module._verify_torrent
 
-    def verify_then_change(*args: object) -> object:
-        outcome = original_verify(*args)  # type: ignore[arg-type]
+    def verify_then_change(*args: object, **kwargs: object) -> object:
+        outcome = original_verify(*args, **kwargs)  # type: ignore[arg-type]
         sibling.write_bytes(b"replaced-content")
         return outcome
 
@@ -1473,7 +1485,7 @@ def test_content_verification_resumes_when_execution_already_has_completed_sibli
         assert execution.matched_auto_count == 19
 
 
-def test_content_verification_waits_for_all_matching_items_to_resolve(tmp_path: Path) -> None:
+def test_content_verification_proceeds_while_sibling_still_matching(tmp_path: Path) -> None:
     content = b"video-content"
     service, factory, _source = _service(
         tmp_path,
@@ -1503,12 +1515,59 @@ def test_content_verification_waits_for_all_matching_items_to_resolve(tmp_path: 
         )
         session.commit()
 
-    assert service.list_verifiable_execution_ids() == ()
+    assert service.list_verifiable_execution_ids() == ("execution-1",)
     report = asyncio.run(service.verify_next_batch("execution-1"))
-    assert report.processed_count == 0
+    assert report.processed_count == 1
     with factory() as session:
         execution = session.get(UnpackExecution, "execution-1")
         item = session.get(UnpackExecutionItem, "item-1")
         assert execution is not None and item is not None
+        # 父级阶段仍由“最早未完成阶段”汇总为匹配中，但条目已经完成内容校验。
         assert execution.status == UnpackExecutionStatus.MATCHING.value
-        assert item.status == UnpackItemStatus.MATCHED_AUTO.value
+        assert item.status == UnpackItemStatus.CONTENT_VERIFIED.value
+
+
+def test_sampled_verification_marks_item_as_sampled_verified(tmp_path: Path) -> None:
+    content = b"video-content"
+    service, factory, _source = _service(
+        tmp_path,
+        source_content=content,
+        torrent=_v1_single("movie.mkv", content),
+        sample_pieces=4,
+    )
+
+    report = asyncio.run(service.verify_next_batch("execution-1", limit=1))
+
+    assert report.processed_count == 1
+    assert report.content_verified_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None and item.selected_candidate_id is not None
+        assert item.status == UnpackItemStatus.CONTENT_VERIFIED.value
+        assert item.content_verification_level == "SAMPLED_VERIFIED"
+        candidate = session.get(UnpackMatchCandidate, item.selected_candidate_id)
+        assert candidate is not None
+        assert candidate.verification_level == "SAMPLED_VERIFIED"
+        evidence = dict(candidate.evidence).get("content_verification")
+        assert isinstance(evidence, dict)
+        assert evidence["verification_scope"] == "SAMPLED"
+
+
+def test_auto_retry_delay_follows_definition_retry_policy() -> None:
+    service = object.__new__(UnpackContentVerificationService)
+    execution = UnpackExecution(config_snapshot={"retry": {"enabled": True, "max_retries": 3}})
+    item = UnpackExecutionItem(retry_count=0)
+
+    assert service._auto_retry_delay(execution, item, "SITE_UNAVAILABLE") == 15.0
+    item.retry_count = 1
+    assert service._auto_retry_delay(execution, item, "SITE_CIRCUIT_OPEN") == 30.0
+    item.retry_count = 2
+    assert service._auto_retry_delay(execution, item, "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT") == 60.0
+    item.retry_count = 3
+    assert service._auto_retry_delay(execution, item, "SITE_UNAVAILABLE") is None
+    # 非瞬时错误不做自动重试。
+    item.retry_count = 0
+    assert service._auto_retry_delay(execution, item, "UNPACK_CONTENT_MISMATCH") is None
+    # 定义关闭重试时不自动重试。
+    disabled = UnpackExecution(config_snapshot={"retry": {"enabled": False, "max_retries": 3}})
+    assert service._auto_retry_delay(disabled, item, "SITE_UNAVAILABLE") is None

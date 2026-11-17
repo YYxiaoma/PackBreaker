@@ -3,9 +3,21 @@ from enum import StrEnum
 
 
 class VerificationLevel(StrEnum):
+    # 逐片校验全部通过：唯一可以宣称“内容与 torrent 逐字节一致”的等级。
     FULL_VERIFIED = "FULL_VERIFIED"
+    # 按确定性规则抽样校验通过：用于大文件快速放行，覆盖率写入证据，不等于逐片证明。
+    SAMPLED_VERIFIED = "SAMPLED_VERIFIED"
     CLIENT_CHECK_REQUIRED = "CLIENT_CHECK_REQUIRED"
     BLOCKED = "BLOCKED"
+
+
+# 可进入执行准备阶段的内容证据等级；BLOCKED / CLIENT_CHECK_REQUIRED 永远不在其中。
+EVIDENCE_VERIFIED_LEVELS: frozenset[VerificationLevel] = frozenset(
+    {VerificationLevel.FULL_VERIFIED, VerificationLevel.SAMPLED_VERIFIED}
+)
+EVIDENCE_VERIFIED_LEVEL_VALUES: frozenset[str] = frozenset(
+    level.value for level in EVIDENCE_VERIFIED_LEVELS
+)
 
 
 class FileMappingState(StrEnum):
@@ -87,7 +99,8 @@ class SkipCheckingReason(StrEnum):
     DOWNLOADER_REQUIRES_CHECK = "DOWNLOADER_REQUIRES_CHECK"
     EXPLICIT_ENABLE_REQUIRED = "EXPLICIT_ENABLE_REQUIRED"
     PREFLIGHT_STALE = "PREFLIGHT_STALE"
-    FULL_VERIFICATION_REQUIRED = "FULL_VERIFICATION_REQUIRED"
+    # 只有具备内容证据等级（逐片全量或确定性抽样）才允许跳过下载器校验。
+    CONTENT_EVIDENCE_REQUIRED = "CONTENT_EVIDENCE_REQUIRED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +124,6 @@ def decide_skip_checking(
         return SkipCheckingDecision(False, SkipCheckingReason.EXPLICIT_ENABLE_REQUIRED)
     if not preflight_current:
         return SkipCheckingDecision(False, SkipCheckingReason.PREFLIGHT_STALE)
-    if verification_level is not VerificationLevel.FULL_VERIFIED:
-        return SkipCheckingDecision(False, SkipCheckingReason.FULL_VERIFICATION_REQUIRED)
+    if verification_level not in EVIDENCE_VERIFIED_LEVELS:
+        return SkipCheckingDecision(False, SkipCheckingReason.CONTENT_EVIDENCE_REQUIRED)
     return SkipCheckingDecision(True, SkipCheckingReason.ALLOWED)

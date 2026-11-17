@@ -55,14 +55,21 @@ def verify_v1_pieces(
     mappings: tuple[V1FileMapping, ...],
     *,
     read_chunk_bytes: int = 1024 * 1024,
+    sample_pieces: int = 0,
     cancel_check: Callable[[], None] | None = None,
 ) -> V1VerificationResult:
-    """只读验证 v1 逻辑字节流；不会创建或修改任何文件。"""
+    """只读验证 v1 逻辑字节流；不会创建或修改任何文件。
+
+    ``sample_pieces`` 大于 0 时，只按确定性规则校验首片、末片与均匀间隔的若干分片，
+    结论标记为 ``SAMPLED_VERIFIED``：它是“抽样一致”，不是“逐片一致”的证据。
+    """
 
     if meta.torrent_kind not in {TorrentKind.V1, TorrentKind.HYBRID}:
         raise DomainViolation(ErrorCode.TORRENT_META_INVALID, "候选不包含 v1 piece 元数据")
     if read_chunk_bytes <= 0:
         raise ValueError("read_chunk_bytes 必须大于 0")
+    if sample_pieces < 0:
+        raise ValueError("sample_pieces 不能为负数")
     _check_cancel(cancel_check)
 
     mapping_by_path = _mapping_index(mappings)
@@ -155,7 +162,16 @@ def verify_v1_pieces(
             )
         )
 
-    pieces = _verify_stream(meta, tuple(spans), read_chunk_bytes, cancel_check)
+    if sample_pieces > 0:
+        pieces = _verify_sampled_pieces(
+            meta,
+            tuple(spans),
+            read_chunk_bytes,
+            sample_pieces,
+            cancel_check,
+        )
+    else:
+        pieces = _verify_stream(meta, tuple(spans), read_chunk_bytes, cancel_check)
     _check_cancel(cancel_check)
     _recheck_snapshots(tuple(spans))
 
@@ -163,6 +179,8 @@ def verify_v1_pieces(
         level = VerificationLevel.BLOCKED
     elif unavailable or any(piece.status is not PieceStatus.VERIFIED for piece in pieces):
         level = VerificationLevel.CLIENT_CHECK_REQUIRED
+    elif sample_pieces > 0:
+        level = VerificationLevel.SAMPLED_VERIFIED
     else:
         level = VerificationLevel.FULL_VERIFIED
     return V1VerificationResult(level=level, mappings=tuple(evidence), pieces=pieces)
@@ -410,6 +428,91 @@ def _verify_stream(
             if span_offset == span.length:
                 span_index += 1
                 span_offset = 0
+
+        if not available:
+            status = PieceStatus.UNAVAILABLE
+        elif hmac.compare_digest(digest.digest(), expected_hash):
+            status = PieceStatus.VERIFIED
+        else:
+            status = PieceStatus.MISMATCH
+        pieces.append(PieceEvidence(piece_index, status, tuple(covered)))
+    return tuple(pieces)
+
+
+def _sample_piece_indices(total_pieces: int, samples: int) -> tuple[int, ...]:
+    """确定性抽样：首片、末片与均匀间隔，保证同一 torrent 每次抽样位置一致。"""
+
+    if total_pieces <= 0:
+        return ()
+    if samples >= total_pieces:
+        return tuple(range(total_pieces))
+    if samples <= 1:
+        return (0,)
+    step = (total_pieces - 1) / (samples - 1)
+    return tuple(sorted({round(index * step) for index in range(samples)}))
+
+
+def _locate_span(
+    spans: tuple[_ReadableSpan, ...],
+    position: int,
+) -> tuple[_ReadableSpan, int]:
+    offset = 0
+    for span in spans:
+        end = offset + span.length
+        if span.length > 0 and offset <= position < end:
+            return span, position - offset
+        offset = end
+    raise DomainViolation(ErrorCode.TORRENT_META_INVALID, "分片偏移超出声明文件范围")
+
+
+def _verify_sampled_pieces(
+    meta: TorrentMeta,
+    spans: tuple[_ReadableSpan, ...],
+    read_chunk_bytes: int,
+    sample_pieces: int,
+    cancel_check: Callable[[], None] | None,
+) -> tuple[PieceEvidence, ...]:
+    """只读取抽中分片的字节区间计算 SHA1，其余字节不做校验。"""
+
+    total_length = sum(span.length for span in spans)
+    expected_piece_count = (
+        (total_length + meta.piece_length - 1) // meta.piece_length if total_length else 0
+    )
+    if expected_piece_count != len(meta.v1_piece_hashes):
+        raise DomainViolation(ErrorCode.TORRENT_META_INVALID, "v1 pieces 数量与声明字节范围不一致")
+
+    pieces: list[PieceEvidence] = []
+    for piece_index in _sample_piece_indices(expected_piece_count, sample_pieces):
+        _check_cancel(cancel_check)
+        expected_hash = meta.v1_piece_hashes[piece_index]
+        start = piece_index * meta.piece_length
+        remaining = min(meta.piece_length, total_length - start)
+        digest = hashlib.sha1()
+        available = True
+        covered: list[str] = []
+        position = start
+        while remaining > 0:
+            span, span_offset = _locate_span(spans, position)
+            take = min(remaining, span.length - span_offset)
+            if not covered or covered[-1] != span.torrent_path:
+                covered.append(span.torrent_path)
+            if span.padding:
+                _hash_zeros(digest, take, read_chunk_bytes)
+            elif span.source_path is None:
+                available = False
+            else:
+                if span.snapshot is None:
+                    raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "映射源缺少文件快照")
+                _hash_file_range(
+                    digest,
+                    span.source_path,
+                    span.snapshot,
+                    span_offset,
+                    take,
+                    read_chunk_bytes,
+                )
+            position += take
+            remaining -= take
 
         if not available:
             status = PieceStatus.UNAVAILABLE

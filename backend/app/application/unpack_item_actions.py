@@ -23,6 +23,7 @@ from backend.app.domain.unpack import (
     item_transition_allowed,
 )
 from backend.app.domain.unpack_execution_plan import unpack_execution_plan_from_payload
+from backend.app.domain.verification import EVIDENCE_VERIFIED_LEVEL_VALUES
 from backend.app.infrastructure.persistence.database import begin_immediate_write
 from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
@@ -422,6 +423,9 @@ class UnpackItemActionService:
                     continue
                 if item.status == UnpackItemStatus.EXECUTION_ERROR.value:
                     _retry_failed_execution_item(session, item, now)
+                elif item.status == UnpackItemStatus.CONTENT_VERIFY_ERROR.value:
+                    # 校验错误只重做内容校验：站点限流/超时不应该让用户再等一轮匹配。
+                    _reset_item_for_verification_retry(session, item, now)
                 else:
                     # A fresh matching generation safely discards earlier candidate
                     # selections. It does NOT erase journal history or media files.
@@ -645,7 +649,7 @@ _ADD_OPERATIONS = frozenset({"UNPACK_EXEC_QBITTORRENT_ADD", "UNPACK_EXEC_TRANSMI
 
 def _plan_retry_allowed(session: Session, item: UnpackExecutionItem) -> bool:
     if (
-        item.content_verification_level != "FULL_VERIFIED"
+        item.content_verification_level not in EVIDENCE_VERIFIED_LEVEL_VALUES
         or item.selected_candidate_id is None
         or not isinstance(item.torrent_metainfo_digest, str)
         or item.execution_plan is not None
@@ -661,14 +665,14 @@ def _plan_retry_allowed(session: Session, item: UnpackExecutionItem) -> bool:
         and candidate.item_id == item.id
         and candidate.generation == item.candidate_generation
         and candidate.verification_status == UnpackCandidateVerificationStatus.VERIFIED.value
-        and candidate.verification_level == "FULL_VERIFIED"
+        and candidate.verification_level in EVIDENCE_VERIFIED_LEVEL_VALUES
         and candidate.metainfo_digest == item.torrent_metainfo_digest
     )
 
 
 def _materialization_resume_allowed(item: UnpackExecutionItem) -> bool:
     if (
-        item.content_verification_level != "FULL_VERIFIED"
+        item.content_verification_level not in EVIDENCE_VERIFIED_LEVEL_VALUES
         or item.selected_candidate_id is None
         or not isinstance(item.execution_plan, dict)
         or not isinstance(item.execution_plan_digest, str)
@@ -912,6 +916,53 @@ def _queue_failed_item(session: Session, item: UnpackExecutionItem, now: datetim
         title="影片存在尚未对账的外部操作",
         detail="不能清除已发生的下载器或文件系统操作记录并重新匹配，请先对账",
     )
+
+
+def _reset_item_for_verification_retry(
+    session: Session,
+    item: UnpackExecutionItem,
+    now: datetime,
+) -> None:
+    """保留已选候选，只把内容校验重新排队；候选失效时才退回重新匹配。"""
+
+    candidate = (
+        session.get(UnpackMatchCandidate, item.selected_candidate_id)
+        if item.selected_candidate_id is not None
+        else None
+    )
+    if candidate is None or candidate.generation != item.candidate_generation:
+        _reset_item_for_match_retry(item, now)
+        return
+
+    candidate.verification_status = UnpackCandidateVerificationStatus.NOT_CHECKED.value
+    candidate.verification_level = None
+    candidate.verification_error_code = None
+    candidate.metainfo_digest = None
+    evidence = dict(candidate.evidence or {})
+    evidence.pop("content_verification", None)
+    candidate.evidence = evidence
+
+    state = dict(item.auxiliary_state or {})
+    state.pop("auto_retry_not_before", None)
+    state.pop("verify_auto_retry", None)
+    item.auxiliary_state = state or None
+    item.status = (
+        UnpackItemStatus.MATCHED_AUTO.value
+        if item.match_origin == "AUTO"
+        else UnpackItemStatus.MATCHED_MANUAL.value
+    )
+    # 人工重试重新获得完整的自动重试预算。
+    item.retry_count = 0
+    item.content_verification_level = None
+    item.torrent_metainfo_digest = None
+    item.execution_plan = None
+    item.execution_plan_digest = None
+    item.execution_plan_created_at = None
+    item.execution_state = None
+    item.last_error_code = None
+    item.last_error_message = None
+    item.updated_at = now
+    item.version += 1
 
 
 def _reset_item_for_match_retry(
