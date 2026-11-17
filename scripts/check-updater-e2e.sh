@@ -88,6 +88,19 @@ report_failure() {
 trap cleanup EXIT
 trap report_failure ERR
 
+docker_pull_with_retry() {
+  # ghcr.io / docker.io 的匿名 token 偶发 EOF（网络抖动或区域限流），重试避免发布流水线误报。
+  local image="$1"
+  local attempt
+  for attempt in 1 2 3 4; do
+    if docker pull "$image" >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "docker pull failed (attempt $attempt/4): $image" >&2
+    sleep "$((attempt * 5))"
+  done
+  docker pull "$image"
+}
 wait_registry() {
   for attempt in $(seq 1 30); do
     if curl --fail --silent "http://127.0.0.1:${registry_port}/v2/" >/dev/null; then
@@ -501,7 +514,7 @@ DOCKERFILE
   test "$(docker image inspect "$baseline_image" --format '{{.Os}}/{{.Architecture}}')" = linux/arm64
 else
   echo "Pull formal baseline by immutable digest: $baseline_image"
-  docker pull "$baseline_image" >/dev/null
+  docker_pull_with_retry "$baseline_image"
 fi
 baseline_image_id="$(docker image inspect "$baseline_image" --format '{{.Id}}')"
 candidate_image_id="$(docker image inspect "$candidate_image" --format '{{.Id}}')"
@@ -519,6 +532,7 @@ fi
 test "$(docker run --rm "$candidate_image" python -c 'from backend.app.versioning import app_version; print(app_version())')" = "$candidate_version"
 
 echo "Start isolated local registry"
+docker_pull_with_retry "registry:2"
 docker run --detach \
   --name "$registry_container" \
   --publish "127.0.0.1:${registry_port}:5000" \
