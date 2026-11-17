@@ -129,24 +129,24 @@ def test_release_assets_wait_for_native_arm64_same_immutable_digest() -> None:
     assert 'test "$(uname -m)" = x86_64' in qemu_steps
     assert "check-immutable-image-runtime.sh" in qemu_steps
     assert "${{ needs.release.outputs.image }}@${{ needs.release.outputs.digest }}" in qemu_steps
+    # 升级门禁跑在 push 之前（push 后失败会污染 registry），推送后不再重复。
     published_upgrade_steps = [
-        (index, step)
-        for index, step in enumerate(build["steps"])
+        step
+        for step in build["steps"]
         if step.get("name")
         == "Exercise formal AMD64 adjacent upgrade and rollback with published immutable digest"
     ]
-    assert len(published_upgrade_steps) == 1
-    upgrade_index, upgrade_step = published_upgrade_steps[0]
-    assert upgrade_step["if"] == "${{ !startsWith(github.ref_name, 'v0.') }}"
-    assert upgrade_step["run"].strip() == (
-        "bash scripts/check-release-upgrade.sh \\\n"
-        '  "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"'
-    )
+    assert published_upgrade_steps == []
+    pre_push_upgrade = [
+        step
+        for step in build["steps"]
+        if (step.get("run") or "").strip()
+        == "bash scripts/check-release-upgrade.sh packbreaker:release-candidate"
+    ]
+    assert len(pre_push_upgrade) == 1
     step_names = [step.get("name") for step in build["steps"]]
-    assert step_names.index("Build and publish target architecture image index") < upgrade_index
-    assert (
-        step_names.index("Exercise immutable published AMD64 image in isolated runtime")
-        < upgrade_index
+    assert step_names.index("Exercise previous-release upgrade and rollback") < step_names.index(
+        "Build and publish target architecture image index"
     )
     assert "gh release create" not in build_steps
     assert "actions/upload-artifact" not in build_steps

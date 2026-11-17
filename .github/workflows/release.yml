@@ -231,6 +231,10 @@ jobs:
             --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --tag packbreaker:release-candidate \
             .
+      # 这两条是发布的权威升级门禁，跑在镜像 push 之前：
+      # 一旦失败（脚本缺陷、镜像行为变化等），registry 里不会留下同名镜像，
+      # 下次重跑不会被「Refuse an existing immutable version image」挡住。
+      # 推送之后只保留对已发布镜像的冒烟验证（immutable runtime smoke）。
       - name: Exercise previous-release upgrade and rollback
         run: bash scripts/check-release-upgrade.sh packbreaker:release-candidate
       - name: Exercise real updater helper upgrade and automatic rollback
@@ -328,19 +332,6 @@ jobs:
           bash scripts/check-immutable-image-runtime.sh \
             "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}" \
             linux/amd64 "$GITHUB_REF_NAME" "$GITHUB_SHA"
-      - name: Exercise formal AMD64 adjacent upgrade and rollback with published immutable digest
-        if: ${{ !startsWith(github.ref_name, 'v0.') }}
-        shell: bash
-        run: |
-          bash scripts/check-release-upgrade.sh \
-            "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"
-      - name: Exercise formal AMD64 updater with published immutable digest
-        if: ${{ !startsWith(github.ref_name, 'v0.') }}
-        shell: bash
-        run: |
-          bash scripts/check-updater-e2e.sh \
-            "${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"
-
   qemu-arm64-published-runtime:
     # Keep QEMU validation on a fresh Docker engine. Pulling amd64 and arm64
     # variants of the same index digest into one classic image store can fail
@@ -564,3 +555,25 @@ jobs:
               exit 1
             fi
           done
+
+  cleanup-published-image:
+    # 发布失败时删除本次刚推上去的版本 tag。
+    # release job 采用不可覆盖策略：同名镜像一旦存在，下次重跑会在
+    # "Refuse an existing immutable version image" 直接失败；而推送之后的
+    # ARM64 原生验证等门禁失败会把镜像留在 registry 里，形成重跑死锁。
+    # 凭据缺失时脚本只告警，不会掩盖真正的失败原因。
+    needs: [release, qemu-arm64-published-runtime, native-arm64-published-runtime, release-assets]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete the just published tags after a failed release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_CLEANUP_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.RELEASE_CLEANUP_DOCKERHUB_TOKEN }}
+        run: bash scripts/cleanup-published-image.sh "$GITHUB_REF_NAME"

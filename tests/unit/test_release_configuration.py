@@ -66,12 +66,26 @@ def test_release_workflow_binds_linux_amd64_digest_sbom_and_manifest() -> None:
     assert "--generate-notes" in workflow
     assert "check-release-upgrade.sh packbreaker:release-candidate" in workflow
     published = '"${{ steps.release_meta.outputs.image }}@${{ steps.build.outputs.digest }}"'
-    assert "Exercise formal AMD64 updater with published immutable digest" in workflow
-    assert "scripts/check-updater-e2e.sh" in workflow
-    assert workflow.index("Exercise formal AMD64 adjacent upgrade") < workflow.index(
-        "Exercise formal AMD64 updater with published immutable digest"
+    # 权威升级门禁必须在 push 之前跑完：失败时 registry 里不会留下同名镜像，
+    # 下次重跑不会被「Refuse an existing immutable version image」挡住。
+    pre_push_gates = (
+        "bash scripts/check-release-upgrade.sh packbreaker:release-candidate",
+        "bash scripts/check-updater-e2e.sh packbreaker:release-candidate",
     )
-    assert workflow.count(published) >= 4
+    for gate in pre_push_gates:
+        assert gate in workflow
+        assert workflow.index(gate) < workflow.index(
+            "Build and publish target architecture image index"
+        )
+    # 推送后不再重复跑同一门禁
+    assert "Exercise formal AMD64 updater with published immutable digest" not in workflow
+    assert (
+        "Exercise formal AMD64 adjacent upgrade and rollback with published immutable digest"
+        not in workflow
+    )
+    # 已发布镜像仍保留一次冒烟验证（含按 index digest 拉取与运行时自检）
+    assert "Exercise immutable published AMD64 image in isolated runtime" in workflow
+    assert workflow.count(published) >= 2
     assert "Exercise formal ARM64 updater with the exact published immutable digest" in workflow
     assert "Exercise published ARM64 anonymous-volume retention" in workflow
     assert "qemu-arm64-published-runtime:" in workflow
@@ -161,3 +175,19 @@ def test_ci_container_gate_exercises_immutable_previous_release() -> None:
     assert "release-baseline.json" in (ROOT / "scripts" / "validate_release_baseline.py").read_text(
         encoding="utf-8"
     )
+
+
+def test_failed_release_cleans_up_the_published_tags() -> None:
+    """推送之后的门禁失败时，必须自动删掉本次刚推的镜像 tag。
+
+    否则不可覆盖守卫会把后续每一次重跑都挡住（v1.1.6 发布实际卡了三轮）。
+    """
+
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    jobs = workflow.count("cleanup-published-image:")
+    assert jobs == 1
+    assert "bash scripts/cleanup-published-image.sh" in workflow
+    assert "if: failure()" in workflow
+    # 清理凭据缺失时只告警，不能掩盖真正的失败原因
+    assert "continue-on-error: true" in workflow
+    assert (ROOT / "scripts" / "cleanup-published-image.sh").is_file()
