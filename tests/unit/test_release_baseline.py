@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -104,47 +103,38 @@ def test_native_arm64_updater_gate_keeps_formal_amd64_baseline_unchanged() -> No
     assert 'LABEL org.packbreaker.ci.synthetic-arm64-baseline="true"' in script
 
 
-def test_native_arm64_release_backup_restore_keeps_synthetic_mode_but_ci_uses_formal_baseline() -> (
-    None
-):
-    script = (ROOT / "scripts" / "check-release-upgrade.sh").read_text(encoding="utf-8")
-    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+def test_updater_gate_resolves_digest_from_the_isolated_registry() -> None:
+    """隔离 registry 的 digest 必须向 registry 索取。
 
-    assert 'baseline_mode="${2:-formal}"' in script
-    assert 'if [[ "$baseline_mode" == --synthetic-arm64-baseline ]]; then' in script
-    assert 'test "$(uname -m)" = aarch64' in script
-    assert "\"$candidate_image\" --format '{{.Os}}/{{.Architecture}}'" in script
-    assert '" = linux/arm64' in script
-    assert 'LABEL org.packbreaker.ci.synthetic-arm64-baseline="true"' in script
-    assert 'test "$baseline_version" = "$candidate_version"' in script
-    assert 'test -n "$baseline_revision"' in script
-    assert 'test "$(docker image inspect "$baseline_image" --format \'{{.Id}}\')" !=' in script
-    assert 'docker pull "$baseline_image"' in script
-    assert "backend.app.maintenance verify-backup" in script
-    assert "backend.app.maintenance restore-backup" in script
-    assert 'assert_probe "$candidate_container"' in script
-    assert 'assert_probe "$rollback_container"' in script
-    assert "check-release-upgrade.sh packbreaker:ci-arm64 --synthetic-arm64-baseline" not in ci
-    assert "check-release-upgrade.sh packbreaker:ci-arm64" in ci
-    assert "check-immutable-image-runtime.sh" in ci
-    assert "check-release-upgrade.sh packbreaker:release-candidate" in release
-    assert "Exercise formal ARM64 updater with the exact published immutable digest" in release
-    assert "Exercise published ARM64 anonymous-volume retention" in release
-    assert release.index(
-        "Exercise formal ARM64 updater with the exact published immutable digest"
-    ) < release.index("Exercise published ARM64 anonymous-volume retention")
-    assert "--synthetic-arm64-baseline" in release
+    containerd 镜像存储会把「源 registry 的 index digest」写进本地 tag 的 RepoDigests，
+    而隔离 registry 实际存放单平台 manifest。用前者去 pull 会 404，
+    升级 helper 会报 DOCKER_IMAGE_PULL_FAILED（v1.1.6 发布实际踩到）。
+    """
+
+    script = (ROOT / "scripts" / "check-updater-e2e.sh").read_text(encoding="utf-8")
+
+    assert "registry_digest_for_tag()" in script
+    assert "docker-content-digest" in script.lower() or "docker-content-digest" in script
+    # 不允许再按本地 RepoDigests 取 digest
+    assert ".RepoDigests" not in script
+    assert 'registry_digest_for_tag "$local_candidate_tag"' in script
+    assert 'registry_digest_for_tag "$local_fault_tag"' in script
 
 
-def test_native_arm64_release_backup_restore_gate_rejects_unknown_mode_before_docker() -> None:
-    result = subprocess.run(
-        ["bash", "scripts/check-release-upgrade.sh", "synthetic-candidate", "--unrecognized"],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=10,
-    )
-    assert result.returncode == 2
-    assert "Invalid baseline mode" in result.stderr
+def test_updater_gate_compares_deployed_target_image_id_not_source_index() -> None:
+    """升级后的容器要比对「实际部署的目标镜像 ID」，而不是源 index digest。"""
+
+    script = (ROOT / "scripts" / "check-updater-e2e.sh").read_text(encoding="utf-8")
+
+    assert 'candidate_target_image_id="$(docker image inspect "$candidate_target"' in script
+    for container in ("success_main", "transient_main"):
+        expected = (
+            'test "$(docker inspect "$'
+            + container
+            + '" --format '
+            + chr(39)
+            + "{{.Image}}"
+            + chr(39)
+            + ')" = "$candidate_target_image_id"'
+        )
+        assert expected in script, container

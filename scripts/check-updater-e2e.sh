@@ -228,10 +228,27 @@ wait_docker_healthy() {
   done
 }
 
-repo_digest_for_tag() {
+registry_digest_for_tag() {
+  # 必须向隔离 registry 本身要 digest，不能读本地 RepoDigests：
+  # containerd 镜像存储会把「源 registry 的 index digest」写进本地 tag 的 RepoDigests，
+  # 而隔离 registry 里实际存放的是单平台 manifest（digest 不同）。
+  # 用后者去 pull 会 404，导致升级 helper 报 DOCKER_IMAGE_PULL_FAILED。
   local tag="$1"
-  docker image inspect "$tag" --format '{{json .RepoDigests}}' | \
-    python3 -c 'import json,sys; repo=sys.argv[1] + "@"; refs=json.load(sys.stdin) or []; matches=[item for item in refs if item.startswith(repo)]; assert len(matches) == 1, matches; print(matches[0])' "$registry_repo"
+  local name="${tag##*:}"
+  local repo="${registry_repo#*/}"
+  local url="http://127.0.0.1:${registry_port}/v2/${repo}/manifests/${name}"
+  local digest
+  digest="$(curl --fail --silent --show-error --max-time 15 -D - -o /dev/null \
+    -H 'Accept: application/vnd.oci.image.index.v1+json' \
+    -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+    -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+    -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+    "$url" | awk 'BEGIN { IGNORECASE = 1 } /^docker-content-digest:/ { print $2 }' | tr -d '\r' | tail -n 1)"
+  if [ -z "$digest" ]; then
+    echo "隔离 registry 未返回 digest: $url" >&2
+    return 1
+  fi
+  printf '%s@%s\n' "$registry_repo" "$digest"
 }
 
 prepare_case() {
@@ -545,7 +562,7 @@ docker push "$local_baseline_tag" >/dev/null
 test "$(docker image inspect "$local_baseline_tag" --format '{{.Id}}')" = "$baseline_image_id"
 docker tag "$candidate_image" "$local_candidate_tag"
 docker push "$local_candidate_tag" >/dev/null
-candidate_target="$(repo_digest_for_tag "$local_candidate_tag")"
+candidate_target="$(registry_digest_for_tag "$local_candidate_tag")"
 test -n "$candidate_target"
 
 cat >"$fault_build_dir/fault_entrypoint.py" <<'PY'
@@ -570,7 +587,7 @@ DOCKERFILE
 docker build --build-arg BASE_IMAGE="$candidate_image" --tag packbreaker:updater-e2e-fault "$fault_build_dir" >/dev/null
 docker tag packbreaker:updater-e2e-fault "$local_fault_tag"
 docker push "$local_fault_tag" >/dev/null
-fault_target="$(repo_digest_for_tag "$local_fault_tag")"
+fault_target="$(registry_digest_for_tag "$local_fault_tag")"
 test -n "$fault_target"
 
 echo "Run real helper success path: $baseline_version -> $candidate_version"
@@ -582,7 +599,11 @@ trigger_upgrade "$success_helper" "$success_request" "$candidate_target" "$succe
 success_status="$(wait_helper_terminal "$success_helper" succeeded)"
 python3 -c 'import json,sys; s=json.load(sys.stdin); assert s["rollback_performed"] is False, s' <<<"$success_status"
 wait_app_ready "$success_main"
-test "$(docker inspect "$success_main" --format '{{.Image}}')" = "$candidate_image_id"
+# 助手从隔离 registry 拉取的是单平台 manifest，其镜像 ID 与源 index digest 不同
+# （containerd 存储下尤其明显），因此用实际部署的目标引用解析 ID 再比对。
+candidate_target_image_id="$(docker image inspect "$candidate_target" --format '{{.Id}}')"
+test -n "$candidate_target_image_id"
+test "$(docker inspect "$success_main" --format '{{.Image}}')" = "$candidate_target_image_id"
 test "$(docker exec --user "$runtime_user" "$success_main" python -c 'from backend.app.versioning import app_version; print(app_version())')" = "$candidate_version"
 assert_probe "$success_main" "success-original"
 assert_quiesced_backup_exists "$success_config"
@@ -621,7 +642,7 @@ wait_app_ready_after_switch "$transient_main" 0:0 "$transient_initial_container_
 wait_docker_healthy "$transient_main"
 transient_new_container_id="$(docker inspect "$transient_main" --format '{{.Id}}')"
 test "$transient_new_container_id" != "$transient_initial_container_id"
-test "$(docker inspect "$transient_main" --format '{{.Image}}')" = "$candidate_image_id"
+test "$(docker inspect "$transient_main" --format '{{.Image}}')" = "$candidate_target_image_id"
 test "$(docker exec --user 0:0 "$transient_main" python -c 'from backend.app.versioning import app_version; print(app_version())')" = "$candidate_version"
 test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/downloads"}}{{.Source}}{{end}}{{end}}')" = "$transient_downloads"
 test "$(docker inspect "$transient_main" --format '{{range .Mounts}}{{if eq .Destination "/downloads2"}}{{.Source}}{{end}}{{end}}')" = "$transient_downloads2"
