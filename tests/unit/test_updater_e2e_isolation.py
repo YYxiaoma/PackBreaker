@@ -62,7 +62,8 @@ def test_failed_baseline_pull_does_not_touch_preexisting_updater_data(tmp_path: 
         text=True,
         capture_output=True,
         check=False,
-        timeout=25,
+        # pull 失败路径包含 4 次退避重试（5s+10s+15s+末次），超时需覆盖整段耗时
+        timeout=90,
     )
     assert result.returncode != 0
     assert sentinel.read_text(encoding="utf-8") == "keep"
