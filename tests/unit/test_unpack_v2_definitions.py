@@ -20,7 +20,10 @@ from backend.app.application.unpack_manual_candidates import (
     UnpackManualCandidateService,
     UnpackManualSiteProvider,
 )
-from backend.app.application.unpack_manual_torrents import ManualTorrentStore
+from backend.app.application.unpack_manual_torrents import (
+    ManualTorrentStore,
+    ManualTorrentStoreError,
+)
 from backend.app.domain.media_matching import parse_media_name
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.site_adapter import TorrentDetails, TorrentPayload
@@ -111,6 +114,7 @@ def _request(
     auto_match_enabled: bool = True,
     target_category: str | None = None,
     target_tags: tuple[str, ...] = (),
+    skip_downloader_check: bool = False,
 ) -> UnpackDefinitionCreate:
     return UnpackDefinitionCreate(
         name="电影库手动拆包",
@@ -127,6 +131,7 @@ def _request(
             "target_downloader_id": "downloader-target",
             "target_category": target_category,
             "target_tags": list(target_tags),
+            "skip_downloader_check": skip_downloader_check,
         },
         auto_match_threshold_bps=9680,
         auto_match_enabled=auto_match_enabled,
@@ -147,8 +152,22 @@ def test_create_manual_definition_is_pending_and_does_not_start_execution(
     assert created.auto_match_enabled is True
     assert created.output_config["target_category"] is None
     assert created.output_config["target_tags"] == []
+    assert created.output_config["skip_downloader_check"] is False
     with factory() as session:
         assert session.scalar(select(func.count(UnpackExecution.id))) == 0
+
+
+def test_skip_downloader_check_setting_is_frozen_into_execution(tmp_path: Path) -> None:
+    service, factory, source = _service(tmp_path)
+    created = service.create(_request(source, skip_downloader_check=True))
+
+    assert created.output_config["skip_downloader_check"] is True
+    result = service.run(created.id)
+    assert result.execution_id is not None
+    with factory() as session:
+        execution = session.get(UnpackExecution, result.execution_id)
+        assert execution is not None
+        assert execution.config_snapshot["output_config"]["skip_downloader_check"] is True
 
 
 def test_edit_definition_keeps_id_and_rejects_stale_version(tmp_path: Path) -> None:
@@ -689,6 +708,18 @@ def test_manual_directory_requires_explicit_target_downloader(tmp_path: Path) ->
         service.create(invalid)
 
 
+def test_skip_downloader_check_rejects_non_boolean_values(tmp_path: Path) -> None:
+    service, _factory, source = _service(tmp_path)
+    request = _request(source)
+    invalid = replace(
+        request,
+        output_config={**request.output_config, "skip_downloader_check": "true"},
+    )
+
+    with pytest.raises(ApplicationError, match="跳过下载器检查必须是布尔值"):
+        service.create(invalid)
+
+
 @pytest.mark.parametrize(
     "allowed_status",
     (
@@ -716,6 +747,43 @@ def test_delete_definition_when_no_items_pending_or_matching(
     with pytest.raises(ApplicationError) as missing:
         service.get(created.id)
     assert missing.value.status == 404
+
+
+def test_definition_deletion_cleans_unreferenced_verified_torrent_payload(tmp_path: Path) -> None:
+    service, factory, source = _service(tmp_path)
+    created = service.create(_request(source))
+    run = service.run(created.id)
+    assert run.execution_id
+    (item_id,) = _set_execution_items(
+        factory, run.execution_id, (UnpackItemStatus.REVIEW_REQUIRED.value,)
+    )
+    store = ManualTorrentStore(source.parent)
+    torrent_content = _manual_torrent_payload()
+    storage_key = store.store(torrent_content)
+    with factory() as session:
+        session.add(
+            UnpackMatchCandidate(
+                id="cached-site-candidate",
+                item_id=item_id,
+                generation=0,
+                site_id="site-mteam",
+                candidate_key="12345",
+                title="Verified cached torrent",
+                size_bytes=100,
+                score_bps=10_000,
+                is_exact_match=True,
+                evidence={},
+                raw_ref={"verified_torrent_storage_key": storage_key},
+                created_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    current = service.get(created.id)
+    service.delete(created.id, expected_version=current.version)
+
+    with pytest.raises(ManualTorrentStoreError):
+        store.load(storage_key)
 
 
 def test_definition_deletion_preserves_real_operation_journal_as_independent_audit(

@@ -112,7 +112,7 @@ class UnpackManualCandidateService:
         site_provider: UnpackManualSiteProvider,
         torrent_store: ManualTorrentStore,
         *,
-        fetch_timeout_seconds: float = 30.0,
+        fetch_timeout_seconds: float = 180.0,
     ) -> None:
         if fetch_timeout_seconds <= 0:
             raise ValueError("manual candidate fetch timeout must be positive")
@@ -558,7 +558,10 @@ class UnpackManualCandidateService:
                 candidates = session.scalars(select(UnpackMatchCandidate)).all()
                 referenced = any(
                     isinstance(candidate.raw_ref, dict)
-                    and candidate.raw_ref.get("manual_torrent_storage_key") == storage_key
+                    and any(
+                        candidate.raw_ref.get(field) == storage_key
+                        for field in ("manual_torrent_storage_key", "verified_torrent_storage_key")
+                    )
                     for candidate in candidates
                 )
             if not referenced:

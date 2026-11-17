@@ -60,6 +60,7 @@ from backend.app.infrastructure.persistence.models import (
     new_uuid,
     utc_now,
 )
+from backend.app.infrastructure.safe_filesystem import probe_directory_capabilities
 from backend.app.infrastructure.source_inventory import current_file_snapshot
 
 
@@ -315,7 +316,7 @@ class UnpackDefinitionService:
 
     def delete(self, definition_id: str, *, expected_version: int) -> None:
         """Delete definitions with no pending/matching item; retain external history."""
-        manual_torrent_keys: set[str] = set()
+        torrent_storage_keys: set[str] = set()
         with self._session_factory() as session:
             begin_immediate_write(session)
             definition = self._require_definition(session, definition_id)
@@ -364,9 +365,10 @@ class UnpackDefinitionService:
                 ).all()
                 for candidate in candidates:
                     raw_ref = candidate.raw_ref if isinstance(candidate.raw_ref, dict) else {}
-                    key = raw_ref.get("manual_torrent_storage_key")
-                    if isinstance(key, str) and self._manual_torrent_store.is_valid_key(key):
-                        manual_torrent_keys.add(key)
+                    for field in ("manual_torrent_storage_key", "verified_torrent_storage_key"):
+                        key = raw_ref.get(field)
+                        if isinstance(key, str) and self._manual_torrent_store.is_valid_key(key):
+                            torrent_storage_keys.add(key)
 
             # Explicitly clear all dependent rows; some SQLite connections
             # may not enforce FK ON DELETE CASCADE, and orphaned evidence must
@@ -406,15 +408,17 @@ class UnpackDefinitionService:
             session.delete(definition)
             session.commit()
 
-        if manual_torrent_keys:
+        if torrent_storage_keys:
             with self._session_factory() as session:
                 remaining = session.scalars(select(UnpackMatchCandidate)).all()
                 referenced = {
-                    candidate.raw_ref.get("manual_torrent_storage_key")
+                    value
                     for candidate in remaining
                     if isinstance(candidate.raw_ref, dict)
+                    for field in ("manual_torrent_storage_key", "verified_torrent_storage_key")
+                    if isinstance((value := candidate.raw_ref.get(field)), str)
                 }
-            for key in manual_torrent_keys - referenced:
+            for key in torrent_storage_keys - referenced:
                 try:
                     self._manual_torrent_store.delete(key)
                 except ManualTorrentStoreError:
@@ -579,7 +583,7 @@ class UnpackDefinitionService:
             try:
                 normalized_directory, _ = self._path_scope.resolve_existing_directory(raw_directory)
             except DomainViolation as exc:
-                raise self._invalid(str(exc)) from exc
+                raise self._invalid(f"来源目录无效：{exc}") from exc
             source_config["directory_path"] = normalized_directory
         else:
             downloader_id = source_config.get("downloader_id")
@@ -706,9 +710,9 @@ class UnpackDefinitionService:
         if not isinstance(output_directory, str) or not output_directory.strip():
             raise self._invalid("必须配置输出目录")
         try:
-            normalized, _anchor, _exists = self._path_scope.resolve_output_anchor(output_directory)
+            normalized, anchor, _exists = self._path_scope.resolve_output_anchor(output_directory)
         except DomainViolation as exc:
-            raise self._invalid(str(exc)) from exc
+            raise self._invalid(f"输出目录无效：{exc}") from exc
         result["output_directory"] = normalized
 
         try:
@@ -720,6 +724,15 @@ class UnpackDefinitionService:
             )
         except ValueError as exc:
             raise self._invalid("输出存放方式或文件冲突策略无效") from exc
+        if storage_mode is TaskStorageMode.HARDLINK:
+            # 落位前能力探测：SMB / 部分网络盘不支持硬链接，提前给出明确提示，
+            # 而不是等任务跑到落位阶段才失败。
+            hardlink_supported, _ = probe_directory_capabilities(anchor)
+            if not hardlink_supported:
+                raise self._invalid(
+                    "输出目录所在文件系统不支持硬链接，请把存放方式改为「复制」，"
+                    "或换到支持硬链接的磁盘"
+                )
         result["storage_mode"] = storage_mode.value
         result["conflict_policy"] = conflict_policy.value
         raw_target_downloader_id = result.get("target_downloader_id")
@@ -758,6 +771,13 @@ class UnpackDefinitionService:
         ):
             raise self._invalid("目标下载器标签最多 100 项，每项最多 128 个字符")
         result["target_tags"] = list(target_tags)
+
+        # 默认跳过下载器全量校验：FULL_VERIFIED/SAMPLED_VERIFIED 已提供内容证据，
+        # 下载器再加一次全量 recheck 属于重复读盘。任务仍可显式关闭。
+        skip_downloader_check = result.get("skip_downloader_check", True)
+        if not isinstance(skip_downloader_check, bool):
+            raise self._invalid("跳过下载器检查必须是布尔值")
+        result["skip_downloader_check"] = skip_downloader_check
         return result
 
     def _normalize_selected_source(

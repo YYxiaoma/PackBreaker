@@ -15,13 +15,13 @@ from backend.app.domain.verification import (
             VerificationLevel.CLIENT_CHECK_REQUIRED,
             True,
             True,
-            SkipCheckingReason.FULL_VERIFICATION_REQUIRED,
+            SkipCheckingReason.CONTENT_EVIDENCE_REQUIRED,
         ),
         (
             VerificationLevel.BLOCKED,
             True,
             True,
-            SkipCheckingReason.FULL_VERIFICATION_REQUIRED,
+            SkipCheckingReason.CONTENT_EVIDENCE_REQUIRED,
         ),
         (
             VerificationLevel.FULL_VERIFIED,
@@ -58,6 +58,20 @@ def test_qb_full_verified_can_skip_only_when_explicitly_enabled() -> None:
     decision = decide_skip_checking(
         downloader=DownloaderKind.QBITTORRENT,
         verification_level=VerificationLevel.FULL_VERIFIED,
+        explicitly_enabled=True,
+        preflight_current=True,
+    )
+
+    assert decision.allowed
+    assert decision.reason is SkipCheckingReason.ALLOWED
+
+
+def test_qb_sampled_verified_can_skip_when_explicitly_enabled() -> None:
+    """抽样证据与逐片全量同等放行；用户显式勾选即代表接受抽样覆盖率。"""
+
+    decision = decide_skip_checking(
+        downloader=DownloaderKind.QBITTORRENT,
+        verification_level=VerificationLevel.SAMPLED_VERIFIED,
         explicitly_enabled=True,
         preflight_current=True,
     )

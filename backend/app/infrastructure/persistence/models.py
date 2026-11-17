@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -804,11 +805,21 @@ class UnpackTemplate(Base):
     __table_args__ = (
         UniqueConstraint("name", name="name"),
         Index("ix_unpack_template_updated", "updated_at"),
+        Index(
+            "uq_unpack_template_builtin_key",
+            "builtin_key",
+            unique=True,
+            sqlite_where=text("builtin_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # USER=用户自建, EXPORTED=文件导入, BUILTIN=镜像内置（只读）
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, default="USER")
+    builtin_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    builtin_version: Mapped[int | None] = mapped_column(nullable=True)
     current_version: Mapped[int] = mapped_column(nullable=False, default=1)
     source_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
@@ -1330,6 +1341,33 @@ class UnpackDeletedItemAudit(Base):
     deleted_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class UnpackReconciledOperationAudit(Base):
+    """Retained evidence for an operation resolved as "never took effect".
+
+    The journal row is removed only after its full payload is archived here, so
+    a re-dispatched operation keeps a complete audit trail. No foreign keys:
+    later item deletion must not cascade away this evidence.
+    """
+
+    __tablename__ = "unpack_reconciled_operation_audit"
+    __table_args__ = (
+        Index("ix_unpack_reconciled_audit_item", "item_id"),
+        Index("ix_unpack_reconciled_audit_execution", "execution_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    definition_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    execution_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    journal_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status_before: Mapped[str] = mapped_column(String(32), nullable=False)
+    resolution: Mapped[str] = mapped_column(String(32), nullable=False)
+    note: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class MovieDedupJob(Base):
     __tablename__ = "movie_dedup_job"
     __table_args__ = (
@@ -1376,6 +1414,8 @@ class MovieDedupJob(Base):
     failed_count: Mapped[int] = mapped_column(nullable=False, default=0)
     logical_duplicate_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     estimated_reclaimable_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # 重复内容中「已有多重硬链接」的部分：替换/删除单路径不释放空间（通常是与媒体库共享）
+    shared_link_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     trace_id: Mapped[str] = mapped_column(String(36), nullable=False)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)

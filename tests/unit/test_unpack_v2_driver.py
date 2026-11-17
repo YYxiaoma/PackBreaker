@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from backend.app.application.unpack_driver import UnpackDriver
 
@@ -164,40 +165,6 @@ def test_unpack_driver_advances_matching_after_discovery() -> None:
     assert matching.calls == [("matching-1", 7)]
 
 
-def test_unpack_driver_pause_after_matching_skips_every_later_stage() -> None:
-    discovery = _FakeDiscoveryService()
-    matching = _FakeMatchService()
-    content = _FakeContentVerificationService()
-    auxiliary = _FakeAuxiliaryService()
-    planning = _FakeExecutionPlanService()
-    materialization = _FakeMaterializationService()
-    seeding = _FakeSeedingService()
-    driver = UnpackDriver(
-        discovery,
-        None,
-        matching,
-        content,
-        auxiliary,
-        planning,
-        materialization,
-        seeding,
-        interval_seconds=10,
-        execution_limit=2,
-        discovery_batch_size=50,
-        pause_after_matching=True,
-    )
-
-    advanced = asyncio.run(driver.run_once())
-
-    assert advanced == 3
-    assert matching.calls == [("matching-1", 20)]
-    assert content.calls == []
-    assert auxiliary.calls == []
-    assert planning.calls == []
-    assert materialization.calls == []
-    assert seeding.calls == []
-
-
 def test_unpack_driver_advances_content_verification_after_matching() -> None:
     discovery = _FakeDiscoveryService()
     matching = _FakeMatchService()
@@ -278,6 +245,10 @@ def test_unpack_driver_advances_plan_materialization_and_seeding_in_order() -> N
     advanced = asyncio.run(driver.run_once())
 
     assert advanced == 8
+    assert discovery.calls == [("execution-1", 50), ("execution-2", 50)]
+    assert matching.calls == [("matching-1", 7)]
+    assert content.calls == [("verify-1", 3)]
+    assert auxiliary.calls == [("auxiliary-1", 1)]
     assert planning.calls == [("plan-1", 4)]
     assert materialization.calls == [("materialize-1", 5)]
     assert seeding.calls == [("seed-1", 6)]
@@ -298,3 +269,156 @@ def test_unpack_driver_isolates_single_execution_failure() -> None:
     assert advanced == 1
     assert service.calls == [("execution-1", 50), ("execution-2", 50)]
     assert driver.state.ticks_completed == 1
+
+
+class _SlowMatchService:
+    def __init__(self, timeline: dict[str, tuple[float, float]]) -> None:
+        self._timeline = timeline
+
+    def list_matching_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
+        return ("matching-1",)
+
+    async def match_next_batch(self, execution_id: str, *, limit: int = 20) -> object:
+        started = time.monotonic()
+        await asyncio.sleep(0.2)
+        self._timeline["matching"] = (started, time.monotonic())
+        return object()
+
+
+class _SlowContentVerificationService:
+    def __init__(self, timeline: dict[str, tuple[float, float]]) -> None:
+        self._timeline = timeline
+
+    def list_verifiable_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
+        return ("verify-1",)
+
+    async def verify_next_batch(self, execution_id: str, *, limit: int = 5) -> object:
+        started = time.monotonic()
+        await asyncio.sleep(0.2)
+        self._timeline["verification"] = (started, time.monotonic())
+        return object()
+
+
+def test_unpack_driver_overlaps_matching_and_content_verification() -> None:
+    timeline: dict[str, tuple[float, float]] = {}
+    driver = UnpackDriver(
+        _FakeDiscoveryService(),
+        None,
+        _SlowMatchService(timeline),
+        _SlowContentVerificationService(timeline),
+        interval_seconds=10,
+        execution_limit=2,
+        discovery_batch_size=50,
+    )
+
+    advanced = asyncio.run(driver.run_once())
+
+    assert advanced == 4
+    matching_start, matching_end = timeline["matching"]
+    verification_start, verification_end = timeline["verification"]
+    # 两个阶段必须真正重叠：串行执行时窗口互斥，断言会失败。
+    assert matching_start < verification_end
+    assert verification_start < matching_end
+
+
+class _OrderedVerificationService:
+    def __init__(self, order: list[str]) -> None:
+        self._order = order
+
+    def list_verifiable_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
+        return ("verify-1",)
+
+    async def verify_next_batch(self, execution_id: str, *, limit: int = 5) -> object:
+        self._order.append("verification")
+        return object()
+
+
+class _OrderedAuxiliaryService:
+    def __init__(self, order: list[str]) -> None:
+        self._order = order
+
+    def list_auxiliary_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
+        return ("auxiliary-1",)
+
+    async def advance_next_batch(self, execution_id: str, *, limit: int = 2) -> object:
+        self._order.append("auxiliary")
+        return object()
+
+
+def test_unpack_driver_keeps_auxiliary_staging_after_content_verification() -> None:
+    order: list[str] = []
+    driver = UnpackDriver(
+        _FakeDiscoveryService(),
+        None,
+        None,
+        _OrderedVerificationService(order),
+        _OrderedAuxiliaryService(order),
+        interval_seconds=10,
+        execution_limit=2,
+        discovery_batch_size=50,
+    )
+
+    asyncio.run(driver.run_once())
+
+    # 两者共用 AUXILIARY_FETCHING 状态，必须保持串行且顺序不可颠倒。
+    assert order == ["verification", "auxiliary"]
+
+
+def test_unpack_driver_dispatches_stages_without_waiting_for_slow_matching() -> None:
+    async def scenario() -> None:
+        release = asyncio.Event()
+        match_started = asyncio.Event()
+
+        class _SlowMatchService:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def list_matching_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
+                return ("matching-1",)
+
+            async def match_next_batch(self, execution_id: str, *, limit: int = 20) -> object:
+                self.calls += 1
+                match_started.set()
+                await release.wait()
+                return object()
+
+        verified: list[str] = []
+
+        class _VerifyService:
+            def list_verifiable_execution_ids(self, *, limit: int = 20) -> tuple[str, ...]:
+                return ("verify-1",)
+
+            async def verify_next_batch(self, execution_id: str, *, limit: int = 5) -> object:
+                verified.append(execution_id)
+                return object()
+
+        matching = _SlowMatchService()
+        driver = UnpackDriver(
+            _FakeDiscoveryService(),
+            None,
+            matching,
+            _VerifyService(),
+            interval_seconds=10,
+            execution_limit=2,
+            discovery_batch_size=50,
+        )
+
+        await driver.run_once(await_stages=False)
+        await asyncio.wait_for(match_started.wait(), timeout=1)
+
+        # 匹配卡在站点请求上时，内容校验仍然独立完成。
+        for _ in range(200):
+            if verified:
+                break
+            await asyncio.sleep(0.01)
+        assert verified == ["verify-1"]
+
+        # 同一阶段不重入：匹配任务还在跑，第二轮不会再派发它。
+        await driver.run_once(await_stages=False)
+        assert matching.calls == 1
+
+        release.set()
+        await driver.wait_stages()
+        assert matching.calls == 1
+
+    asyncio.run(scenario())

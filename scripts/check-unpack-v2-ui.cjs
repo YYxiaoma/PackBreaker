@@ -292,6 +292,9 @@ const fulfillJson = (route, body, status = 200) =>
   const createdDefinitionBodies = [];
   const scanSelectedKeys = new Set();
   let largePageMode = false;
+  let executionDetailGetCount = 0;
+  let executionItemsDelayMs = 0;
+  let executionItemsResponseResolved = false;
   const observedPageLimits = [];
   const observedExecutionFilters = [];
   let updatedDefinitionBody = null;
@@ -423,6 +426,9 @@ const fulfillJson = (route, body, status = 200) =>
     trigger: "MANUAL",
     status: "FAILED",
     total_count: 1,
+    match_pending_count: 0,
+    matching_count: 0,
+    match_progress_count: 1,
     matched_auto_count: 0,
     no_match_count: 1,
     review_count: 0,
@@ -493,6 +499,9 @@ const fulfillJson = (route, body, status = 200) =>
     discovery_complete: true,
     discovery_cursor: null,
     total_count: 3,
+    match_pending_count: 0,
+    matching_count: 0,
+    match_progress_count: 3,
     matched_auto_count: 1,
     no_match_count: 0,
     review_count: 1,
@@ -537,8 +546,12 @@ const fulfillJson = (route, body, status = 200) =>
   await page.route("**/api/v1/unpack/executions?**", (route) =>
     fulfillJson(route, { items: [execution, failedExecution] }),
   );
-  await page.route("**/api/v1/unpack/executions/execution-review", (route) =>
-    fulfillJson(route, execution),
+  await page.route(
+    "**/api/v1/unpack/executions/execution-review",
+    async (route) => {
+      executionDetailGetCount += 1;
+      return fulfillJson(route, execution);
+    },
   );
 
   const sourceBase = {
@@ -617,7 +630,7 @@ const fulfillJson = (route, body, status = 200) =>
   ];
   await page.route(
     "**/api/v1/unpack/executions/execution-review/items**",
-    (route) => {
+    async (route) => {
       const url = new URL(route.request().url());
       const limit = Number(url.searchParams.get("limit"));
       observedPageLimits.push(limit);
@@ -626,6 +639,12 @@ const fulfillJson = (route, body, status = 200) =>
         q: url.searchParams.get("q"),
       });
       if (!largePageMode) {
+        if (executionItemsDelayMs > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, executionItemsDelayMs),
+          );
+        }
+        executionItemsResponseResolved = true;
         return fulfillJson(route, {
           items: executionItems,
           next_cursor: null,
@@ -729,7 +748,9 @@ const fulfillJson = (route, body, status = 200) =>
     ],
   });
   const longDiagnosticTargetPath =
-    "/isolated/synthetic-test/" + "nested-folder/".repeat(25) + "Thelma.and.Louise.1991.1080p.mkv";
+    "/isolated/synthetic-test/" +
+    "nested-folder/".repeat(25) +
+    "Thelma.and.Louise.1991.1080p.mkv";
   await page.route("**/api/v1/unpack/items/**", (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (
@@ -944,9 +965,19 @@ const fulfillJson = (route, body, status = 200) =>
     await page.goto(`${frontendUrl}/#%E6%80%BB%E8%A7%88`, {
       waitUntil: "domcontentloaded",
     });
-    await page.getByRole("heading", { name: "PackBreaker 总览", exact: true }).waitFor();
-    assert.equal(await page.locator(".overview-task-strip").count(), 0, "总览不应显示待审核/运行中/可重试/待对账摘要行");
-    assert.equal(await page.locator(".lifecycle").count(), 1, "删除摘要行后应保留任务生命周期区域");
+    await page
+      .getByRole("heading", { name: "PackBreaker 总览", exact: true })
+      .waitFor();
+    assert.equal(
+      await page.locator(".overview-task-strip").count(),
+      0,
+      "总览不应显示待审核/运行中/可重试/待对账摘要行",
+    );
+    assert.equal(
+      await page.locator(".lifecycle").count(),
+      1,
+      "删除摘要行后应保留任务生命周期区域",
+    );
     await page.goto(`${frontendUrl}/#%E4%BB%BB%E5%8A%A1%E4%B8%AD%E5%BF%83`, {
       waitUntil: "domcontentloaded",
     });
@@ -1050,7 +1081,9 @@ const fulfillJson = (route, body, status = 200) =>
       0,
     );
     assert.equal(
-      await unpackFilterBar.evaluate((element) => element.closest(".table-card") !== null),
+      await unpackFilterBar.evaluate(
+        (element) => element.closest(".table-card") !== null,
+      ),
       false,
       "数据拆包过滤栏应位于白色列表卡片之外",
     );
@@ -1064,20 +1097,24 @@ const fulfillJson = (route, body, status = 200) =>
     }
     for (const label of ["搜索", "重置"]) {
       assert.equal(
-        await unpackFilterBar.getByRole("button", { name: label, exact: true }).count(),
+        await unpackFilterBar
+          .getByRole("button", { name: label, exact: true })
+          .count(),
         0,
         `数据拆包过滤栏不应显示“${label}”按钮`,
       );
     }
-    const unpackFilterStyle = await unpackFilterBar.locator(".filters").evaluate((element) => {
-      const style = window.getComputedStyle(element);
-      return {
-        backgroundColor: style.backgroundColor,
-        borderTopWidth: style.borderTopWidth,
-        boxShadow: style.boxShadow,
-        paddingTop: style.paddingTop,
-      };
-    });
+    const unpackFilterStyle = await unpackFilterBar
+      .locator(".filters")
+      .evaluate((element) => {
+        const style = window.getComputedStyle(element);
+        return {
+          backgroundColor: style.backgroundColor,
+          borderTopWidth: style.borderTopWidth,
+          boxShadow: style.boxShadow,
+          paddingTop: style.paddingTop,
+        };
+      });
     assert.equal(unpackFilterStyle.backgroundColor, "rgba(0, 0, 0, 0)");
     assert.equal(unpackFilterStyle.borderTopWidth, "0px");
     assert.equal(unpackFilterStyle.boxShadow, "none");
@@ -1097,7 +1134,9 @@ const fulfillJson = (route, body, status = 200) =>
     await unpackFilterBar
       .getByPlaceholder("搜索任务名称 / 来源")
       .fill("新番持续监控");
-    await unpackFilterBar.getByPlaceholder("搜索任务名称 / 来源").press("Enter");
+    await unpackFilterBar
+      .getByPlaceholder("搜索任务名称 / 来源")
+      .press("Enter");
     assert.equal(
       await page.locator(".unpack-table .el-table__row").count(),
       1,
@@ -1108,7 +1147,9 @@ const fulfillJson = (route, body, status = 200) =>
       0,
     );
     await unpackFilterBar.getByPlaceholder("搜索任务名称 / 来源").fill("");
-    await unpackFilterBar.getByPlaceholder("搜索任务名称 / 来源").press("Enter");
+    await unpackFilterBar
+      .getByPlaceholder("搜索任务名称 / 来源")
+      .press("Enter");
     assert.equal(
       await page.locator(".unpack-table .el-table__row").count(),
       3,
@@ -1127,7 +1168,9 @@ const fulfillJson = (route, body, status = 200) =>
       "页面标题应统一为数据去重",
     );
     assert.equal(
-      await dedupFilterBar.evaluate((element) => element.closest(".table-card") !== null),
+      await dedupFilterBar.evaluate(
+        (element) => element.closest(".table-card") !== null,
+      ),
       false,
       "数据去重过滤栏应位于白色列表卡片之外",
     );
@@ -1141,20 +1184,24 @@ const fulfillJson = (route, body, status = 200) =>
     }
     for (const label of ["搜索", "重置"]) {
       assert.equal(
-        await dedupFilterBar.getByRole("button", { name: label, exact: true }).count(),
+        await dedupFilterBar
+          .getByRole("button", { name: label, exact: true })
+          .count(),
         0,
         `数据去重过滤栏不应显示“${label}”按钮`,
       );
     }
-    const dedupFilterStyle = await dedupFilterBar.locator(".filters").evaluate((element) => {
-      const style = window.getComputedStyle(element);
-      return {
-        backgroundColor: style.backgroundColor,
-        borderTopWidth: style.borderTopWidth,
-        boxShadow: style.boxShadow,
-        paddingTop: style.paddingTop,
-      };
-    });
+    const dedupFilterStyle = await dedupFilterBar
+      .locator(".filters")
+      .evaluate((element) => {
+        const style = window.getComputedStyle(element);
+        return {
+          backgroundColor: style.backgroundColor,
+          borderTopWidth: style.borderTopWidth,
+          boxShadow: style.boxShadow,
+          paddingTop: style.paddingTop,
+        };
+      });
     assert.equal(dedupFilterStyle.backgroundColor, "rgba(0, 0, 0, 0)");
     assert.equal(dedupFilterStyle.borderTopWidth, "0px");
     assert.equal(dedupFilterStyle.boxShadow, "none");
@@ -1198,12 +1245,24 @@ const fulfillJson = (route, body, status = 200) =>
     await page.getByText("电影库手动拆包", { exact: true }).waitFor();
 
     // 新增拆包任务四步向导：验证手动/监控条件、来源目标、过滤高级折叠及确认摘要。
-    await unpackFilterBar.getByRole("button", { name: "新增任务", exact: true }).click();
-    const wizardDialog = page.locator(".el-dialog").filter({ hasText: "新增数据拆包任务" }).last();
+    await unpackFilterBar
+      .getByRole("button", { name: "新增任务", exact: true })
+      .click();
+    const wizardDialog = page
+      .locator(".el-dialog")
+      .filter({ hasText: "新增数据拆包任务" })
+      .last();
     const wizard = wizardDialog.locator(".unpack-wizard");
     await wizard.waitFor({ state: "visible" });
-    assert.equal(await wizard.locator(".wizard-step-heading h3").textContent(), "基本信息");
-    assert.equal(await wizard.locator(".cron-panel").count(), 0, "手动拆包不显示 Cron 执行时间");
+    assert.equal(
+      await wizard.locator(".wizard-step-heading h3").textContent(),
+      "基本信息",
+    );
+    assert.equal(
+      await wizard.locator(".cron-panel").count(),
+      0,
+      "手动拆包不显示 Cron 执行时间",
+    );
 
     // 模板拆包只显示单站点 READY 模板，并且只能选择该模板绑定的站点。
     await wizard
@@ -1215,13 +1274,17 @@ const fulfillJson = (route, body, status = 200) =>
       .filter({ hasText: "拆包模板" })
       .first();
     await templateField.locator(".el-select__wrapper").click();
-    await page.getByRole("option", { name: /Synthetic M-TEAM template/ }).waitFor();
+    await page
+      .getByRole("option", { name: /Synthetic M-TEAM template/ })
+      .waitFor();
     assert.equal(
       await page.getByRole("option", { name: /跨站模板不应显示/ }).count(),
       0,
       "绑定多个站点的模板不应出现在可选模板列表",
     );
-    await page.getByRole("option", { name: /Synthetic M-TEAM template/ }).click();
+    await page
+      .getByRole("option", { name: /Synthetic M-TEAM template/ })
+      .click();
     assert.match(
       (await wizard.locator(".template-site-summary").textContent()) || "",
       /M-TEAM/,
@@ -1260,23 +1323,63 @@ const fulfillJson = (route, body, status = 200) =>
       0,
       "切回普通手动拆包后应隐藏模板专属字段",
     );
-    await wizard.locator(".el-form-item").filter({ hasText: "任务名称" }).locator("input").fill("向导 UI 校验");
-    const wizardSiteField = wizard.locator(".el-form-item").filter({ hasText: "扫描站点" }).first();
-    const wizardSiteLabelBounds = await wizardSiteField.locator(".el-form-item__label").boundingBox();
+    await wizard
+      .locator(".el-form-item")
+      .filter({ hasText: "任务名称" })
+      .locator("input")
+      .fill("向导 UI 校验");
+    const wizardSiteField = wizard
+      .locator(".el-form-item")
+      .filter({ hasText: "扫描站点" })
+      .first();
+    const wizardSiteLabelBounds = await wizardSiteField
+      .locator(".el-form-item__label")
+      .boundingBox();
     assert.ok(wizardSiteLabelBounds, "扫描站点标签应可测量");
-    await page.mouse.click(wizardSiteLabelBounds.x + wizardSiteLabelBounds.width / 2, wizardSiteLabelBounds.y + wizardSiteLabelBounds.height / 2);
-    assert.equal(await page.locator(".el-select__popper:visible").count(), 0, "点击下拉字段标题不应展开选项");
+    await page.mouse.click(
+      wizardSiteLabelBounds.x + wizardSiteLabelBounds.width / 2,
+      wizardSiteLabelBounds.y + wizardSiteLabelBounds.height / 2,
+    );
+    assert.equal(
+      await page.locator(".el-select__popper:visible").count(),
+      0,
+      "点击下拉字段标题不应展开选项",
+    );
     await wizardSiteField.locator(".el-form-item__content small").click();
-    assert.equal(await page.locator(".el-select__popper:visible").count(), 0, "点击辅助说明不应展开选项");
+    assert.equal(
+      await page.locator(".el-select__popper:visible").count(),
+      0,
+      "点击辅助说明不应展开选项",
+    );
     await wizardSiteField.locator(".el-select__wrapper").click();
     await page.getByRole("option", { name: "M-TEAM", exact: true }).click();
     await page.keyboard.press("Escape");
-    await wizard.locator(".trigger-card").filter({ hasText: "监控拆包" }).click();
-    assert.equal(await wizard.locator(".cron-panel").count(), 1, "监控拆包应显示 Cron 配置");
-    await wizard.locator(".cron-panel").getByRole("button", { name: "每小时", exact: true }).click();
-    assert.equal(await wizard.locator(".cron-panel input").inputValue(), "0 * * * *");
-    await wizard.locator(".trigger-card").filter({ hasText: "手动拆包" }).click();
-    assert.equal(await wizard.locator(".cron-panel").count(), 0, "切回手动拆包应隐藏 Cron 配置");
+    await wizard
+      .locator(".trigger-card")
+      .filter({ hasText: "监控拆包" })
+      .click();
+    assert.equal(
+      await wizard.locator(".cron-panel").count(),
+      1,
+      "监控拆包应显示 Cron 配置",
+    );
+    await wizard
+      .locator(".cron-panel")
+      .getByRole("button", { name: "每小时", exact: true })
+      .click();
+    assert.equal(
+      await wizard.locator(".cron-panel input").inputValue(),
+      "0 * * * *",
+    );
+    await wizard
+      .locator(".trigger-card")
+      .filter({ hasText: "手动拆包" })
+      .click();
+    assert.equal(
+      await wizard.locator(".cron-panel").count(),
+      0,
+      "切回手动拆包应隐藏 Cron 配置",
+    );
     // 切换任务类型会清空扫描站点，回到手动拆包后重新选择，避免用旧选择绕过校验。
     const resetWizardSiteField = wizard
       .locator(".el-form-item")
@@ -1285,67 +1388,200 @@ const fulfillJson = (route, body, status = 200) =>
     await resetWizardSiteField.locator(".el-select__wrapper").click();
     await page.getByRole("option", { name: "M-TEAM", exact: true }).click();
     await page.keyboard.press("Escape");
-    await wizardDialog.getByRole("button", { name: "下一步", exact: false }).click();
-    assert.equal(await wizard.locator(".wizard-step-heading h3").textContent(), "来源与目标");
-    assert.equal(await wizard.locator(".source-choice").getByRole("button", { name: "下载器", exact: false }).count(), 0, "手动拆包不允许选择下载器来源");
-    const wizardSourceField = wizard.locator(".el-form-item").filter({ hasText: "来源目录" }).first();
-    await wizardSourceField.getByRole("button", { name: "选择目录", exact: true }).click();
-    let wizardTreeDialog = page.locator(".el-dialog").filter({ hasText: "选择目录" }).last();
+    await wizardDialog
+      .getByRole("button", { name: "下一步", exact: false })
+      .click();
+    assert.equal(
+      await wizard.locator(".wizard-step-heading h3").textContent(),
+      "来源与目标",
+    );
+    assert.equal(
+      await wizard
+        .locator(".source-choice")
+        .getByRole("button", { name: "下载器", exact: false })
+        .count(),
+      0,
+      "手动拆包不允许选择下载器来源",
+    );
+    const wizardSourceField = wizard
+      .locator(".el-form-item")
+      .filter({ hasText: "来源目录" })
+      .first();
+    await wizardSourceField
+      .getByRole("button", { name: "选择目录", exact: true })
+      .click();
+    let wizardTreeDialog = page
+      .locator(".el-dialog")
+      .filter({ hasText: "选择目录" })
+      .last();
     await wizardTreeDialog.waitFor({ state: "visible" });
     await wizardTreeDialog.getByText("downloads", { exact: true }).click();
-    await wizardTreeDialog.getByRole("button", { name: "使用此目录", exact: true }).click();
-    const wizardOutputField = wizard.locator(".el-form-item").filter({ hasText: "输出目录" }).first();
-    await wizardOutputField.getByRole("button", { name: "选择目录", exact: true }).click();
-    wizardTreeDialog = page.locator(".el-dialog").filter({ hasText: "选择目录" }).last();
+    await wizardTreeDialog
+      .getByRole("button", { name: "使用此目录", exact: true })
+      .click();
+    const wizardOutputField = wizard
+      .locator(".el-form-item")
+      .filter({ hasText: "输出目录" })
+      .first();
+    await wizardOutputField
+      .getByRole("button", { name: "选择目录", exact: true })
+      .click();
+    wizardTreeDialog = page
+      .locator(".el-dialog")
+      .filter({ hasText: "选择目录" })
+      .last();
     await wizardTreeDialog.waitFor({ state: "visible" });
     await wizardTreeDialog.getByText("downloads2", { exact: true }).click();
-    await wizardTreeDialog.getByRole("button", { name: "使用此目录", exact: true }).click();
-    const wizardTargetField = wizard.locator(".el-form-item").filter({ hasText: "目标下载器" }).first();
+    await wizardTreeDialog
+      .getByRole("button", { name: "使用此目录", exact: true })
+      .click();
+    const wizardTargetField = wizard
+      .locator(".el-form-item")
+      .filter({ hasText: "目标下载器" })
+      .first();
     await wizardTargetField.locator(".el-select").click();
-    await page.getByRole("option", { name: "qBittorrent · 主下载器", exact: true }).click();
-    await wizardDialog.getByRole("button", { name: "下一步", exact: false }).click();
-    assert.equal(await wizard.locator(".wizard-step-heading h3").textContent(), "文件过滤");
-    assert.equal(await wizard.locator(".advanced-rule-content").count(), 0, "高级执行规则默认折叠");
+    await page
+      .getByRole("option", { name: "qBittorrent · 主下载器", exact: true })
+      .click();
+    const skipCheckPanel = wizard.locator(".skip-downloader-check-panel");
+    assert.equal(
+      await skipCheckPanel.count(),
+      1,
+      "来源与目标步骤应展示跳过下载器检查开关",
+    );
+    assert.equal(
+      await skipCheckPanel.locator(".el-switch input").isChecked(),
+      false,
+      "跳过下载器检查默认关闭",
+    );
+    await wizardDialog
+      .getByRole("button", { name: "下一步", exact: false })
+      .click();
+    assert.equal(
+      await wizard.locator(".wizard-step-heading h3").textContent(),
+      "文件过滤",
+    );
+    assert.equal(
+      await wizard.locator(".advanced-rule-content").count(),
+      0,
+      "高级执行规则默认折叠",
+    );
     const advancedToggle = wizard.getByRole("button", { name: /高级执行规则/ });
     assert.equal(await advancedToggle.getAttribute("aria-expanded"), "false");
     await advancedToggle.click();
     assert.equal(await wizard.locator(".advanced-rule-content").count(), 1);
     const extensionFilterField = wizard.locator(".extension-filter-item");
-    assert.equal(await extensionFilterField.locator(".extension-label-hint").textContent(), "多个后缀使用逗号分隔。", "后缀说明应以内联提示展示在标签右侧");
-    assert.equal(await extensionFilterField.locator(".el-form-item__content small").count(), 0, "后缀说明不应留在输入框下方");
-    const advancedFieldLabels = await wizard.locator(".advanced-rule-content .form-grid.three .el-form-item__label").allTextContents();
-    assert.deepEqual(advancedFieldLabels.map((label) => label.trim()), ["自动匹配", "自动重试", "存放方式", "自动匹配阈值（%）", "重试次数"]);
-    const autoMatchField = wizard.locator(".advanced-rule-content .el-form-item").filter({ hasText: "自动匹配" }).first();
-    assert.equal(await autoMatchField.locator(".el-switch input").isChecked(), true, "新增任务的自动匹配默认开启");
-    assert.equal(await autoMatchField.locator(".el-switch").count(), 1, "自动匹配应使用与自动重试相同的开关样式");
+    assert.equal(
+      await extensionFilterField.locator(".extension-label-hint").textContent(),
+      "多个后缀使用逗号分隔。",
+      "后缀说明应以内联提示展示在标签右侧",
+    );
+    assert.equal(
+      await extensionFilterField
+        .locator(".el-form-item__content small")
+        .count(),
+      0,
+      "后缀说明不应留在输入框下方",
+    );
+    const advancedFieldLabels = await wizard
+      .locator(".advanced-rule-content .form-grid.three .el-form-item__label")
+      .allTextContents();
+    assert.deepEqual(
+      advancedFieldLabels.map((label) => label.trim()),
+      ["自动匹配", "自动重试", "存放方式", "自动匹配阈值（%）", "重试次数"],
+    );
+    const autoMatchField = wizard
+      .locator(".advanced-rule-content .el-form-item")
+      .filter({ hasText: "自动匹配" })
+      .first();
+    assert.equal(
+      await autoMatchField.locator(".el-switch input").isChecked(),
+      true,
+      "新增任务的自动匹配默认开启",
+    );
+    assert.equal(
+      await autoMatchField.locator(".el-switch").count(),
+      1,
+      "自动匹配应使用与自动重试相同的开关样式",
+    );
     assert.equal(await autoMatchField.locator(".el-radio-group").count(), 0);
-    assert.equal(await wizard.locator(".advanced-rule-content .el-form-item").filter({ hasText: "自动重试" }).locator(".el-switch").count(), 1);
-    const thresholdField = wizard.locator(".advanced-rule-content .el-form-item").filter({ hasText: "自动匹配阈值（%）" });
-    assert.equal(await thresholdField.locator("input").inputValue(), "99.0", "自动匹配默认阈值应为 99.0%");
+    assert.equal(
+      await wizard
+        .locator(".advanced-rule-content .el-form-item")
+        .filter({ hasText: "自动重试" })
+        .locator(".el-switch")
+        .count(),
+      1,
+    );
+    const thresholdField = wizard
+      .locator(".advanced-rule-content .el-form-item")
+      .filter({ hasText: "自动匹配阈值（%）" });
+    assert.equal(
+      await thresholdField.locator("input").inputValue(),
+      "99.0",
+      "自动匹配默认阈值应为 99.0%",
+    );
 
     await wizard.getByRole("button", { name: /高级执行规则/ }).click();
     assert.equal(await wizard.locator(".advanced-rule-content").count(), 0);
-    await wizardDialog.getByRole("button", { name: "下一步", exact: false }).click();
-    assert.equal(await wizard.locator(".wizard-step-heading h3").textContent(), "确认创建");
-    assert.equal(await wizard.locator(".review-card").count(), 4, "确认页应分组展示四类配置摘要");
-    assert.match(await wizard.locator(".review-card").first().textContent(), /向导 UI 校验/);
-    await wizard.locator(".review-card").filter({ hasText: "文件过滤" }).getByRole("button", { name: "编辑", exact: true }).click();
-    assert.equal(await wizard.locator(".wizard-step-heading h3").textContent(), "文件过滤", "确认页编辑应返回对应步骤");
-    await wizardDialog.getByRole("button", { name: "下一步", exact: false }).click();
+    await wizardDialog
+      .getByRole("button", { name: "下一步", exact: false })
+      .click();
+    assert.equal(
+      await wizard.locator(".wizard-step-heading h3").textContent(),
+      "确认创建",
+    );
+    assert.equal(
+      await wizard.locator(".review-card").count(),
+      4,
+      "确认页应分组展示四类配置摘要",
+    );
+    assert.match(
+      await wizard.locator(".review-card").first().textContent(),
+      /向导 UI 校验/,
+    );
+    await wizard
+      .locator(".review-card")
+      .filter({ hasText: "文件过滤" })
+      .getByRole("button", { name: "编辑", exact: true })
+      .click();
+    assert.equal(
+      await wizard.locator(".wizard-step-heading h3").textContent(),
+      "文件过滤",
+      "确认页编辑应返回对应步骤",
+    );
+    await wizardDialog
+      .getByRole("button", { name: "下一步", exact: false })
+      .click();
     await wizardDialog.locator(".el-dialog__headerbtn").click();
     assert.equal(createdDefinitionBodies.length, 0, "取消向导演练不得提交任务");
 
     // 监控任务第二步应开放下载器来源及任务名/分类/标签筛选。
-    await unpackFilterBar.getByRole("button", { name: "新增任务", exact: true }).click();
-    const monitorWizardDialog = page.locator(".el-dialog").filter({ hasText: "新增数据拆包任务" }).last();
+    await unpackFilterBar
+      .getByRole("button", { name: "新增任务", exact: true })
+      .click();
+    const monitorWizardDialog = page
+      .locator(".el-dialog")
+      .filter({ hasText: "新增数据拆包任务" })
+      .last();
     const monitorWizard = monitorWizardDialog.locator(".unpack-wizard");
     await monitorWizard.waitFor({ state: "visible" });
-    await monitorWizard.locator(".el-form-item").filter({ hasText: "任务名称" }).locator("input").fill("监控向导 UI 校验");
-    const monitorSiteField = monitorWizard.locator(".el-form-item").filter({ hasText: "扫描站点" }).first();
+    await monitorWizard
+      .locator(".el-form-item")
+      .filter({ hasText: "任务名称" })
+      .locator("input")
+      .fill("监控向导 UI 校验");
+    const monitorSiteField = monitorWizard
+      .locator(".el-form-item")
+      .filter({ hasText: "扫描站点" })
+      .first();
     await monitorSiteField.locator(".el-select").click();
     await page.getByRole("option", { name: "M-TEAM", exact: true }).click();
     await page.keyboard.press("Escape");
-    await monitorWizard.locator(".trigger-card").filter({ hasText: "监控拆包" }).click();
+    await monitorWizard
+      .locator(".trigger-card")
+      .filter({ hasText: "监控拆包" })
+      .click();
     // 任务类型切换会重置扫描站点，选择监控模式后重新设置站点再继续。
     const resetMonitorSiteField = monitorWizard
       .locator(".el-form-item")
@@ -1355,14 +1591,49 @@ const fulfillJson = (route, body, status = 200) =>
     await page.getByRole("option", { name: "M-TEAM", exact: true }).click();
     await page.keyboard.press("Escape");
     assert.equal(await monitorWizard.locator(".cron-panel").count(), 1);
-    await monitorWizardDialog.getByRole("button", { name: "下一步", exact: false }).click();
-    assert.equal(await monitorWizard.locator(".source-choice").getByRole("button", { name: "下载器", exact: false }).count(), 1);
-    await monitorWizard.locator(".source-choice").getByRole("button", { name: "下载器", exact: false }).click();
+    await monitorWizardDialog
+      .getByRole("button", { name: "下一步", exact: false })
+      .click();
+    assert.equal(
+      await monitorWizard
+        .locator(".source-choice")
+        .getByRole("button", { name: "下载器", exact: false })
+        .count(),
+      1,
+    );
+    await monitorWizard
+      .locator(".source-choice")
+      .getByRole("button", { name: "下载器", exact: false })
+      .click();
     const monitorSourceSection = monitorWizard.locator(".form-section").first();
-    assert.equal(await monitorSourceSection.locator(".el-form-item").filter({ hasText: "来源下载器" }).count(), 1);
-    assert.equal(await monitorSourceSection.locator(".el-form-item").filter({ hasText: "任务名称包含" }).count(), 1);
-    assert.equal(await monitorSourceSection.locator(".el-form-item").filter({ hasText: "分类" }).count(), 1);
-    assert.equal(await monitorSourceSection.locator(".el-form-item").filter({ hasText: "标签" }).count(), 1);
+    assert.equal(
+      await monitorSourceSection
+        .locator(".el-form-item")
+        .filter({ hasText: "来源下载器" })
+        .count(),
+      1,
+    );
+    assert.equal(
+      await monitorSourceSection
+        .locator(".el-form-item")
+        .filter({ hasText: "任务名称包含" })
+        .count(),
+      1,
+    );
+    assert.equal(
+      await monitorSourceSection
+        .locator(".el-form-item")
+        .filter({ hasText: "分类" })
+        .count(),
+      1,
+    );
+    assert.equal(
+      await monitorSourceSection
+        .locator(".el-form-item")
+        .filter({ hasText: "标签" })
+        .count(),
+      1,
+    );
     await monitorWizardDialog.locator(".el-dialog__headerbtn").click();
     const manualRow = page
       .locator(".unpack-table .el-table__row")
@@ -1384,11 +1655,28 @@ const fulfillJson = (route, body, status = 200) =>
       await monitorRow.getByText("待人工审核", { exact: true }).count(),
       1,
     );
-    const activeDefinitionDelete = monitorRow.getByRole("button", { name: "删除", exact: true });
-    await page.waitForFunction(() => document.querySelector(".table-card")?.getAttribute("data-actions-mode") === "inline");
-    assert.equal(await activeDefinitionDelete.isEnabled(), true, "存在待审核子项的任务应提供删除操作；后端校验是否仍有匹配中子项");
+    const activeDefinitionDelete = monitorRow.getByRole("button", {
+      name: "删除",
+      exact: true,
+    });
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".table-card")
+          ?.getAttribute("data-actions-mode") === "inline",
+    );
+    assert.equal(
+      await activeDefinitionDelete.isEnabled(),
+      true,
+      "存在待审核子项的任务应提供删除操作；后端校验是否仍有匹配中子项",
+    );
 
-    await page.waitForFunction(() => document.querySelector(".table-card")?.getAttribute("data-actions-mode") === "inline");
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".table-card")
+          ?.getAttribute("data-actions-mode") === "inline",
+    );
     assert.equal(
       await manualRow.locator(".task-row-actions button").count(),
       3,
@@ -1403,7 +1691,13 @@ const fulfillJson = (route, body, status = 200) =>
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 980 });
       const expectedMode = width === 1440 ? "inline" : "overflow";
-      await page.waitForFunction((mode) => document.querySelector(".table-card")?.getAttribute("data-actions-mode") === mode, expectedMode);
+      await page.waitForFunction(
+        (mode) =>
+          document
+            .querySelector(".table-card")
+            ?.getAttribute("data-actions-mode") === mode,
+        expectedMode,
+      );
       const actions = failedRow.locator(".task-row-actions");
       const positions = await actions.locator("button").evaluateAll((buttons) =>
         buttons.map((button) => {
@@ -1418,15 +1712,21 @@ const fulfillJson = (route, body, status = 200) =>
       assert.equal(
         positions.length,
         expectedMode === "inline" ? 4 : 3,
-        expectedMode === "inline" ? "宽屏失败任务应直接展示查看、重新匹配、编辑和删除" : "窄屏失败任务应展示查看、重新匹配和更多操作",
+        expectedMode === "inline"
+          ? "宽屏失败任务应直接展示查看、重新匹配、编辑和删除"
+          : "窄屏失败任务应展示查看、重新匹配和更多操作",
       );
       assert.equal(
-        await failedRow.getByRole("button", { name: "编辑", exact: true }).count(),
+        await failedRow
+          .getByRole("button", { name: "编辑", exact: true })
+          .count(),
         expectedMode === "inline" ? 1 : 0,
         "编辑按钮应根据操作列宽度决定直接显示或收纳",
       );
       assert.equal(
-        await failedRow.getByRole("button", { name: "删除", exact: true }).count(),
+        await failedRow
+          .getByRole("button", { name: "删除", exact: true })
+          .count(),
         expectedMode === "inline" ? 1 : 0,
         "删除按钮应根据操作列宽度决定直接显示或收纳",
       );
@@ -1447,8 +1747,12 @@ const fulfillJson = (route, body, status = 200) =>
       );
       if (expectedMode === "overflow") {
         await failedRow.getByRole("button", { name: "更多操作" }).click();
-        await page.getByRole("menuitem", { name: "编辑", exact: true }).waitFor();
-        await page.getByRole("menuitem", { name: "删除", exact: true }).waitFor();
+        await page
+          .getByRole("menuitem", { name: "编辑", exact: true })
+          .waitFor();
+        await page
+          .getByRole("menuitem", { name: "删除", exact: true })
+          .waitFor();
         await page.keyboard.press("Escape");
       }
     }
@@ -1462,56 +1766,196 @@ const fulfillJson = (route, body, status = 200) =>
       .last();
     await createDialog.waitFor({ state: "visible" });
     const createWizard = createDialog.locator(".unpack-wizard");
-    assert.equal(await createWizard.locator(".wizard-progress .wizard-step").count(), 4);
-    assert.equal(await createWizard.locator(".wizard-step-heading h3").textContent(), "基本信息");
-    assert.equal(await createWizard.locator(".cron-panel").count(), 0, "默认手动拆包不显示 Cron 配置");
-    assert.equal(await createWizard.getByRole("button", { name: "监控拆包", exact: false }).count(), 1);
-    assert.equal(await createDialog.getByRole("button", { name: "下一步", exact: false }).count(), 1);
-    assert.equal(await createWizard.locator(".review-card").count(), 0, "初始步骤不应提前显示确认摘要");
-    await createWizard.locator(".trigger-card").filter({ hasText: "模板拆包" }).click();
-    const createTemplateField = createWizard.locator(".el-form-item").filter({ hasText: "拆包模板" }).first();
+    assert.equal(
+      await createWizard.locator(".wizard-progress .wizard-step").count(),
+      4,
+    );
+    assert.equal(
+      await createWizard.locator(".wizard-step-heading h3").textContent(),
+      "基本信息",
+    );
+    assert.equal(
+      await createWizard.locator(".cron-panel").count(),
+      0,
+      "默认手动拆包不显示 Cron 配置",
+    );
+    assert.equal(
+      await createWizard
+        .getByRole("button", { name: "监控拆包", exact: false })
+        .count(),
+      1,
+    );
+    assert.equal(
+      await createDialog
+        .getByRole("button", { name: "下一步", exact: false })
+        .count(),
+      1,
+    );
+    assert.equal(
+      await createWizard.locator(".review-card").count(),
+      0,
+      "初始步骤不应提前显示确认摘要",
+    );
+    await createWizard
+      .locator(".trigger-card")
+      .filter({ hasText: "模板拆包" })
+      .click();
+    const createTemplateField = createWizard
+      .locator(".el-form-item")
+      .filter({ hasText: "拆包模板" })
+      .first();
     await createTemplateField.locator(".el-select__wrapper").click();
-    await page.getByRole("option", { name: /Synthetic M-TEAM template/ }).click();
-    const createTemplateSiteField = createWizard.locator(".el-form-item").filter({ hasText: "使用的站点配置" }).first();
+    await page
+      .getByRole("option", { name: /Synthetic M-TEAM template/ })
+      .click();
+    const createTemplateSiteField = createWizard
+      .locator(".el-form-item")
+      .filter({ hasText: "使用的站点配置" })
+      .first();
     await createTemplateSiteField.locator(".el-select__wrapper").click();
     await page.getByRole("option", { name: "M-TEAM", exact: true }).click();
-    await createWizard.locator(".el-form-item").filter({ hasText: "任务名称" }).locator("input").fill("模板来源对齐校验");
-    await createDialog.getByRole("button", { name: "下一步", exact: false }).click();
-    assert.equal(await createWizard.locator(".wizard-step-heading h3").textContent(), "选择来源与目标");
-    await createWizard.locator(".source-choice").getByRole("button", { name: "下载器", exact: false }).click();
-    const createSourceDownloaderField = createWizard.locator(".el-form-item").filter({ hasText: "来源下载器" }).first();
-    const createSourceSeedField = createWizard.locator(".el-form-item").filter({ hasText: "来源种子" }).first();
-    assert.equal(await createSourceSeedField.locator(".source-seed-hint").textContent(), "仅读取已完成种子；创建任务不会修改下载器任务。");
-    assert.equal(await createSourceSeedField.locator(".el-form-item__content small").count(), 0, "安全提示应放在来源种子标题右侧，而不是输入框下方");
-    const sourceDownloaderBox = await createSourceDownloaderField.locator(".el-select__wrapper").boundingBox();
-    const sourceSeedBox = await createSourceSeedField.locator(".el-select__wrapper").boundingBox();
-    assert.ok(sourceDownloaderBox && sourceSeedBox, "来源下载器和来源种子选择框应可测量");
-    assert.ok(Math.abs(sourceDownloaderBox.y - sourceSeedBox.y) <= 1, "来源下载器与来源种子选择框应水平对齐");
-    const sourceSeedLabelLayout = await createSourceSeedField.evaluate((field) => {
-      const title = field.querySelector(".source-seed-label-row .extension-label-title");
-      const hint = field.querySelector(".source-seed-hint");
-      if (!title || !hint) return null;
-      return {
-        titleRight: title.getBoundingClientRect().right,
-        hintLeft: hint.getBoundingClientRect().left,
-      };
-    });
-    assert.ok(sourceSeedLabelLayout && sourceSeedLabelLayout.hintLeft >= sourceSeedLabelLayout.titleRight - 1, "安全提示应显示在来源种子标题右侧");
+    await createWizard
+      .locator(".el-form-item")
+      .filter({ hasText: "任务名称" })
+      .locator("input")
+      .fill("模板来源对齐校验");
+    await createDialog
+      .getByRole("button", { name: "下一步", exact: false })
+      .click();
+    assert.equal(
+      await createWizard.locator(".wizard-step-heading h3").textContent(),
+      "选择来源与目标",
+    );
+    assert.equal(
+      await createWizard.locator(".skip-downloader-check-panel").count(),
+      1,
+      "模板拆包来源与目标步骤也应展示跳过下载器检查开关",
+    );
+    await createWizard
+      .locator(".source-choice")
+      .getByRole("button", { name: "下载器", exact: false })
+      .click();
+    const createSourceDownloaderField = createWizard
+      .locator(".el-form-item")
+      .filter({ hasText: "来源下载器" })
+      .first();
+    const createSourceSeedField = createWizard
+      .locator(".el-form-item")
+      .filter({ hasText: "来源种子" })
+      .first();
+    assert.equal(
+      await createSourceSeedField.locator(".source-seed-hint").textContent(),
+      "仅读取已完成种子；创建任务不会修改下载器任务。",
+    );
+    assert.equal(
+      await createSourceSeedField
+        .locator(".el-form-item__content small")
+        .count(),
+      0,
+      "安全提示应放在来源种子标题右侧，而不是输入框下方",
+    );
+    const sourceDownloaderBox = await createSourceDownloaderField
+      .locator(".el-select__wrapper")
+      .boundingBox();
+    const sourceSeedBox = await createSourceSeedField
+      .locator(".el-select__wrapper")
+      .boundingBox();
+    assert.ok(
+      sourceDownloaderBox && sourceSeedBox,
+      "来源下载器和来源种子选择框应可测量",
+    );
+    assert.ok(
+      Math.abs(sourceDownloaderBox.y - sourceSeedBox.y) <= 1,
+      "来源下载器与来源种子选择框应水平对齐",
+    );
+    const sourceSeedLabelLayout = await createSourceSeedField.evaluate(
+      (field) => {
+        const title = field.querySelector(
+          ".source-seed-label-row .extension-label-title",
+        );
+        const hint = field.querySelector(".source-seed-hint");
+        if (!title || !hint) return null;
+        return {
+          titleRight: title.getBoundingClientRect().right,
+          hintLeft: hint.getBoundingClientRect().left,
+        };
+      },
+    );
+    assert.ok(
+      sourceSeedLabelLayout &&
+        sourceSeedLabelLayout.hintLeft >= sourceSeedLabelLayout.titleRight - 1,
+      "安全提示应显示在来源种子标题右侧",
+    );
     await createDialog.locator(".el-dialog__headerbtn").click();
 
+    executionItemsDelayMs = 900;
+    executionItemsResponseResolved = false;
+    const executionItemsRequestStarted = page.waitForRequest((request) => {
+      return (
+        new URL(request.url()).pathname ===
+        "/api/v1/unpack/executions/execution-review/items"
+      );
+    });
     await monitorRow.getByRole("button", { name: "查看", exact: true }).click();
     const executionDialog = page
       .locator(".el-dialog")
       .filter({ hasText: "执行详情 · 新番持续监控" })
       .last();
+    await executionItemsRequestStarted;
     await executionDialog.waitFor({ state: "visible" });
+    assert.equal(
+      executionItemsResponseResolved,
+      false,
+      "执行详情弹窗应先显示，不等待影片列表接口返回",
+    );
+    assert.equal(
+      executionDetailGetCount,
+      0,
+      "打开执行详情不应再串行请求重复的执行汇总接口",
+    );
+    const executionDialogHeader = executionDialog.locator(
+      ".execution-dialog-header",
+    );
+    const executionDialogTitle = executionDialogHeader.locator(
+      ".execution-dialog-title",
+    );
+    const matchingNotice = executionDialogHeader.locator(
+      ".execution-matching-notice",
+    );
+    assert.equal(
+      await matchingNotice.count(),
+      1,
+      "匹配阶段提示应移动到弹窗标题右侧",
+    );
+    const titleBounds = await executionDialogTitle.boundingBox();
+    const noticeBounds = await matchingNotice.boundingBox();
+    assert.ok(
+      titleBounds &&
+        noticeBounds &&
+        noticeBounds.x >= titleBounds.x + titleBounds.width - 2,
+    );
+    assert.ok(
+      Math.abs(
+        titleBounds.y +
+          titleBounds.height / 2 -
+          (noticeBounds.y + noticeBounds.height / 2),
+      ) <= 6,
+      "标题与匹配阶段提示应在同一行",
+    );
+    assert.equal(
+      await matchingNotice
+        .locator(".el-alert__title")
+        .evaluate((element) => getComputedStyle(element).whiteSpace),
+      "nowrap",
+      "匹配阶段提示应单行展示",
+    );
     for (const step of [
       "分页获取影片",
       "分批影片匹配",
       "自动匹配 / 人工审核",
       "种子内容校验",
       "辅种执行",
-      "客户端校验 / 完成",
+      "下载器处理 / 完成",
     ]) {
       assert.equal(
         (await executionDialog.getByText(new RegExp(step)).count()) >= 1,
@@ -1519,6 +1963,119 @@ const fulfillJson = (route, body, status = 200) =>
         "缺少执行阶段：" + step,
       );
     }
+    const executionMetrics = executionDialog.locator(".metric-grid");
+    await executionDialog
+      .locator(".el-table__body .el-table__row")
+      .first()
+      .waitFor({ state: "visible" });
+    assert.equal(
+      executionItemsResponseResolved,
+      true,
+      "匹配弹窗先展示后，影片列表应正常完成加载",
+    );
+    executionItemsDelayMs = 0;
+    const executionOperationHeader = executionDialog
+      .locator(".el-table__header-wrapper th")
+      .filter({ hasText: "操作" })
+      .last();
+    const executionOperationBounds =
+      await executionOperationHeader.boundingBox();
+    assert.ok(
+      executionOperationBounds &&
+        executionOperationBounds.width >= 295 &&
+        executionOperationBounds.width <= 305,
+      "执行详情操作列应固定为约 300px",
+    );
+    assert.equal(
+      await executionDialog
+        .locator(".execution-item-actions")
+        .first()
+        .evaluate((element) => getComputedStyle(element).flexWrap),
+      "nowrap",
+      "四个操作按钮应保持单行，不再因操作列变窄而换行",
+    );
+    const actionAlignment = await executionDialog
+      .locator(".execution-item-actions")
+      .first()
+      .evaluate((element) => {
+        const container = element.getBoundingClientRect();
+        const buttons = Array.from(element.children);
+        const left = buttons[0]?.getBoundingClientRect().left ?? container.left;
+        const right =
+          buttons.at(-1)?.getBoundingClientRect().right ?? container.right;
+        return {
+          justifyContent: getComputedStyle(element).justifyContent,
+          leftSpace: left - container.left,
+          rightSpace: container.right - right,
+        };
+      });
+    assert.equal(
+      actionAlignment.justifyContent,
+      "center",
+      "操作列按钮应水平居中排列",
+    );
+    assert.ok(
+      Math.abs(actionAlignment.leftSpace - actionAlignment.rightSpace) <= 3,
+      "左右留白应基本相等，操作按钮应真正居中：" +
+        JSON.stringify(actionAlignment),
+    );
+    const fourActionGroup = executionDialog
+      .locator(".execution-item-actions")
+      .nth(2);
+    const fourActionWidth = await fourActionGroup.evaluate((element) => {
+      const reviewGroup = document
+        .querySelectorAll(".execution-item-actions")[1]
+        ?.querySelector(".review-action-group")
+        ?.cloneNode(true);
+      if (!reviewGroup) return null;
+      element.insertBefore(reviewGroup, element.lastElementChild);
+      const result = {
+        buttons: element.querySelectorAll("button").length,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        children: Array.from(element.children).map((child) => ({
+          text: child.textContent?.trim(),
+          width: child.getBoundingClientRect().width,
+        })),
+      };
+      reviewGroup.remove();
+      return result;
+    });
+    assert.ok(
+      fourActionWidth &&
+        fourActionWidth.buttons === 4 &&
+        fourActionWidth.scrollWidth <= fourActionWidth.clientWidth + 1,
+      "300px 操作列应刚好容纳四个按钮而不产生横向溢出：" +
+        JSON.stringify(fourActionWidth),
+    );
+    assert.deepEqual(
+      await executionMetrics.locator("small").allTextContents(),
+      [
+        "影片总数",
+        "待匹配",
+        "匹配中",
+        "自动匹配",
+        "无匹配",
+        "待人工审核",
+        "内容校验通过",
+        "匹配超时",
+        "异常 / 不一致",
+      ],
+      "执行详情应在自动匹配前分别展示待匹配和匹配中的数量",
+    );
+    assert.deepEqual(
+      (await executionMetrics.locator("b").allTextContents()).slice(0, 4),
+      ["3", "0", "0", "1"],
+    );
+    await executionDialog
+      .locator(".execution-item-filters .el-select__wrapper")
+      .click();
+    for (const statusLabel of ["待匹配", "匹配中"]) {
+      await page
+        .getByRole("option", { name: statusLabel, exact: true })
+        .waitFor({ state: "visible" });
+    }
+    await page.keyboard.press("Escape");
     assert.equal(
       await executionDialog.getByText("自动匹配成功", { exact: true }).count(),
       1,
@@ -1527,20 +2084,36 @@ const fulfillJson = (route, body, status = 200) =>
       await executionDialog.getByText("匹配错误", { exact: true }).count(),
       1,
     );
+    const replaceCandidateButton = executionDialog.getByRole("button", {
+      name: "更换候选",
+      exact: true,
+    });
+    assert.equal(
+      await replaceCandidateButton.count(),
+      1,
+      "自动匹配成功的影片只提供可选的更换候选入口",
+    );
     assert.equal(
       await executionDialog
         .getByRole("button", { name: "审核", exact: true })
         .count(),
-      2,
-      "自动匹配成功与待人工审核都必须提供审核按钮",
+      1,
+      "只有需要人工处理的影片显示审核入口",
     );
+    await replaceCandidateButton.hover();
+    await page
+      .locator(".el-popper:visible")
+      .filter({ hasText: "自动匹配结果会自动进入内容验证" })
+      .waitFor({ state: "visible" });
+    await page.mouse.move(0, 0);
     assert.equal(
       await executionDialog.getByText("最高 100.0%", { exact: true }).count(),
       2,
       "审核入口旁应展示本轮候选队列最高匹配度",
     );
-    const reviewRowOffsets = await executionDialog.locator(".review-action-group").evaluateAll(
-      (groups) =>
+    const reviewRowOffsets = await executionDialog
+      .locator(".review-action-group")
+      .evaluateAll((groups) =>
         groups.map((group) => {
           const button = group.querySelector("button");
           const score = group.querySelector(".best-candidate-score");
@@ -1548,27 +2121,35 @@ const fulfillJson = (route, body, status = 200) =>
           const buttonBox = button.getBoundingClientRect();
           const scoreBox = score.getBoundingClientRect();
           return Math.abs(
-            buttonBox.y + buttonBox.height / 2 - (scoreBox.y + scoreBox.height / 2),
+            buttonBox.y +
+              buttonBox.height / 2 -
+              (scoreBox.y + scoreBox.height / 2),
           );
         }),
-    );
-    const reviewRowOrder = await executionDialog.locator(".review-action-group").evaluateAll(
-      (groups) =>
+      );
+    const reviewRowOrder = await executionDialog
+      .locator(".review-action-group")
+      .evaluateAll((groups) =>
         groups.map((group) => {
           const score = group.querySelector(".best-candidate-score");
           const button = group.querySelector("button");
-          return Boolean(score && button && score.getBoundingClientRect().right < button.getBoundingClientRect().left);
+          return Boolean(
+            score &&
+              button &&
+              score.getBoundingClientRect().right <
+                button.getBoundingClientRect().left,
+          );
         }),
-    );
+      );
     assert.deepEqual(
       reviewRowOrder,
       [true, true],
-      "最高匹配度应展示在审核按钮左侧",
+      "最高匹配度应展示在审核或更换候选入口左侧",
     );
     assert.equal(reviewRowOffsets.length, 2);
     assert(
       reviewRowOffsets.every((offset) => offset <= 1),
-      "审核按钮与最高匹配度必须处于同一水平中心线",
+      "操作入口与最高匹配度必须处于同一水平中心线",
     );
     assert.equal(
       await executionDialog
@@ -1582,18 +2163,58 @@ const fulfillJson = (route, body, status = 200) =>
         .count(),
       3,
     );
-    await executionDialog.getByRole("button", { name: "执行明细", exact: true }).click();
-    const historyDialog = page.locator(".el-dialog.execution-detail-dialog").last();
+    await executionDialog
+      .getByRole("button", { name: "执行明细", exact: true })
+      .click();
+    const historyDialog = page
+      .locator(".el-dialog.execution-detail-dialog")
+      .last();
     await historyDialog.waitFor({ state: "visible" });
-    await historyDialog.locator(".detail-summary-card").first().waitFor({ state: "visible" });
-    assert.equal(await historyDialog.locator(".detail-summary-card").count(), 4, "方案 A 应展示四张摘要卡");
-    for (const heading of ["当前结果", "停止阶段", "风险状态", "可执行建议", "执行阶段", "操作记录"]) {
-      assert.equal(await historyDialog.getByText(heading, { exact: true }).count(), 1, "方案 A 缺少 " + heading);
+    await historyDialog
+      .locator(".execution-detail-stages")
+      .waitFor({ state: "visible" });
+    assert.equal(
+      await historyDialog.locator(".detail-summary-card").count(),
+      0,
+      "执行明细不应再展示顶部摘要卡",
+    );
+    assert.equal(
+      await historyDialog.locator(".execution-detail-overview").count(),
+      0,
+    );
+    assert.equal(
+      await historyDialog.locator(".execution-detail-explanation").count(),
+      0,
+    );
+    for (const heading of ["执行阶段", "操作记录"]) {
+      assert.equal(
+        await historyDialog.getByText(heading, { exact: true }).count(),
+        1,
+        "执行明细缺少 " + heading,
+      );
     }
-    assert.equal(await historyDialog.locator(".detail-timeline .detail-step").count(), 3);
-    assert.equal(await historyDialog.getByText("请求下载器校验", { exact: true }).count(), 0, "历史中无 VERIFY 不应虚构校验成功");
-    assert.equal(await historyDialog.getByText("请求开始下载或做种", { exact: true }).count(), 0, "历史中无 START 不应虚构启动成功");
-    assert.equal(await historyDialog.locator(".detail-history-table .el-table__row").count(), 3);
+    assert.equal(
+      await historyDialog.locator(".detail-timeline .detail-step").count(),
+      3,
+    );
+    assert.equal(
+      await historyDialog.getByText("请求下载器校验", { exact: true }).count(),
+      0,
+      "历史中无 VERIFY 不应虚构校验成功",
+    );
+    assert.equal(
+      await historyDialog
+        .getByText("请求开始下载或做种", { exact: true })
+        .count(),
+      0,
+      "历史中无 START 不应虚构启动成功",
+    );
+    assert.equal(
+      await historyDialog
+        .locator(".detail-history-table .el-table__row")
+        .count(),
+      3,
+    );
     for (const removed of [
       "只按已保存的操作记录展示；未发生的步骤不会标记成功",
       "历史中的“成功”仅表示当时记录成功，不保证文件或种子现在仍处于相同状态。",
@@ -1606,7 +2227,9 @@ const fulfillJson = (route, body, status = 200) =>
       );
     }
     assert.equal(
-      await historyDialog.getByRole("button", { name: "查询下载器状态（只读）" }).count(),
+      await historyDialog
+        .getByRole("button", { name: "查询下载器状态（只读）" })
+        .count(),
       0,
       "执行明细弹窗不再提供查询下载器状态按钮",
     );
@@ -1624,7 +2247,9 @@ const fulfillJson = (route, body, status = 200) =>
     assert.equal(targetLayout.textOverflow, "ellipsis");
     assert.equal(targetLayout.whiteSpace, "nowrap");
     await clippedTarget.hover();
-    const fullPathTooltip = page.locator(".execution-detail-target-tooltip:visible").last();
+    const fullPathTooltip = page
+      .locator(".execution-detail-target-tooltip:visible")
+      .last();
     await fullPathTooltip.waitFor({ state: "visible" });
     assert(
       (await fullPathTooltip.innerText()).includes(longDiagnosticTargetPath),
@@ -1637,13 +2262,21 @@ const fulfillJson = (route, body, status = 200) =>
       const button = footer.querySelector("button");
       if (!button) return null;
       return {
-        rightGap: Math.abs(footer.getBoundingClientRect().right - button.getBoundingClientRect().right),
+        rightGap: Math.abs(
+          footer.getBoundingClientRect().right -
+            button.getBoundingClientRect().right,
+        ),
         justify: getComputedStyle(footer).justifyContent,
       };
     });
-    assert(closeAlignment && closeAlignment.rightGap <= 2, "关闭按钮应该位于弹窗右下角");
+    assert(
+      closeAlignment && closeAlignment.rightGap <= 2,
+      "关闭按钮应该位于弹窗右下角",
+    );
     assert.equal(closeAlignment.justify, "flex-end");
-    await historyDialog.getByRole("button", { name: "关闭", exact: true }).click();
+    await historyDialog
+      .getByRole("button", { name: "关闭", exact: true })
+      .click();
     await historyDialog.waitFor({ state: "hidden" });
     const deletedDisabled = await executionDialog
       .getByRole("button", { name: "删除", exact: true })
@@ -1680,39 +2313,61 @@ const fulfillJson = (route, body, status = 200) =>
     });
     await manualAddButton.waitFor({ state: "visible" });
     assert.equal(
-      await reviewDialog.locator(".el-dialog__header .manual-add-candidate-trigger").count(),
+      await reviewDialog
+        .locator(".el-dialog__header .manual-add-candidate-trigger")
+        .count(),
       0,
       "手动添加不应继续显示在弹窗标题旁",
     );
     assert.equal(
-      await reviewDialog.locator(".review-heading-actions > .manual-add-candidate-trigger").count(),
+      await reviewDialog
+        .locator(".review-heading-actions > .manual-add-candidate-trigger")
+        .count(),
       1,
       "手动添加必须位于候选列表右侧的人工审核文字旁",
     );
-    const reviewHeadingOrder = await reviewDialog.locator(".review-heading-actions").evaluate((group) => {
-      const tag = group.querySelector(".el-tag");
-      const button = group.querySelector(".manual-add-candidate-trigger");
-      if (!tag || !button) return null;
-      const tagBox = tag.getBoundingClientRect();
-      const buttonBox = button.getBoundingClientRect();
-      return {
-        tagRight: tagBox.right,
-        buttonLeft: buttonBox.left,
-        centerDiff: Math.abs(
-          tagBox.top + tagBox.height / 2 - (buttonBox.top + buttonBox.height / 2),
-        ),
-      };
-    });
+    const reviewHeadingOrder = await reviewDialog
+      .locator(".review-heading-actions")
+      .evaluate((group) => {
+        const tag = group.querySelector(".el-tag");
+        const button = group.querySelector(".manual-add-candidate-trigger");
+        if (!tag || !button) return null;
+        const tagBox = tag.getBoundingClientRect();
+        const buttonBox = button.getBoundingClientRect();
+        return {
+          tagRight: tagBox.right,
+          buttonLeft: buttonBox.left,
+          centerDiff: Math.abs(
+            tagBox.top +
+              tagBox.height / 2 -
+              (buttonBox.top + buttonBox.height / 2),
+          ),
+        };
+      });
     assert(reviewHeadingOrder, "人工审核标识及按钮必须都存在");
-    assert(reviewHeadingOrder.tagRight < reviewHeadingOrder.buttonLeft, "手动添加必须在人工审核文字右侧");
-    assert(reviewHeadingOrder.centerDiff <= 1, "人工审核文字与手动添加按钮必须垂直居中");
+    assert(
+      reviewHeadingOrder.tagRight < reviewHeadingOrder.buttonLeft,
+      "手动添加必须在人工审核文字右侧",
+    );
+    assert(
+      reviewHeadingOrder.centerDiff <= 1,
+      "人工审核文字与手动添加按钮必须垂直居中",
+    );
     assert.equal(
-      await reviewDialog.getByRole("button", { name: "稍后处理", exact: true }).count(),
+      await reviewDialog
+        .getByRole("button", { name: "稍后处理", exact: true })
+        .count(),
       0,
       "人工审核候选弹窗不应再有稍后处理按钮",
     );
-    const manualAddColor = await manualAddButton.evaluate((button) => getComputedStyle(button).color);
-    assert.notEqual(manualAddColor, "rgb(255, 255, 255)", "手动添加按钮默认态文字不应为白色而不可见");
+    const manualAddColor = await manualAddButton.evaluate(
+      (button) => getComputedStyle(button).color,
+    );
+    assert.notEqual(
+      manualAddColor,
+      "rgb(255, 255, 255)",
+      "手动添加按钮默认态文字不应为白色而不可见",
+    );
     await manualAddButton.click();
     const manualCandidateDialog = page
       .locator(".el-dialog")
@@ -1846,7 +2501,9 @@ const fulfillJson = (route, body, status = 200) =>
     await executionDialog.locator(".el-dialog__headerbtn").click();
 
     assert.equal(
-      await monitorRow.getByRole("button", { name: "重试", exact: true }).count(),
+      await monitorRow
+        .getByRole("button", { name: "重试", exact: true })
+        .count(),
       1,
       "运行中但包含待审核和异常影片的拆包任务，也应显示批量重试",
     );
@@ -1855,25 +2512,49 @@ const fulfillJson = (route, body, status = 200) =>
     await failedRow.getByRole("button", { name: "重试", exact: true }).click();
     const retryDialog = page.locator(".el-dialog.unpack-retry-dialog").last();
     await retryDialog.waitFor({ state: "visible" });
-    assert.equal(await retryDialog.locator(".el-select").count(), 1, "弹窗必须只有一个多选状态框");
-    assert.equal(await retryDialog.getByRole("button", { name: "重试", exact: true }).count(), 1);
-    assert.equal(await retryDialog.getByRole("button", { name: "重试", exact: true }).isDisabled(), true, "未选择状态禁止重试");
+    assert.equal(
+      await retryDialog.locator(".el-select").count(),
+      1,
+      "弹窗必须只有一个多选状态框",
+    );
+    assert.equal(
+      await retryDialog
+        .getByRole("button", { name: "重试", exact: true })
+        .count(),
+      1,
+    );
+    assert.equal(
+      await retryDialog
+        .getByRole("button", { name: "重试", exact: true })
+        .isDisabled(),
+      true,
+      "未选择状态禁止重试",
+    );
     await retryDialog.locator(".el-select").click();
     for (const stateLabel of ["无匹配", "匹配错误"]) {
       await page.getByRole("option", { name: stateLabel, exact: true }).click();
     }
-    assert.equal(await retryDialog.getByRole("button", { name: "重试", exact: true }).isEnabled(), true);
+    assert.equal(
+      await retryDialog
+        .getByRole("button", { name: "重试", exact: true })
+        .isEnabled(),
+      true,
+    );
     // Element Plus keeps multi-select popovers open while selecting several
     // values. Close the popover before clicking the modal's submit footer.
     await retryDialog.locator(".el-dialog__header").click();
     const bulkRetryResponse = page.waitForResponse(
       (response) =>
-        response.url().includes("/api/v1/unpack/executions/execution-failed/actions") &&
+        response
+          .url()
+          .includes("/api/v1/unpack/executions/execution-failed/actions") &&
         response.request().method() === "POST" &&
         response.status() === 200,
       { timeout: 15000 },
     );
-    await retryDialog.getByRole("button", { name: "重试", exact: true }).click();
+    await retryDialog
+      .getByRole("button", { name: "重试", exact: true })
+      .click();
     const completedBulkRetry = await bulkRetryResponse;
     await retryDialog.waitFor({ state: "hidden" });
     // The request event fires before the async mock route handler runs. Wait
@@ -1888,7 +2569,13 @@ const fulfillJson = (route, body, status = 200) =>
     });
     await failedRow.getByRole("button", { name: "重试", exact: true }).click();
     await retryDialog.waitFor({ state: "visible" });
-    assert.equal(await retryDialog.getByRole("button", { name: "重试", exact: true }).isDisabled(), true, "重新打开不得保留之前选中状态");
+    assert.equal(
+      await retryDialog
+        .getByRole("button", { name: "重试", exact: true })
+        .isDisabled(),
+      true,
+      "重新打开不得保留之前选中状态",
+    );
     await retryDialog.locator(".el-dialog__headerbtn").click();
     await retryDialog.waitFor({ state: "hidden" });
     await manualRow.getByRole("button", { name: "编辑", exact: true }).click();
@@ -1903,7 +2590,9 @@ const fulfillJson = (route, body, status = 200) =>
       .locator("input")
       .fill("人工编辑 E2E");
     for (let step = 1; step < 4; step += 1) {
-      await editDialog.getByRole("button", { name: "下一步", exact: false }).click();
+      await editDialog
+        .getByRole("button", { name: "下一步", exact: false })
+        .click();
     }
     const manualEditResponse = page.waitForResponse(
       (response) =>
@@ -1919,7 +2608,9 @@ const fulfillJson = (route, body, status = 200) =>
     await monitorRow.getByRole("button", { name: "编辑", exact: true }).click();
     await editDialog.waitFor({ state: "visible" });
     for (let step = 1; step < 4; step += 1) {
-      await editDialog.getByRole("button", { name: "下一步", exact: false }).click();
+      await editDialog
+        .getByRole("button", { name: "下一步", exact: false })
+        .click();
     }
     const monitorEditResponse = page.waitForResponse(
       (response) =>
@@ -1973,7 +2664,9 @@ const fulfillJson = (route, body, status = 200) =>
     await siteField.locator(".el-select").click();
     await page.getByRole("option", { name: "M-TEAM", exact: true }).click();
     await page.keyboard.press("Escape");
-    await manualDialog.getByRole("button", { name: "下一步", exact: false }).click();
+    await manualDialog
+      .getByRole("button", { name: "下一步", exact: false })
+      .click();
 
     const sourceField = manualDialog
       .locator(".el-form-item")
@@ -2035,10 +2728,28 @@ const fulfillJson = (route, body, status = 200) =>
     await page
       .getByRole("option", { name: "qBittorrent · 主下载器", exact: true })
       .click();
-    await manualDialog.getByRole("button", { name: "下一步", exact: false }).click();
-    assert.equal(await manualDialog.locator(".advanced-rule-content").count(), 0, "新建任务文件过滤步骤的高级规则应默认折叠");
-    await manualDialog.getByRole("button", { name: "下一步", exact: false }).click();
-    await manualDialog.getByRole("button", { name: "创建任务", exact: true }).click();
+    const manualSkipCheckPanel = manualDialog.locator(
+      ".skip-downloader-check-panel",
+    );
+    assert.equal(
+      await manualSkipCheckPanel.locator(".el-switch input").isChecked(),
+      false,
+    );
+    await manualSkipCheckPanel.locator(".el-switch").click();
+    await manualDialog
+      .getByRole("button", { name: "下一步", exact: false })
+      .click();
+    assert.equal(
+      await manualDialog.locator(".advanced-rule-content").count(),
+      0,
+      "新建任务文件过滤步骤的高级规则应默认折叠",
+    );
+    await manualDialog
+      .getByRole("button", { name: "下一步", exact: false })
+      .click();
+    await manualDialog
+      .getByRole("button", { name: "创建任务", exact: true })
+      .click();
 
     const scopeDialog = page
       .locator(".el-dialog")
@@ -2071,6 +2782,11 @@ const fulfillJson = (route, body, status = 200) =>
     );
     assert.equal(createdDefinitionBodies[0].source_scan_id, "scan-1");
     assert.equal(createdDefinitionBodies[0].source_kind, "DIRECTORY");
+    assert.equal(
+      createdDefinitionBodies[0].output_config.skip_downloader_check,
+      true,
+      "跳过下载器检查开关应写入任务配置",
+    );
 
     await sidebarNav.getByText("数据去重", { exact: true }).click();
     await page.locator("main .movie-dedup-panel").waitFor({ state: "visible" });
@@ -2089,16 +2805,24 @@ const fulfillJson = (route, body, status = 200) =>
     await sidebarNav.getByText("Agent配置", { exact: true }).click();
     const aiSettingsPage = page.locator(".ai-settings");
     const aiPageHeading = aiSettingsPage.locator(".ai-page-heading");
-    await aiPageHeading.getByRole("heading", { name: "AI 助手", exact: true, level: 2 }).waitFor();
+    await aiPageHeading
+      .getByRole("heading", { name: "AI 助手", exact: true, level: 2 })
+      .waitFor();
     assert.equal(await aiSettingsPage.locator(".ai-status-panel").count(), 0);
     assert.equal(await aiPageHeading.locator(".panel").count(), 0);
     assert.equal(
-      await aiPageHeading.locator("h2").evaluate((element) => window.getComputedStyle(element).fontSize),
+      await aiPageHeading
+        .locator("h2")
+        .evaluate((element) => window.getComputedStyle(element).fontSize),
       "20px",
       "Agent 页面标题应直接放在底色上并采用较大字号",
     );
-    await aiSettingsPage.getByRole("heading", { name: "Provider 配置", exact: true }).waitFor();
-    await aiSettingsPage.getByRole("heading", { name: "Telegram AI", exact: true }).waitFor();
+    await aiSettingsPage
+      .getByRole("heading", { name: "Provider 配置", exact: true })
+      .waitFor();
+    await aiSettingsPage
+      .getByRole("heading", { name: "Telegram AI", exact: true })
+      .waitFor();
     for (const removedText of [
       "AI 助手首版严格只读",
       "AI 可以查询健康、任务、脱敏日志",
@@ -2116,30 +2840,48 @@ const fulfillJson = (route, body, status = 200) =>
       );
     }
     const providerHeading = aiSettingsPage.locator(".section-heading");
-    const providerTitleBounds = await providerHeading.locator("h3").boundingBox();
-    const providerSwitchBounds = await providerHeading.locator(".el-switch").boundingBox();
+    const providerTitleBounds = await providerHeading
+      .locator("h3")
+      .boundingBox();
+    const providerSwitchBounds = await providerHeading
+      .locator(".el-switch")
+      .boundingBox();
     assert.ok(
-      providerTitleBounds && providerSwitchBounds &&
-        providerSwitchBounds.x >= providerTitleBounds.x + providerTitleBounds.width &&
-        providerSwitchBounds.x - (providerTitleBounds.x + providerTitleBounds.width) < 24 &&
+      providerTitleBounds &&
+        providerSwitchBounds &&
+        providerSwitchBounds.x >=
+          providerTitleBounds.x + providerTitleBounds.width &&
+        providerSwitchBounds.x -
+          (providerTitleBounds.x + providerTitleBounds.width) <
+          24 &&
         Math.abs(providerSwitchBounds.y - providerTitleBounds.y) < 14,
       "AI 助手启用开关应紧邻 Provider 配置标题右侧同一行",
     );
     const telegramHeading = aiSettingsPage.locator(".telegram-heading");
     const telegramTitleRow = telegramHeading.locator(".telegram-title-row");
-    const telegramTitleBounds = await telegramTitleRow.locator("h3").boundingBox();
-    const telegramSwitchBounds = await telegramTitleRow.locator(".el-switch").boundingBox();
+    const telegramTitleBounds = await telegramTitleRow
+      .locator("h3")
+      .boundingBox();
+    const telegramSwitchBounds = await telegramTitleRow
+      .locator(".el-switch")
+      .boundingBox();
     assert.ok(
-      telegramTitleBounds && telegramSwitchBounds &&
-        telegramSwitchBounds.x >= telegramTitleBounds.x + telegramTitleBounds.width &&
-        telegramSwitchBounds.x - (telegramTitleBounds.x + telegramTitleBounds.width) < 24 &&
+      telegramTitleBounds &&
+        telegramSwitchBounds &&
+        telegramSwitchBounds.x >=
+          telegramTitleBounds.x + telegramTitleBounds.width &&
+        telegramSwitchBounds.x -
+          (telegramTitleBounds.x + telegramTitleBounds.width) <
+          24 &&
         Math.abs(telegramSwitchBounds.y - telegramTitleBounds.y) < 18,
       "启用 Telegram AI 开关应紧邻 Telegram AI 标题右侧同一行",
     );
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(100);
     assert.equal(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+      ),
       true,
       "Agent 配置页面 390px 不应产生页面级横向溢出",
     );
@@ -2147,7 +2889,9 @@ const fulfillJson = (route, body, status = 200) =>
 
     await sidebarNav.getByText("备份恢复", { exact: true }).click();
     const backupPage = page.locator(".backup-management");
-    await backupPage.getByRole("heading", { name: "备份策略", exact: true }).waitFor();
+    await backupPage
+      .getByRole("heading", { name: "备份策略", exact: true })
+      .waitFor();
     assert.equal(
       await backupPage.locator(":scope > .panel").count(),
       4,
@@ -2157,7 +2901,9 @@ const fulfillJson = (route, body, status = 200) =>
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(100);
     assert.equal(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+      ),
       true,
       "备份恢复页面 390px 不应产生页面级横向溢出",
     );
@@ -2165,9 +2911,16 @@ const fulfillJson = (route, body, status = 200) =>
 
     await sidebarNav.getByText("日志浏览", { exact: true }).click();
     const logsPage = page.locator(".operational-logs");
-    await logsPage.getByRole("heading", { name: "运行日志", exact: true }).waitFor();
+    await logsPage
+      .getByRole("heading", { name: "运行日志", exact: true })
+      .waitFor();
     const logFilterBar = logsPage.locator(".log-filter-toolbar");
-    assert.equal(await logFilterBar.evaluate((element) => element.closest(".panel") !== null), false);
+    assert.equal(
+      await logFilterBar.evaluate(
+        (element) => element.closest(".panel") !== null,
+      ),
+      false,
+    );
     const logFilterStyle = await logFilterBar.evaluate((element) => {
       const style = window.getComputedStyle(element);
       return {
@@ -2181,15 +2934,29 @@ const fulfillJson = (route, body, status = 200) =>
     assert.equal(logFilterStyle.borderTopWidth, "0px");
     assert.equal(logFilterStyle.boxShadow, "none");
     assert.equal(logFilterStyle.paddingTop, "0px");
-    await logFilterBar.getByPlaceholder("搜索日志内容、logger 或 trace_id").waitFor();
-    assert.equal(await logFilterBar.getByRole("button", { name: "刷新", exact: true }).count(), 1);
+    await logFilterBar
+      .getByPlaceholder("搜索日志内容、logger 或 trace_id")
+      .waitFor();
+    assert.equal(
+      await logFilterBar
+        .getByRole("button", { name: "刷新", exact: true })
+        .count(),
+      1,
+    );
     for (const label of ["搜索", "重置"]) {
-      assert.equal(await logFilterBar.getByRole("button", { name: label, exact: true }).count(), 0);
+      assert.equal(
+        await logFilterBar
+          .getByRole("button", { name: label, exact: true })
+          .count(),
+        0,
+      );
     }
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(100);
     assert.equal(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+      ),
       true,
       "日志浏览过滤栏 390px 不应产生页面级横向溢出",
     );

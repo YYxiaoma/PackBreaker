@@ -5,6 +5,7 @@ import {
   Clock3,
   Eye,
   FolderOpen,
+  Globe,
   Info,
   Ellipsis,
   ExternalLink,
@@ -43,7 +44,13 @@ import {
   listUnpackSourceScanItems,
   listUnpackTreeRoots,
   retryUnpackItemMatch,
+  retryUnpackItemContentVerification,
   retryUnpackExecutionItems,
+  reconcileUnpackExecutionItem,
+  reconcileUnpackExecution,
+  previewUnpackTemplateFile,
+  importUnpackTemplateFile,
+  exportUnpackExecutionTemplate,
   reviewUnpackItem,
   runUnpackDefinition,
   updateUnpackSourceScanSelection,
@@ -51,6 +58,7 @@ import {
   type UnpackDefinition,
   type UnpackDefinitionCreate,
   type UnpackTemplate,
+  type UnpackTemplateFilePreview,
   type UnpackExecution,
   type UnpackExecutionItem,
   type UnpackItemDiagnostics,
@@ -71,13 +79,8 @@ import {
   unpackReconciliationGuidance,
   unpackOperationTypeLabel,
   unpackOperationStatusLabel,
-  unpackExecutionStageLabel,
-  unpackItemStatusLabel,
   unpackItemStatusSummary,
-  unpackPlanStatusLabel,
-  unpackPlanBlockReasonLabel,
   unpackErrorLabel,
-  unpackProgressCount,
   unpackProgressPercent,
   unpackSourceKindLabel,
   unpackTriggerLabel,
@@ -85,7 +88,6 @@ import {
 } from '../unpackPresentation';
 import {
   unpackExecutionDetailTimeline,
-  unpackExecutionDetailSummary,
   unpackExecutionDetailRecordNote,
 } from '../unpackExecutionDetail';
 import { createUnpackDiagnosticsGuard } from '../unpackDiagnosticsGuard';
@@ -125,6 +127,7 @@ interface Draft {
   targetDownloaderId: string;
   targetCategory: string;
   targetTags: string[];
+  skipDownloaderCheck: boolean;
   extensions: string;
   minSizeMb: number | null;
   maxSizeMb: number | null;
@@ -162,8 +165,10 @@ const appliedKeyword = ref('');
 const createVisible = ref(false);
 const unpackTableContainer = ref<HTMLElement | null>(null);
 const unpackTableContainerWidth = ref(0);
-const showInlineDefinitionActions = computed(() => unpackTableContainerWidth.value >= 1000);
-const definitionActionColumnWidth = computed(() => (showInlineDefinitionActions.value ? 320 : 200));
+const showInlineDefinitionActions = computed(() => unpackTableContainerWidth.value >= 1150);
+// 操作列固定宽度：内联时按「执行/查看/重试/导出模板/编辑/删除」实测需要留足，
+// 否则右侧按钮会被 fixed 列遮盖。
+const definitionActionColumnWidth = computed(() => (showInlineDefinitionActions.value ? 400 : 156));
 let unpackTableResizeObserver: ResizeObserver | undefined;
 
 const editingDefinition = ref<UnpackDefinition | null>(null);
@@ -253,9 +258,6 @@ const diagnostics = ref<UnpackItemDiagnostics | null>(null);
 const detailTimeline = computed(() =>
   diagnostics.value ? unpackExecutionDetailTimeline(diagnostics.value) : [],
 );
-const detailSummary = computed(() =>
-  diagnostics.value ? unpackExecutionDetailSummary(diagnostics.value) : null,
-);
 
 const diagnosticsGuard = createUnpackDiagnosticsGuard();
 // Invalidate immediately on close, including requests that finish before the
@@ -279,6 +281,17 @@ const itemPageSize = ref(20);
 const itemPageIndex = ref(1);
 const executionItemStatusFilter = ref('');
 const executionItemKeyword = ref('');
+let executionItemsRequestId = 0;
+watch(
+  executionVisible,
+  (visible) => {
+    if (!visible) {
+      executionItemsRequestId += 1;
+      executionLoading.value = false;
+    }
+  },
+  { flush: 'sync' },
+);
 
 const reviewVisible = ref(false);
 const reviewLoading = ref(false);
@@ -312,9 +325,7 @@ const currentWizardStep = computed(
 
 const enabledSites = computed(() => sites.value.filter((item) => item.enabled));
 const readyTemplates = computed(() =>
-  templates.value.filter(
-    (item) => item.status === 'READY' && item.site_keys.length === 1 && item.site_ids.length > 0,
-  ),
+  templates.value.filter((item) => item.status === 'READY' && item.site_keys.length === 1),
 );
 const selectedTemplate = computed(
   () => templates.value.find((item) => item.id === draft.templateId) ?? null,
@@ -407,7 +418,7 @@ const pipelineSteps = [
   '自动匹配 / 人工审核',
   '种子内容校验',
   '辅种执行',
-  '客户端校验 / 完成',
+  '下载器处理 / 完成',
 ];
 
 const activePipelineIndex = computed(() => {
@@ -442,6 +453,7 @@ function freshDraft(): Draft {
     targetDownloaderId: '',
     targetCategory: '',
     targetTags: [],
+    skipDownloaderCheck: true,
     extensions: '.mkv, .mp4, .ts, .m2ts',
     minSizeMb: 0,
     maxSizeMb: null,
@@ -527,9 +539,14 @@ function itemStatusTag(
   if (status === 'COMPLETED' || status === 'CONTENT_VERIFIED') return 'success';
   if (status === 'REVIEW_REQUIRED') return 'warning';
   if (
-    ['NO_MATCH', 'MATCH_TIMEOUT', 'MATCH_ERROR', 'CONTENT_MISMATCH', 'EXECUTION_ERROR'].includes(
-      status,
-    )
+    [
+      'NO_MATCH',
+      'MATCH_TIMEOUT',
+      'MATCH_ERROR',
+      'CONTENT_VERIFY_ERROR',
+      'CONTENT_MISMATCH',
+      'EXECUTION_ERROR',
+    ].includes(status)
   ) {
     return 'danger';
   }
@@ -561,16 +578,7 @@ function resultText(row: TaskRow): string {
 }
 
 function progressCount(execution: UnpackExecution): number {
-  return unpackProgressCount(execution.total_count, {
-    matchedAutoCount: execution.matched_auto_count,
-    noMatchCount: execution.no_match_count,
-    reviewCount: execution.review_count,
-    contentVerifiedCount: execution.content_verified_count,
-    contentMismatchCount: execution.content_mismatch_count,
-    timeoutCount: execution.timeout_count,
-    errorCount: execution.error_count,
-    completedCount: execution.completed_count,
-  });
+  return execution.match_progress_count;
 }
 
 function progressText(execution: UnpackExecution | null): string {
@@ -663,6 +671,7 @@ function openEdit(row: TaskRow): void {
     targetDownloaderId: stringValue(output.target_downloader_id),
     targetCategory: stringValue(output.target_category),
     targetTags: stringList(output.target_tags),
+    skipDownloaderCheck: output.skip_downloader_check === true,
     extensions: stringList(filter.extensions).join(', '),
     minSizeMb: typeof filter.min_size_bytes === 'number' ? filter.min_size_bytes / 1048576 : null,
     maxSizeMb: typeof filter.max_size_bytes === 'number' ? filter.max_size_bytes / 1048576 : null,
@@ -732,11 +741,19 @@ const retryingDefinitionId = ref<string | null>(null);
 const retryDialogVisible = ref(false);
 const retryTargetRow = ref<TaskRow | null>(null);
 const selectedRetryStatuses = ref<UnpackItemStatus[]>([]);
+const retryStatusChoices = computed(() => {
+  const counts = retryTargetRow.value?.execution?.item_status_counts ?? {};
+  const present = retryStatusOptions.filter((option) => (counts[option.value] ?? 0) > 0);
+  const options = present.length ? present : retryStatusOptions;
+  return options.map((option) => ({ ...option, count: counts[option.value] ?? 0 }));
+});
+
 const retryStatusOptions: Array<{ value: UnpackItemStatus; label: string }> = [
   { value: 'NO_MATCH', label: '无匹配' },
   { value: 'REVIEW_REQUIRED', label: '待人工审核' },
   { value: 'MATCH_TIMEOUT', label: '匹配超时' },
   { value: 'MATCH_ERROR', label: '匹配错误' },
+  { value: 'CONTENT_VERIFY_ERROR', label: '校验错误' },
   { value: 'CONTENT_MISMATCH', label: '内容不匹配' },
   { value: 'EXECUTION_ERROR', label: '执行异常' },
   { value: 'MATCHED_AUTO', label: '自动匹配成功' },
@@ -755,23 +772,66 @@ async function retryDefinition(): Promise<void> {
   const execution = row?.execution;
   if (!row || !execution || !selectedRetryStatuses.value.length || retryingDefinitionId.value)
     return;
+  const retryStatuses = selectedRetryStatuses.value.filter(
+    (status) => status !== 'EXECUTION_ERROR',
+  );
+  const wantsReconcile = selectedRetryStatuses.value.includes('EXECUTION_ERROR');
   retryingDefinitionId.value = row.definition.id;
+  const messages: string[] = [];
+  let hasWarning = false;
   try {
-    const result = await retryUnpackExecutionItems(
-      execution.id,
-      execution.version,
-      selectedRetryStatuses.value,
-    );
-    retryDialogVisible.value = false;
-    if (result.retried_count > 0) {
-      ElMessage.success(
-        result.retried_count +
-          ' 个影片已重新加入匹配队列，' +
-          result.skipped_unsafe_count +
-          ' 个影片存在文件或下载器操作记录，已安全跳过，请逐项核对后处理',
+    if (retryStatuses.length) {
+      const result = await retryUnpackExecutionItems(
+        execution.id,
+        execution.version,
+        retryStatuses,
       );
+      if (result.retried_count > 0) {
+        messages.push(result.retried_count + ' 个影片已重新加入处理队列');
+      }
+      if (result.skipped_unsafe_count > 0) {
+        hasWarning = true;
+        messages.push(
+          result.skipped_unsafe_count +
+            ' 个影片存在文件或下载器操作记录，已安全跳过，请逐条核对后处理',
+        );
+      }
+      if (result.retried_count === 0 && result.skipped_unsafe_count === 0) {
+        messages.push('所选状态没有可重试的影片');
+      }
+    }
+    if (wantsReconcile) {
+      const reconciled = await reconcileUnpackExecution(execution.id);
+      if (reconciled.processed_count === 0) {
+        messages.push('没有需要重新对账的执行异常影片');
+      } else {
+        messages.push(
+          '已对账 ' +
+            reconciled.processed_count +
+            ' 个执行异常影片，确认 ' +
+            reconciled.resolved_count +
+            ' 项操作结果',
+        );
+      }
+      if (reconciled.manual_count > 0) {
+        hasWarning = true;
+        messages.push('仍有 ' + reconciled.manual_count + ' 项无法自动证明，需人工核对');
+      }
+      if (reconciled.failed_count > 0) {
+        hasWarning = true;
+        messages.push(
+          reconciled.failed_count +
+            ' 个影片对账失败' +
+            (reconciled.failed_reasons.length ? '：' + reconciled.failed_reasons[0] : ''),
+        );
+      }
+    }
+    retryDialogVisible.value = false;
+    const summary = messages.join('；');
+    if (hasWarning) {
+      ElMessage.warning(summary);
     } else {
-      ElMessage.info('没有可重新匹配的影片');
+      ElMessage.success(summary);
     }
     await refresh();
   } catch (caught) {
@@ -799,6 +859,10 @@ function handleDefinitionMenu(command: string, row: TaskRow): void {
     openEdit(row);
   } else if (command === 'delete') {
     void deleteDefinition(row);
+  } else if (command === 'retry') {
+    openRetryDialog(row);
+  } else if (command === 'export-template') {
+    void exportTemplate(row);
   }
 }
 
@@ -858,7 +922,7 @@ function templateMatchingStatusLabel(template: UnpackTemplate): string {
 
 function templateOptionLabel(template: UnpackTemplate): string {
   const parts = [
-    template.name,
+    template.origin === 'BUILTIN' ? `【官方】${template.name}` : template.name,
     templateSiteLabel(template),
     `v${template.current_version}`,
     `${template.seed_count} 个种子`,
@@ -866,7 +930,153 @@ function templateOptionLabel(template: UnpackTemplate): string {
   ];
   const matchingStatus = templateMatchingStatusLabel(template);
   if (matchingStatus) parts.push(matchingStatus);
+  if (!template.site_ids.length) {
+    parts.push(`未配置 ${template.site_keys[0]} 站点，暂不可选`);
+  }
   return parts.join(' · ');
+}
+
+const templateImportInput = ref<HTMLInputElement | null>(null);
+const templateImportVisible = ref(false);
+const templateImportFile = ref<File | null>(null);
+const templateImportFileName = ref('');
+const templateImportPreview = ref<UnpackTemplateFilePreview | null>(null);
+const templateImporting = ref(false);
+const exportingDefinitionId = ref<string | null>(null);
+const templateExportPickerVisible = ref(false);
+const templateExportSiteOptions = ref<string[]>([]);
+const templateExportSite = ref('');
+const templateExportTarget = ref<TaskRow | null>(null);
+
+const TEMPLATE_TERMINAL_EXECUTION_STATUSES = [
+  'COMPLETED',
+  'COMPLETED_WITH_ERRORS',
+  'FAILED',
+  'CANCELLED',
+];
+const TEMPLATE_ACTIVE_ITEM_STATUSES = [
+  'MATCH_PENDING',
+  'MATCHING',
+  'TORRENT_FETCHING',
+  'AUXILIARY_FETCHING',
+  'CONTENT_VERIFYING',
+  'PLAN_PENDING',
+  'EXECUTING',
+  'CLIENT_VERIFYING',
+];
+
+function templateExportState(row: TaskRow): { enabled: boolean; reason: string } {
+  const execution = row.execution;
+  if (!execution) return { enabled: false, reason: '尚未执行，无法导出模板' };
+  if (!TEMPLATE_TERMINAL_EXECUTION_STATUSES.includes(execution.status)) {
+    return { enabled: false, reason: '任务尚未结束，结束后才能导出模板' };
+  }
+  const counts = execution.item_status_counts ?? {};
+  if (TEMPLATE_ACTIVE_ITEM_STATUSES.some((status) => (counts[status] ?? 0) > 0)) {
+    return { enabled: false, reason: '仍有影片在处理中，处理结束后才能导出' };
+  }
+  if ((execution.completed_count ?? 0) < 1) {
+    return { enabled: false, reason: '没有已完成的影片可导出' };
+  }
+  return { enabled: true, reason: '' };
+}
+
+function pickTemplateFile(): void {
+  templateImportInput.value?.click();
+}
+
+async function onTemplateFileSelected(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.pbtemplate')) {
+    ElMessage.warning('请选择 .pbtemplate 模板文件');
+    return;
+  }
+  try {
+    const preview = await previewUnpackTemplateFile(file);
+    templateImportFile.value = file;
+    templateImportFileName.value = file.name;
+    templateImportPreview.value = preview;
+    templateImportVisible.value = true;
+  } catch (caught) {
+    ElMessage.error(toApiProblem(caught).message);
+  }
+}
+
+async function confirmTemplateImport(): Promise<void> {
+  const file = templateImportFile.value;
+  if (!file || templateImporting.value) return;
+  templateImporting.value = true;
+  try {
+    const result = await importUnpackTemplateFile(file);
+    templateImportVisible.value = false;
+    await refresh();
+    draft.templateId = result.template_id;
+    onTemplateChange(result.template_id);
+    ElMessage.success('模板「' + result.name + '」已导入，共 ' + result.seed_count + ' 条种子');
+  } catch (caught) {
+    ElMessage.error(toApiProblem(caught).message);
+  } finally {
+    templateImporting.value = false;
+  }
+}
+
+function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function parseSiteKeysFromProblem(message: string): string[] {
+  const matched = /：([^。]+)。/.exec(message);
+  if (!matched?.[1]) return [];
+  return matched[1]
+    .split(/[,，、]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function exportTemplate(row: TaskRow, siteKey?: string): Promise<void> {
+  const execution = row.execution;
+  if (!execution || exportingDefinitionId.value) return;
+  exportingDefinitionId.value = row.definition.id;
+  try {
+    const result = await exportUnpackExecutionTemplate(execution.id, { siteKey });
+    saveBlob(result.blob, result.filename);
+    const skipped = result.skippedCount > 0 ? '，跳过 ' + result.skippedCount + ' 条' : '';
+    ElMessage.success('已导出 ' + result.seedCount + ' 条种子' + skipped);
+  } catch (caught) {
+    const problem = toApiProblem(caught);
+    if (problem.code === 'UNPACK_TEMPLATE_EXPORT_SITE_AMBIGUOUS') {
+      const options = parseSiteKeysFromProblem(problem.message);
+      if (options.length) {
+        templateExportTarget.value = row;
+        templateExportSiteOptions.value = options;
+        templateExportSite.value = options[0];
+        templateExportPickerVisible.value = true;
+        return;
+      }
+    }
+    ElMessage.error(problem.message);
+  } finally {
+    exportingDefinitionId.value = null;
+  }
+}
+
+async function confirmTemplateExportSite(): Promise<void> {
+  const row = templateExportTarget.value;
+  const siteKey = templateExportSite.value;
+  templateExportPickerVisible.value = false;
+  templateExportTarget.value = null;
+  if (!row || !siteKey) return;
+  await exportTemplate(row, siteKey);
 }
 
 function chooseSource(kind: SourceKind): void {
@@ -1227,6 +1437,7 @@ function createPayload(
       target_downloader_id: draft.targetDownloaderId,
       target_category: draft.targetCategory.trim() || null,
       target_tags: [...new Set(draft.targetTags.map((tag) => tag.trim()).filter(Boolean))],
+      skip_downloader_check: draft.skipDownloaderCheck,
     },
     retry_enabled: draft.retryEnabled,
     max_retries: draft.maxRetries,
@@ -1457,42 +1668,71 @@ async function runDefinition(row: TaskRow): Promise<void> {
   }
 }
 
-async function openExecution(row: TaskRow): Promise<void> {
+function openExecution(row: TaskRow): void {
   const execution = row.execution;
   if (!execution) {
     ElMessage.info('该任务尚未产生执行记录');
     return;
   }
+  executionItemsRequestId += 1;
   activeDefinition.value = row.definition;
-  activeExecution.value = await getUnpackExecution(execution.id);
+  // The task list already carries the latest execution summary. Render the
+  // dialog immediately, then fetch only its first item page in the background.
+  activeExecution.value = execution;
+  executionItems.value = [];
+  itemCursor.value = undefined;
+  itemNextCursor.value = null;
   itemCursorHistory.value = [];
   itemPageSize.value = 20;
   itemPageIndex.value = 1;
   executionItemStatusFilter.value = '';
   executionItemKeyword.value = '';
-  await loadExecutionItems();
   executionVisible.value = true;
+  void loadExecutionItems();
 }
 
 async function loadExecutionItems(cursor?: string): Promise<void> {
-  if (!activeExecution.value) return;
+  const execution = activeExecution.value;
+  if (!execution) return;
+  const executionId = execution.id;
+  const requestId = ++executionItemsRequestId;
   executionLoading.value = true;
   try {
-    const result = await listUnpackExecutionItems(activeExecution.value.id, {
+    const result = await listUnpackExecutionItems(executionId, {
       cursor,
       limit: itemPageSize.value,
       status: (executionItemStatusFilter.value || undefined) as UnpackItemStatus | undefined,
       q: executionItemKeyword.value.trim() || undefined,
     });
+    if (requestId !== executionItemsRequestId || activeExecution.value?.id !== executionId) return;
     itemCursor.value = cursor;
     executionItems.value = result.items;
     itemNextCursor.value = result.next_cursor;
-    activeExecution.value = await getUnpackExecution(activeExecution.value.id);
   } catch (caught) {
-    ElMessage.error(toApiProblem(caught).message);
+    if (requestId === executionItemsRequestId && activeExecution.value?.id === executionId) {
+      ElMessage.error(toApiProblem(caught).message);
+    }
   } finally {
-    executionLoading.value = false;
+    if (requestId === executionItemsRequestId) executionLoading.value = false;
   }
+}
+
+async function refreshExecutionSummary(): Promise<void> {
+  const executionId = activeExecution.value?.id;
+  if (!executionId) return;
+  try {
+    const result = await getUnpackExecution(executionId);
+    if (activeExecution.value?.id === executionId) activeExecution.value = result;
+  } catch (caught) {
+    if (activeExecution.value?.id === executionId) ElMessage.error(toApiProblem(caught).message);
+  }
+}
+
+function syncActiveExecutionFromList(): void {
+  const executionId = activeExecution.value?.id;
+  if (!executionId) return;
+  const latest = executions.value.find((execution) => execution.id === executionId);
+  if (latest) activeExecution.value = latest;
 }
 
 async function nextItemPage(): Promise<void> {
@@ -1523,7 +1763,7 @@ async function applyExecutionItemFilters(): Promise<void> {
 }
 
 async function refreshExecutionItems(): Promise<void> {
-  await loadExecutionItems(itemCursor.value);
+  await Promise.all([loadExecutionItems(itemCursor.value), refreshExecutionSummary()]);
 }
 
 function mediaTitle(item: UnpackExecutionItem): string {
@@ -1555,43 +1795,98 @@ function itemCanReview(item: UnpackExecutionItem): boolean {
 }
 
 function itemCanRetry(item: UnpackExecutionItem): boolean {
-  return ['match', 'resume'].includes(unpackItemRetryAvailability(item));
+  return ['match', 'verification', 'plan', 'resume'].includes(unpackItemRetryAvailability(item));
 }
 
 function itemRetryLabel(item: UnpackExecutionItem): string {
-  if (unpackItemRetryAvailability(item) === 'resume') return '继续执行';
+  const retryAvailability = unpackItemRetryAvailability(item);
+  if (retryAvailability === 'verification') return '重试内容校验';
+  if (retryAvailability === 'plan') return '重试执行计划';
   const state = asRecord(item.auxiliary_state);
   if (
+    retryAvailability === 'resume' &&
     item.status === 'MATCH_ERROR' &&
-    item.has_external_operations &&
     item.last_error_code === 'UNPACK_AUXILIARY_CONFLICT' &&
     state.state === 'DOWNLOADING'
   ) {
     return '核对后续跑';
   }
-  return item.status === 'MATCH_ERROR' &&
+  if (
+    retryAvailability === 'resume' &&
+    item.status === 'MATCH_ERROR' &&
     [
       'DOWNLOADER_UNAVAILABLE',
       'DOWNLOADER_CONNECTION_FAILED',
       'SITE_UNAVAILABLE',
       'SITE_RATE_LIMITED',
+      'SITE_CIRCUIT_OPEN',
     ].includes(item.last_error_code ?? '') &&
     state.state === 'DOWNLOADING'
-    ? '继续补齐'
-    : '重新匹配';
+  ) {
+    return '继续补齐';
+  }
+  if (retryAvailability === 'resume') return '继续执行';
+  return '重新匹配';
 }
 
 async function retryItem(item: UnpackExecutionItem): Promise<void> {
   try {
-    const result = await retryUnpackItemMatch(item.id, item.version);
+    const retryAvailability = unpackItemRetryAvailability(item);
+    const result =
+      retryAvailability === 'verification'
+        ? await retryUnpackItemContentVerification(item.id, item.version)
+        : await retryUnpackItemMatch(item.id, item.version);
     ElMessage.success(
-      result.item_status === 'AUXILIARY_FETCHING'
-        ? '已恢复原有辅助文件补齐，将校验已下载文件，不会重复添加种子'
-        : result.item_status === 'EXECUTING'
-          ? '已保留原执行计划和操作记录，等待执行器重新核对后继续'
-          : '已重新进入匹配队列',
+      retryAvailability === 'verification'
+        ? result.item_status === 'MATCH_PENDING'
+          ? '原候选已失效，已重新进入匹配队列；匹配成功后将重新校验内容'
+          : '已保留原候选，重新进入内容校验队列'
+        : retryAvailability === 'plan'
+          ? '已保留原候选和内容校验结果，重新进入执行计划生成队列'
+          : result.item_status === 'AUXILIARY_FETCHING'
+            ? '已恢复原有辅助文件补齐，将校验已下载文件，不会重复添加种子'
+            : result.item_status === 'EXECUTING'
+              ? '已保留原执行计划和操作记录，等待执行器重新核对后继续'
+              : result.item_status === 'PLAN_PENDING'
+                ? '已保留原候选和执行计划，重新进入文件落位队列'
+                : '已重新进入匹配队列',
     );
-    await loadExecutionItems(itemCursor.value);
+    await Promise.all([loadExecutionItems(itemCursor.value), refreshExecutionSummary()]);
+  } catch (caught) {
+    ElMessage.error(toApiProblem(caught).message);
+  }
+}
+
+async function reconcileItem(item: UnpackExecutionItem): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      '会按磁盘与下载器的实际状态核对上次结果未确认的文件/种子操作：确认未生效的会重新执行，已生效的记为成功，无法证明的保持待人工核对。是否继续？',
+      '对账并继续执行',
+      { type: 'warning', confirmButtonText: '开始对账', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    const result = await reconcileUnpackExecutionItem(item.id, item.version);
+    if (result.manual_count > 0) {
+      ElMessage.warning(
+        '已确认 ' +
+          result.resolved_count +
+          ' 项，仍有 ' +
+          result.manual_count +
+          ' 项无法自动证明，请查看执行明细人工核对',
+      );
+    } else {
+      const nextStep =
+        result.resumed_stage === 'CONTENT_VERIFIED'
+          ? '按当前下载器配置重新生成执行计划'
+          : result.resumed_stage === 'MATERIALIZING'
+            ? '重新执行文件落位'
+            : '继续辅种流程';
+      ElMessage.success('对账完成：' + result.resolved_count + ' 项已确认，影片将' + nextStep);
+    }
+    await Promise.all([loadExecutionItems(itemCursor.value), refreshExecutionSummary()]);
   } catch (caught) {
     ElMessage.error(toApiProblem(caught).message);
   }
@@ -1637,6 +1932,7 @@ async function deleteExecutionItem(item: UnpackExecutionItem): Promise<void> {
     itemPageIndex.value = 1;
     await loadExecutionItems();
     await refresh();
+    syncActiveExecutionFromList();
   } catch (error) {
     ElMessage.error(toApiProblem(error).message);
   }
@@ -1973,6 +2269,7 @@ async function submitReview(decision: 'APPROVE' | 'NO_MATCH'): Promise<void> {
     reviewVisible.value = false;
     await loadExecutionItems(itemCursor.value);
     await refresh();
+    syncActiveExecutionFromList();
   } catch (caught) {
     ElMessage.error(toApiProblem(caught).message);
   } finally {
@@ -2054,7 +2351,7 @@ onMounted(() => {
           <el-option label="待人工审核" value="REVIEW_REQUIRED" />
           <el-option label="内容校验中" value="CONTENT_VERIFYING" />
           <el-option label="执行中" value="EXECUTING" />
-          <el-option label="下载器校验中" value="CLIENT_VERIFYING" />
+          <el-option label="下载器处理中" value="CLIENT_VERIFYING" />
           <el-option label="已完成" value="COMPLETED" />
           <el-option label="完成但有异常" value="COMPLETED_WITH_ERRORS" />
           <el-option label="失败" value="FAILED" />
@@ -2151,16 +2448,32 @@ onMounted(() => {
               <el-button v-if="showViewAction(row)" link type="primary" @click="openExecution(row)">
                 <Eye :size="14" />查看
               </el-button>
-              <el-button
-                v-if="showRetryAction(row)"
-                link
-                type="warning"
-                :loading="retryingDefinitionId === row.definition.id"
-                :disabled="retryingDefinitionId !== null"
-                @click="openRetryDialog(row)"
-                ><RotateCcw :size="14" />重试</el-button
-              >
               <template v-if="showInlineDefinitionActions">
+                <el-button
+                  v-if="showRetryAction(row)"
+                  link
+                  type="warning"
+                  :loading="retryingDefinitionId === row.definition.id"
+                  :disabled="retryingDefinitionId !== null"
+                  @click="openRetryDialog(row)"
+                  ><RotateCcw :size="14" />重试</el-button
+                >
+                <el-tooltip
+                  :disabled="templateExportState(row).enabled"
+                  :content="templateExportState(row).reason"
+                  placement="top"
+                >
+                  <span>
+                    <el-button
+                      link
+                      type="primary"
+                      :disabled="!templateExportState(row).enabled"
+                      :loading="exportingDefinitionId === row.definition.id"
+                      @click="exportTemplate(row)"
+                      >导出模板</el-button
+                    >
+                  </span>
+                </el-tooltip>
                 <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
                 <el-button
                   link
@@ -2183,10 +2496,18 @@ onMounted(() => {
                 </el-button>
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item command="edit">编辑</el-dropdown-item>
+                    <el-dropdown-item v-if="showRetryAction(row)" command="retry"
+                      >重试</el-dropdown-item
+                    >
+                    <el-dropdown-item
+                      command="export-template"
+                      :disabled="!templateExportState(row).enabled"
+                      :title="templateExportState(row).reason"
+                      >导出模板</el-dropdown-item
+                    >
+                    <el-dropdown-item command="edit" divided>编辑</el-dropdown-item>
                     <el-dropdown-item
                       command="delete"
-                      divided
                       :disabled="!definitionCanDelete(row)"
                       :title="definitionDeleteDisabledReason(row)"
                       >删除</el-dropdown-item
@@ -2220,14 +2541,18 @@ onMounted(() => {
             clearable
             filterable
             style="width: 100%"
-            placeholder="选择要重新匹配的影片状态（可多选）"
+            placeholder="选择要处理的影片状态（可多选）"
             :disabled="retryingDefinitionId !== null"
             aria-label="拆包状态"
           >
             <el-option
-              v-for="statusOption in retryStatusOptions"
+              v-for="statusOption in retryStatusChoices"
               :key="statusOption.value"
-              :label="statusOption.label"
+              :label="
+                statusOption.count
+                  ? `${statusOption.label}（${statusOption.count}）`
+                  : statusOption.label
+              "
               :value="statusOption.value"
             />
           </el-select>
@@ -2241,6 +2566,54 @@ onMounted(() => {
           @click="retryDefinition"
           >重试</el-button
         >
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="templateImportVisible" title="导入拆包模板" width="min(560px, 94vw)">
+      <div v-if="templateImportPreview" class="template-import-preview">
+        <p><b>文件：</b>{{ templateImportFileName }}</p>
+        <p><b>模板名称：</b>{{ templateImportPreview.resolved_name }}</p>
+        <p v-if="templateImportPreview.description">
+          <b>描述：</b>{{ templateImportPreview.description }}
+        </p>
+        <p><b>绑定站点：</b>{{ templateImportPreview.site_key }}</p>
+        <p>
+          <b>内容：</b>{{ templateImportPreview.seed_count }} 个种子 ·
+          {{ templateImportPreview.mapped_media_count }} 个目录映射
+        </p>
+        <p v-if="templateImportPreview.renamed">
+          <b>命名：</b>已存在同名模板，将保存为「{{ templateImportPreview.resolved_name }}」
+        </p>
+        <el-alert
+          v-for="warning in templateImportPreview.warnings"
+          :key="warning"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="warning"
+        />
+      </div>
+      <template #footer>
+        <el-button @click="templateImportVisible = false">取消</el-button>
+        <el-button type="primary" :loading="templateImporting" @click="confirmTemplateImport"
+          >确认导入</el-button
+        >
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="templateExportPickerVisible" title="选择导出站点" width="min(420px, 94vw)">
+      <p class="dialog-help">该任务的完成影片来自多个站点，请选择要导出哪一个站点的模板。</p>
+      <el-select v-model="templateExportSite" style="width: 100%">
+        <el-option
+          v-for="siteKey in templateExportSiteOptions"
+          :key="siteKey"
+          :label="siteKey"
+          :value="siteKey"
+        />
+      </el-select>
+      <template #footer>
+        <el-button @click="templateExportPickerVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmTemplateExportSite">导出</el-button>
       </template>
     </el-dialog>
 
@@ -2335,6 +2708,19 @@ onMounted(() => {
               </span>
               <span class="trigger-card-radio" aria-hidden="true"></span>
             </button>
+            <button
+              type="button"
+              class="trigger-card is-placeholder"
+              disabled
+              aria-disabled="true"
+              title="模板市场正在开发中：后续可在这里浏览云端与社区共享的模板，并一键导入到本地模板库"
+            >
+              <span class="trigger-card-icon"><Globe :size="20" /></span>
+              <span class="trigger-card-copy">
+                <b>模板市场<span class="trigger-card-badge">开发中</span></b>
+                <small>浏览并导入云端与社区模板，暂未开放。</small>
+              </span>
+            </button>
           </div>
 
           <el-form-item
@@ -2365,21 +2751,32 @@ onMounted(() => {
           </el-form-item>
 
           <el-form-item v-if="draft.taskKind === 'TEMPLATE'" label="拆包模板" required>
-            <el-select
-              v-model="draft.templateId"
-              filterable
-              clearable
-              placeholder="请选择已完成入库的模板"
-              style="width: 100%"
-              @change="onTemplateChange"
-            >
-              <el-option
-                v-for="template in readyTemplates"
-                :key="template.id"
-                :label="templateOptionLabel(template)"
-                :value="template.id"
+            <div class="template-picker-row">
+              <el-select
+                v-model="draft.templateId"
+                filterable
+                clearable
+                placeholder="请选择已完成入库的模板"
+                class="template-picker-select"
+                @change="onTemplateChange"
+              >
+                <el-option
+                  v-for="template in readyTemplates"
+                  :key="template.id"
+                  :label="templateOptionLabel(template)"
+                  :value="template.id"
+                  :disabled="template.site_ids.length === 0"
+                />
+              </el-select>
+              <el-button :loading="templateImporting" @click="pickTemplateFile">导入模板</el-button>
+              <input
+                ref="templateImportInput"
+                type="file"
+                accept=".pbtemplate"
+                class="hidden-file-input"
+                @change="onTemplateFileSelected"
               />
-            </el-select>
+            </div>
             <small
               >官方模板绑定唯一站点；模板匹配时优先使用已记录的影片目录—种子关系，但仍执行候选评分与内容验证。</small
             >
@@ -2395,7 +2792,7 @@ onMounted(() => {
               </span>
             </div>
             <small v-if="!readyTemplates.length"
-              >暂无可用模板。请先通过受控模板导入接口完成种子元数据入库。</small
+              >暂无可用模板。可以导入其他实例导出的模板文件，或通过受控模板导入接口完成种子元数据入库。</small
             >
           </el-form-item>
 
@@ -2638,6 +3035,37 @@ onMounted(() => {
             </div>
             <small v-if="selectedTargetDownloader?.type === 'TRANSMISSION'" class="hint">
               Transmission 不区分分类和标签，分类与标签会作为标签一并写入。
+            </small>
+          </section>
+
+          <section class="form-section skip-downloader-check-panel">
+            <div class="skip-downloader-check-row">
+              <div class="skip-downloader-check-copy">
+                <b>跳过下载器检查</b>
+                <p>
+                  开启后，只要 PackBreaker
+                  已有内容证据（逐片全量校验，或按确定性规则抽样校验）就跳过下载器的重复校验。
+                </p>
+              </div>
+              <el-switch
+                v-model="draft.skipDownloaderCheck"
+                active-text="开启"
+                inactive-text="关闭"
+                aria-label="跳过下载器检查"
+              />
+            </div>
+            <small v-if="selectedTargetDownloader?.type === 'TRANSMISSION'">
+              Transmission 不支持单任务原生跳检；开启后仅跳过额外 VERIFY，启动时仍可能执行
+              Transmission 自身检查。
+            </small>
+            <small v-else>
+              QB 仅在 API 支持且存放方式满足安全条件时启用
+              skip_checking；不满足条件会自动回退为正常检查。
+            </small>
+            <small v-if="draft.skipDownloaderCheck" class="hint">
+              注意：抽样校验只覆盖“首片 + 末片 +
+              均匀间隔”的部分分片；开启跳过后，未抽中的分片损坏不会被下载器发现。
+              如果站点对坏种敏感，请关闭此项让下载器做全量校验。
             </small>
           </section>
         </div>
@@ -3114,91 +3542,7 @@ onMounted(() => {
         </div>
       </template>
       <div v-loading="diagnosticsLoading" class="execution-detail-body">
-        <template v-if="diagnostics && detailSummary">
-          <div class="execution-detail-overview" aria-label="执行结果概览">
-            <div
-              class="detail-summary-card"
-              :class="{
-                result: [
-                  'EXECUTION_ERROR',
-                  'MATCH_ERROR',
-                  'MATCH_TIMEOUT',
-                  'CONTENT_MISMATCH',
-                ].includes(diagnostics.status),
-              }"
-              data-detail-card="result"
-            >
-              <div class="detail-card-icon"><Info :size="20" /></div>
-              <div class="detail-card-copy">
-                <small>当前结果</small>
-                <b>{{ unpackItemStatusLabel(diagnostics.status) }}</b>
-                <span>来自本次任务记录</span>
-              </div>
-            </div>
-            <div class="detail-summary-card" data-detail-card="stage">
-              <div class="detail-card-icon"><FolderOpen :size="20" /></div>
-              <div class="detail-card-copy">
-                <small>停止阶段</small>
-                <b>{{ unpackExecutionStageLabel(diagnostics.execution_stage) }}</b>
-                <span>历史记录的最后阶段</span>
-              </div>
-            </div>
-            <div
-              class="detail-summary-card"
-              :class="{ caution: diagnostics.requires_manual_reconciliation }"
-              data-detail-card="risk"
-            >
-              <div class="detail-card-icon"><Info :size="20" /></div>
-              <div class="detail-card-copy">
-                <small>风险状态</small>
-                <b>{{
-                  diagnostics.requires_manual_reconciliation ? '需要人工核对' : '未标记强制核对'
-                }}</b>
-                <span>不代表实时核验已通过</span>
-              </div>
-            </div>
-            <div class="detail-summary-card" data-detail-card="advice">
-              <div class="detail-card-icon"><Info :size="20" /></div>
-              <div class="detail-card-copy">
-                <small>可执行建议</small>
-                <b>{{ detailSummary.recommendationLabel }}</b>
-                <span>不会自动操作下载器</span>
-              </div>
-            </div>
-          </div>
-
-          <section
-            class="execution-detail-explanation"
-            :class="{
-              warning: diagnostics.requires_manual_reconciliation,
-              'is-success':
-                !diagnostics.last_error_code && !diagnostics.requires_manual_reconciliation,
-            }"
-            aria-label="执行结果说明"
-          >
-            <div class="detail-explanation-heading">
-              <Info :size="20" />
-              <h3>{{ detailSummary.title }}</h3>
-            </div>
-            <p>{{ detailSummary.description }}</p>
-            <p class="detail-recommendation"><b>建议：</b>{{ detailSummary.recommendation }}</p>
-            <p v-if="diagnostics.acceptance_read_only" class="detail-security-warning">
-              这是只读验收任务：不可创建文件，也不可向下载器添加、校验或启动种子。
-            </p>
-            <p
-              v-if="diagnostics.plan_status === 'BLOCKED' || diagnostics.plan_status === 'INVALID'"
-              class="detail-security-warning"
-            >
-              上次执行计划存在问题：{{
-                diagnostics.plan_blocked_reasons.map(unpackPlanBlockReasonLabel).join('、') ||
-                unpackPlanStatusLabel(diagnostics.plan_status)
-              }}。不能凭历史记录跳过安全检查。
-            </p>
-            <p v-if="diagnostics.requires_manual_reconciliation" class="detail-security-warning">
-              部分文件或下载器操作的结果仍不明确，必须先核对，不允许直接重复执行这些操作。
-            </p>
-          </section>
-
+        <template v-if="diagnostics">
           <section class="execution-detail-stages" aria-label="执行阶段">
             <div class="detail-section-title">
               <h3>执行阶段</h3>
@@ -3340,16 +3684,33 @@ onMounted(() => {
         <aside>
           <b>当前选择</b>
           <p>{{ selectedTreeNode?.path || '请选择目录节点' }}</p>
-          <small>目录选择使用后端授权根与 opaque token；保存时仍会重新校验路径权限。</small>
+          <small>目录树可浏览当前进程有读取权限的目录；任务创建与执行仍会校验目录操作权限。</small>
         </aside>
       </div>
     </el-dialog>
 
-    <el-dialog
-      v-model="executionVisible"
-      :title="'执行详情 · ' + (activeDefinition?.name ?? '')"
-      width="min(1180px, 97vw)"
-    >
+    <el-dialog v-model="executionVisible" width="min(1180px, 97vw)">
+      <template #header>
+        <div class="execution-dialog-header">
+          <strong class="execution-dialog-title" :title="activeDefinition?.name ?? ''">
+            执行详情 · {{ activeDefinition?.name ?? '' }}
+          </strong>
+          <div class="execution-matching-notice-wrap">
+            <el-tooltip
+              content="匹配成功的影片会立即逐条进入种子内容验证、文件落位与做种，不再等待同一任务内其它影片匹配结束。自动匹配成功无需人工审核；匹配失败或需要人工处理的影片仍按原流程处理。存在未处理的待人工审核影片时，落位与做种会等待审核完成。"
+              placement="bottom-start"
+            >
+              <el-alert
+                type="info"
+                title="匹配阶段：匹配成功的影片逐条进入种子内容验证；自动匹配成功无需人工审核。"
+                :closable="false"
+                show-icon
+                class="execution-matching-notice"
+              />
+            </el-tooltip>
+          </div>
+        </div>
+      </template>
       <div v-if="activeExecution" class="execution-detail">
         <div class="pipeline">
           <div
@@ -3367,6 +3728,14 @@ onMounted(() => {
           <div>
             <b>{{ activeExecution.total_count }}</b
             ><small>影片总数</small>
+          </div>
+          <div>
+            <b>{{ activeExecution.match_pending_count ?? 0 }}</b
+            ><small>待匹配</small>
+          </div>
+          <div>
+            <b>{{ activeExecution.matching_count ?? 0 }}</b
+            ><small>匹配中</small>
           </div>
           <div>
             <b>{{ activeExecution.matched_auto_count }}</b
@@ -3387,6 +3756,14 @@ onMounted(() => {
           <div>
             <b>{{ activeExecution.timeout_count }}</b
             ><small>匹配超时</small>
+          </div>
+          <div>
+            <b>{{ activeExecution.completed_count }}</b
+            ><small>已完成</small>
+          </div>
+          <div>
+            <b>{{ activeExecution.executing_count }}</b
+            ><small>执行中</small>
           </div>
           <div>
             <b>{{ activeExecution.error_count + activeExecution.content_mismatch_count }}</b
@@ -3410,6 +3787,15 @@ onMounted(() => {
           ><span
             >完成 {{ activeExecution.completed_count }} / {{ activeExecution.total_count }}</span
           >
+          <el-tooltip
+            v-if="activeExecution.review_count > 0 && activeExecution.status !== 'REVIEW_REQUIRED'"
+            content="待人工审核只阻塞该影片本身，其它已匹配的影片会继续校验、落位和做种"
+            placement="top"
+          >
+            <el-tag type="warning" size="small"
+              >含 {{ activeExecution.review_count }} 条待审核</el-tag
+            >
+          </el-tooltip>
         </div>
         <div class="execution-item-filters">
           <el-select
@@ -3419,12 +3805,16 @@ onMounted(() => {
             style="width: 170px"
             @change="applyExecutionItemFilters"
           >
-            <el-option label="无匹配" value="NO_MATCH" />
+            <el-option label="待匹配" value="MATCH_PENDING" />
             <el-option label="匹配中" value="MATCHING" />
+            <el-option label="无匹配" value="NO_MATCH" />
             <el-option label="匹配错误" value="MATCH_ERROR" />
+            <el-option label="校验错误" value="CONTENT_VERIFY_ERROR" />
             <el-option label="匹配超时" value="MATCH_TIMEOUT" />
             <el-option label="人工审核" value="REVIEW_REQUIRED" />
             <el-option label="自动匹配" value="MATCHED_AUTO" />
+            <el-option label="执行中" value="EXECUTING" />
+            <el-option label="客户端校验中" value="CLIENT_VERIFYING" />
             <el-option label="已完成" value="COMPLETED" />
             <el-option label="执行异常" value="EXECUTION_ERROR" />
           </el-select>
@@ -3491,9 +3881,9 @@ onMounted(() => {
               </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="400" fixed="right">
+          <el-table-column label="操作" width="300" fixed="right">
             <template #default="{ row }">
-              <div class="task-row-actions">
+              <div class="task-row-actions execution-item-actions">
                 <el-button
                   v-if="row.has_external_operations || unpackItemExternalRiskLabel(row)"
                   link
@@ -3508,17 +3898,36 @@ onMounted(() => {
                     title="本轮候选队列中的最高匹配度，仅供审核参考，不代表已完成内容校验"
                     >最高 {{ (row.highest_candidate_score_bps / 100).toFixed(1) }}%</span
                   >
-                  <el-button link type="primary" @click="openReview(row)">审核</el-button>
+                  <el-tooltip
+                    :content="
+                      row.match_origin === 'AUTO' && row.status !== 'REVIEW_REQUIRED'
+                        ? '自动匹配结果会自动进入内容验证；此处仅用于主动更换候选，不需要人工确认。'
+                        : row.status === 'REVIEW_REQUIRED'
+                          ? '该影片需要人工处理，请选择并确认候选。'
+                          : '可在外部操作开始前主动更换候选。'
+                    "
+                    placement="top"
+                  >
+                    <el-button link type="primary" @click="openReview(row)">
+                      {{
+                        row.match_origin === 'AUTO' && row.status !== 'REVIEW_REQUIRED'
+                          ? '更换候选'
+                          : '审核'
+                      }}
+                    </el-button>
+                  </el-tooltip>
                 </div>
                 <el-button v-if="itemCanRetry(row)" link type="warning" @click="retryItem(row)"
                   ><RotateCcw :size="14" />{{ itemRetryLabel(row) }}</el-button
                 >
                 <el-tooltip
                   v-else-if="unpackItemRetryAvailability(row) === 'reconcile'"
-                  content="这部影片已经进行过文件或下载器操作，现有记录不足以证明可以安全继续，请先查看执行明细。"
+                  :content="
+                    row.retry_reason || '当前执行记录不满足安全恢复条件，请先查看执行明细。'
+                  "
                   placement="top"
                 >
-                  <span class="blocked-retry"><el-button link disabled>暂不可重试</el-button></span>
+                  <el-button link type="warning" @click="reconcileItem(row)">对账并继续</el-button>
                 </el-tooltip>
                 <el-button
                   link
@@ -3549,15 +3958,20 @@ onMounted(() => {
       <template #footer><el-button @click="executionVisible = false">关闭</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="reviewVisible" width="min(1040px, 96vw)">
+    <el-dialog v-model="reviewVisible" class="unpack-review-dialog" width="min(1040px, 96vw)">
       <template #header>
         <div class="review-dialog-header">
           <strong class="review-dialog-title"
-            >人工审核候选 · {{ reviewItem ? mediaTitle(reviewItem) : '' }}</strong
+            >{{
+              reviewItem?.match_origin === 'AUTO' && reviewItem.status !== 'REVIEW_REQUIRED'
+                ? '更换匹配候选'
+                : '人工审核候选'
+            }}
+            · {{ reviewItem ? mediaTitle(reviewItem) : '' }}</strong
           >
         </div>
       </template>
-      <div v-loading="reviewLoading">
+      <div v-loading="reviewLoading" class="review-body">
         <div v-if="reviewItem" class="source-box">
           <strong>{{ mediaTitle(reviewItem) }}</strong>
           <div class="source-meta">
@@ -3566,10 +3980,19 @@ onMounted(() => {
         </div>
         <div class="review-heading">
           <div class="review-heading-description">
-            <b>候选列表</b><small>默认选中匹配度最高的一条，但必须点击确认后才会继续。</small>
+            <b>候选列表</b
+            ><small>{{
+              reviewItem?.match_origin === 'AUTO' && reviewItem.status !== 'REVIEW_REQUIRED'
+                ? '自动匹配结果会自动进入内容验证；只有需要更换候选时才需要确认。'
+                : '默认选中匹配度最高的一条，但必须点击确认后才会继续。'
+            }}</small>
           </div>
           <div class="review-heading-actions">
-            <el-tag type="warning">人工审核</el-tag>
+            <el-tag type="warning">{{
+              reviewItem?.match_origin === 'AUTO' && reviewItem.status !== 'REVIEW_REQUIRED'
+                ? '主动更换候选'
+                : '人工审核'
+            }}</el-tag>
             <el-button
               type="primary"
               plain
@@ -3830,6 +4253,25 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.template-picker-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  align-items: center;
+}
+.template-picker-select {
+  flex: 1;
+  min-width: 0;
+}
+.hidden-file-input {
+  display: none;
+}
+.template-import-preview p {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-all;
+}
 .v2-task-center {
   display: grid;
   gap: 18px;
@@ -3854,6 +4296,44 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+.execution-dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-right: 34px;
+}
+.execution-dialog-title {
+  flex: 0 1 auto;
+  max-width: 32%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--el-text-color-primary);
+  font-size: 18px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution-matching-notice-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.execution-matching-notice-wrap :deep(.el-alert) {
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 4px 8px;
+}
+.execution-matching-notice-wrap :deep(.el-alert__content) {
+  min-width: 0;
+  overflow: hidden;
+}
+.execution-matching-notice-wrap :deep(.el-alert__title) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 20px;
 }
 .execution-detail-body {
   display: grid;
@@ -4150,6 +4630,37 @@ onMounted(() => {
     justify-content: flex-end;
   }
 }
+:deep(.el-dialog.unpack-review-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+  overflow: hidden;
+  margin-top: 6vh !important;
+}
+:deep(.el-dialog.unpack-review-dialog .el-dialog__header),
+:deep(.el-dialog.unpack-review-dialog .el-dialog__footer) {
+  flex: 0 0 auto;
+}
+:deep(.el-dialog.unpack-review-dialog .el-dialog__body) {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(88vh - 168px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+.review-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.review-body > .source-box,
+.review-body > .review-heading,
+.review-body > :deep(.el-empty) {
+  flex: 0 0 auto;
+}
 .review-dialog-header {
   display: flex;
   align-items: center;
@@ -4343,7 +4854,9 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  /* 放不下时换行而不是向左溢出被单元格裁掉（否则最左侧的「查看」最先被吃掉）。 */
+  flex-wrap: wrap;
+  gap: 6px 8px;
   width: 100%;
   min-width: 0;
   white-space: nowrap;
@@ -4351,6 +4864,18 @@ onMounted(() => {
 .task-row-actions :deep(.el-button) {
   flex-shrink: 0;
   margin: 0;
+}
+.execution-item-actions {
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 2px;
+  white-space: nowrap;
+}
+.execution-item-actions :deep(.el-button.is-link) {
+  padding: 0 2px !important;
+}
+.execution-item-actions .review-action-group {
+  gap: 2px;
 }
 .task-more-trigger {
   width: 32px;
@@ -4584,7 +5109,14 @@ onMounted(() => {
 }
 .candidate-list {
   display: grid;
+  flex: 1 1 auto;
+  align-content: start;
   gap: 10px;
+  min-height: 0;
+  padding-right: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .candidate-card {
   display: grid;
@@ -4800,6 +5332,8 @@ onMounted(() => {
   gap: 12px;
   width: 100%;
   min-width: 0;
+  /* 四张卡片保持等高：文案行数不同也不影响外观一致。 */
+  min-height: 88px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -4820,6 +5354,30 @@ onMounted(() => {
   border-color: var(--blue);
   background: var(--blue-soft);
   box-shadow: inset 0 0 0 1px var(--blue);
+}
+/* 占位卡片：模板市场等尚未开放的能力，只做预告不可选择。 */
+.trigger-card.is-placeholder {
+  border-style: dashed;
+  background: var(--canvas);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+.trigger-card.is-placeholder:hover {
+  border-color: var(--line);
+}
+.trigger-card.is-placeholder .trigger-card-icon {
+  color: var(--muted);
+}
+.trigger-card-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  vertical-align: 1px;
 }
 .trigger-card-icon {
   display: grid;
@@ -4905,6 +5463,35 @@ onMounted(() => {
 }
 .wizard-source-target .form-section {
   padding: 15px;
+}
+.skip-downloader-check-panel {
+  display: grid;
+  gap: 8px;
+}
+.skip-downloader-check-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.skip-downloader-check-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.skip-downloader-check-copy b {
+  font-size: 14px;
+}
+.skip-downloader-check-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.skip-downloader-check-panel > small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .wizard-section-title {
   display: flex;

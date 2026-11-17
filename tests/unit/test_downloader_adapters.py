@@ -601,14 +601,27 @@ async def test_qbittorrent_skip_checking_is_blocked_on_webapi_216() -> None:
     assert calls == ["/api/v2/app/webapiVersion"]
 
 
-def test_qbittorrent_request_rejects_skip_checking_without_full_verification() -> None:
-    with pytest.raises(ValueError, match="FULL_VERIFIED"):
+def test_qbittorrent_request_rejects_skip_checking_without_content_evidence() -> None:
+    with pytest.raises(ValueError, match="内容证据等级"):
         QbittorrentAddRequest(
             torrent_content=b"synthetic-torrent-payload",
             save_path="/downloads/seed",
             verification_level=VerificationLevel.CLIENT_CHECK_REQUIRED,
             skip_checking=True,
         )
+
+
+def test_qbittorrent_request_accepts_sampled_verification_for_skip_checking() -> None:
+    """抽样证据与逐片全量同等放行；用户显式勾选即代表接受抽样边界。"""
+
+    request = QbittorrentAddRequest(
+        torrent_content=b"synthetic-torrent-payload",
+        save_path="/downloads/seed",
+        verification_level=VerificationLevel.SAMPLED_VERIFIED,
+        skip_checking=True,
+    )
+
+    assert request.skip_checking is True
 
 
 @pytest.mark.asyncio

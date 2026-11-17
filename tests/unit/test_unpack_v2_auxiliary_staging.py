@@ -14,6 +14,7 @@ from backend.app.application.downloaders import QbittorrentWriteBinding
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
 from backend.app.application.unpack_auxiliary import UnpackAuxiliaryStagingService
+from backend.app.application.unpack_manual_torrents import ManualTorrentStore
 from backend.app.domain.downloader import PathMappingRule
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.site_adapter import SiteAdapter, TorrentPayload
@@ -85,9 +86,11 @@ class _FakeSite:
         self._torrent = torrent
         self.transient_error = False
         self.delay_seconds = 0.0
+        self.calls: list[str] = []
 
     async def fetch_torrent(self, torrent_id: str) -> TorrentPayload:
         assert torrent_id == "torrent-1"
+        self.calls.append(torrent_id)
         if self.delay_seconds:
             await asyncio.sleep(self.delay_seconds)
         if self.transient_error:
@@ -260,6 +263,7 @@ def _fixture(
     tmp_path: Path,
     *,
     mapped_root: Path | None = None,
+    cache_torrent: bool = False,
 ) -> tuple[
     UnpackAuxiliaryStagingService,
     sessionmaker[Session],
@@ -278,6 +282,7 @@ def _fixture(
     snapshot = current_file_snapshot(source)
     torrent = _torrent(movie, nfo)
     meta = parse_torrent(torrent)
+    cached_torrent_key = ManualTorrentStore(data_root).store(torrent) if cache_torrent else None
 
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -396,6 +401,11 @@ def _fixture(
                     "adapter_site_id": "fake-site",
                     "site_config_id": "site-config-1",
                     "site_config_version": 7,
+                    **(
+                        {"verified_torrent_storage_key": cached_torrent_key}
+                        if cached_torrent_key is not None
+                        else {}
+                    ),
                 },
                 created_at=now,
             )
@@ -422,13 +432,37 @@ def _fixture(
         adapter=cast(QbittorrentWriteAdapter, fake_qb),
         data_root=data_root,
     )
+    site = _FakeSite(torrent)
     service = UnpackAuxiliaryStagingService(
         factory,
-        _SiteProvider(_FakeSite(torrent)),
+        _SiteProvider(site),
         _DownloaderProvider(binding),
         path_scope=AuthorizedPathScope.legacy_only(legacy_data_root=data_root),
     )
     return service, factory, fake_qb, data_root
+
+
+def test_auxiliary_stage_reuses_content_verified_torrent_without_site_request(
+    tmp_path: Path,
+) -> None:
+    service, _factory, fake_qb, _data_root = _fixture(tmp_path, cache_torrent=True)
+    site = cast(_SiteProvider, service._site_provider)._site
+
+    asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert site.calls == []
+    assert fake_qb.calls == ["add", "select", "start"]
+
+
+def test_auxiliary_scheduler_keeps_recovering_after_parent_enters_execution(tmp_path: Path) -> None:
+    service, factory, _fake_qb, _data_root = _fixture(tmp_path)
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        execution.status = UnpackExecutionStatus.EXECUTING.value
+        session.commit()
+
+    assert service.list_auxiliary_execution_ids() == ("execution-1",)
 
 
 @pytest.mark.parametrize("tamper", ("unselected_site", "reference_site", "reference_torrent"))
@@ -463,26 +497,14 @@ def test_auxiliary_candidate_identity_must_match_frozen_execution_before_staging
         assert session.scalar(select(UnpackExternalOperationJournal.id)) is None
 
 
-@pytest.mark.parametrize(
-    ("phase", "invalidation"),
-    (
-        ("PENDING_FETCH", "status"),
-        ("DOWNLOADING", "status"),
-        ("DOWNLOADING", "version"),
-        ("DOWNLOADING", "candidate"),
-    ),
-)
+@pytest.mark.parametrize("invalidation", ("status", "version", "candidate"))
 def test_auxiliary_paused_site_fetch_cannot_write_after_item_is_invalidated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    phase: str,
     invalidation: str,
 ) -> None:
-    """A worker paused on a tracker read must not write for a changed item."""
+    """A worker paused on the initial tracker read must not write for a changed item."""
     service, factory, fake_qb, data_root = _fixture(tmp_path)
-    if phase == "DOWNLOADING":
-        asyncio.run(service.advance_next_batch("execution-1"))
-        assert fake_qb.calls == ["add", "select", "start"]
     old_calls = list(fake_qb.calls)
     with factory() as session:
         old_journal_count = len(session.scalars(select(UnpackExternalOperationJournal.id)).all())
@@ -517,8 +539,7 @@ def test_auxiliary_paused_site_fetch_cannot_write_after_item_is_invalidated(
 
     asyncio.run(interleave())
     assert fake_qb.calls == old_calls
-    if phase == "PENDING_FETCH":
-        assert not (data_root / ".packbreaker-staging").exists()
+    assert not (data_root / ".packbreaker-staging").exists()
     with factory() as session:
         assert (
             len(session.scalars(select(UnpackExternalOperationJournal.id)).all())
@@ -982,28 +1003,23 @@ def test_auxiliary_poll_survives_temporary_site_download_500_without_readding(
     site.transient_error = True
 
     pending = asyncio.run(service.advance_next_batch("execution-1"))
-    assert pending.downloading_count == 1
+    assert pending.downloading_count == 0
+    assert pending.verified_count == 1
     assert pending.error_count == 0
-    assert fake_qb.calls == ["add", "select", "start"]
+    assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+    assert site.calls == ["torrent-1"]
     with factory() as session:
         item = session.get(UnpackExecutionItem, "item-1")
         assert item is not None
-        assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
-        assert item.auxiliary_state is not None
-        assert item.auxiliary_state["state"] == "DOWNLOADING"
+        assert item.status == UnpackItemStatus.CONTENT_VERIFIED.value
         assert (
             session.scalar(
                 select(UnpackExternalOperationJournal.id).where(
                     UnpackExternalOperationJournal.operation_type == "UNPACK_AUX_TORRENT_STOP"
                 )
             )
-            is None
+            is not None
         )
-
-    site.transient_error = False
-    resumed = asyncio.run(service.advance_next_batch("execution-1"))
-    assert resumed.verified_count == 1
-    assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
     assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
 
 
@@ -1022,33 +1038,36 @@ def test_auxiliary_fetch_deadline_preserves_state_and_retries_on_next_worker_pas
     service._fetch_timeout_seconds = 0.001
 
     # asyncio.timeout() raises builtin TimeoutError, not SiteAdapterError.
-    # A single slow site must not crash the auxiliary execution worker.
+    # A slow first fetch must not crash the worker; after the first successful
+    # fetch, later polls use the persisted torrent and do not contact the site.
     report = asyncio.run(service.advance_next_batch("execution-1"))
     assert report.error_count == 0
-    assert fake_qb.calls == (["add", "select", "start"] if already_added else [])
+    if already_added:
+        assert report.verified_count == 1
+        assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
+        assert site.calls == ["torrent-1"]
+        with factory() as session:
+            item = session.get(UnpackExecutionItem, "item-1")
+            assert item is not None
+            assert item.status == UnpackItemStatus.CONTENT_VERIFIED.value
+        assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
+        return
+
+    assert fake_qb.calls == []
     with factory() as session:
         item = session.get(UnpackExecutionItem, "item-1")
         assert item is not None
         assert item.status == UnpackItemStatus.AUXILIARY_FETCHING.value
         assert item.auxiliary_state is not None
-        assert item.auxiliary_state["state"] == (
-            "DOWNLOADING" if already_added else "PENDING_FETCH"
-        )
-        assert len(session.scalars(select(UnpackExternalOperationJournal)).all()) == (
-            4 if already_added else 0
-        )
-    assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
+        assert item.auxiliary_state["state"] == "PENDING_FETCH"
+        assert len(session.scalars(select(UnpackExternalOperationJournal)).all()) == 0
 
     site.delay_seconds = 0
     service._fetch_timeout_seconds = 30.0
     recovered = asyncio.run(service.advance_next_batch("execution-1"))
+    assert recovered.downloading_count == 1
     assert recovered.error_count == 0
-    if already_added:
-        assert recovered.verified_count == 1
-        assert fake_qb.calls == ["add", "select", "start", "stop", "remove"]
-    else:
-        assert recovered.downloading_count == 1
-        assert fake_qb.calls == ["add", "select", "start"]
+    assert fake_qb.calls == ["add", "select", "start"]
     assert (data_root / "movies" / "Movie.mkv").read_bytes() == b"abcdefgh"
 
 

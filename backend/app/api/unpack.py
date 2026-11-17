@@ -5,8 +5,9 @@ import binascii
 from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any, Literal, cast
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Header, Query, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.api.dependencies import (
@@ -17,9 +18,11 @@ from backend.app.api.dependencies import (
     unpack_definition_service,
     unpack_execution_query_service,
     unpack_item_action_service,
+    unpack_item_reconcile_service,
     unpack_manual_candidate_service,
     unpack_source_scan_service,
     unpack_template_service,
+    unpack_template_transfer_service,
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.unpack_definitions import (
@@ -40,6 +43,7 @@ from backend.app.application.unpack_source_scans import (
     UnpackSourceScanView,
     UnpackTreeEntryView,
 )
+from backend.app.application.unpack_template_transfer import MAX_ARCHIVE_BYTES
 from backend.app.application.unpack_templates import (
     UnpackTemplateImportJobView,
 )
@@ -147,6 +151,8 @@ class UnpackTemplateResponse(BaseModel):
     mapped_media_count: int
     site_keys: list[str]
     site_ids: list[str]
+    available_site_ids: list[str]
+    origin: str
     content_digest: str
     source_provenance: dict[str, Any]
     created_at: datetime
@@ -255,6 +261,9 @@ class UnpackExecutionResponse(BaseModel):
     discovery_complete: bool
     discovery_cursor: str | None
     total_count: int
+    match_pending_count: int
+    matching_count: int
+    match_progress_count: int
     matched_auto_count: int
     no_match_count: int
     review_count: int
@@ -263,6 +272,8 @@ class UnpackExecutionResponse(BaseModel):
     timeout_count: int
     error_count: int
     completed_count: int
+    executing_count: int
+    item_status_counts: dict[str, int]
     started_at: datetime
     finished_at: datetime | None
     version: int
@@ -291,6 +302,8 @@ class UnpackExecutionItemResponse(BaseModel):
     auxiliary_state: dict[str, Any] | None
     review_allowed: bool
     has_external_operations: bool
+    retry_capability: Literal["MATCH", "VERIFICATION", "PLAN", "RESUME", "RECONCILE", "NONE"]
+    retry_reason: str | None
     last_error_code: str | None
     last_error_message: str | None
     match_started_at: datetime | None
@@ -451,7 +464,7 @@ class UnpackReviewResponse(BaseModel):
 
 
 class UnpackItemActionRequest(BaseModel):
-    action: Literal["retry_match"]
+    action: Literal["retry_match", "retry_content_verification"]
 
 
 class UnpackItemActionResponse(BaseModel):
@@ -460,6 +473,52 @@ class UnpackItemActionResponse(BaseModel):
     retry_count: int
     item_version: int
     item_status: UnpackItemStatus
+
+
+class UnpackReconcileOutcomeResponse(BaseModel):
+    journal_id: str
+    operation_type: str
+    resolution: Literal["APPLIED", "NO_EFFECT", "MANUAL", "PLAN_RESET"]
+    note: str
+
+
+class UnpackExecutionReconcileResponse(BaseModel):
+    execution_id: str
+    processed_count: int
+    resolved_count: int
+    manual_count: int
+    failed_count: int
+    failed_reasons: list[str]
+
+
+class UnpackItemReconcileResponse(BaseModel):
+    item_id: str
+    item_status: UnpackItemStatus
+    resumed_stage: str | None
+    resolved_count: int
+    manual_count: int
+    outcomes: tuple[UnpackReconcileOutcomeResponse, ...]
+
+
+class UnpackTemplateFilePreviewResponse(BaseModel):
+    name: str
+    description: str | None
+    site_key: str
+    seed_count: int
+    mapped_media_count: int
+    resolved_name: str
+    renamed: bool
+    warnings: list[str]
+
+
+class UnpackTemplateFileImportResponse(BaseModel):
+    template_id: str
+    template_version: int
+    name: str
+    site_key: str
+    seed_count: int
+    status: str
+    renamed: bool
 
 
 def _tree_entry_response(view: UnpackTreeEntryView) -> UnpackTreeEntryResponse:
@@ -532,6 +591,9 @@ def _execution_response(view: UnpackExecutionView) -> UnpackExecutionResponse:
         discovery_complete=view.discovery_complete,
         discovery_cursor=view.discovery_cursor,
         total_count=view.total_count,
+        match_pending_count=view.match_pending_count,
+        matching_count=view.matching_count,
+        match_progress_count=view.match_progress_count,
         matched_auto_count=view.matched_auto_count,
         no_match_count=view.no_match_count,
         review_count=view.review_count,
@@ -540,6 +602,8 @@ def _execution_response(view: UnpackExecutionView) -> UnpackExecutionResponse:
         timeout_count=view.timeout_count,
         error_count=view.error_count,
         completed_count=view.completed_count,
+        executing_count=view.executing_count,
+        item_status_counts=view.item_status_counts,
         started_at=view.started_at,
         finished_at=view.finished_at,
         version=view.version,
@@ -566,6 +630,8 @@ def _execution_item_response(view: UnpackExecutionItemView) -> UnpackExecutionIt
         auxiliary_state=view.auxiliary_state,
         review_allowed=view.review_allowed,
         has_external_operations=view.has_external_operations,
+        retry_capability=view.retry_capability,
+        retry_reason=view.retry_reason,
         last_error_code=view.last_error_code,
         last_error_message=view.last_error_message,
         match_started_at=view.match_started_at,
@@ -659,6 +725,96 @@ def _required_item_version(value: str | None) -> int:
     return version
 
 
+@router.post(
+    "/unpack/templates/import-file/preview",
+    response_model=UnpackTemplateFilePreviewResponse,
+)
+async def preview_unpack_template_file(
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+) -> UnpackTemplateFilePreviewResponse:
+    raw = await _template_file_body(request)
+    preview = unpack_template_transfer_service(request).preview_file(raw)
+    return UnpackTemplateFilePreviewResponse(
+        name=preview.name,
+        description=preview.description,
+        site_key=preview.site_key,
+        seed_count=preview.seed_count,
+        mapped_media_count=preview.mapped_media_count,
+        resolved_name=preview.resolved_name,
+        renamed=preview.renamed,
+        warnings=list(preview.warnings),
+    )
+
+
+@router.post(
+    "/unpack/templates/import-file",
+    response_model=UnpackTemplateFileImportResponse,
+)
+async def import_unpack_template_file(
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+) -> UnpackTemplateFileImportResponse:
+    raw = await _template_file_body(request)
+    result = unpack_template_transfer_service(request).import_file(raw)
+    return UnpackTemplateFileImportResponse(
+        template_id=result.template_id,
+        template_version=result.template_version,
+        name=result.name,
+        site_key=result.site_key,
+        seed_count=result.seed_count,
+        status=result.status,
+        renamed=result.renamed,
+    )
+
+
+@router.post("/unpack/executions/{execution_id}/template-export")
+async def export_unpack_execution_template(
+    execution_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+    site_key: Annotated[str | None, Query(max_length=32)] = None,
+    collection_root: Annotated[str | None, Query(max_length=255)] = None,
+) -> Response:
+    summary = unpack_template_transfer_service(request).export_execution(
+        execution_id,
+        target_site_key=site_key,
+        collection_root=collection_root,
+    )
+    filename = quote(summary.filename)
+    return Response(
+        content=summary.payload,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+            "X-Packbreaker-Template-Seeds": str(summary.seed_count),
+            "X-Packbreaker-Template-Skipped": str(summary.skipped_count),
+            "X-Packbreaker-Template-Site": summary.site_key,
+            "X-Packbreaker-Template-Root": quote(summary.collection_root_name),
+        },
+    )
+
+
+async def _template_file_body(request: Request) -> bytes:
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_ARCHIVE_BYTES:
+        raise ApplicationError(
+            code="UNPACK_TEMPLATE_FILE_TOO_LARGE",
+            status=413,
+            title="模板文件无法处理",
+            detail="模板文件超过 32 MiB 上限",
+        )
+    raw = await request.body()
+    if len(raw) > MAX_ARCHIVE_BYTES:
+        raise ApplicationError(
+            code="UNPACK_TEMPLATE_FILE_TOO_LARGE",
+            status=413,
+            title="模板文件无法处理",
+            detail="模板文件超过 32 MiB 上限",
+        )
+    return raw
+
+
 @router.get("/unpack/templates", response_model=UnpackTemplateListResponse)
 def list_unpack_templates(
     request: Request,
@@ -678,6 +834,8 @@ def list_unpack_templates(
                 mapped_media_count=item.mapped_media_count,
                 site_keys=list(item.site_keys),
                 site_ids=list(item.site_ids),
+                available_site_ids=list(item.available_site_ids),
+                origin=item.origin,
                 content_digest=item.content_digest,
                 source_provenance=item.source_provenance,
                 created_at=item.created_at,
@@ -1325,18 +1483,75 @@ async def act_on_unpack_item(
     _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
     if_match: Annotated[str | None, Header(alias="If-Match")] = None,
 ) -> UnpackItemActionResponse:
-    if payload.action != "retry_match":
-        raise AssertionError("Pydantic 已限制 action")
-    result = unpack_item_action_service(request).retry_match(
-        item_id,
-        expected_item_version=_required_item_version(if_match),
-    )
+    service = unpack_item_action_service(request)
+    if payload.action == "retry_content_verification":
+        result = service.retry_content_verification(
+            item_id,
+            expected_item_version=_required_item_version(if_match),
+        )
+    else:
+        result = service.retry_match(
+            item_id,
+            expected_item_version=_required_item_version(if_match),
+        )
     return UnpackItemActionResponse(
         item_id=result.item_id,
         generation=result.generation,
         retry_count=result.retry_count,
         item_version=result.item_version,
         item_status=result.item_status,
+    )
+
+
+@router.post(
+    "/unpack/executions/{execution_id}/reconcile",
+    response_model=UnpackExecutionReconcileResponse,
+)
+async def reconcile_unpack_execution_items(
+    execution_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+) -> UnpackExecutionReconcileResponse:
+    result = await unpack_item_reconcile_service(request).reconcile_execution(execution_id)
+    return UnpackExecutionReconcileResponse(
+        execution_id=result.execution_id,
+        processed_count=result.processed_count,
+        resolved_count=result.resolved_count,
+        manual_count=result.manual_count,
+        failed_count=result.failed_count,
+        failed_reasons=list(result.failed_reasons),
+    )
+
+
+@router.post(
+    "/unpack/items/{item_id}/reconcile",
+    response_model=UnpackItemReconcileResponse,
+)
+async def reconcile_unpack_execution_item(
+    item_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> UnpackItemReconcileResponse:
+    result = await unpack_item_reconcile_service(request).reconcile_item(
+        item_id,
+        expected_item_version=_required_item_version(if_match),
+    )
+    return UnpackItemReconcileResponse(
+        item_id=result.item_id,
+        item_status=UnpackItemStatus(result.item_status),
+        resumed_stage=result.resumed_stage,
+        resolved_count=result.resolved_count,
+        manual_count=result.manual_count,
+        outcomes=tuple(
+            UnpackReconcileOutcomeResponse(
+                journal_id=outcome.journal_id,
+                operation_type=outcome.operation_type,
+                resolution=outcome.resolution.value,
+                note=outcome.note,
+            )
+            for outcome in result.outcomes
+        ),
     )
 
 

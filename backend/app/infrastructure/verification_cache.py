@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from threading import Lock
 from typing import Generic, TypeVar
 
 from backend.app.domain.errors import DomainViolation
@@ -34,11 +36,20 @@ class VerificationCacheEntry(Generic[T]):
 class VerificationResultCache(Generic[T]):
     """进程内结果缓存；命中仍必须复查全部映射源快照。"""
 
-    def __init__(self) -> None:
-        self._entries: dict[str, VerificationCacheEntry[T]] = {}
+    def __init__(self, *, max_entries: int = 32) -> None:
+        if max_entries < 1:
+            raise ValueError("校验缓存条目上限必须大于 0")
+        self._max_entries = max_entries
+        # 有界 LRU：校验结果可能包含整部影片的分片证据，必须限制常驻内存。
+        self._entries: OrderedDict[str, VerificationCacheEntry[T]] = OrderedDict()
+        self._lock = Lock()
 
     def put(self, key: VerificationCacheKey, result: T) -> None:
-        self._entries[key.digest] = VerificationCacheEntry(key, result)
+        with self._lock:
+            self._entries[key.digest] = VerificationCacheEntry(key, result)
+            self._entries.move_to_end(key.digest)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
 
     def get_if_current(
         self,
@@ -54,12 +65,16 @@ class VerificationResultCache(Generic[T]):
             algorithm_version=algorithm_version,
             read_policy=read_policy,
         )
-        entry = self._entries.get(key.digest)
-        if entry is None or entry.key != key:
-            return None
+        with self._lock:
+            entry = self._entries.get(key.digest)
+            if entry is None or entry.key != key:
+                return None
+            self._entries.move_to_end(key.digest)
+            result = entry.result
+        # 快照复查涉及文件系统 IO，放在锁外执行。
         if not mapping_snapshots_current(mappings):
             return None
-        return entry.result
+        return result
 
 
 def build_verification_cache_key(

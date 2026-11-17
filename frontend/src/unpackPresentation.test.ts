@@ -15,7 +15,6 @@ import {
   unpackItemStatusSummary,
   unpackPlanStatusLabel,
   unpackPlanBlockReasonLabel,
-  unpackProgressCount,
   unpackProgressPercent,
   unpackSourceKindLabel,
   unpackTriggerLabel,
@@ -33,26 +32,23 @@ describe('unpack presentation', () => {
       '种子信息',
     );
     expect(unpackExecutionStageLabel('FILES_MATERIALIZED')).toContain('文件');
+    expect(unpackExecutionStatusLabel('CLIENT_VERIFYING')).toBe('下载器处理中');
+    expect(unpackItemStatusLabel('CLIENT_VERIFYING')).toBe('下载器处理中');
+    expect(unpackExecutionStageLabel('ADD_RESUME_CHECKING')).toContain('恢复种子数据');
+    expect(unpackExecutionStageLabel('ADD_RESUME_CHECKING')).toContain('不执行完整文件校验');
+    expect(unpackExecutionStageLabel('CLIENT_VERIFYING')).toContain('文件校验');
     expect(unpackOperationTypeLabel('UNPACK_EXEC_MATERIALIZE_HARDLINK')).toContain('硬链接');
     expect(unpackOperationStatusLabel('APPLIED')).toBe('已记录成功');
     expect(unpackRecordedStateLabel(null, 'regular')).toBe('文件');
   });
 
-  it('offers retry for execution errors but requires reconciliation for unknown side effects', () => {
-    const item = {
-      status: 'EXECUTION_ERROR' as const,
-      has_external_operations: true,
-      last_error_code: 'SITE_INVALID_RESPONSE',
-    };
-    expect(unpackItemRetryAvailability(item)).toBe('resume');
-    expect(unpackItemRetryAvailability({ ...item, has_external_operations: false })).toBe('match');
-    expect(
-      unpackItemRetryAvailability({
-        ...item,
-        last_error_code: 'UNPACK_EXEC_MATERIALIZATION_TARGET_DRIFT',
-      }),
-    ).toBe('reconcile');
-    expect(unpackItemRetryAvailability({ ...item, status: 'COMPLETED' })).toBe('none');
+  it('uses backend retry capabilities instead of inferring safety from status or journal presence', () => {
+    expect(unpackItemRetryAvailability({ retry_capability: 'PLAN' })).toBe('plan');
+    expect(unpackItemRetryAvailability({ retry_capability: 'VERIFICATION' })).toBe('verification');
+    expect(unpackItemRetryAvailability({ retry_capability: 'MATCH' })).toBe('match');
+    expect(unpackItemRetryAvailability({ retry_capability: 'RESUME' })).toBe('resume');
+    expect(unpackItemRetryAvailability({ retry_capability: 'RECONCILE' })).toBe('reconcile');
+    expect(unpackItemRetryAvailability({ retry_capability: 'NONE' })).toBe('none');
   });
 
   it('translates every user-visible definition status', () => {
@@ -64,37 +60,17 @@ describe('unpack presentation', () => {
 
   it('translates execution and item states without exposing enum values', () => {
     expect(unpackExecutionStatusLabel('REVIEW_REQUIRED')).toBe('待人工审核');
-    expect(unpackExecutionStatusLabel('CLIENT_VERIFYING')).toBe('下载器校验中');
+    expect(unpackExecutionStatusLabel('CLIENT_VERIFYING')).toBe('下载器处理中');
     expect(unpackItemStatusLabel('MATCHED_AUTO')).toBe('自动匹配成功');
     expect(unpackItemStatusLabel('AUXILIARY_FETCHING')).toBe('补齐辅助文件');
     expect(unpackItemStatusLabel('EXECUTION_ERROR')).toBe('执行错误');
+    expect(unpackItemStatusLabel('CONTENT_VERIFY_ERROR')).toBe('校验错误');
   });
 
-  it('counts automatic matches as progress and caps progress at the execution total', () => {
-    const progressed = unpackProgressCount(519, {
-      matchedAutoCount: 305,
-      noMatchCount: 151,
-      reviewCount: 58,
-      contentVerifiedCount: 0,
-      contentMismatchCount: 0,
-      timeoutCount: 0,
-      errorCount: 5,
-      completedCount: 0,
-    });
-    expect(progressed).toBe(519);
-    expect(unpackProgressPercent(519, progressed)).toBe(100);
-    expect(
-      unpackProgressCount(4, {
-        matchedAutoCount: 2,
-        noMatchCount: 1,
-        reviewCount: 1,
-        contentVerifiedCount: 0,
-        contentMismatchCount: 0,
-        timeoutCount: 0,
-        errorCount: 1,
-        completedCount: 0,
-      }),
-    ).toBe(4);
+  it('clamps the backend-provided match progress to the visible progress range', () => {
+    expect(unpackProgressPercent(4, 5)).toBe(100);
+    expect(unpackProgressPercent(4, -1)).toBe(0);
+    expect(unpackProgressPercent(0, 0)).toBe(0);
   });
 
   it('does not misrepresent blocked frozen plans as ready or live-verified', () => {

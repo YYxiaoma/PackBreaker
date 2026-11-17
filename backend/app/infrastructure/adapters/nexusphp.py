@@ -36,7 +36,7 @@ _logger = logging.getLogger("packbreaker.site_adapter.nexusphp")
 
 _DEFAULT_HTML_LIMIT_BYTES = 5 * 1024 * 1024
 _DEFAULT_TORRENT_LIMIT_BYTES = 20 * 1024 * 1024
-_DEFAULT_PROFILE_TOTAL_TIMEOUT_SECONDS = 30.0
+_DEFAULT_PROFILE_TOTAL_TIMEOUT_SECONDS = 60.0
 _IMDB_RE = re.compile(r"/title/(tt\d{5,10})", re.IGNORECASE)
 _DOUBAN_RE = re.compile(r"/subject/(\d{3,12})")
 _SIZE_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGTPE]?i?B)\s*$", re.IGNORECASE)
@@ -225,6 +225,25 @@ class _Card:
 
 
 class _NexusHtmlParser(HTMLParser):
+    _VOID_HTML_TAGS = frozenset(
+        {
+            "area",
+            "base",
+            "br",
+            "col",
+            "embed",
+            "hr",
+            "img",
+            "input",
+            "link",
+            "meta",
+            "param",
+            "source",
+            "track",
+            "wbr",
+        }
+    )
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._rows: list[_Row] = []
@@ -232,11 +251,14 @@ class _NexusHtmlParser(HTMLParser):
         self._cards: list[_Card] = []
         self._card_stack: list[_Card] = []
         self._card_element_stack: list[tuple[str, str | None, bool]] = []
-        self._link_stack: list[tuple[str, str | None, str | None, list[str]]] = []
+        self._link_stack: list[tuple[str, str | None, str | None, list[str], bool]] = []
         self._class_text_captures: list[_TextCapture] = []
         self.class_text_parts: dict[str, list[str]] = {}
         self.audiences_level_classes: list[str] = []
         self.all_link_classes: list[tuple[str, str | None, str]] = []
+        self.info_block_links: list[tuple[str, str | None, str]] = []
+        self._open_tag_stack: list[tuple[str, bool]] = []
+        self._info_block_depth = 0
         self._table_stack: list[int] = []
         self._next_table_index = 0
         self._heading_depth = 0
@@ -280,6 +302,12 @@ class _NexusHtmlParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
         classes = set((attributes.get("class") or "").split())
+        is_info_block = attributes.get("id") == "info_block"
+        if tag not in self._VOID_HTML_TAGS:
+            self._open_tag_stack.append((tag, is_info_block))
+            if is_info_block:
+                # PT-Depiler scopes #info_block regardless of its HTML tag.
+                self._info_block_depth += 1
         for capture in self._class_text_captures:
             if capture.tag == tag:
                 capture.depth += 1
@@ -345,7 +373,15 @@ class _NexusHtmlParser(HTMLParser):
                 row.cell_titles[row.active_cell].append(title)
         elif tag == "a":
             href = attributes.get("href") or ""
-            self._link_stack.append((href, attributes.get("title"), attributes.get("class"), []))
+            self._link_stack.append(
+                (
+                    href,
+                    attributes.get("title"),
+                    attributes.get("class"),
+                    [],
+                    self._info_block_depth > 0,
+                )
+            )
         elif tag == "h1":
             self._heading_depth += 1
         elif tag in {"h2", "h3"}:
@@ -365,7 +401,7 @@ class _NexusHtmlParser(HTMLParser):
         if self._row_stack:
             row = self._row_stack[-1]
             if row.active_cell is not None:
-                for attribute_name in ("title", "alt", "aria-label"):
+                for attribute_name in ("title", "alt", "aria-label", "rowspan"):
                     attribute_value = attributes.get(attribute_name)
                     if attribute_value:
                         row.cell_attributes[row.active_cell].append(
@@ -378,10 +414,12 @@ class _NexusHtmlParser(HTMLParser):
         elif tag == "td" and self._row_stack:
             self._row_stack[-1].active_cell = None
         elif tag == "a" and self._link_stack:
-            href, title, class_name, parts = self._link_stack.pop()
+            href, title, class_name, parts, in_info_block = self._link_stack.pop()
             label = _clean_text(" ".join(parts))
             link = (href, title, label)
             self.all_links.append(link)
+            if in_info_block:
+                self.info_block_links.append(link)
             self.all_link_classes.append((href, class_name, label))
             for row in self._row_stack:
                 row.links.append(link)
@@ -405,6 +443,17 @@ class _NexusHtmlParser(HTMLParser):
             break
         if tag == "table" and self._table_stack:
             self._table_stack.pop()
+        for index in range(len(self._open_tag_stack) - 1, -1, -1):
+            if self._open_tag_stack[index][0] != tag:
+                continue
+            closed_open_tags = self._open_tag_stack[index:]
+            del self._open_tag_stack[index:]
+            self._info_block_depth = max(
+                0,
+                self._info_block_depth
+                - sum(1 for _, is_info_block in closed_open_tags if is_info_block),
+            )
+            break
         remaining_captures: list[_TextCapture] = []
         for capture in self._class_text_captures:
             if capture.tag == tag:
@@ -506,12 +555,12 @@ class NexusPhpWebAdapter:
 
     async def fetch_user_profile(self) -> SiteUserProfile:
         site_key = self._profile.site_id.replace("_", "").lower()
-        # PT-Depiler uses a 30-second default for user-info requests. Keep the
-        # three sites with confirmed slow profile/stat endpoints bounded but
-        # aligned with that behavior instead of dropping optional fields at 15s.
+        # Real site profile/stat endpoints can be slower than the ordinary 15s
+        # request timeout. Use a bounded 60s total deadline for these sites so
+        # optional statistics are not silently lost during normal site load.
         profile_timeout_seconds = (
             max(self._timeout_seconds, _DEFAULT_PROFILE_TOTAL_TIMEOUT_SECONDS)
-            if site_key in {"ubits", "audiences", "springsunday"}
+            if site_key in {"ubits", "audiences", "springsunday", "pterclub", "hdhome"}
             else None
         )
 
@@ -551,7 +600,8 @@ class NexusPhpWebAdapter:
         )
         if not authenticated:
             raise SiteAdapterError("SITE_AUTH_FAILED", "NexusPHP Cookie 无效或会话已失效")
-        profile_link = _user_profile_link(index.all_links)
+        profile_link = _user_profile_link(index)
+        profile_html: str | None = None
         confirmed_from_settings = False
         if profile_link is None:
             parser = _parse_html(await get_profile_html(f"/{self._profile.authenticated_href}"))
@@ -561,7 +611,7 @@ class NexusPhpWebAdapter:
             # A public homepage can link to many other accounts. The signed-in
             # user's own settings page may provide a unique ordinary profile
             # link without requiring us to guess an identity from that homepage.
-            settings_link = _user_profile_link(parser.all_links)
+            settings_link = _user_profile_link(parser)
             if settings_link is not None:
                 href, settings_uid, settings_username = settings_link
                 try:
@@ -577,9 +627,10 @@ class NexusPhpWebAdapter:
                         )
                     # Validate the original link's origin first, then request the
                     # fixed same-origin profile endpoint with only the numeric id.
-                    parser = _parse_html(
-                        await get_profile_html("/userdetails.php", params={"id": settings_uid})
+                    profile_html = await get_profile_html(
+                        "/userdetails.php", params={"id": settings_uid}
                     )
+                    parser = _parse_html(profile_html)
                     uid = settings_uid
                     username = settings_username
                     confirmed_from_settings = True
@@ -591,8 +642,28 @@ class NexusPhpWebAdapter:
                     "SITE_REQUEST_POLICY_VIOLATION", "站点用户资料链接路径不受支持"
                 )
             # Do not forward auxiliary query parameters from the page's link.
-            parser = _parse_html(await get_profile_html("/userdetails.php", params={"id": uid}))
+            profile_html = await get_profile_html("/userdetails.php", params={"id": uid})
+            parser = _parse_html(profile_html)
         self._reject_login_page(parser)
+        # PT-depiler reads the account name from the current user's #info_block
+        # on userdetails.php. Prefer that profile-page value only when it is a
+        # same-origin link scoped to #info_block and its UID matches index.php.
+        profile_account_link = _user_profile_link(parser)
+        if uid is not None and profile_account_link is not None:
+            profile_href, profile_uid, profile_username = profile_account_link
+            is_scoped_account_link = any(
+                href == profile_href for href, _title, _label in parser.info_block_links
+            )
+            if is_scoped_account_link and profile_uid == uid and profile_username:
+                try:
+                    profile_account_url = self._same_origin_url(profile_href)
+                except SiteAdapterError:
+                    profile_account_url = None
+                if (
+                    profile_account_url is not None
+                    and urlsplit(profile_account_url).path.lstrip("/") == "userdetails.php"
+                ):
+                    username = profile_username
         profile = _parse_nexus_user_profile(
             parser,
             site_id=self._profile.site_id,
@@ -601,6 +672,45 @@ class NexusPhpWebAdapter:
             timezone_offset_minutes=self._profile.timezone_offset_minutes,
         )
         numeric_uid = uid is not None and re.fullmatch(r"[0-9]{1,64}", uid) is not None
+
+        if site_key == "hdhome" and profile_html is not None:
+            # Older HDHome pages expose the ten centered values in the profile's
+            # direct h1 block. The current page no longer renders that block, but
+            # /mybonus.php still publishes an explicit "currently earning per hour"
+            # sentence; use it as a read-only fallback rather than guessing a rate.
+            hourly_bonus = _parse_hdhome_bonus_per_hour(profile_html)
+            if hourly_bonus is None:
+                try:
+                    bonus_page = _parse_html(await get_profile_html("/mybonus.php"))
+                    self._reject_login_page(bonus_page)
+                    hourly_bonus = _parse_hhclub_hourly_bonus(bonus_page)
+                except SiteAdapterError as exc:
+                    _logger.warning("HDHome 每小时魔力辅助页读取失败 error_code=%s", exc.code)
+            if hourly_bonus is not None:
+                profile = replace(profile, bonus_per_hour=hourly_bonus)
+            else:
+                _logger.warning(
+                    "HDHome 每小时魔力解析未命中 response_bytes=%s td_text_cells=%s "
+                    "direct_h1_cells=%s centered_divs=%s",
+                    len(profile_html.encode("utf-8")),
+                    len(
+                        re.findall(
+                            r"<td\b[^>]*\bclass=[\"'][^\"']*\btext\b", profile_html, re.IGNORECASE
+                        )
+                    ),
+                    len(
+                        re.findall(
+                            r"<td\b[^>]*\bclass=[\"'][^\"']*\btext\b[^>]*>\s*<h1\b",
+                            profile_html,
+                            re.IGNORECASE,
+                        )
+                    ),
+                    len(
+                        re.findall(
+                            r"<div\b[^>]*\balign=[\"']center[\"']", profile_html, re.IGNORECASE
+                        )
+                    ),
+                )
 
         if site_key == "keepfrds":
             # KeepFrds removed the old AJAX user-torrent endpoint. Its JSON API is
@@ -641,7 +751,7 @@ class NexusPhpWebAdapter:
             if hourly_bonus is not None:
                 profile = replace(profile, bonus_per_hour=hourly_bonus)
 
-        if site_key in {"ubits", "audiences"} and profile.bonus_per_hour is None:
+        if site_key in {"ubits", "audiences", "pterclub"} and profile.bonus_per_hour is None:
             # PT-Depiler's default user-info flow reads hourly bonus from
             # /mybonus.php. Audiences has a dedicated compact-rate selector;
             # UBits uses the generic "currently getting" sentence.
@@ -658,9 +768,18 @@ class NexusPhpWebAdapter:
                 _logger.warning("%s 每小时收益读取失败 error_code=%s", site_key, exc.code)
 
         if site_key == "springsunday" and profile.bonus_per_hour is None:
-            hourly_bonus = _parse_springsunday_bonus_per_hour(parser)
-            if hourly_bonus is not None:
-                profile = replace(profile, bonus_per_hour=hourly_bonus)
+            try:
+                # PT-depiler's SpringSunday definition reads both hourly rates from
+                # /mybonus.php rather than assuming they are present on userdetails.php.
+                bonus_page = _parse_html(await get_profile_html("/mybonus.php"))
+                self._reject_login_page(bonus_page)
+                hourly_bonus = _parse_springsunday_bonus_per_hour(bonus_page)
+                if hourly_bonus is None:
+                    hourly_bonus = _parse_springsunday_bonus_per_hour(parser)
+                if hourly_bonus is not None:
+                    profile = replace(profile, bonus_per_hour=hourly_bonus)
+            except SiteAdapterError as exc:
+                _logger.warning("SpringSunday 每小时收益读取失败 error_code=%s", exc.code)
 
         if site_key == "pterclub" and profile.seeding_count is None:
             header_seeding_count = _parse_pter_seeding_count(parser)
@@ -722,6 +841,26 @@ class NexusPhpWebAdapter:
                                 else seeding_summary[1]
                             ),
                         )
+                    elif site_key == "springsunday":
+                        # The request itself succeeded, but a changed/empty HTML
+                        # fragment must not silently look like a valid zero total.
+                        _logger.warning(
+                            "SpringSunday 做种汇总响应格式未识别 "
+                            "response_bytes=%s bold_count=%s has_record_marker=%s",
+                            len(seeding_html.encode("utf-8")),
+                            len(
+                                re.findall(
+                                    r"<b\b[^>]*>.*?</b\s*>", seeding_html, re.IGNORECASE | re.DOTALL
+                                )
+                            ),
+                            bool(
+                                re.search(
+                                    r"</b\s*>\s*(?:条记录|條記錄|records?)",
+                                    seeding_html,
+                                    re.IGNORECASE,
+                                )
+                            ),
+                        )
                 except SiteAdapterError as exc:
                     _logger.warning(
                         "站点做种汇总读取失败 site_id=%s error_code=%s",
@@ -740,7 +879,7 @@ class NexusPhpWebAdapter:
                             and self._profile.min_request_interval_seconds > 0
                         ):
                             await asyncio.sleep(self._profile.min_request_interval_seconds)
-                        uploaded_html = await self._get_html(
+                        uploaded_html = await get_profile_html(
                             "/torrents.php",
                             params={
                                 "incldead": "1",
@@ -1510,9 +1649,16 @@ def _details_link(links: list[tuple[str, str | None, str]]) -> tuple[str, str] |
     return None
 
 
-def _user_profile_link(
-    links: list[tuple[str, str | None, str]],
-) -> tuple[str, str, str | None] | None:
+def _user_profile_link(parser: _NexusHtmlParser) -> tuple[str, str, str | None] | None:
+    # PT-depiler's NexusPHP base selector scopes the current account link to
+    # #info_block. Prefer that trusted context so unrelated user links elsewhere
+    # on the homepage cannot make the authenticated account ambiguous.
+    scoped_links = tuple(
+        link
+        for link in parser.info_block_links
+        if urlsplit(link[0]).path.lstrip("/") == "userdetails.php"
+    )
+    links = scoped_links or parser.all_links
     candidate: tuple[str, str, str | None] | None = None
     for href, _, text in links:
         parsed = urlsplit(href)
@@ -1568,7 +1714,9 @@ def _parse_nexus_user_profile(
     if hnr_count is None:
         hnr_count = hnr_link_count
     bonus_labels: tuple[str, ...]
-    if site_key == "audiences":
+    if site_key == "pterclub":
+        bonus_labels = ("猫粮", "貓糧", "Karma Points", "魔力值", "Bonus")
+    elif site_key == "audiences":
         bonus_labels = ("爆米花", "Karma Points", "积分", "茉莉", "魔力值", "Bonus")
     elif site_key == "springsunday":
         bonus_labels = ("积分", "茉莉", "魔力值", "Bonus")
@@ -1678,16 +1826,21 @@ def _parse_nexus_user_profile(
             "注册时间",
             "注册日期",
             "Join Time",
+            "Join date",
+            "Joined",
             "Registered",
             timezone_offset_minutes=timezone_offset_minutes,
         ),
         last_access_at=_profile_datetime(
             text,
             "最近动向",
+            "最近動向",
             "最近访问时间",
             "最后访问时间",
             "最近访问",
             "Last Access At",
+            "Last Action",
+            "Last Access",
             timezone_offset_minutes=timezone_offset_minutes,
         ),
         hnr_status=_profile_text(
@@ -1701,15 +1854,7 @@ def _parse_nexus_user_profile(
         )
         or hnr_link_status,
         hnr_count=hnr_count,
-        message_count=_profile_int_from_parser(
-            parser,
-            text,
-            "未读消息",
-            "未读消息数",
-            "未读消息数量",
-            "消息数",
-            "Message Count",
-        ),
+        message_count=_profile_message_count(parser, text, site_key),
     )
 
 
@@ -1725,6 +1870,32 @@ def _profile_hnr(parser: _NexusHtmlParser) -> tuple[int | None, str | None]:
         unsatisfied = numbers[1] if len(numbers) >= 2 else numbers[0]
         return unsatisfied, "正常" if unsatisfied == 0 else "异常"
     return None, None
+
+
+def _profile_message_count(parser: _NexusHtmlParser, text: str, site_key: str) -> int | None:
+    count = _profile_int_from_parser(
+        parser,
+        text,
+        "未读消息",
+        "未读消息数",
+        "未读消息数量",
+        "消息数",
+        "Message Count",
+    )
+    if count is not None or site_key not in {"pterclub", "springsunday"}:
+        return count
+
+    # PT-depiler uses site-specific unread-message badges for these two sites.
+    # The HTML parser retains the badge text in its enclosing messages.php link.
+    # The PterClub and SpringSunday selectors are not restricted to #info_block;
+    # search all links on the user-details document just as PT-depiler does.
+    for href, _title, label in parser.all_links:
+        if urlsplit(href).path.lstrip("/") != "messages.php":
+            continue
+        match = re.search(r"[0-9][0-9,]*", label)
+        if match is not None:
+            return _parse_nonnegative_int(match.group(0))
+    return None
 
 
 def _normalize_level_candidate(value: str) -> str | None:
@@ -2172,6 +2343,113 @@ def _parse_springsunday_ajax_summary(html: str) -> tuple[int, int] | None:
     return (count, size) if count is not None and size is not None else None
 
 
+class _HDHomeBonusParser(HTMLParser):
+    """Capture only centered values inside the HDHome td.text cell with a direct h1."""
+
+    _VOID_TAGS = frozenset(
+        {
+            "area",
+            "base",
+            "br",
+            "col",
+            "embed",
+            "hr",
+            "img",
+            "input",
+            "link",
+            "meta",
+            "param",
+            "source",
+            "track",
+            "wbr",
+        }
+    )
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._tag_stack: list[str] = []
+        self._cell_depth: int | None = None
+        self._cell_has_heading = False
+        self._cell_center_texts: list[str] = []
+        self._center_div_depth: int | None = None
+        self._center_div_text: list[str] = []
+        self.values: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        classes = set((attributes.get("class") or "").split())
+        if tag == "td" and "text" in classes and self._cell_depth is None:
+            self._cell_depth = len(self._tag_stack)
+            self._cell_has_heading = False
+            self._cell_center_texts = []
+        elif self._cell_depth is not None:
+            if tag == "h1" and len(self._tag_stack) == self._cell_depth + 1:
+                self._cell_has_heading = True
+            if (
+                tag == "div"
+                and (attributes.get("align") or "").casefold() == "center"
+                and self._center_div_depth is None
+            ):
+                self._center_div_depth = len(self._tag_stack)
+                self._center_div_text = []
+        if tag not in self._VOID_TAGS:
+            self._tag_stack.append(tag)
+
+    def handle_data(self, data: str) -> None:
+        if self._center_div_depth is not None:
+            self._center_div_text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if (
+            tag == "div"
+            and self._center_div_depth is not None
+            and len(self._tag_stack) - 1 == self._center_div_depth
+        ):
+            self._cell_center_texts.append("".join(self._center_div_text))
+            self._center_div_depth = None
+            self._center_div_text = []
+        if (
+            tag == "td"
+            and self._cell_depth is not None
+            and len(self._tag_stack) - 1 == self._cell_depth
+        ):
+            if self._center_div_depth is not None:
+                self._cell_center_texts.append("".join(self._center_div_text))
+                self._center_div_depth = None
+                self._center_div_text = []
+            if self._cell_has_heading:
+                value = _clean_text(" ".join(self._cell_center_texts))
+                if value:
+                    self.values.append(value)
+            self._cell_depth = None
+            self._cell_has_heading = False
+            self._cell_center_texts = []
+        for index in range(len(self._tag_stack) - 1, -1, -1):
+            if self._tag_stack[index] == tag:
+                del self._tag_stack[index:]
+                break
+
+
+def _parse_hdhome_bonus_per_hour(html: str) -> float | None:
+    parser = _HDHomeBonusParser()
+    parser.feed(html)
+    if not parser.values:
+        return None
+    numbers = re.findall(r"[0-9]+", parser.values[0])
+    if not numbers:
+        return None
+    try:
+        parsed_values = [float(value) for value in numbers]
+        value = (
+            parsed_values[0] + parsed_values[5] + parsed_values[8]
+            if len(parsed_values) == 10
+            else parsed_values[0]
+        )
+    except (ValueError, IndexError):
+        return None
+    return value if 0 <= value < float("inf") else None
+
+
 def _parse_nexus_ajax_total_count(html: str, parser: _NexusHtmlParser) -> int | None:
     """Read NexusPHP upload totals using the response variants handled by PT-Depiler."""
     match = re.search(
@@ -2211,6 +2489,11 @@ def _parse_nexus_ajax_seeding_summary(
         summary = _parse_springsunday_ajax_summary(html)
         if summary is not None:
             return summary
+    # NexusPHP returns a short plain-text marker when the current user has no
+    # seeding records. Treat this explicit response as a real zero aggregate,
+    # not as an unknown/malformed response.
+    if not parser.rows and re.search(r"(?:No records?\.?|没有记录|沒有記錄)", html, re.IGNORECASE):
+        return 0, 0
     explicit = _parse_explicit_seeding_summary(parser)
     if explicit is not None:
         return explicit
@@ -2269,6 +2552,22 @@ def _parse_nexus_bonus_per_hour(
     class_value = _profile_class_float(parser, class_name) if class_name else None
     if class_value is not None:
         return class_value
+
+    # PT-Depiler's generic NexusPHP selector checks #outer td[rowspan] first.
+    # Retain that attribute on row cells so PterClub's /mybonus.php fallback
+    # can read the same numeric rate without scraping unrelated page text.
+    for row in parser.rows:
+        for index, attributes in enumerate(row.cell_attributes):
+            if not any(tag == "td" and name == "rowspan" for tag, name, _value in attributes):
+                continue
+            match = re.search(r"[0-9][0-9,]*(?:\.[0-9]+)?", row.cells[index])
+            if match is not None:
+                try:
+                    value = float(match.group(0).replace(",", ""))
+                except ValueError:
+                    continue
+                if 0 <= value < float("inf"):
+                    return value
 
     text = "".join(parser.text_parts)
     match = re.search(
@@ -2443,8 +2742,12 @@ def _profile_datetime(text: str, *labels: str, timezone_offset_minutes: int) -> 
     for fmt in (
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
         "%Y/%m/%d %H:%M:%S",
         "%Y/%m/%d %H:%M",
+        "%Y/%m/%d",
+        "%d %b %Y",
+        "%d %B %Y",
         "%Y-%m-%dT%H:%M:%S%z",
         "%Y-%m-%dT%H:%M:%S.%f%z",
     ):

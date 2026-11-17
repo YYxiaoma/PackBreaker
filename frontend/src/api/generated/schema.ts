@@ -1232,6 +1232,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/unpack/executions/{execution_id}/reconcile': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Reconcile Unpack Execution Items */
+    post: operations['reconcile_unpack_execution_items_api_v1_unpack_executions__execution_id__reconcile_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/unpack/executions/{execution_id}/template-export': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Export Unpack Execution Template */
+    post: operations['export_unpack_execution_template_api_v1_unpack_executions__execution_id__template_export_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/unpack/items/{item_id}': {
     parameters: {
       query?: never;
@@ -1348,6 +1382,23 @@ export interface paths {
     put?: never;
     /** Add Manual Unpack Candidate */
     post: operations['add_manual_unpack_candidate_api_v1_unpack_items__item_id__manual_candidates_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/unpack/items/{item_id}/reconcile': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Reconcile Unpack Execution Item */
+    post: operations['reconcile_unpack_execution_item_api_v1_unpack_items__item_id__reconcile_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1484,6 +1535,40 @@ export interface paths {
     put?: never;
     /** Create Unpack Template Import */
     post: operations['create_unpack_template_import_api_v1_unpack_templates_import_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/unpack/templates/import-file': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Import Unpack Template File */
+    post: operations['import_unpack_template_file_api_v1_unpack_templates_import_file_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/unpack/templates/import-file/preview': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Preview Unpack Template File */
+    post: operations['preview_unpack_template_file_api_v1_unpack_templates_import_file_preview_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -2321,6 +2406,8 @@ export interface components {
       name: string;
       /** Phase */
       phase: string;
+      /** Shared Link Bytes */
+      shared_link_bytes: number;
       /** Source File Count */
       source_file_count: number;
       /** Source Root */
@@ -2443,6 +2530,14 @@ export interface components {
       target_device: number;
       /** Target Root */
       target_root: string;
+      /** Target Sampled Files */
+      target_sampled_files: number;
+      /** Target Shared Link Bytes */
+      target_shared_link_bytes: number;
+      /** Target Shared Link Files */
+      target_shared_link_files: number;
+      /** Warnings */
+      warnings: string[];
     };
     /** NotificationChannelActionRequest */
     NotificationChannelActionRequest: {
@@ -3437,8 +3532,15 @@ export interface components {
       media_identity: {
         [key: string]: unknown;
       };
+      /**
+       * Retry Capability
+       * @enum {string}
+       */
+      retry_capability: 'MATCH' | 'VERIFICATION' | 'PLAN' | 'RESUME' | 'RECONCILE' | 'NONE';
       /** Retry Count */
       retry_count: number;
+      /** Retry Reason */
+      retry_reason: string | null;
       /** Review Allowed */
       review_allowed: boolean;
       /** Selected Candidate Id */
@@ -3465,6 +3567,21 @@ export interface components {
       /** Items */
       items: components['schemas']['UnpackExecutionResponse'][];
     };
+    /** UnpackExecutionReconcileResponse */
+    UnpackExecutionReconcileResponse: {
+      /** Execution Id */
+      execution_id: string;
+      /** Failed Count */
+      failed_count: number;
+      /** Failed Reasons */
+      failed_reasons: string[];
+      /** Manual Count */
+      manual_count: number;
+      /** Processed Count */
+      processed_count: number;
+      /** Resolved Count */
+      resolved_count: number;
+    };
     /** UnpackExecutionResponse */
     UnpackExecutionResponse: {
       /** Completed Count */
@@ -3486,12 +3603,24 @@ export interface components {
       discovery_cursor: string | null;
       /** Error Count */
       error_count: number;
+      /** Executing Count */
+      executing_count: number;
       /** Finished At */
       finished_at: string | null;
       /** Id */
       id: string;
+      /** Item Status Counts */
+      item_status_counts: {
+        [key: string]: number;
+      };
+      /** Match Pending Count */
+      match_pending_count: number;
+      /** Match Progress Count */
+      match_progress_count: number;
       /** Matched Auto Count */
       matched_auto_count: number;
+      /** Matching Count */
+      matching_count: number;
       /** No Match Count */
       no_match_count: number;
       /** Review Count */
@@ -3541,9 +3670,9 @@ export interface components {
     UnpackItemActionRequest: {
       /**
        * Action
-       * @constant
+       * @enum {string}
        */
-      action: 'retry_match';
+      action: 'retry_match' | 'retry_content_verification';
     };
     /** UnpackItemActionResponse */
     UnpackItemActionResponse: {
@@ -3592,6 +3721,20 @@ export interface components {
       requires_manual_reconciliation: boolean;
       status: components['schemas']['UnpackItemStatus'];
     };
+    /** UnpackItemReconcileResponse */
+    UnpackItemReconcileResponse: {
+      /** Item Id */
+      item_id: string;
+      item_status: components['schemas']['UnpackItemStatus'];
+      /** Manual Count */
+      manual_count: number;
+      /** Outcomes */
+      outcomes: components['schemas']['UnpackReconcileOutcomeResponse'][];
+      /** Resolved Count */
+      resolved_count: number;
+      /** Resumed Stage */
+      resumed_stage: string | null;
+    };
     /**
      * UnpackItemStatus
      * @enum {string}
@@ -3611,6 +3754,7 @@ export interface components {
       | 'CONTENT_VERIFYING'
       | 'CONTENT_VERIFIED'
       | 'CONTENT_MISMATCH'
+      | 'CONTENT_VERIFY_ERROR'
       | 'PLAN_PENDING'
       | 'EXECUTING'
       | 'CLIENT_VERIFYING'
@@ -3737,6 +3881,20 @@ export interface components {
        * Format: date-time
        */
       updated_at: string;
+    };
+    /** UnpackReconcileOutcomeResponse */
+    UnpackReconcileOutcomeResponse: {
+      /** Journal Id */
+      journal_id: string;
+      /** Note */
+      note: string;
+      /** Operation Type */
+      operation_type: string;
+      /**
+       * Resolution
+       * @enum {string}
+       */
+      resolution: 'APPLIED' | 'NO_EFFECT' | 'MANUAL' | 'PLAN_RESET';
     };
     /** UnpackRetryEligibleItemsRequest */
     UnpackRetryEligibleItemsRequest: {
@@ -3869,6 +4027,42 @@ export interface components {
      * @enum {string}
      */
     UnpackTaskKind: 'MANUAL' | 'MONITOR' | 'TEMPLATE';
+    /** UnpackTemplateFileImportResponse */
+    UnpackTemplateFileImportResponse: {
+      /** Name */
+      name: string;
+      /** Renamed */
+      renamed: boolean;
+      /** Seed Count */
+      seed_count: number;
+      /** Site Key */
+      site_key: string;
+      /** Status */
+      status: string;
+      /** Template Id */
+      template_id: string;
+      /** Template Version */
+      template_version: number;
+    };
+    /** UnpackTemplateFilePreviewResponse */
+    UnpackTemplateFilePreviewResponse: {
+      /** Description */
+      description: string | null;
+      /** Mapped Media Count */
+      mapped_media_count: number;
+      /** Name */
+      name: string;
+      /** Renamed */
+      renamed: boolean;
+      /** Resolved Name */
+      resolved_name: string;
+      /** Seed Count */
+      seed_count: number;
+      /** Site Key */
+      site_key: string;
+      /** Warnings */
+      warnings: string[];
+    };
     /** UnpackTemplateImportJobResponse */
     UnpackTemplateImportJobResponse: {
       /**
@@ -3926,6 +4120,8 @@ export interface components {
     };
     /** UnpackTemplateResponse */
     UnpackTemplateResponse: {
+      /** Available Site Ids */
+      available_site_ids: string[];
       /** Content Digest */
       content_digest: string;
       /**
@@ -3945,6 +4141,8 @@ export interface components {
       mapped_media_count: number;
       /** Name */
       name: string;
+      /** Origin */
+      origin: string;
       /** Seed Count */
       seed_count: number;
       /** Site Ids */
@@ -7159,6 +7357,81 @@ export interface operations {
       };
     };
   };
+  reconcile_unpack_execution_items_api_v1_unpack_executions__execution_id__reconcile_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        execution_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackExecutionReconcileResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  export_unpack_execution_template_api_v1_unpack_executions__execution_id__template_export_post: {
+    parameters: {
+      query?: {
+        site_key?: string | null;
+        collection_root?: string | null;
+      };
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        execution_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   delete_unpack_execution_item_api_v1_unpack_items__item_id__delete: {
     parameters: {
       query?: never;
@@ -7401,6 +7674,43 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['ManualCandidateAddResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  reconcile_unpack_execution_item_api_v1_unpack_items__item_id__reconcile_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'If-Match'?: string | null;
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        item_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackItemReconcileResponse'];
         };
       };
       /** @description Validation Error */
@@ -7696,6 +8006,74 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['UnpackTemplateImportJobResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  import_unpack_template_file_api_v1_unpack_templates_import_file_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackTemplateFileImportResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  preview_unpack_template_file_api_v1_unpack_templates_import_file_preview_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['UnpackTemplateFilePreviewResponse'];
         };
       };
       /** @description Validation Error */

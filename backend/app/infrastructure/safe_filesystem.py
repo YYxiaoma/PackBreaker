@@ -5,8 +5,10 @@ import errno
 import hashlib
 import os
 import stat
+import tempfile
 import unicodedata
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1104,7 +1106,7 @@ class SafeFilesystemGateway:
             if _stat_at(target_parent_fd, target_name, missing_ok=True) is not None:
                 raise DomainViolation(ErrorCode.TARGET_CONFLICT, "硬链接目标路径并发出现")
 
-            _rename_noreplace(
+            _publish_noreplace(
                 source_dir_fd=target_parent_fd,
                 source_name=temporary_name,
                 target_dir_fd=target_parent_fd,
@@ -1183,11 +1185,12 @@ class SafeFilesystemGateway:
             _assert_source_snapshot(current_source, expected_source_snapshot)
             if _stat_at(target_parent_fd, target_name, missing_ok=True) is not None:
                 raise DomainViolation(ErrorCode.TARGET_CONFLICT, "软链接目标路径并发出现")
-            _rename_noreplace(
+            _publish_noreplace(
                 source_dir_fd=target_parent_fd,
                 source_name=temporary_name,
                 target_dir_fd=target_parent_fd,
                 target_name=target_name,
+                symlink=True,
             )
             _call_fault_hook(fault_hook, "after_final_symlink")
             final_snapshot = _stat_at(target_parent_fd, target_name)
@@ -1274,7 +1277,7 @@ class SafeFilesystemGateway:
                 raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "临时复制文件状态异常")
             if _stat_at(target_parent_fd, target_name, missing_ok=True) is not None:
                 raise DomainViolation(ErrorCode.TARGET_CONFLICT, "复制目标路径并发出现")
-            _rename_noreplace(
+            _publish_noreplace(
                 source_dir_fd=target_parent_fd,
                 source_name=temporary_name,
                 target_dir_fd=target_parent_fd,
@@ -1343,6 +1346,16 @@ class SafeFilesystemGateway:
             temporary = _stat_at(target_parent_fd, temporary_name, missing_ok=True)
             target = _stat_at(target_parent_fd, target_name, missing_ok=True)
 
+            if temporary is None and target is not None and _same_file_identity(target, source):
+                # 上一次已用 rename 覆盖完成（文件系统不支持 RENAME_EXCHANGE 的回退路径）：
+                # 临时路径已不存在，目标已指向权威源 inode，直接视为已应用。
+                return DedupExchangeResult(
+                    target_snapshot=target,
+                    original_target_snapshot=expected_target_snapshot,
+                    temporary_relative_path="",
+                    recovered_after_exchange=True,
+                )
+
             if temporary is None:
                 if target is None:
                     raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重目标文件已消失")
@@ -1382,6 +1395,7 @@ class SafeFilesystemGateway:
                 raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重目标文件已消失")
 
             recovered = False
+            published_with_rename = False
             if _same_file_identity(target, source) and _same_file_identity(
                 temporary, expected_target_snapshot
             ):
@@ -1407,20 +1421,27 @@ class SafeFilesystemGateway:
                     code=ErrorCode.SOURCE_CHANGED,
                     detail="影片去重源文件在原子交换前已变化",
                 )
-                _rename_exchange(
-                    source_dir_fd=target_parent_fd,
-                    source_name=temporary_name,
-                    target_dir_fd=target_parent_fd,
+                published_with_rename = _publish_dedup_entry(
+                    parent_fd=target_parent_fd,
+                    temporary_name=temporary_name,
                     target_name=target_name,
                 )
                 _call_fault_hook(fault_hook, "after_dedup_exchange")
 
             final_target = _stat_at(target_parent_fd, target_name)
-            old_target = _stat_at(target_parent_fd, temporary_name)
+            old_target = _stat_at(target_parent_fd, temporary_name, missing_ok=True)
             if final_target is None or not _same_file_identity(final_target, source):
                 raise DomainViolation(
                     ErrorCode.PATH_MAPPING_INVALID,
                     "影片去重原子交换后目标未指向权威源 inode",
+                )
+            if published_with_rename:
+                # rename 覆盖完成：旧目标已解除引用，没有需要保留/清理的临时文件。
+                return DedupExchangeResult(
+                    target_snapshot=final_target,
+                    original_target_snapshot=expected_target_snapshot,
+                    temporary_relative_path="",
+                    recovered_after_exchange=recovered,
                 )
             if old_target is None:
                 raise DomainViolation(
@@ -1479,6 +1500,20 @@ class SafeFilesystemGateway:
             temporary = _stat_at(target_parent_fd, temporary_name, missing_ok=True)
             target = _stat_at(target_parent_fd, target_name, missing_ok=True)
 
+            if (
+                temporary is None
+                and target is not None
+                and target.file_type == "symlink"
+                and _readlink_at(target_parent_fd, target_name) == symlink_target
+            ):
+                # 同上：rename 覆盖已完成的回退路径。
+                return DedupExchangeResult(
+                    target_snapshot=target,
+                    original_target_snapshot=expected_target_snapshot,
+                    temporary_relative_path="",
+                    recovered_after_exchange=True,
+                )
+
             if temporary is None:
                 if target is None:
                     raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重目标文件已消失")
@@ -1508,6 +1543,7 @@ class SafeFilesystemGateway:
                 raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重目标文件已消失")
 
             recovered = False
+            published_with_rename = False
             if (
                 target.file_type == "symlink"
                 and _readlink_at(target_parent_fd, target_name) == symlink_target
@@ -1538,16 +1574,15 @@ class SafeFilesystemGateway:
                     code=ErrorCode.SOURCE_CHANGED,
                     detail="影片去重源文件在原子交换前已变化",
                 )
-                _rename_exchange(
-                    source_dir_fd=target_parent_fd,
-                    source_name=temporary_name,
-                    target_dir_fd=target_parent_fd,
+                published_with_rename = _publish_dedup_entry(
+                    parent_fd=target_parent_fd,
+                    temporary_name=temporary_name,
                     target_name=target_name,
                 )
                 _call_fault_hook(fault_hook, "after_dedup_exchange")
 
             final_target = _stat_at(target_parent_fd, target_name)
-            old_target = _stat_at(target_parent_fd, temporary_name)
+            old_target = _stat_at(target_parent_fd, temporary_name, missing_ok=True)
             if (
                 final_target is None
                 or final_target.file_type != "symlink"
@@ -1556,6 +1591,13 @@ class SafeFilesystemGateway:
                 raise DomainViolation(
                     ErrorCode.PATH_MAPPING_INVALID,
                     "影片去重原子交换后软链接目标异常",
+                )
+            if published_with_rename:
+                return DedupExchangeResult(
+                    target_snapshot=final_target,
+                    original_target_snapshot=expected_target_snapshot,
+                    temporary_relative_path="",
+                    recovered_after_exchange=recovered,
                 )
             if old_target is None:
                 raise DomainViolation(
@@ -2225,6 +2267,63 @@ def _fds_equal(left_fd: int, right_fd: int, expected_size: int) -> bool:
         return False
 
 
+class _NoReplaceUnsupportedError(Exception):
+    """底层文件系统不支持 renameat2 的 RENAME_NOREPLACE 语义（NFS/SMB/FUSE 常见）。"""
+
+
+def probe_directory_capabilities(directory: Path) -> tuple[bool, bool]:
+    """探测目录是否支持硬链接与无覆盖原子发布。
+
+    只创建并清理临时小文件，不触碰任何既有内容；用于在写入前给出明确提示，
+    而不是等到落位阶段才报错。返回 (是否支持硬链接, 是否支持 renameat2)。
+    """
+
+    hardlink_supported = False
+    no_replace_supported = False
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=directory, prefix=".pb-probe-", suffix=".tmp", delete=False
+        ) as handle:
+            source = Path(handle.name)
+    except OSError:
+        return False, False
+
+    linked = source.with_name(f"{source.name}.link")
+    moved = source.with_name(f"{source.name}.move")
+    try:
+        try:
+            os.link(source, linked)
+        except OSError:
+            hardlink_supported = False
+        else:
+            hardlink_supported = True
+        try:
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        except OSError:
+            no_replace_supported = False
+        else:
+            try:
+                _rename_noreplace(
+                    source_dir_fd=directory_fd,
+                    source_name=source.name,
+                    target_dir_fd=directory_fd,
+                    target_name=moved.name,
+                )
+                no_replace_supported = True
+            except _NoReplaceUnsupportedError:
+                no_replace_supported = False
+            except DomainViolation:
+                # renameat2 可用但在本次探测中失败（并发/权限），按支持处理。
+                no_replace_supported = True
+            finally:
+                os.close(directory_fd)
+    finally:
+        for item in (source, linked, moved):
+            with suppress(OSError):
+                item.unlink()
+    return hardlink_supported, no_replace_supported
+
+
 def _rename_noreplace(
     *,
     source_dir_fd: int,
@@ -2234,10 +2333,7 @@ def _rename_noreplace(
 ) -> None:
     renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
     if renameat2 is None:
-        raise DomainViolation(
-            ErrorCode.PATH_MAPPING_INVALID,
-            "当前系统缺少 renameat2，不能安全执行无覆盖原子落位",
-        )
+        raise _NoReplaceUnsupportedError("当前系统缺少 renameat2")
     result = renameat2(
         ctypes.c_int(source_dir_fd),
         ctypes.c_char_p(os.fsencode(source_name)),
@@ -2249,10 +2345,81 @@ def _rename_noreplace(
         return
     error_number = ctypes.get_errno()
     if error_number == errno.EEXIST:
-        raise DomainViolation(ErrorCode.TARGET_CONFLICT, "硬链接最终目标并发出现")
+        raise DomainViolation(ErrorCode.TARGET_CONFLICT, "落位目标并发出现")
     if error_number == errno.EXDEV:
-        raise DomainViolation(ErrorCode.CROSS_DEVICE_LINK, "硬链接原子落位跨越不同设备")
-    raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "硬链接无法安全原子落位")
+        raise DomainViolation(ErrorCode.CROSS_DEVICE_LINK, "原子落位跨越不同设备")
+    if error_number in {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP}:
+        raise _NoReplaceUnsupportedError(f"renameat2 不被文件系统支持 errno={error_number}")
+    raise DomainViolation(
+        ErrorCode.PATH_MAPPING_INVALID,
+        f"无法安全原子落位（errno={errno.errorcode.get(error_number, error_number)}）",
+    )
+
+
+def _publish_noreplace(
+    *,
+    source_dir_fd: int,
+    source_name: str,
+    target_dir_fd: int,
+    target_name: str,
+    symlink: bool = False,
+) -> None:
+    """发布临时条目为最终目标，语义等价于「目标存在则失败」。
+
+    优先使用 renameat2(RENAME_NOREPLACE)；NFS/SMB 等文件系统不支持时回退为
+    ``link(2)``（普通文件）或 ``symlink(2)``（软链接）。两者本身都是原子的，
+    目标已存在时返回 EEXIST，不会覆盖任何既有文件。
+    """
+
+    try:
+        _rename_noreplace(
+            source_dir_fd=source_dir_fd,
+            source_name=source_name,
+            target_dir_fd=target_dir_fd,
+            target_name=target_name,
+        )
+        return
+    except _NoReplaceUnsupportedError:
+        pass
+
+    if symlink:
+        try:
+            link_target = _readlink_at(source_dir_fd, source_name)
+            os.symlink(link_target, target_name, dir_fd=target_dir_fd)
+        except FileExistsError as exc:
+            raise DomainViolation(ErrorCode.TARGET_CONFLICT, "软链接目标并发出现") from exc
+        except OSError as exc:
+            raise DomainViolation(
+                ErrorCode.PATH_MAPPING_INVALID,
+                "当前文件系统不支持原子发布软链接，请改用硬链接或复制模式",
+            ) from exc
+    else:
+        try:
+            os.link(
+                source_name,
+                target_name,
+                src_dir_fd=source_dir_fd,
+                dst_dir_fd=target_dir_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError as exc:
+            raise DomainViolation(ErrorCode.TARGET_CONFLICT, "落位目标并发出现") from exc
+        except OSError as exc:
+            if exc.errno == errno.EXDEV:
+                raise DomainViolation(ErrorCode.CROSS_DEVICE_LINK, "原子落位跨越不同设备") from exc
+            code = errno.errorcode.get(exc.errno or 0, str(exc.errno))
+            raise DomainViolation(
+                ErrorCode.PATH_MAPPING_INVALID,
+                f"当前文件系统不支持原子发布落位目标（errno={code}），请改用复制模式",
+            ) from exc
+
+    # 目标已经发布成功；清理临时条目失败不影响结果正确性。
+    with suppress(OSError):
+        os.unlink(source_name, dir_fd=source_dir_fd)
+
+
+class _ExchangeUnsupported(Exception):
+    """当前文件系统/内核不支持 RENAME_EXCHANGE（例如 NFS 返回 EINVAL）。"""
 
 
 def _rename_exchange(
@@ -2264,10 +2431,7 @@ def _rename_exchange(
 ) -> None:
     renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
     if renameat2 is None:
-        raise DomainViolation(
-            ErrorCode.PATH_MAPPING_INVALID,
-            "当前系统缺少 renameat2，不能安全执行影片去重原子交换",
-        )
+        raise _ExchangeUnsupported("当前系统缺少 renameat2")
     result = renameat2(
         ctypes.c_int(source_dir_fd),
         ctypes.c_char_p(os.fsencode(source_name)),
@@ -2282,7 +2446,51 @@ def _rename_exchange(
         raise DomainViolation(ErrorCode.CROSS_DEVICE_LINK, "影片去重原子交换跨越不同设备")
     if error_number in {errno.ENOENT, errno.EEXIST}:
         raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重原子交换目标状态已变化")
+    if error_number in {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+        # NFS 等网络文件系统不支持交换语义；由调用方退回 rename 原子覆盖。
+        raise _ExchangeUnsupported(f"文件系统不支持 RENAME_EXCHANGE（errno={error_number}）")
     raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "影片去重无法安全执行原子交换")
+
+
+def _publish_dedup_entry(
+    *,
+    parent_fd: int,
+    temporary_name: str,
+    target_name: str,
+) -> bool:
+    """把临时条目原子发布到目标路径。
+
+    优先用 RENAME_EXCHANGE（旧目标会留在临时路径，便于回滚/审计）；文件系统不支持时
+    退回 POSIX `rename` 原子覆盖——目标同样是一次性切换，旧 inode 立即解除该路径引用。
+    返回 True 表示走了 rename 覆盖路径（此时没有可供清理的旧目标临时文件）。
+    """
+
+    try:
+        _rename_exchange(
+            source_dir_fd=parent_fd,
+            source_name=temporary_name,
+            target_dir_fd=parent_fd,
+            target_name=target_name,
+        )
+        return False
+    except _ExchangeUnsupported:
+        pass
+    try:
+        os.rename(
+            temporary_name,
+            target_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+    except FileNotFoundError as exc:
+        raise DomainViolation(ErrorCode.TARGET_CONFLICT, "影片去重临时路径已消失") from exc
+    except OSError as exc:
+        code = errno.errorcode.get(exc.errno or 0, str(exc.errno))
+        raise DomainViolation(
+            ErrorCode.PATH_MAPPING_INVALID,
+            f"无法原子替换影片去重目标（errno={code}）",
+        ) from exc
+    return True
 
 
 def _validate_operation_token(operation_token: str) -> None:

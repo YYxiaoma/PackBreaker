@@ -24,6 +24,7 @@ def test_site_profile_registry_lists_supported_and_planned_origins() -> None:
     assert trusted_site_base_url(SiteKind.HHCLUB) == "https://hhanclub.net"
     assert trusted_site_base_url(SiteKind.KEEPFRDS) == "https://pt.keepfrds.com"
     assert trusted_site_base_url(SiteKind.HDHOME) == "https://hdhome.org"
+    assert trusted_site_base_url(SiteKind.HDDOLBY) == "https://www.uhddolby.com"
     assert trusted_site_base_url(SiteKind.UBITS) == "https://ubits.club"
     assert trusted_site_base_url(SiteKind.HDFANS) == "https://hdfans.org"
     assert trusted_site_base_url(SiteKind.BTSCHOOL) == "https://pt.btschool.club"

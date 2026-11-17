@@ -10,7 +10,11 @@ from typing import Any
 
 from backend.app.domain.execution_plan import ExecutionPlanBlockReason
 from backend.app.domain.task_definition import TaskConflictPolicy, TaskStorageMode
-from backend.app.domain.verification import FileSnapshot, VerificationLevel
+from backend.app.domain.verification import (
+    EVIDENCE_VERIFIED_LEVELS,
+    FileSnapshot,
+    VerificationLevel,
+)
 
 UNPACK_EXECUTION_PLAN_SCHEMA_VERSION = "packbreaker-unpack-execution-plan-v1"
 
@@ -104,8 +108,8 @@ class UnpackExecutionPlan:
             char not in "0123456789abcdef" for char in self.metainfo_digest
         ):
             raise ValueError("执行计划 metainfo digest 无效")
-        if self.verification_level is not VerificationLevel.FULL_VERIFIED:
-            raise ValueError("v2 最终执行计划只能消费 FULL_VERIFIED 候选")
+        if self.verification_level not in EVIDENCE_VERIFIED_LEVELS:
+            raise ValueError("v2 最终执行计划只能消费内容证据已通过的候选")
         if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
             raise ValueError("执行计划创建时间必须带时区")
         object.__setattr__(self, "created_at", self.created_at.astimezone(UTC))

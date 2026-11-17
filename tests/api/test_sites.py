@@ -618,11 +618,11 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
         assert items["LINGYIN_CLUB"]["base_url"] == "https://pt.soulvoice.club"
         assert items["LINGYIN_CLUB"]["credential_kind"] == "COOKIE"
         assert items["LINGYIN_CLUB"]["support_status"] == "SUPPORTED"
-        assert items["HDDOLBY"]["base_url"] == "https://www.hddolby.com"
+        assert items["HDDOLBY"]["base_url"] == "https://www.uhddolby.com"
         assert items["HDDOLBY"]["request_timeout_seconds"] == 45
         assert items["PTERCLUB"]["request_timeout_seconds"] == 15
         assert items["SPRING_SUNDAY"]["request_timeout_seconds"] == 15
-        assert items["TANGPT"]["base_url"] == "https://tangpt.top"
+        assert items["TANGPT"]["base_url"] == "https://www.tangpt.top"
         for kind in ("PTERCLUB", "AUDIENCES", "SPRING_SUNDAY", "HDDOLBY", "U2", "TANGPT", "CARPT"):
             assert items[kind]["credential_kind"] == "COOKIE"
             assert items[kind]["support_status"] == "SUPPORTED"

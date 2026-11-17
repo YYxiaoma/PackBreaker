@@ -24,6 +24,7 @@ from backend.app.domain.unpack_execution_plan import (
     UnpackExecutionActionKind,
     unpack_execution_plan_from_payload,
 )
+from backend.app.domain.verification import EVIDENCE_VERIFIED_LEVELS
 from backend.app.infrastructure.persistence.models import (
     UnpackExecution,
     UnpackExecutionItem,
@@ -208,7 +209,11 @@ def audit_scoped_carpt_journal_rows(
                         or any(c not in "0123456789abcdef" for c in h)
                         for h in hashes
                     )
-                    or intent.get("skip_checking") is not False
+                    or not isinstance(intent.get("skip_checking"), bool)
+                    or (
+                        intent["skip_checking"] is True
+                        and plan.verification_level not in EVIDENCE_VERIFIED_LEVELS
+                    )
                     or not isinstance(intent.get("ownership_tag"), str)
                     or not intent["ownership_tag"]
                 ):

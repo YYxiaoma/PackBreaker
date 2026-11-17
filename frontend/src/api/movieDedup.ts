@@ -25,6 +25,7 @@ export interface MovieDedupJob {
   failed_count: number;
   logical_duplicate_bytes: number;
   estimated_reclaimable_bytes: number;
+  shared_link_bytes: number;
   version: number;
   error_code: string | null;
   created_at: string;
@@ -67,6 +68,10 @@ export interface MovieDedupPrecheck {
   source_device: number;
   target_device: number;
   same_filesystem: boolean;
+  target_sampled_files: number;
+  target_shared_link_files: number;
+  target_shared_link_bytes: number;
+  warnings: string[];
   resolved_action: 'HARDLINK' | 'SYMLINK' | 'SCAN_ONLY' | 'BLOCKED';
   blocked_reasons: string[];
 }

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -60,6 +62,11 @@ class MovieDedupPrecheckView:
     same_filesystem: bool
     resolved_action: MovieDedupResolvedAction
     blocked_reasons: tuple[str, ...]
+    # B 侧有界采样：识别「已有多重硬链接」的文件，替换/删除不会释放空间。
+    target_sampled_files: int = 0
+    target_shared_link_files: int = 0
+    target_shared_link_bytes: int = 0
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +92,7 @@ class MovieDedupJobView:
     failed_count: int
     logical_duplicate_bytes: int
     estimated_reclaimable_bytes: int
+    shared_link_bytes: int
     trace_id: str
     version: int
     error_code: str | None
@@ -121,6 +129,58 @@ class MovieDedupPairView:
     estimated_reclaimable_bytes: int
     error_code: str | None
     error_message: str | None
+
+
+# 预检阶段的 B 侧采样上限：只做有界抽样，避免创建任务时把整棵目录树扫一遍。
+_PRECHECK_SAMPLE_FILES = 3000
+_PRECHECK_SAMPLE_SECONDS = 2.5
+
+
+def _sample_target_hardlinks(
+    root: Path,
+    *,
+    max_files: int = _PRECHECK_SAMPLE_FILES,
+    seconds: float = _PRECHECK_SAMPLE_SECONDS,
+) -> tuple[int, int, int, bool]:
+    """有界采样 B 侧，统计已有多重硬链接的文件数与实际占用。
+
+    返回（采样文件数, 多重链接文件数, 多重链接实际占用字节, 是否已扫完整棵树）。
+    这类文件通常已经与媒体库共享同一份数据，替换或删除单一路径不会释放空间。
+    """
+
+    sampled = 0
+    shared = 0
+    shared_bytes = 0
+    deadline = time.monotonic() + max(0.1, seconds)
+    stack: list[Path] = [root]
+    complete = True
+    while stack:
+        if sampled >= max_files or time.monotonic() > deadline:
+            complete = False
+            break
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            sampled += 1
+            if info.st_nlink > 1:
+                shared += 1
+                shared_bytes += max(0, int(getattr(info, "st_blocks", 0))) * 512
+            if sampled >= max_files or time.monotonic() > deadline:
+                complete = False
+                break
+    return sampled, shared, shared_bytes, complete
 
 
 class MovieDedupService:
@@ -162,6 +222,15 @@ class MovieDedupService:
         blocked: list[str] = []
         if action is MovieDedupResolvedAction.BLOCKED:
             blocked.append("CROSS_DEVICE_LINK")
+        sampled, shared, shared_bytes, sampled_complete = _sample_target_hardlinks(target)
+        warnings: list[str] = []
+        if shared:
+            warnings.append(
+                f"B 侧采样 {sampled} 个文件，其中 {shared} 个已有多重硬链接"
+                "（通常是已与媒体库或其它目录共享同一份数据），替换或删除单一路径不会释放空间。"
+            )
+        elif not sampled_complete and sampled:
+            warnings.append(f"B 侧仅采样前 {sampled} 个文件，未发现多重硬链接。")
         return MovieDedupPrecheckView(
             source_root=source_normalized,
             target_root=target_normalized,
@@ -170,6 +239,10 @@ class MovieDedupService:
             same_filesystem=same_filesystem,
             resolved_action=action,
             blocked_reasons=tuple(blocked),
+            target_sampled_files=sampled,
+            target_shared_link_files=shared,
+            target_shared_link_bytes=shared_bytes,
+            warnings=tuple(warnings),
         )
 
     def create(self, request: MovieDedupJobCreate, *, trace_id: str) -> MovieDedupJobView:
@@ -244,16 +317,17 @@ class MovieDedupService:
 
         with self._session_factory() as session:
             record = self._require_job(session, job_id)
+            # RECOVERY_REQUIRED 允许删除：否则一旦恢复路径走不通，任务既不能执行也不能清理。
+            # 删除只移除数据库记录，绝不触碰 A/B 目录里的媒体文件。
             if record.status in {
                 MovieDedupJobStatus.RUNNING.value,
                 MovieDedupJobStatus.REVIEW_REQUIRED.value,
-                MovieDedupJobStatus.RECOVERY_REQUIRED.value,
             }:
                 raise ApplicationError(
                     code="MOVIE_DEDUP_DELETE_BLOCKED",
                     status=409,
                     title="当前影片去重任务不可删除",
-                    detail="运行中、待审核或待恢复任务必须先完成安全生命周期，避免丢失恢复与审计证据",
+                    detail="运行中或待审核任务必须先完成安全生命周期，避免丢失恢复与审计证据",
                 )
             # 显式清理数据库记录，不依赖 SQLite 外键级联配置。这里绝不调用
             # SafeFilesystemGateway，因此不会删除或修改 A/B 目录媒体文件。
@@ -1116,6 +1190,10 @@ class MovieDedupService:
         job.estimated_reclaimable_bytes = sum(
             item.allocated_bytes for item in unique_targets.values() if item.link_count == 1
         )
+        # 已有多重硬链接（通常是与媒体库共享）：删除/替换单路径不释放空间，单独记账。
+        job.shared_link_bytes = sum(
+            item.allocated_bytes for item in unique_targets.values() if item.link_count > 1
+        )
         requires_execution = any(_pair_requires_execution(pair) for pair in pairs)
         blocked_duplicate = any(_pair_is_blocked_duplicate(pair) for pair in pairs)
         if requires_execution:
@@ -1204,6 +1282,7 @@ class MovieDedupService:
             failed_count=record.failed_count,
             logical_duplicate_bytes=record.logical_duplicate_bytes,
             estimated_reclaimable_bytes=record.estimated_reclaimable_bytes,
+            shared_link_bytes=record.shared_link_bytes,
             trace_id=record.trace_id,
             version=record.version,
             error_code=record.error_code,

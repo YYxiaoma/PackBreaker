@@ -18,6 +18,7 @@ from backend.app.application.downloaders import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import EnabledSiteAdapter
+from backend.app.application.unpack_manual_torrents import ManualTorrentStore
 from backend.app.application.unpack_seeding import UnpackSeedingService
 from backend.app.domain.downloader import PathMappingRule
 from backend.app.domain.operation import OperationStatus
@@ -292,7 +293,9 @@ def _fixture(
     target_tags: tuple[str, ...] = (),
     lose_add_response: bool = False,
     force_client_check: bool = False,
+    skip_downloader_check: bool | None = None,
     start_behavior: str = "success",
+    cache_torrent: bool = False,
 ) -> tuple[
     UnpackSeedingService,
     sessionmaker[Session],
@@ -312,6 +315,7 @@ def _fixture(
     torrent = _torrent("Movie.mkv", content)
     meta = parse_torrent(torrent)
     assert meta.v1_info_hash is not None
+    cached_torrent_key = ManualTorrentStore(data_root).store(torrent) if cache_torrent else None
 
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -321,7 +325,11 @@ def _fixture(
         autoflush=False,
     )
     now = utc_now()
-    client_check_required = kind == "transmission" or force_client_check
+    # Most seeding tests use the qBittorrent verified fast-path to isolate
+    # downstream behavior. Pass skip_downloader_check=False to exercise the
+    # production default (client check required); Transmission checks by default.
+    skip_requested = kind == "qb" if skip_downloader_check is None else skip_downloader_check
+    client_check_required = not skip_requested or force_client_check
     plan = UnpackExecutionPlan(
         item_id="item-1",
         item_version_before=4,
@@ -447,6 +455,11 @@ def _fixture(
                     "adapter_site_id": "fake-site",
                     "site_config_id": "site-config-1",
                     "site_config_version": 7,
+                    **(
+                        {"verified_torrent_storage_key": cached_torrent_key}
+                        if cached_torrent_key is not None
+                        else {}
+                    ),
                 },
                 created_at=now,
             )
@@ -526,6 +539,17 @@ def _fixture(
         path_scope=AuthorizedPathScope.legacy_only(legacy_data_root=data_root),
     )
     return service, factory, fake, torrent
+
+
+def test_final_seeding_reuses_cached_verified_torrent_without_site_request(tmp_path: Path) -> None:
+    service, _factory, downloader, _torrent_data = _fixture(tmp_path, kind="qb", cache_torrent=True)
+    site = cast(_SiteProvider, service._site_provider)._site
+
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert report.completed_count == 1
+    assert site.calls == []
+    assert downloader.calls == ["add", "start"]
 
 
 def test_final_seeding_site_wait_must_recheck_materialization_before_add(
@@ -857,6 +881,51 @@ def test_qb_resume_data_checking_during_add_is_not_active_downloading(
             )
         )
         assert row is not None and row.status == OperationStatus.APPLIED.value
+
+
+def test_qb_skip_check_waits_for_resume_data_without_readding_or_rechecking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, factory, fake, _ = _fixture(tmp_path, kind="qb", skip_downloader_check=True)
+    fake = cast(_FakeQb, fake)
+    original_states = fake.get_torrents
+    checking_observed = False
+
+    async def resume_data_probe(
+        hashes: tuple[str, ...],
+    ) -> tuple[QbittorrentTorrentState, ...]:
+        nonlocal checking_observed
+        states = await original_states(hashes)
+        if states and fake.calls == ["add"] and not checking_observed:
+            checking_observed = True
+            return (replace(states[0], state="checkingResumeData"),)
+        return states
+
+    monkeypatch.setattr(fake, "get_torrents", resume_data_probe)
+
+    waiting = asyncio.run(service.advance_next_batch("execution-1"))
+    assert waiting.client_verifying_count == 1
+    assert waiting.error_count == 0
+    assert fake.calls == ["add"]
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        assert item.status == UnpackItemStatus.CLIENT_VERIFYING.value
+        assert item.execution_state is not None
+        assert item.execution_state["stage"] == "ADD_RESUME_CHECKING"
+
+    completed = asyncio.run(service.advance_next_batch("execution-1"))
+    assert completed.completed_count == 1
+    assert completed.error_count == 0
+    assert fake.calls == ["add", "start"]
+    with factory() as session:
+        operations = session.scalars(
+            select(UnpackExternalOperationJournal).where(
+                UnpackExternalOperationJournal.item_id == "item-1"
+            )
+        ).all()
+        assert sum(row.operation_type == "UNPACK_EXEC_QBITTORRENT_ADD" for row in operations) == 1
+        assert not any("RECHECK" in row.operation_type for row in operations)
 
 
 @pytest.mark.parametrize("kind", ("qb", "transmission"))
@@ -1644,6 +1713,7 @@ def test_qb_full_verified_skip_checking_adds_paused_then_starts(tmp_path: Path) 
         kind="qb",
         target_category="Movie Library",
         target_tags=("4K", "seed"),
+        skip_downloader_check=True,
     )
     qb = cast(_FakeQb, fake)
 
@@ -1822,6 +1892,76 @@ def test_transmission_resume_rejects_tampered_add_journal(tmp_path: Path) -> Non
         assert item.last_error_code == "UNPACK_SEED_RECONCILE_REQUIRED"
 
 
+def test_transmission_skip_option_uses_local_full_verification_without_extra_verify(
+    tmp_path: Path,
+) -> None:
+    service, factory, fake, _torrent_bytes = _fixture(
+        tmp_path,
+        kind="transmission",
+        skip_downloader_check=True,
+    )
+    transmission = cast(_FakeTransmission, fake)
+
+    report = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert report.completed_count == 1
+    assert transmission.calls == ["add", "start"]
+    assert transmission.state is not None and transmission.state.seeding
+    with factory() as session:
+        journals = session.scalars(
+            select(UnpackExternalOperationJournal)
+            .where(UnpackExternalOperationJournal.item_id == "item-1")
+            .where(UnpackExternalOperationJournal.id != "materialized-proof-1")
+        ).all()
+        assert {row.operation_type for row in journals} == {
+            "UNPACK_EXEC_TRANSMISSION_ADD",
+            "UNPACK_EXEC_TRANSMISSION_START",
+        }
+        assert all(row.status == OperationStatus.APPLIED.value for row in journals)
+
+
+def test_transmission_skip_option_waits_for_native_check_after_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _factory, fake, _torrent_bytes = _fixture(
+        tmp_path,
+        kind="transmission",
+        skip_downloader_check=True,
+    )
+    transmission = cast(_FakeTransmission, fake)
+
+    async def start_and_check(torrent_hash: str) -> None:
+        transmission._assert_intent("UNPACK_EXEC_TRANSMISSION_START")
+        assert transmission.state is not None
+        assert transmission.state.torrent_hash == torrent_hash
+        transmission.calls.append("start")
+        transmission.state = replace(
+            transmission.state,
+            status=2,
+            percent_done=0.0,
+            recheck_progress=0.25,
+        )
+
+    monkeypatch.setattr(transmission, "start_torrent", start_and_check)
+    first = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert first.completed_count == 0
+    assert first.error_count == 0
+    assert transmission.calls == ["add", "start"]
+    assert transmission.state is not None and transmission.state.checking
+
+    transmission.state = replace(
+        transmission.state,
+        status=6,
+        percent_done=1.0,
+        recheck_progress=1.0,
+    )
+    second = asyncio.run(service.advance_next_batch("execution-1"))
+
+    assert second.completed_count == 1
+    assert transmission.calls == ["add", "start"]
+
+
 def test_transmission_requires_explicit_verify_before_start(tmp_path: Path) -> None:
     service, factory, fake, _torrent_bytes = _fixture(
         tmp_path,
@@ -1857,13 +1997,13 @@ def test_transmission_requires_explicit_verify_before_start(tmp_path: Path) -> N
         assert all(row.status == OperationStatus.APPLIED.value for row in journals)
 
 
-def test_qb_client_check_plan_requires_explicit_recheck_before_start(
+def test_qb_skip_disabled_plan_requires_explicit_recheck_before_start(
     tmp_path: Path,
 ) -> None:
     service, factory, fake, _torrent_bytes = _fixture(
         tmp_path,
         kind="qb",
-        force_client_check=True,
+        skip_downloader_check=False,
     )
     qb = cast(_FakeQb, fake)
 

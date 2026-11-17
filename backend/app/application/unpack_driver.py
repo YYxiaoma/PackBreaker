@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
+
+# 阶段协程约定：返回（推进次数, 受影响的 execution id）。
+_StageCoroutine = Callable[[], Coroutine[Any, Any, tuple[int, tuple[str, ...]]]]
 
 
 class UnpackDiscoveryAutomationPort(Protocol):
@@ -71,7 +75,7 @@ class UnpackDriverState:
 
 
 class UnpackDriver:
-    """后台有界推进数据拆包媒体发现；匹配阶段由后续 coordinator 接管。"""
+    """后台有界、持续推进数据拆包从发现到最终辅种的完整生命周期。"""
 
     def __init__(
         self,
@@ -94,7 +98,6 @@ class UnpackDriver:
         execution_plan_batch_size: int = 5,
         materialization_batch_size: int = 5,
         seeding_batch_size: int = 5,
-        pause_after_matching: bool = False,
         logger: logging.Logger | None = None,
     ) -> None:
         if interval_seconds <= 0:
@@ -128,11 +131,12 @@ class UnpackDriver:
         self._execution_plan_batch_size = execution_plan_batch_size
         self._materialization_batch_size = materialization_batch_size
         self._seeding_batch_size = seeding_batch_size
-        self._pause_after_matching = pause_after_matching
         self._logger = logger or logging.getLogger("packbreaker.unpack_driver")
         self._tick_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._runner: asyncio.Task[None] | None = None
+        self._stage_tasks: dict[str, asyncio.Task[None]] = {}
+        self._touched_execution_ids: set[str] = set()
         self._ticks_started = 0
         self._ticks_completed = 0
         self._ticks_skipped = 0
@@ -167,257 +171,70 @@ class UnpackDriver:
         runner = self._runner
         self._runner = None
         self._stop_event.set()
+        stage_tasks = [task for task in self._stage_tasks.values() if not task.done()]
+        self._stage_tasks.clear()
+        for task in stage_tasks:
+            task.cancel()
+        if stage_tasks:
+            await asyncio.gather(*stage_tasks, return_exceptions=True)
         if runner is None:
             return
         runner.cancel()
         with suppress(asyncio.CancelledError):
             await runner
 
-    async def run_once(self) -> int | None:
+    async def run_once(self, *, await_stages: bool = True) -> int | None:
+        """推进一轮调度。
+
+        ``await_stages=True`` 等待所有阶段完成（测试与显式巡检使用）。
+        后台循环使用 ``await_stages=False``：只派发阶段任务，某个阶段耗时很久
+        （例如站点限流导致一次匹配要几十分钟）也不会挡住其它阶段的下一轮。
+        """
+
         if self._tick_lock.locked():
             self._ticks_skipped += 1
             return None
         await self._tick_lock.acquire()
         self._ticks_started += 1
         advanced = 0
-        matching_execution_ids: tuple[str, ...] = ()
-        verifying_execution_ids: tuple[str, ...] = ()
-        auxiliary_execution_ids: tuple[str, ...] = ()
-        planning_execution_ids: tuple[str, ...] = ()
-        materializing_execution_ids: tuple[str, ...] = ()
-        seeding_execution_ids: tuple[str, ...] = ()
         try:
+            # 监控触发与媒体发现必须先行：它们决定本轮有哪些 execution 可以推进。
             if self._monitor_service is not None:
-                definition_ids = await asyncio.to_thread(
-                    self._monitor_service.list_due_definition_ids,
-                    limit=self._execution_limit,
+                monitor_advanced, monitor_ids = await self._advance_monitor_definitions()
+                advanced += monitor_advanced
+                self._touched_execution_ids.update(monitor_ids)
+
+            discovery_advanced, discovery_ids = await self._advance_discovery()
+            advanced += discovery_advanced
+            self._touched_execution_ids.update(discovery_ids)
+
+            # 各阶段按 item 状态归属彼此隔离：匹配等待站点网络，内容校验消耗磁盘哈希，
+            # 落位与辅种写下载器。必须串行的「内容校验 → 辅助文件补齐」已经合并进
+            # 同一个阶段协程（两者共用 AUXILIARY_FETCHING 状态）。
+            stages = self._stage_coroutines()
+            if await_stages:
+                results = await asyncio.gather(
+                    *(coroutine() for _, coroutine in stages),
+                    return_exceptions=True,
                 )
-                for definition_id in definition_ids:
-                    try:
-                        await self._monitor_service.trigger_due_definition(definition_id)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self._last_error_type = type(exc).__name__
-                        self._logger.exception(
-                            "监控拆包调度失败 definition_id=%s error_type=%s",
-                            definition_id,
+                for result in results:
+                    if isinstance(result, BaseException):
+                        if isinstance(result, asyncio.CancelledError):
+                            raise result
+                        self._last_error_type = type(result).__name__
+                        self._logger.error(
+                            "数据拆包阶段并行推进失败 error_type=%s",
                             self._last_error_type,
+                            exc_info=result,
                         )
                         continue
-                    advanced += 1
+                    stage_advanced, stage_ids = result
+                    advanced += stage_advanced
+                    self._touched_execution_ids.update(stage_ids)
+            else:
+                advanced += self._dispatch_stages(stages)
 
-            execution_ids = await asyncio.to_thread(
-                self._service.list_due_execution_ids,
-                limit=self._execution_limit,
-            )
-            for execution_id in execution_ids:
-                try:
-                    await asyncio.to_thread(
-                        self._service.discover_next_page,
-                        execution_id,
-                        limit=self._discovery_batch_size,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    self._last_error_type = type(exc).__name__
-                    self._logger.exception(
-                        "数据拆包媒体发现后台推进失败 execution_id=%s error_type=%s",
-                        execution_id,
-                        self._last_error_type,
-                    )
-                    continue
-                advanced += 1
-
-            if self._match_service is not None:
-                matching_execution_ids = await asyncio.to_thread(
-                    self._match_service.list_matching_execution_ids,
-                    limit=self._execution_limit,
-                )
-                for execution_id in matching_execution_ids:
-                    try:
-                        await self._match_service.match_next_batch(
-                            execution_id,
-                            limit=self._match_batch_size,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self._last_error_type = type(exc).__name__
-                        self._logger.exception(
-                            "数据拆包匹配后台推进失败 execution_id=%s error_type=%s",
-                            execution_id,
-                            self._last_error_type,
-                        )
-                        continue
-                    advanced += 1
-
-            if self._pause_after_matching:
-                touched_execution_ids = tuple(
-                    sorted(set(execution_ids) | set(matching_execution_ids))
-                )
-                if self._result_notification_service is not None and touched_execution_ids:
-                    try:
-                        await asyncio.to_thread(
-                            self._result_notification_service.project_unpack_execution_results,
-                            touched_execution_ids,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self._last_error_type = type(exc).__name__
-                        self._logger.exception(
-                            "匹配阶段暂停模式下的终态通知投影失败 execution_count=%s error_type=%s",
-                            len(touched_execution_ids),
-                            self._last_error_type,
-                        )
-                self._ticks_completed += 1
-                if advanced:
-                    self._last_error_type = None
-                return advanced
-
-            if self._content_verification_service is not None:
-                verifying_execution_ids = await asyncio.to_thread(
-                    self._content_verification_service.list_verifiable_execution_ids,
-                    limit=self._execution_limit,
-                )
-                for execution_id in verifying_execution_ids:
-                    try:
-                        await self._content_verification_service.verify_next_batch(
-                            execution_id,
-                            limit=self._content_verification_batch_size,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self._last_error_type = type(exc).__name__
-                        self._logger.exception(
-                            "数据拆包内容验证后台推进失败 execution_id=%s error_type=%s",
-                            execution_id,
-                            self._last_error_type,
-                        )
-                        continue
-                    advanced += 1
-
-            if self._auxiliary_service is not None:
-                auxiliary_execution_ids = await asyncio.to_thread(
-                    self._auxiliary_service.list_auxiliary_execution_ids,
-                    limit=self._execution_limit,
-                )
-                for execution_id in auxiliary_execution_ids:
-                    try:
-                        await self._auxiliary_service.advance_next_batch(
-                            execution_id,
-                            limit=self._auxiliary_batch_size,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self._last_error_type = type(exc).__name__
-                        self._logger.exception(
-                            "数据拆包辅助文件补齐后台推进失败 execution_id=%s error_type=%s",
-                            execution_id,
-                            self._last_error_type,
-                        )
-                        continue
-                    advanced += 1
-
-            if self._execution_plan_service is not None:
-                planning_execution_ids = await asyncio.to_thread(
-                    self._execution_plan_service.list_plannable_execution_ids,
-                    limit=self._execution_limit,
-                )
-                for execution_id in planning_execution_ids:
-                    try:
-                        await self._execution_plan_service.plan_next_batch(
-                            execution_id,
-                            limit=self._execution_plan_batch_size,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self._last_error_type = type(exc).__name__
-                        self._logger.exception(
-                            "数据拆包执行计划后台推进失败 execution_id=%s error_type=%s",
-                            execution_id,
-                            self._last_error_type,
-                        )
-                        continue
-                    advanced += 1
-
-            if self._materialization_service is not None:
-                materializing_execution_ids = await asyncio.to_thread(
-                    self._materialization_service.list_materializable_execution_ids,
-                    limit=self._execution_limit,
-                )
-                for execution_id in materializing_execution_ids:
-                    try:
-                        await asyncio.to_thread(
-                            self._materialization_service.materialize_next_batch,
-                            execution_id,
-                            limit=self._materialization_batch_size,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self._last_error_type = type(exc).__name__
-                        self._logger.exception(
-                            "数据拆包文件落位后台推进失败 execution_id=%s error_type=%s",
-                            execution_id,
-                            self._last_error_type,
-                        )
-                        continue
-                    advanced += 1
-
-            if self._seeding_service is not None:
-                seeding_execution_ids = await asyncio.to_thread(
-                    self._seeding_service.list_seedable_execution_ids,
-                    limit=self._execution_limit,
-                )
-                for execution_id in seeding_execution_ids:
-                    try:
-                        await self._seeding_service.advance_next_batch(
-                            execution_id,
-                            limit=self._seeding_batch_size,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self._last_error_type = type(exc).__name__
-                        self._logger.exception(
-                            "数据拆包最终辅种后台推进失败 execution_id=%s error_type=%s",
-                            execution_id,
-                            self._last_error_type,
-                        )
-                        continue
-                    advanced += 1
-            touched_execution_ids = tuple(
-                sorted(
-                    set(execution_ids)
-                    | set(matching_execution_ids)
-                    | set(verifying_execution_ids)
-                    | set(auxiliary_execution_ids)
-                    | set(planning_execution_ids)
-                    | set(materializing_execution_ids)
-                    | set(seeding_execution_ids)
-                )
-            )
-            if self._result_notification_service is not None and touched_execution_ids:
-                try:
-                    await asyncio.to_thread(
-                        self._result_notification_service.project_unpack_execution_results,
-                        touched_execution_ids,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    self._last_error_type = type(exc).__name__
-                    self._logger.exception(
-                        "数据拆包终态通知投影失败 execution_count=%s error_type=%s",
-                        len(touched_execution_ids),
-                        self._last_error_type,
-                    )
+            await self._project_stage_results()
             self._ticks_completed += 1
             if advanced:
                 self._last_error_type = None
@@ -426,10 +243,290 @@ class UnpackDriver:
             self._last_tick_completed_at = datetime.now(UTC)
             self._tick_lock.release()
 
+    def _stage_coroutines(self) -> tuple[tuple[str, _StageCoroutine], ...]:
+        return (
+            ("matching", self._advance_matching),
+            ("verification", self._advance_verification_and_auxiliary),
+            ("planning", self._advance_execution_plans),
+            ("materialization", self._advance_materialization),
+            ("seeding", self._advance_seeding),
+        )
+
+    def _dispatch_stages(self, stages: tuple[tuple[str, _StageCoroutine], ...]) -> int:
+        dispatched = 0
+        for name, coroutine in stages:
+            running = self._stage_tasks.get(name)
+            if running is not None and not running.done():
+                # 同一阶段不允许重入：上一轮还没跑完就跳过这一轮。
+                continue
+            self._stage_tasks[name] = asyncio.create_task(
+                self._run_stage(name, coroutine),
+                name=f"packbreaker-unpack-{name}",
+            )
+            dispatched += 1
+        return dispatched
+
+    async def _run_stage(self, name: str, coroutine: _StageCoroutine) -> None:
+        try:
+            stage_advanced, stage_ids = await coroutine()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._last_error_type = type(exc).__name__
+            self._logger.error(
+                "数据拆包阶段推进失败 stage=%s error_type=%s",
+                name,
+                self._last_error_type,
+                exc_info=exc,
+            )
+            return
+        self._touched_execution_ids.update(stage_ids)
+        if stage_advanced:
+            self._last_error_type = None
+
+    async def _project_stage_results(self) -> None:
+        if self._result_notification_service is None or not self._touched_execution_ids:
+            return
+        touched = tuple(sorted(self._touched_execution_ids))
+        self._touched_execution_ids.clear()
+        try:
+            await asyncio.to_thread(
+                self._result_notification_service.project_unpack_execution_results,
+                touched,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._last_error_type = type(exc).__name__
+            self._logger.exception(
+                "数据拆包终态通知投影失败 execution_count=%s error_type=%s",
+                len(touched),
+                self._last_error_type,
+            )
+
+    async def wait_stages(self) -> None:
+        """等待当前在跑的阶段任务结束（停机与测试使用）。"""
+
+        tasks = [task for task in self._stage_tasks.values() if not task.done()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _advance_monitor_definitions(self) -> tuple[int, tuple[str, ...]]:
+        assert self._monitor_service is not None
+        advanced = 0
+        definition_ids = await asyncio.to_thread(
+            self._monitor_service.list_due_definition_ids,
+            limit=self._execution_limit,
+        )
+        for definition_id in definition_ids:
+            try:
+                await self._monitor_service.trigger_due_definition(definition_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error_type = type(exc).__name__
+                self._logger.exception(
+                    "监控拆包调度失败 definition_id=%s error_type=%s",
+                    definition_id,
+                    self._last_error_type,
+                )
+                continue
+            advanced += 1
+        return advanced, ()
+
+    async def _advance_discovery(self) -> tuple[int, tuple[str, ...]]:
+        advanced = 0
+        execution_ids = await asyncio.to_thread(
+            self._service.list_due_execution_ids,
+            limit=self._execution_limit,
+        )
+        for execution_id in execution_ids:
+            try:
+                await asyncio.to_thread(
+                    self._service.discover_next_page,
+                    execution_id,
+                    limit=self._discovery_batch_size,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error_type = type(exc).__name__
+                self._logger.exception(
+                    "数据拆包媒体发现后台推进失败 execution_id=%s error_type=%s",
+                    execution_id,
+                    self._last_error_type,
+                )
+                continue
+            advanced += 1
+        return advanced, execution_ids
+
+    async def _advance_matching(self) -> tuple[int, tuple[str, ...]]:
+        if self._match_service is None:
+            return 0, ()
+        advanced = 0
+        execution_ids = await asyncio.to_thread(
+            self._match_service.list_matching_execution_ids,
+            limit=self._execution_limit,
+        )
+        for execution_id in execution_ids:
+            try:
+                await self._match_service.match_next_batch(
+                    execution_id,
+                    limit=self._match_batch_size,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error_type = type(exc).__name__
+                self._logger.exception(
+                    "数据拆包匹配后台推进失败 execution_id=%s error_type=%s",
+                    execution_id,
+                    self._last_error_type,
+                )
+                continue
+            advanced += 1
+        return advanced, execution_ids
+
+    async def _advance_verification_and_auxiliary(self) -> tuple[int, tuple[str, ...]]:
+        advanced = 0
+        touched: set[str] = set()
+        if self._content_verification_service is not None:
+            verifying_execution_ids = await asyncio.to_thread(
+                self._content_verification_service.list_verifiable_execution_ids,
+                limit=self._execution_limit,
+            )
+            touched.update(verifying_execution_ids)
+            for execution_id in verifying_execution_ids:
+                try:
+                    await self._content_verification_service.verify_next_batch(
+                        execution_id,
+                        limit=self._content_verification_batch_size,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._last_error_type = type(exc).__name__
+                    self._logger.exception(
+                        "数据拆包内容验证后台推进失败 execution_id=%s error_type=%s",
+                        execution_id,
+                        self._last_error_type,
+                    )
+                    continue
+                advanced += 1
+
+        # 辅助文件补齐依赖内容校验写入的 AUXILIARY_FETCHING 阶段标记，必须排在其后。
+        if self._auxiliary_service is not None:
+            auxiliary_execution_ids = await asyncio.to_thread(
+                self._auxiliary_service.list_auxiliary_execution_ids,
+                limit=self._execution_limit,
+            )
+            touched.update(auxiliary_execution_ids)
+            for execution_id in auxiliary_execution_ids:
+                try:
+                    await self._auxiliary_service.advance_next_batch(
+                        execution_id,
+                        limit=self._auxiliary_batch_size,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._last_error_type = type(exc).__name__
+                    self._logger.exception(
+                        "数据拆包辅助文件补齐后台推进失败 execution_id=%s error_type=%s",
+                        execution_id,
+                        self._last_error_type,
+                    )
+                    continue
+                advanced += 1
+        return advanced, tuple(sorted(touched))
+
+    async def _advance_execution_plans(self) -> tuple[int, tuple[str, ...]]:
+        if self._execution_plan_service is None:
+            return 0, ()
+        advanced = 0
+        execution_ids = await asyncio.to_thread(
+            self._execution_plan_service.list_plannable_execution_ids,
+            limit=self._execution_limit,
+        )
+        for execution_id in execution_ids:
+            try:
+                await self._execution_plan_service.plan_next_batch(
+                    execution_id,
+                    limit=self._execution_plan_batch_size,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error_type = type(exc).__name__
+                self._logger.exception(
+                    "数据拆包执行计划后台推进失败 execution_id=%s error_type=%s",
+                    execution_id,
+                    self._last_error_type,
+                )
+                continue
+            advanced += 1
+        return advanced, execution_ids
+
+    async def _advance_materialization(self) -> tuple[int, tuple[str, ...]]:
+        if self._materialization_service is None:
+            return 0, ()
+        advanced = 0
+        execution_ids = await asyncio.to_thread(
+            self._materialization_service.list_materializable_execution_ids,
+            limit=self._execution_limit,
+        )
+        for execution_id in execution_ids:
+            try:
+                await asyncio.to_thread(
+                    self._materialization_service.materialize_next_batch,
+                    execution_id,
+                    limit=self._materialization_batch_size,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error_type = type(exc).__name__
+                self._logger.exception(
+                    "数据拆包文件落位后台推进失败 execution_id=%s error_type=%s",
+                    execution_id,
+                    self._last_error_type,
+                )
+                continue
+            advanced += 1
+        return advanced, execution_ids
+
+    async def _advance_seeding(self) -> tuple[int, tuple[str, ...]]:
+        if self._seeding_service is None:
+            return 0, ()
+        advanced = 0
+        execution_ids = await asyncio.to_thread(
+            self._seeding_service.list_seedable_execution_ids,
+            limit=self._execution_limit,
+        )
+        for execution_id in execution_ids:
+            try:
+                await self._seeding_service.advance_next_batch(
+                    execution_id,
+                    limit=self._seeding_batch_size,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error_type = type(exc).__name__
+                self._logger.exception(
+                    "数据拆包最终辅种后台推进失败 execution_id=%s error_type=%s",
+                    execution_id,
+                    self._last_error_type,
+                )
+                continue
+            advanced += 1
+        return advanced, execution_ids
+
     async def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                await self.run_once()
+                # 只派发阶段任务：单个阶段耗时很久时，其它阶段仍按自己的节奏推进。
+                await self.run_once(await_stages=False)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

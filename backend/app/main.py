@@ -38,7 +38,7 @@ from backend.app.application.notification_driver import NotificationDriver
 from backend.app.application.notifications import NotificationService
 from backend.app.application.secrets import SecretStore
 from backend.app.application.site_statistics_driver import SiteStatisticsDriver
-from backend.app.application.sites import SiteService
+from backend.app.application.sites import SiteService, sync_fixed_site_base_urls
 from backend.app.application.system_health import SystemResourceSampler
 from backend.app.application.system_upgrades import SystemUpgradeService
 from backend.app.application.unpack_acceptance import UnpackAcceptanceScope
@@ -52,6 +52,8 @@ from backend.app.application.unpack_driver import UnpackDriver
 from backend.app.application.unpack_execution_plans import UnpackExecutionPlanService
 from backend.app.application.unpack_executions import UnpackExecutionQueryService
 from backend.app.application.unpack_item_actions import UnpackItemActionService
+from backend.app.application.unpack_item_reconcile import UnpackItemReconcileService
+from backend.app.application.unpack_lifecycle import refresh_stale_review_executions
 from backend.app.application.unpack_manual_candidates import UnpackManualCandidateService
 from backend.app.application.unpack_manual_torrents import ManualTorrentStore
 from backend.app.application.unpack_matching import UnpackMatchCoordinator
@@ -60,11 +62,16 @@ from backend.app.application.unpack_monitor import UnpackMonitorService
 from backend.app.application.unpack_seeding import UnpackSeedingService
 from backend.app.application.unpack_source_scans import UnpackSourceScanService
 from backend.app.application.unpack_template_driver import UnpackTemplateImportDriver
+from backend.app.application.unpack_template_transfer import (
+    UnpackTemplateTransferService,
+    install_builtin_templates,
+)
 from backend.app.application.unpack_templates import UnpackTemplateService
 from backend.app.config import AppSettings
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.http_security import TrustedProxyPolicy, apply_security_headers
 from backend.app.infrastructure.runtime import RuntimeManager
+from backend.app.infrastructure.safe_filesystem import SafeFilesystemGateway
 from backend.app.infrastructure.site_reliability import SiteReliabilityRegistry
 from backend.app.versioning import app_version
 
@@ -318,14 +325,29 @@ def create_app(
             max_candidates_per_item=resolved_settings.unpack_match_candidate_limit,
         )
         app.state.unpack_match_coordinator = unpack_match_coordinator
+        recovered_match_count = unpack_match_coordinator.recover_interrupted_matches()
+        if recovered_match_count:
+            _recovery_logger.warning(
+                "已恢复上次进程中断的数据拆包匹配 item_count=%d",
+                recovered_match_count,
+            )
         unpack_content_verification_service = UnpackContentVerificationService(
             resolved_runtime.session_factory,
             site_service,
             path_scope=path_scope,
             fetch_timeout_seconds=resolved_settings.unpack_content_fetch_timeout_seconds,
             manual_torrent_store=manual_torrent_store,
+            sample_pieces=resolved_settings.unpack_verify_sample_pieces,
         )
         app.state.unpack_content_verification_service = unpack_content_verification_service
+        recovered_verification_count = (
+            unpack_content_verification_service.recover_interrupted_verifications()
+        )
+        if recovered_verification_count:
+            _recovery_logger.warning(
+                "已恢复上次进程中断的数据拆包内容验证 item_count=%d",
+                recovered_verification_count,
+            )
         unpack_auxiliary_service = UnpackAuxiliaryStagingService(
             resolved_runtime.session_factory,
             site_service,
@@ -350,6 +372,26 @@ def create_app(
             path_scope=path_scope,
         )
         app.state.unpack_materialization_service = unpack_materialization_service
+        # 旧版本把“存在未决审核”固化成不可调度的执行状态，升级后一次性重算。
+        refresh_stale_review_executions(resolved_runtime.session_factory)
+        if sync_fixed_site_base_urls(resolved_runtime.session_factory):
+            _recovery_logger.info("站点地址已按受信任 Profile 自动同步")
+        install_builtin_templates(
+            resolved_runtime.session_factory,
+            resolved_settings.official_template_dir,
+            app_version_value=app_version(),
+        )
+        app.state.unpack_template_transfer_service = UnpackTemplateTransferService(
+            resolved_runtime.session_factory
+        )
+        app.state.unpack_item_reconcile_service = UnpackItemReconcileService(
+            resolved_runtime.session_factory,
+            downloader_service,
+            SafeFilesystemGateway(
+                Path(resolved_settings.data_dir),
+                path_scope=path_scope,
+            ),
+        )
         unpack_seeding_service = UnpackSeedingService(
             resolved_runtime.session_factory,
             site_service,

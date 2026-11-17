@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.domain.site_config import SiteKind, SiteSupportStatus, site_profile
 from backend.app.domain.unpack_execution_plan import unpack_execution_plan_from_payload
+from backend.app.domain.verification import EVIDENCE_VERIFIED_LEVEL_VALUES
 from backend.app.infrastructure.persistence.models import (
     Downloader,
     Site,
@@ -246,12 +247,12 @@ class ScopedWriteProposalInspector:
             or candidate.generation != item.candidate_generation
             or candidate.site_id != proposal["site_id"]
             or candidate.verification_status != "VERIFIED"
-            or candidate.verification_level != "FULL_VERIFIED"
+            or candidate.verification_level not in EVIDENCE_VERIFIED_LEVEL_VALUES
             or candidate.metainfo_digest != proposal["metainfo_digest"]
             or not isinstance(candidate.raw_ref, dict)
             or candidate.raw_ref.get("site_config_id") != proposal["site_id"]
             or candidate.raw_ref.get("site_config_version") != proposal["site_version"]
-            or item.content_verification_level != "FULL_VERIFIED"
+            or item.content_verification_level not in EVIDENCE_VERIFIED_LEVEL_VALUES
             or item.torrent_metainfo_digest != proposal["metainfo_digest"]
         ):
             return False

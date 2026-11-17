@@ -2,9 +2,17 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
 from backend.app.infrastructure.persistence.database import sqlite_database_url
+
+
+def _head_revision(config: Config) -> str:
+    head = ScriptDirectory.from_config(config).get_current_head()
+    if head is None:  # pragma: no cover - 迁移链必须始终有 head
+        raise RuntimeError("alembic 迁移链缺少 head")
+    return head
 
 
 def test_unpack_v2_foundation_migration_creates_new_model(tmp_path: Path) -> None:
@@ -31,6 +39,38 @@ def test_unpack_v2_foundation_migration_creates_new_model(tmp_path: Path) -> Non
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one() == ("0035_unpack_v2_foundation")
+    finally:
+        engine.dispose()
+
+
+def test_unpack_content_verify_error_migration_expands_item_status_check(tmp_path: Path) -> None:
+    database = tmp_path / "unpack-content-verify-error.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database)
+
+    command.upgrade(config, "0051_unpack_template_match_acceptance")
+    engine = create_engine(sqlite_database_url(database))
+    try:
+        before = {
+            item["name"]: item["sqltext"]
+            for item in inspect(engine).get_check_constraints("unpack_execution_item")
+        }
+        assert "CONTENT_VERIFY_ERROR" not in before["ck_unpack_execution_item_status"]
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(sqlite_database_url(database))
+    try:
+        checks = {
+            item["name"]: item["sqltext"]
+            for item in inspect(engine).get_check_constraints("unpack_execution_item")
+        }
+        assert "CONTENT_VERIFY_ERROR" in checks["ck_unpack_execution_item_status"]
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == _head_revision(config)
     finally:
         engine.dispose()
 
@@ -310,9 +350,41 @@ def test_template_library_migration_preserves_existing_unpack_history(tmp_path: 
                 text(
                     "INSERT INTO unpack_execution_item "
                     "(id, execution_id, source_object_key, source_snapshot, media_identity, "
-                    "status, candidate_generation, retry_count, version, created_at, updated_at) "
+                    "status, selected_candidate_id, match_origin, candidate_generation, "
+                    "retry_count, "
+                    "last_error_code, last_error_message, version, created_at, updated_at) "
                     "VALUES ('keep-item', 'keep-execution', 'source-1', '{}', '{}', "
-                    "'DISCOVERED', 0, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                    "'MATCH_ERROR', 'keep-candidate', 'AUTO', 2, 0, "
+                    "'UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT', '获取候选 torrent 超时，可稍后重试', "
+                    "1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO unpack_match_candidate "
+                    "(id, item_id, generation, site_id, candidate_key, title, score_bps, "
+                    "is_exact_match, evidence, verification_status, raw_ref, created_at) VALUES "
+                    "('keep-candidate', 'keep-item', 2, 'keep-site', 'torrent-1', "
+                    "'Keep candidate', 10000, 1, '{}', 'NOT_CHECKED', '{}', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO unpack_review_decision "
+                    "(id, item_id, generation, decision, candidate_id, item_version_before, "
+                    "idempotency_key, decided_at) VALUES "
+                    "('keep-review', 'keep-item', 2, 'APPROVE', 'keep-candidate', 1, "
+                    "'keep-review-idempotency', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO unpack_external_operation_journal "
+                    "(id, item_id, idempotency_key, operation_type, target, intent, status, "
+                    "created_at, updated_at) VALUES "
+                    "('keep-operation', 'keep-item', 'keep-operation-idempotency', "
+                    "'UNPACK_EXEC_CREATE_DIRECTORY', '{}', '{}', 'APPLIED', "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
                 )
             )
     finally:
@@ -323,10 +395,9 @@ def test_template_library_migration_preserves_existing_unpack_history(tmp_path: 
     engine = create_engine(sqlite_database_url(database))
     try:
         with engine.connect() as connection:
-            assert (
-                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                == "0051_unpack_template_match_acceptance"
-            )
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == _head_revision(config)
             template_import_columns = {
                 item["name"] for item in inspect(engine).get_columns("unpack_template_import_job")
             }
@@ -352,18 +423,81 @@ def test_template_library_migration_preserves_existing_unpack_history(tmp_path: 
                 ).scalar_one()
                 == "keep-execution"
             )
-            assert (
-                connection.execute(
-                    text("SELECT id FROM unpack_execution_item WHERE id='keep-item'")
-                ).scalar_one()
-                == "keep-item"
+            migrated_item = connection.execute(
+                text(
+                    "SELECT id, status, selected_candidate_id, match_origin, last_error_code "
+                    "FROM unpack_execution_item WHERE id='keep-item'"
+                )
+            ).one()
+            assert migrated_item == (
+                "keep-item",
+                "CONTENT_VERIFY_ERROR",
+                "keep-candidate",
+                "AUTO",
+                "UNPACK_VERIFY_TORRENT_FETCH_TIMEOUT",
             )
+            assert connection.execute(
+                text(
+                    "SELECT id, item_id, generation, candidate_key "
+                    "FROM unpack_match_candidate WHERE id='keep-candidate'"
+                )
+            ).one() == ("keep-candidate", "keep-item", 2, "torrent-1")
+            assert connection.execute(
+                text(
+                    "SELECT id, candidate_id, generation, decision "
+                    "FROM unpack_review_decision WHERE id='keep-review'"
+                )
+            ).one() == ("keep-review", "keep-candidate", 2, "APPROVE")
+            assert connection.execute(
+                text(
+                    "SELECT id, operation_type, status "
+                    "FROM unpack_external_operation_journal WHERE id='keep-operation'"
+                )
+            ).one() == ("keep-operation", "UNPACK_EXEC_CREATE_DIRECTORY", "APPLIED")
             assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
             template_fk_targets = {
                 row[2]
                 for row in connection.execute(text("PRAGMA foreign_key_list(unpack_definition)"))
             }
             assert "unpack_template" in template_fk_targets
+    finally:
+        engine.dispose()
+
+    command.downgrade(config, "0051_unpack_template_match_acceptance")
+    engine = create_engine(sqlite_database_url(database))
+    try:
+        with engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "0051_unpack_template_match_acceptance"
+            )
+            assert (
+                connection.execute(
+                    text("SELECT status FROM unpack_execution_item WHERE id='keep-item'")
+                ).scalar_one()
+                == "MATCH_ERROR"
+            )
+            assert (
+                connection.execute(
+                    text("SELECT id FROM unpack_match_candidate WHERE id='keep-candidate'")
+                ).scalar_one()
+                == "keep-candidate"
+            )
+            assert (
+                connection.execute(
+                    text("SELECT id FROM unpack_review_decision WHERE id='keep-review'")
+                ).scalar_one()
+                == "keep-review"
+            )
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT id FROM unpack_external_operation_journal WHERE id='keep-operation'"
+                    )
+                ).scalar_one()
+                == "keep-operation"
+            )
+            assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
     finally:
         engine.dispose()
 
@@ -407,5 +541,35 @@ def test_legacy_task_runtime_retirement_disables_telegram_approval(tmp_path: Pat
                 connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
                 == "0044_retire_legacy_task_runtime"
             )
+    finally:
+        engine.dispose()
+
+
+def test_sampled_verification_level_is_accepted_for_items_and_candidates(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "unpack-sampled.db"
+    config = Config("alembic.ini")
+    config.attributes["database_url"] = sqlite_database_url(database)
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(sqlite_database_url(database))
+    try:
+        inspector = inspect(engine)
+        item_checks = {
+            item["name"]: item["sqltext"]
+            for item in inspector.get_check_constraints("unpack_execution_item")
+        }
+        candidate_checks = {
+            item["name"]: item["sqltext"]
+            for item in inspector.get_check_constraints("unpack_match_candidate")
+        }
+        assert (
+            "SAMPLED_VERIFIED" in item_checks["ck_unpack_execution_item_content_verification_level"]
+        )
+        assert (
+            "SAMPLED_VERIFIED" in candidate_checks["ck_unpack_match_candidate_verification_level"]
+        )
     finally:
         engine.dispose()

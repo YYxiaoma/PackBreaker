@@ -299,6 +299,34 @@ class ReliableSiteAdapter:
             SearchPage,
         )
 
+    async def search_for_unpack(self, query: SearchQuery) -> SearchPage:
+        """One network attempt per persisted match attempt; retain cache and site throttling.
+
+        UnpackMatchCoordinator owns the durable retry budget for a media item.
+        Nesting the reliability retry loop here can wait through a site's long
+        minimum request interval and exceed the coordinator's per-call deadline.
+        """
+        key: Hashable = ("search", query)
+        return await self._cached(
+            key,
+            self._policy.search_cache_ttl_seconds,
+            lambda: self._delegate.search(query),
+            SearchPage,
+            retry_allowed=False,
+        )
+
+    async def search_for_unpack_fresh(self, query: SearchQuery) -> SearchPage:
+        """Make one fresh unpack search and replace any cached page for this query."""
+        key: Hashable = ("search", query)
+        return await self._cached(
+            key,
+            self._policy.search_cache_ttl_seconds,
+            lambda: self._delegate.search(query),
+            SearchPage,
+            retry_allowed=False,
+            refresh=True,
+        )
+
     async def fetch_details(self, torrent_id: str) -> TorrentDetails:
         normalized_id = torrent_id.strip()
         key: Hashable = ("details", normalized_id)
@@ -323,18 +351,24 @@ class ReliableSiteAdapter:
         ttl_seconds: float,
         operation: Callable[[], Awaitable[_T]],
         expected_type: type[_T],
+        *,
+        retry_allowed: bool = True,
+        refresh: bool = False,
     ) -> _T:
         if ttl_seconds <= 0:
-            return await self._invoke(operation)
-        cached = await self._cache_get(key)
+            return await self._invoke(operation, retry_allowed=retry_allowed)
+        cached = _CACHE_MISS if refresh else await self._cache_get(key)
         if cached is not _CACHE_MISS:
             return cast(_T, cached)
 
         async with self._state.cache_key_lock(key):
-            cached = await self._cache_get(key, record=False)
+            if refresh:
+                async with self._state.cache_lock:
+                    self._state.cache.pop(key, None)
+            cached = _CACHE_MISS if refresh else await self._cache_get(key, record=False)
             if cached is not _CACHE_MISS:
                 return cast(_T, cached)
-            result = await self._invoke(operation)
+            result = await self._invoke(operation, retry_allowed=retry_allowed)
             if not isinstance(result, expected_type):
                 raise TypeError("站点适配器返回类型不符合 SiteAdapter 契约")
             await self._cache_put(key, result, ttl_seconds)
@@ -508,16 +542,20 @@ class ReliableSiteAdapter:
     ) -> bool:
         if interval_seconds <= 0:
             return True
-        async with self._state.rate_lock:
-            now = self._clock()
-            scheduled = max(now, self._state.next_request_at)
-            delay = max(0.0, scheduled - now)
-            if deadline is not None and now + delay > deadline:
-                return False
-            self._state.next_request_at = scheduled + interval_seconds
-        if delay > 0:
+        while True:
+            async with self._state.rate_lock:
+                now = self._clock()
+                scheduled = max(now, self._state.next_request_at)
+                delay = max(0.0, scheduled - now)
+                if deadline is not None and now + delay > deadline:
+                    return False
+                if delay <= 0:
+                    # Reserve only when the slot is actually reached. Waiting
+                    # outside the lock keeps health reads responsive, and a
+                    # cancelled waiter consumes no future request interval.
+                    self._state.next_request_at = now + interval_seconds
+                    return True
             await self._sleep(delay)
-        return True
 
     def _retry_delay(self, attempt: int, retry_after_seconds: float | None) -> float:
         base = float(

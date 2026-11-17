@@ -2168,6 +2168,10 @@
             "title": "Phase",
             "type": "string"
           },
+          "shared_link_bytes": {
+            "title": "Shared Link Bytes",
+            "type": "integer"
+          },
           "source_file_count": {
             "title": "Source File Count",
             "type": "integer"
@@ -2253,6 +2257,7 @@
           "failed_count",
           "logical_duplicate_bytes",
           "estimated_reclaimable_bytes",
+          "shared_link_bytes",
           "version",
           "error_code",
           "created_at",
@@ -2518,6 +2523,25 @@
           "target_root": {
             "title": "Target Root",
             "type": "string"
+          },
+          "target_sampled_files": {
+            "title": "Target Sampled Files",
+            "type": "integer"
+          },
+          "target_shared_link_bytes": {
+            "title": "Target Shared Link Bytes",
+            "type": "integer"
+          },
+          "target_shared_link_files": {
+            "title": "Target Shared Link Files",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -2527,7 +2551,11 @@
           "target_device",
           "same_filesystem",
           "resolved_action",
-          "blocked_reasons"
+          "blocked_reasons",
+          "target_sampled_files",
+          "target_shared_link_files",
+          "target_shared_link_bytes",
+          "warnings"
         ],
         "title": "MovieDedupPrecheckResponse",
         "type": "object"
@@ -5708,9 +5736,32 @@
             "title": "Media Identity",
             "type": "object"
           },
+          "retry_capability": {
+            "enum": [
+              "MATCH",
+              "VERIFICATION",
+              "PLAN",
+              "RESUME",
+              "RECONCILE",
+              "NONE"
+            ],
+            "title": "Retry Capability",
+            "type": "string"
+          },
           "retry_count": {
             "title": "Retry Count",
             "type": "integer"
+          },
+          "retry_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Reason"
           },
           "review_allowed": {
             "title": "Review Allowed",
@@ -5777,6 +5828,8 @@
           "auxiliary_state",
           "review_allowed",
           "has_external_operations",
+          "retry_capability",
+          "retry_reason",
           "last_error_code",
           "last_error_message",
           "match_started_at",
@@ -5802,6 +5855,47 @@
           "items"
         ],
         "title": "UnpackExecutionListResponse",
+        "type": "object"
+      },
+      "UnpackExecutionReconcileResponse": {
+        "properties": {
+          "execution_id": {
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "failed_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Failed Reasons",
+            "type": "array"
+          },
+          "manual_count": {
+            "title": "Manual Count",
+            "type": "integer"
+          },
+          "processed_count": {
+            "title": "Processed Count",
+            "type": "integer"
+          },
+          "resolved_count": {
+            "title": "Resolved Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "execution_id",
+          "processed_count",
+          "resolved_count",
+          "manual_count",
+          "failed_count",
+          "failed_reasons"
+        ],
+        "title": "UnpackExecutionReconcileResponse",
         "type": "object"
       },
       "UnpackExecutionResponse": {
@@ -5846,6 +5940,10 @@
             "title": "Error Count",
             "type": "integer"
           },
+          "executing_count": {
+            "title": "Executing Count",
+            "type": "integer"
+          },
           "finished_at": {
             "anyOf": [
               {
@@ -5862,8 +5960,27 @@
             "title": "Id",
             "type": "string"
           },
+          "item_status_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Item Status Counts",
+            "type": "object"
+          },
+          "match_pending_count": {
+            "title": "Match Pending Count",
+            "type": "integer"
+          },
+          "match_progress_count": {
+            "title": "Match Progress Count",
+            "type": "integer"
+          },
           "matched_auto_count": {
             "title": "Matched Auto Count",
+            "type": "integer"
+          },
+          "matching_count": {
+            "title": "Matching Count",
             "type": "integer"
           },
           "no_match_count": {
@@ -5912,6 +6029,9 @@
           "discovery_complete",
           "discovery_cursor",
           "total_count",
+          "match_pending_count",
+          "matching_count",
+          "match_progress_count",
           "matched_auto_count",
           "no_match_count",
           "review_count",
@@ -5920,6 +6040,8 @@
           "timeout_count",
           "error_count",
           "completed_count",
+          "executing_count",
+          "item_status_counts",
           "started_at",
           "finished_at",
           "version",
@@ -5957,7 +6079,10 @@
       "UnpackItemActionRequest": {
         "properties": {
           "action": {
-            "const": "retry_match",
+            "enum": [
+              "retry_match",
+              "retry_content_verification"
+            ],
             "title": "Action",
             "type": "string"
           }
@@ -6118,6 +6243,53 @@
         "title": "UnpackItemDiagnosticsResponse",
         "type": "object"
       },
+      "UnpackItemReconcileResponse": {
+        "properties": {
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "item_status": {
+            "$ref": "#/components/schemas/UnpackItemStatus"
+          },
+          "manual_count": {
+            "title": "Manual Count",
+            "type": "integer"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/UnpackReconcileOutcomeResponse"
+            },
+            "title": "Outcomes",
+            "type": "array"
+          },
+          "resolved_count": {
+            "title": "Resolved Count",
+            "type": "integer"
+          },
+          "resumed_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resumed Stage"
+          }
+        },
+        "required": [
+          "item_id",
+          "item_status",
+          "resumed_stage",
+          "resolved_count",
+          "manual_count",
+          "outcomes"
+        ],
+        "title": "UnpackItemReconcileResponse",
+        "type": "object"
+      },
       "UnpackItemStatus": {
         "enum": [
           "DISCOVERED",
@@ -6134,6 +6306,7 @@
           "CONTENT_VERIFYING",
           "CONTENT_VERIFIED",
           "CONTENT_MISMATCH",
+          "CONTENT_VERIFY_ERROR",
           "PLAN_PENDING",
           "EXECUTING",
           "CLIENT_VERIFYING",
@@ -6553,6 +6726,40 @@
         "title": "UnpackOperationDiagnosticResponse",
         "type": "object"
       },
+      "UnpackReconcileOutcomeResponse": {
+        "properties": {
+          "journal_id": {
+            "title": "Journal Id",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "operation_type": {
+            "title": "Operation Type",
+            "type": "string"
+          },
+          "resolution": {
+            "enum": [
+              "APPLIED",
+              "NO_EFFECT",
+              "MANUAL",
+              "PLAN_RESET"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "journal_id",
+          "operation_type",
+          "resolution",
+          "note"
+        ],
+        "title": "UnpackReconcileOutcomeResponse",
+        "type": "object"
+      },
       "UnpackRetryEligibleItemsRequest": {
         "properties": {
           "action": {
@@ -6897,6 +7104,107 @@
         "title": "UnpackTaskKind",
         "type": "string"
       },
+      "UnpackTemplateFileImportResponse": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "renamed": {
+            "title": "Renamed",
+            "type": "boolean"
+          },
+          "seed_count": {
+            "title": "Seed Count",
+            "type": "integer"
+          },
+          "site_key": {
+            "title": "Site Key",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          },
+          "template_version": {
+            "title": "Template Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "template_id",
+          "template_version",
+          "name",
+          "site_key",
+          "seed_count",
+          "status",
+          "renamed"
+        ],
+        "title": "UnpackTemplateFileImportResponse",
+        "type": "object"
+      },
+      "UnpackTemplateFilePreviewResponse": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "mapped_media_count": {
+            "title": "Mapped Media Count",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "renamed": {
+            "title": "Renamed",
+            "type": "boolean"
+          },
+          "resolved_name": {
+            "title": "Resolved Name",
+            "type": "string"
+          },
+          "seed_count": {
+            "title": "Seed Count",
+            "type": "integer"
+          },
+          "site_key": {
+            "title": "Site Key",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "site_key",
+          "seed_count",
+          "mapped_media_count",
+          "resolved_name",
+          "renamed",
+          "warnings"
+        ],
+        "title": "UnpackTemplateFilePreviewResponse",
+        "type": "object"
+      },
       "UnpackTemplateImportJobResponse": {
         "properties": {
           "created_at": {
@@ -7065,6 +7373,13 @@
       },
       "UnpackTemplateResponse": {
         "properties": {
+          "available_site_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Available Site Ids",
+            "type": "array"
+          },
           "content_digest": {
             "title": "Content Digest",
             "type": "string"
@@ -7103,6 +7418,10 @@
           },
           "name": {
             "title": "Name",
+            "type": "string"
+          },
+          "origin": {
+            "title": "Origin",
             "type": "string"
           },
           "seed_count": {
@@ -7149,6 +7468,8 @@
           "mapped_media_count",
           "site_keys",
           "site_ids",
+          "available_site_ids",
+          "origin",
           "content_digest",
           "source_provenance",
           "created_at",
@@ -7483,7 +7804,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.1.5"
+    "version": "1.1.6"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -14479,6 +14800,218 @@
         ]
       }
     },
+    "/api/v1/unpack/executions/{execution_id}/reconcile": {
+      "post": {
+        "operationId": "reconcile_unpack_execution_items_api_v1_unpack_executions__execution_id__reconcile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackExecutionReconcileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile Unpack Execution Items",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/executions/{execution_id}/template-export": {
+      "post": {
+        "operationId": "export_unpack_execution_template_api_v1_unpack_executions__execution_id__template_export_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "title": "Execution Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "site_key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Site Key"
+            }
+          },
+          {
+            "in": "query",
+            "name": "collection_root",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Collection Root"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Unpack Execution Template",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
     "/api/v1/unpack/items/{item_id}": {
       "delete": {
         "operationId": "delete_unpack_execution_item_api_v1_unpack_items__item_id__delete",
@@ -15064,6 +15597,112 @@
           }
         },
         "summary": "Add Manual Unpack Candidate",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/items/{item_id}/reconcile": {
+      "post": {
+        "operationId": "reconcile_unpack_execution_item_api_v1_unpack_items__item_id__reconcile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackItemReconcileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile Unpack Execution Item",
         "tags": [
           "unpack-v2"
         ]
@@ -15796,6 +16435,168 @@
           }
         },
         "summary": "Create Unpack Template Import",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/templates/import-file": {
+      "post": {
+        "operationId": "import_unpack_template_file_api_v1_unpack_templates_import_file_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackTemplateFileImportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Unpack Template File",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/unpack/templates/import-file/preview": {
+      "post": {
+        "operationId": "preview_unpack_template_file_api_v1_unpack_templates_import_file_preview_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackTemplateFilePreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Unpack Template File",
         "tags": [
           "unpack-v2"
         ]

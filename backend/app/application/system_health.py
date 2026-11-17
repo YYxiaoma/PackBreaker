@@ -424,8 +424,10 @@ class SystemHealthService:
         movie_dedup_status = _string_int_map(database["movie_dedup_jobs"])
         terminal = {status.value for status in TERMINAL_EXECUTION_STATUSES}
         active_count = sum(count for status, count in by_status.items() if status not in terminal)
-        retry_count = item_status.get(UnpackItemStatus.MATCH_TIMEOUT.value, 0) + item_status.get(
-            UnpackItemStatus.MATCH_ERROR.value, 0
+        retry_count = (
+            item_status.get(UnpackItemStatus.MATCH_TIMEOUT.value, 0)
+            + item_status.get(UnpackItemStatus.MATCH_ERROR.value, 0)
+            + item_status.get(UnpackItemStatus.CONTENT_VERIFY_ERROR.value, 0)
         )
         stale_count = _integer(database["stale_tasks"], label="stale_tasks")
         running_executions = active_count

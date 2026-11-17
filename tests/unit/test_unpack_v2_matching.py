@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Awaitable
 from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -278,9 +279,14 @@ def _candidate(
 
 
 @pytest.mark.parametrize("duplicate_mapping", [False, True])
+@pytest.mark.parametrize("upper_case_site_key", [False, True])
 def test_template_task_uses_unique_saved_mapping_without_querying_site_adapters(
     duplicate_mapping: bool,
+    upper_case_site_key: bool,
 ) -> None:
+    # 模板侧写 SiteKind 名称（MTEAM），站点引用暴露规范 ID（mteam）：
+    # 大小写不同也必须匹配，否则模板任务整批判成「站点绑定无效」。
+    site_key = "MTEAM" if upper_case_site_key else "mteam"
     collection_root = "DouBan_IMDB.TOP250.Movies.Mixed.Collection.20240501.FRDS"
     movie_directory = "Movie.2024.1080p.WEB-DL.x265.tt1234567"
     source_filename = f"{movie_directory}.mkv"
@@ -322,7 +328,7 @@ def test_template_task_uses_unique_saved_mapping_without_querying_site_adapters(
                 status="READY",
                 expected_seed_count=2,
                 seed_count=2,
-                site_keys=["mteam"],
+                site_keys=[site_key],
                 content_digest="a" * 64,
                 source_provenance={"source": "test"},
                 created_at=now,
@@ -332,7 +338,7 @@ def test_template_task_uses_unique_saved_mapping_without_querying_site_adapters(
         session.add(
             UnpackTorrentMetadata(
                 id="metadata-1",
-                site_key="mteam",
+                site_key=site_key,
                 remote_torrent_id="torrent-template-1",
                 display_name=display_name,
                 descriptor=_descriptor_payload(descriptor),
@@ -364,7 +370,7 @@ def test_template_task_uses_unique_saved_mapping_without_querying_site_adapters(
         session.add(
             UnpackTorrentMetadata(
                 id="metadata-2",
-                site_key="mteam",
+                site_key=site_key,
                 remote_torrent_id="torrent-template-2",
                 display_name=display_name,
                 descriptor=_descriptor_payload(descriptor),
@@ -1323,6 +1329,38 @@ def test_test_pause_keeps_successful_match_in_matching_stage() -> None:
         assert item.status == UnpackItemStatus.MATCHED_AUTO.value
 
 
+def test_startup_recovery_requeues_interrupted_match_without_consuming_retry_budget() -> None:
+    factory = _factory(threshold=10_000)
+    started_at = utc_now() - timedelta(hours=25)
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        assert item is not None
+        item.status = UnpackItemStatus.MATCHING.value
+        item.candidate_generation = 3
+        item.retry_count = 1
+        item.match_started_at = started_at
+        item.match_finished_at = None
+        session.commit()
+
+    coordinator = UnpackMatchCoordinator(factory, _FakeSiteProvider(None))
+
+    assert coordinator.recover_interrupted_matches() == 1
+    assert coordinator.recover_interrupted_matches() == 0
+
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        execution = session.get(UnpackExecution, "execution-1")
+        assert item is not None
+        assert execution is not None
+        assert item.status == UnpackItemStatus.MATCH_PENDING.value
+        assert item.candidate_generation == 3
+        assert item.retry_count == 1
+        assert item.match_started_at is None
+        assert item.match_finished_at is None
+        assert item.last_error_code == "UNPACK_MATCH_INTERRUPTED"
+        assert execution.status == UnpackExecutionStatus.MATCHING.value
+
+
 def test_high_similarity_with_insufficient_evidence_stays_in_review() -> None:
     factory = _factory(threshold=7000, filename="Movie.mkv", size=1000)
     adapter = _FakeSiteAdapter((_candidate("Movie", imdb_id=""),))
@@ -1339,7 +1377,89 @@ def test_high_similarity_with_insufficient_evidence_stays_in_review() -> None:
         candidate = session.scalar(select(UnpackMatchCandidate))
         assert candidate is not None
         assert candidate.score_bps == 10_000
+        assert candidate.is_exact_match is True
         assert candidate.evidence["evidence_coverage_bps"] == 4_000
+        assert candidate.evidence["exact"]["year"] is None
+        assert candidate.evidence["exact"]["size"] is True
+
+
+def test_exact_match_with_core_evidence_below_coverage_floor_auto_selects() -> None:
+    source_name = "Captain.America.Civil.War.2016.UHD.BluRay.REMUX.2160p.HEVC.Atmos.TrueHD.7.1"
+    candidate_name = (
+        "Captain America Civil War 2016 UHD BluRay REMUX 2160p HEVC Atmos TrueHD 7 1-PTer"
+    )
+    size = 53_675_953_096
+    factory = _factory(threshold=9900, filename=f"{source_name}.mkv", size=size)
+    descriptor = parse_media_name(candidate_name, total_size=size)
+    candidate = CandidateMeta(
+        site_id="fake-site",
+        torrent_id="captain-america-civil-war",
+        display_name=candidate_name,
+        descriptor=descriptor,
+        total_size=size,
+        seeders=12,
+    )
+
+    report = asyncio.run(
+        UnpackMatchCoordinator(
+            factory, _FakeSiteProvider(_FakeSiteAdapter((candidate,)))
+        ).match_next_batch("execution-1")
+    )
+
+    assert report.matched_auto_count == 1
+    assert report.review_count == 0
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        matched = session.scalar(select(UnpackMatchCandidate))
+        assert item is not None and item.status == UnpackItemStatus.MATCHED_AUTO.value
+        assert item.selected_candidate_id is not None
+        assert matched is not None and item.selected_candidate_id == matched.id
+        assert matched.score_bps == 10_000
+        assert matched.is_exact_match is True
+        assert matched.evidence["evidence_coverage_bps"] == 6_000
+        assert matched.evidence["hard_conflicts"] == []
+        assert matched.evidence["exact"]["title"] is True
+        assert matched.evidence["exact"]["year"] is True
+        assert matched.evidence["exact"]["size"] is True
+        assert matched.evidence["exact"]["resolution"] is True
+
+
+def test_non_exact_match_below_coverage_floor_stays_in_review() -> None:
+    source_name = "Captain.America.Civil.War.2016.UHD.BluRay.REMUX.2160p.HEVC.Atmos.TrueHD.7.1"
+    candidate_name = (
+        "Captain America Civil War 2016 UHD BluRay REMUX 2160p HEVC Atmos TrueHD 7 1-PTer"
+    )
+    source_size = 53_675_953_096
+    candidate_size = 54_095_994_586
+    factory = _factory(threshold=9500, filename=f"{source_name}.mkv", size=source_size)
+    descriptor = parse_media_name(candidate_name, total_size=candidate_size)
+    candidate = CandidateMeta(
+        site_id="fake-site",
+        torrent_id="captain-america-civil-war-near-match",
+        display_name=candidate_name,
+        descriptor=descriptor,
+        total_size=candidate_size,
+        seeders=12,
+    )
+
+    report = asyncio.run(
+        UnpackMatchCoordinator(
+            factory, _FakeSiteProvider(_FakeSiteAdapter((candidate,)))
+        ).match_next_batch("execution-1")
+    )
+
+    assert report.matched_auto_count == 0
+    assert report.review_count == 1
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        near_match = session.scalar(select(UnpackMatchCandidate))
+        assert item is not None and item.status == UnpackItemStatus.REVIEW_REQUIRED.value
+        assert item.selected_candidate_id is None
+        assert near_match is not None
+        assert near_match.score_bps >= 9500
+        assert near_match.is_exact_match is False
+        assert near_match.evidence["evidence_coverage_bps"] == 6_000
+        assert near_match.evidence["hard_conflicts"] == []
 
 
 def test_high_threshold_sends_candidate_to_review_without_persisting_approval() -> None:
@@ -1773,6 +1893,103 @@ def test_retryable_site_failure_becomes_match_timeout() -> None:
         assert item is not None
         assert item.status == UnpackItemStatus.MATCH_TIMEOUT.value
         assert item.last_error_code == "UNPACK_MATCH_TIMEOUT"
+
+
+def test_match_search_deadline_includes_adapter_minimum_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = _factory(threshold=10_000)
+
+    class _RateLimitedAdapter(_FakeSiteAdapter):
+        async def capabilities(self) -> SiteSearchCapabilities:
+            return SiteSearchCapabilities(
+                supports_imdb_id=True,
+                supports_douban_id=True,
+                min_request_interval_seconds=90.0,
+            )
+
+        async def search(self, query: SearchQuery) -> SearchPage:
+            raise AssertionError("unpack matching must use the single-attempt search path")
+
+        async def search_for_unpack(self, query: SearchQuery) -> SearchPage:
+            self.queries.append(query)
+            return SearchPage(
+                site_id="fake-site",
+                page=query.page,
+                items=(),
+                has_more=False,
+            )
+
+    adapter = _RateLimitedAdapter()
+    observed_timeouts: list[float] = []
+
+    async def capture_site_request(
+        awaitable: Awaitable[SearchPage], *, timeout_seconds: float
+    ) -> SearchPage:
+        observed_timeouts.append(timeout_seconds)
+        return await awaitable
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "backend.app.application.unpack_matching._await_site_request",
+        capture_site_request,
+    )
+    monkeypatch.setattr(
+        "backend.app.application.unpack_matching.asyncio.sleep",
+        no_sleep,
+    )
+
+    coordinator = UnpackMatchCoordinator(
+        factory,
+        _FakeSiteProvider(adapter),
+        max_queries_per_site=1,
+    )
+    report = asyncio.run(coordinator.match_next_batch("execution-1"))
+
+    assert report.no_match_count == 1
+    assert len(adapter.queries) >= 2  # empty page and fallback searches use the same bounded path
+    assert max(observed_timeouts) == 121.0
+
+
+def test_empty_search_fallback_bypasses_cached_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = _factory(threshold=10_000)
+
+    class _CacheAwareAdapter(_FakeSiteAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fresh_queries: list[SearchQuery] = []
+
+        async def search_for_unpack(self, query: SearchQuery) -> SearchPage:
+            self.queries.append(query)
+            return SearchPage("fake-site", query.page, (), False)
+
+        async def search_for_unpack_fresh(self, query: SearchQuery) -> SearchPage:
+            self.fresh_queries.append(query)
+            return SearchPage("fake-site", query.page, (), False)
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "backend.app.application.unpack_matching.asyncio.sleep",
+        no_sleep,
+    )
+    adapter = _CacheAwareAdapter()
+    coordinator = UnpackMatchCoordinator(
+        factory,
+        _FakeSiteProvider(adapter),
+        max_queries_per_site=1,
+    )
+
+    report = asyncio.run(coordinator.match_next_batch("execution-1"))
+
+    assert report.no_match_count == 1
+    assert len(adapter.queries) == 1
+    assert len(adapter.fresh_queries) == 2
 
 
 def test_test_pause_keeps_retryable_timeout_in_matching_stage_without_retry() -> None:

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { Plus, RefreshCw, Search } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
@@ -57,16 +57,13 @@ const pairs = ref<MovieDedupPair[]>([]);
 const selectedPairIds = ref<string[]>([]);
 const directoryPickerVisible = ref(false);
 const directoryPickerTarget = ref<'source' | 'target'>('source');
-const directoryPath = ref('/');
-interface DirectoryEntry {
+interface DirectoryTreeNode {
   name: string;
   path: string;
   token: string;
 }
-
-const directoryEntries = ref<DirectoryEntry[]>([]);
+const selectedTreeNode = ref<DirectoryTreeNode | null>(null);
 const directoryLoading = ref(false);
-let pollTimer: ReturnType<typeof setInterval> | undefined;
 
 const draft = reactive<Draft>(freshDraft());
 
@@ -118,6 +115,7 @@ function publishStats(): void {
 }
 
 async function refresh(): Promise<void> {
+  if (loading.value) return;
   loading.value = true;
   try {
     jobs.value = await listMovieDedupJobs();
@@ -142,21 +140,6 @@ function searchFilters(): void {
 
 function openCreate(): void {
   Object.assign(draft, freshDraft());
-  precheckResult.value = null;
-  createVisible.value = true;
-}
-
-function cloneJob(job: MovieDedupJob): void {
-  Object.assign(draft, {
-    name: `${job.name} - 副本`,
-    sourceRoot: job.source_root,
-    targetRoot: job.target_root,
-    mode: job.mode,
-    crossFilesystemPolicy: job.cross_filesystem_policy,
-    includeSubdirectories: job.include_subdirectories,
-    minSizeMb: job.min_size_bytes / 1024 / 1024,
-    videoExtensions: job.video_extensions.join(', '),
-  });
   precheckResult.value = null;
   createVisible.value = true;
 }
@@ -247,12 +230,13 @@ async function runJob(job: MovieDedupJob): Promise<void> {
 }
 
 function canDeleteJob(job: MovieDedupJob): boolean {
-  return !['RUNNING', 'REVIEW_REQUIRED', 'RECOVERY_REQUIRED'].includes(job.status);
+  // RECOVERY_REQUIRED 允许删除，避免恢复路径走不通时任务既不能执行也不能清理。
+  return !['RUNNING', 'REVIEW_REQUIRED'].includes(job.status);
 }
 
 async function removeJob(job: MovieDedupJob): Promise<void> {
   if (!canDeleteJob(job)) {
-    ElMessage.warning('运行中、待审核或待恢复任务不能删除');
+    ElMessage.warning('运行中或待审核任务不能删除');
     return;
   }
   try {
@@ -367,88 +351,49 @@ async function executeSelected(): Promise<void> {
   }
 }
 
-async function openDirectoryPicker(target: 'source' | 'target'): Promise<void> {
+function openDirectoryPicker(target: 'source' | 'target'): void {
   directoryPickerTarget.value = target;
-  directoryPath.value = target === 'source' ? draft.sourceRoot || '/' : draft.targetRoot || '/';
+  selectedTreeNode.value = null;
   directoryPickerVisible.value = true;
-  await loadDirectory(directoryPath.value);
 }
 
-async function loadDirectory(path: string): Promise<void> {
+async function loadTreeNode(
+  node: { level: number; data?: DirectoryTreeNode },
+  resolve: (data: DirectoryTreeNode[]) => void,
+): Promise<void> {
   directoryLoading.value = true;
   try {
-    const result = await resolveAuthorizedDirectory(path);
-    directoryPath.value = result.path;
-    directoryEntries.value = result.entries;
+    const entries: UnpackTreeEntry[] =
+      node.level === 0
+        ? await listUnpackTreeRoots()
+        : await browseUnpackTree(node.data?.token ?? '').then((result) => result.entries);
+    resolve(
+      entries.map((entry) => ({
+        name: entry.name,
+        path: entry.display_path,
+        token: entry.selection_token,
+      })),
+    );
   } catch (caught) {
     ElMessage.error(toApiProblem(caught).message);
+    resolve([]);
   } finally {
     directoryLoading.value = false;
   }
 }
 
-async function resolveAuthorizedDirectory(
-  requestedPath: string,
-): Promise<{ path: string; entries: DirectoryEntry[] }> {
-  const roots = await listUnpackTreeRoots();
-  const normalized = requestedPath.trim() || '/';
-  if (normalized === '/' || normalized === '.') {
-    return { path: '/', entries: roots.map(directoryEntry) };
-  }
-
-  const root = [...roots]
-    .sort((left, right) => right.display_path.length - left.display_path.length)
-    .find(
-      (entry) =>
-        normalized === entry.display_path ||
-        normalized.startsWith(entry.display_path.replace(/\/$/, '') + '/'),
-    );
-  if (!root) throw new Error('所选目录不在当前授权目录树中');
-
-  let current = await browseUnpackTree(root.selection_token);
-  if (normalized === current.display_path) {
-    return { path: current.display_path, entries: current.entries.map(directoryEntry) };
-  }
-
-  const rootPrefix = root.display_path.replace(/\/$/, '');
-  const remaining = normalized.slice(rootPrefix.length).split('/').filter(Boolean);
-  let expectedPath = rootPrefix;
-  for (const segment of remaining) {
-    expectedPath = expectedPath + '/' + segment;
-    const next = current.entries.find((entry) => entry.display_path === expectedPath);
-    if (!next) throw new Error('所选目录已不存在或不再属于当前授权目录树');
-    current = await browseUnpackTree(next.selection_token);
-  }
-  if (current.display_path !== normalized) {
-    throw new Error('目录树解析结果与请求路径不一致');
-  }
-  return { path: current.display_path, entries: current.entries.map(directoryEntry) };
+function onTreeNodeClick(data: DirectoryTreeNode): void {
+  selectedTreeNode.value = data;
 }
 
-function directoryEntry(entry: UnpackTreeEntry): DirectoryEntry {
-  return {
-    name: entry.name,
-    path: entry.display_path,
-    token: entry.selection_token,
-  };
-}
-
-function directoryParent(path: string): string | null {
-  if (path === '.' || path === '/') return null;
-  const absolute = path.startsWith('/');
-  const parts = path.split('/').filter(Boolean);
-  parts.pop();
-  if (!parts.length) return absolute ? '/' : '.';
-  return `${absolute ? '/' : ''}${parts.join('/')}`;
-}
-
-function selectCurrentDirectory(): void {
-  if (directoryPath.value === '/' || directoryPath.value === '.') {
-    ElMessage.warning('请选择一个已授权挂载目录，不能直接使用路径命名空间根');
+function confirmDirectorySelection(): void {
+  const selected = selectedTreeNode.value;
+  if (!selected) {
+    ElMessage.warning('请选择一个目录');
     return;
   }
-  if (directoryPickerTarget.value === 'source') draft.sourceRoot = directoryPath.value;
-  else draft.targetRoot = directoryPath.value;
+  if (directoryPickerTarget.value === 'source') draft.sourceRoot = selected.path;
+  else draft.targetRoot = selected.path;
   precheckResult.value = null;
   directoryPickerVisible.value = false;
 }
@@ -534,13 +479,6 @@ function metadataText(metadata: Record<string, string>): string {
 
 onMounted(() => {
   void refresh();
-  pollTimer = setInterval(() => {
-    if (jobs.value.some((item) => item.status === 'RUNNING')) void refresh();
-  }, 2000);
-});
-
-onBeforeUnmount(() => {
-  if (pollTimer) clearInterval(pollTimer);
 });
 
 defineExpose({ openCreate, refresh });
@@ -644,21 +582,22 @@ defineExpose({ openCreate, refresh });
             }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="预计释放" width="120">
-          <template #default="scope">{{
-            formatBytes(scope.row.estimated_reclaimable_bytes)
-          }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="255" fixed="right">
+        <el-table-column label="重复数据 / 预计释放" width="160">
           <template #default="scope">
-            <el-button link type="primary" @click="openPairs(scope.row)">查看</el-button>
+            <div class="primary-cell">
+              <b>{{ formatBytes(scope.row.logical_duplicate_bytes) }}</b>
+              <small>预计释放 {{ formatBytes(scope.row.estimated_reclaimable_bytes) }}</small>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="170" fixed="right">
+          <template #default="scope">
             <el-button
               link
-              type="success"
+              type="primary"
               :loading="Boolean(starting[scope.row.id])"
-              :disabled="scope.row.status === 'RUNNING'"
               @click="runJob(scope.row)"
-              >执行</el-button
+              >{{ scope.row.status === 'PENDING' ? '开始' : '查看' }}</el-button
             >
             <el-button
               link
@@ -667,14 +606,6 @@ defineExpose({ openCreate, refresh });
               @click="removeJob(scope.row)"
               >删除</el-button
             >
-            <el-dropdown trigger="click">
-              <el-button link>更多</el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item @click="cloneJob(scope.row)">复制任务</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -762,6 +693,20 @@ defineExpose({ openCreate, refresh });
             `A device ${precheckResult.source_device} · B device ${precheckResult.target_device}`
           "
         />
+        <el-alert
+          v-for="warning in precheckResult?.warnings ?? []"
+          :key="warning"
+          class="precheck-warning"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="warning"
+          :description="
+            precheckResult && precheckResult.target_shared_link_bytes > 0
+              ? `采样中已共享的部分约 ${formatBytes(precheckResult.target_shared_link_bytes)}`
+              : ''
+          "
+        />
       </div>
       <template #footer>
         <el-button :loading="precheckLoading" @click="runPrecheck">检查目录</el-button>
@@ -771,35 +716,39 @@ defineExpose({ openCreate, refresh });
       </template>
     </el-dialog>
 
-    <el-dialog v-model="directoryPickerVisible" title="选择目录" width="min(660px, 92vw)">
-      <div class="directory-browser" v-loading="directoryLoading">
-        <div class="directory-toolbar">
-          <el-button
-            :disabled="directoryParent(directoryPath) === null"
-            @click="loadDirectory(directoryParent(directoryPath) || '/')"
-            >返回上级</el-button
-          >
-          <code>{{ directoryPath }}</code>
+    <el-dialog v-model="directoryPickerVisible" width="min(850px, 95vw)">
+      <template #header>
+        <div class="directory-picker-header">
+          <span>选择目录</span>
+          <div class="directory-picker-header-actions">
+            <el-button size="small" @click="confirmDirectorySelection">使用此目录</el-button>
+            <el-button size="small" @click="directoryPickerVisible = false">取消</el-button>
+          </div>
         </div>
-        <el-table :data="directoryEntries" height="360">
-          <el-table-column label="目录">
-            <template #default="scope">
-              <el-button link type="primary" @click="loadDirectory(scope.row.path)">{{
-                scope.row.name
-              }}</el-button>
-            </template>
-          </el-table-column>
-          <el-table-column prop="path" label="路径" min-width="260" />
-        </el-table>
-      </div>
-      <template #footer>
-        <el-button type="primary" @click="selectCurrentDirectory">选择当前目录</el-button>
       </template>
+      <div class="dedup-tree-picker" v-loading="directoryLoading">
+        <el-tree
+          lazy
+          :load="loadTreeNode"
+          node-key="token"
+          :props="{ label: 'name', isLeaf: () => false }"
+          highlight-current
+          @node-click="onTreeNodeClick"
+        />
+        <aside>
+          <b>当前选择</b>
+          <p>{{ selectedTreeNode?.path || '请选择目录节点' }}</p>
+          <small
+            >目录树可浏览当前进程有读取权限的目录；创建任务时仍会校验 A/B
+            路径及文件操作权限。</small
+          >
+        </aside>
+      </div>
     </el-dialog>
 
     <el-dialog
       v-model="pairDrawerVisible"
-      title="影片去重候选"
+      title="数据去重候选"
       width="min(1180px, 96vw)"
       top="4vh"
       append-to-body
@@ -822,14 +771,26 @@ defineExpose({ openCreate, refresh });
           <div>
             <small>预计可释放</small><b>{{ formatBytes(activeJob.estimated_reclaimable_bytes) }}</b>
           </div>
+          <div v-if="activeJob.shared_link_bytes > 0">
+            <small>已硬链接共享</small><b>{{ formatBytes(activeJob.shared_link_bytes) }}</b>
+          </div>
           <div>
             <small>已完成去重</small><b>{{ activeJob.deduplicated_count }}</b>
           </div>
         </div>
         <el-alert
+          v-if="activeJob.shared_link_bytes > 0"
+          class="shared-link-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`另有 ${formatBytes(activeJob.shared_link_bytes)} 已与媒体库或其它目录硬链接共享，删除或替换单一路径不会释放空间`"
+          description="这类文件在磁盘上只有一份数据，去重不会带来额外空间收益。若要真正回收，需要先确认并移除多余的那条链接。"
+        />
+        <el-alert
           type="info"
           :closable="false"
-          title="大小和快速指纹只用于筛选；只有完整 SHA-256 一致的候选才允许执行。link_count > 1 的旧 B inode 预计释放空间按 0 计算。"
+          title="大小和快速指纹只用于筛选；只有完整 SHA-256 一致的候选才允许执行。替换 B 路径只会移除该路径的一个硬链接；若旧 B inode 仍有其他硬链接，其数据块不会释放，因此逻辑重复数据量可能大于预计释放空间。"
         />
         <div class="pair-actions">
           <span>可执行 {{ executablePairs.length }} 个 · 已选 {{ selectedPairIds.length }} 个</span>
@@ -881,20 +842,28 @@ defineExpose({ openCreate, refresh });
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="A 文件" min-width="260">
+          <el-table-column label="文件路径（A / B）" min-width="430">
             <template #default="scope">
-              <div class="primary-cell">
-                <code class="path-code">{{ scope.row.source_relative_path }}</code>
-                <small>{{ metadataText(scope.row.source_media_metadata) }}</small>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="B 文件" min-width="260">
-            <template #default="scope">
-              <div class="primary-cell">
-                <code class="path-code">{{ scope.row.target_relative_path }}</code>
-                <small>{{ metadataText(scope.row.target_media_metadata) }}</small>
-              </div>
+              <el-tooltip placement="top" :show-after="300">
+                <template #content>
+                  <div class="pair-path-tooltip">
+                    <div><b>A 文件</b> {{ scope.row.source_relative_path }}</div>
+                    <div><b>B 文件</b> {{ scope.row.target_relative_path }}</div>
+                  </div>
+                </template>
+                <div class="pair-path-cell">
+                  <div class="pair-path-side">
+                    <small>A</small>
+                    <code>{{ scope.row.source_relative_path }}</code>
+                    <small>{{ metadataText(scope.row.source_media_metadata) }}</small>
+                  </div>
+                  <div class="pair-path-side">
+                    <small>B</small>
+                    <code>{{ scope.row.target_relative_path }}</code>
+                    <small>{{ metadataText(scope.row.target_media_metadata) }}</small>
+                  </div>
+                </div>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column label="大小" width="105">
@@ -1024,6 +993,13 @@ defineExpose({ openCreate, refresh });
 .movie-job-table .primary-cell > small {
   margin-left: 6px;
 }
+/* 已硬链接共享的提示单独占一行，避免和「预计释放」挤在一起被截断。 */
+.shared-link-alert {
+  margin-bottom: 8px;
+}
+.precheck-warning {
+  margin-top: 8px;
+}
 .create-form {
   display: grid;
   gap: 16px;
@@ -1053,16 +1029,91 @@ defineExpose({ openCreate, refresh });
 .directory-field :deep(.el-input) {
   flex: 1;
 }
-.directory-toolbar,
 .pair-actions {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
 }
-.directory-toolbar code,
 .pair-actions span {
   flex: 1;
+}
+.directory-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 14px;
+}
+.directory-picker-header > span {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+.directory-picker-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dedup-tree-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 16px;
+  min-height: 420px;
+}
+.dedup-tree-picker :deep(.el-tree) {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: auto;
+}
+.dedup-tree-picker aside {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+.dedup-tree-picker aside p {
+  overflow-wrap: anywhere;
+}
+.dedup-tree-picker aside small {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.pair-path-cell {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.pair-path-side {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 3px 8px;
+  min-width: 0;
+}
+.pair-path-side > small:first-child {
+  grid-row: span 2;
+  color: var(--muted);
+  font-weight: 600;
+}
+.pair-path-side code {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pair-path-side > small:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pair-path-tooltip {
+  max-width: min(720px, 80vw);
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.pair-path-tooltip > div + div {
+  margin-top: 6px;
 }
 .summary-grid {
   display: grid;
@@ -1105,7 +1156,8 @@ defineExpose({ openCreate, refresh });
 @media (max-width: 860px) {
   .form-grid,
   .summary-grid,
-  .pair-detail {
+  .pair-detail,
+  .dedup-tree-picker {
     grid-template-columns: 1fr;
   }
   .dedup-filter-toolbar,
