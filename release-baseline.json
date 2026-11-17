@@ -1,16 +1,16 @@
 {
   "format_version": 2,
-  "version": "1.1.5",
-  "tag": "v1.1.5",
-  "commit": "1fb6389843120623e5851fbda0eb70cc3c24df90",
+  "version": "1.1.6",
+  "tag": "v1.1.6",
+  "commit": "3bdcd1fdf9ebb12eb72e035b48d8171e93696bb2",
   "platform": "multi",
   "platforms": [
     "linux/amd64",
     "linux/arm64"
   ],
   "image": "ghcr.io/yyxiaoma/packbreaker",
-  "image_digest": "sha256:29fc76649c7e262cbb7e2602e7cab5ebb1f4c0620b7296e38cfe1ac14216b2eb",
-  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:29fc76649c7e262cbb7e2602e7cab5ebb1f4c0620b7296e38cfe1ac14216b2eb",
-  "alembic_revision": "0051_unpack_template_match_acceptance",
-  "release_workflow_run_id": 41800435240
+  "image_digest": "sha256:9023686cc3810357f4feb6aea5077146a79ad5a313d34bad6b4e2153db51deb3",
+  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:9023686cc3810357f4feb6aea5077146a79ad5a313d34bad6b4e2153db51deb3",
+  "alembic_revision": "0056_movie_dedup_shared_link_bytes",
+  "release_workflow_run_id": 44057544025
 }
