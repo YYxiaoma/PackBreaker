@@ -171,6 +171,19 @@ class DockerEngineClient:
         return _json_object(response)
 
     def pull_image(self, image: str, *, timeout_seconds: float = 900.0) -> None:
+        # registry/代理抖动在真实部署里很常见（NAS 上一次 8 秒即失败的升级就是这么来的），
+        # 拉取失败重试几次，避免把瞬时网络问题变成一次失败的升级。
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                self._pull_image_once(image, timeout_seconds=timeout_seconds)
+                return
+            except DockerUpdaterError:
+                if attempt == attempts:
+                    raise
+                time.sleep(3.0 * attempt)
+
+    def _pull_image_once(self, image: str, *, timeout_seconds: float) -> None:
         response = self._client.post(
             self._path("/images/create"),
             params={"fromImage": image},
@@ -185,8 +198,11 @@ class DockerEngineClient:
             except json.JSONDecodeError:
                 continue
             if isinstance(item, dict) and (item.get("error") or item.get("errorDetail")):
+                detail = item.get("errorDetail")
+                message = detail.get("message") if isinstance(detail, dict) else None
+                suffix = f"：{str(message)[:200]}" if message else ""
                 raise DockerUpdaterError(
-                    "DOCKER_IMAGE_PULL_FAILED", "Docker daemon 报告目标镜像拉取失败"
+                    "DOCKER_IMAGE_PULL_FAILED", f"Docker daemon 报告目标镜像拉取失败{suffix}"
                 )
 
     def stop_container(self, container: str, *, timeout_seconds: int = 30) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -23,6 +24,8 @@ from backend.app.infrastructure.updater_protocol import (
     parse_updater_status,
 )
 from backend.app.versioning import app_version
+
+_logger = logging.getLogger("packbreaker.updater")
 
 
 class TransientUpdaterLauncher:
@@ -55,6 +58,16 @@ class TransientUpdaterLauncher:
         try:
             payload = json.loads(self._state_path.read_text(encoding="utf-8"))
             status = parse_updater_status(payload)
+        except PermissionError:
+            # 一次性 helper 以 root 运行时会写出 0600 的状态文件，而以 PUID 运行的主应用
+            # 读不到它。现场其实已经收敛，若按「状态损坏」处理会永久阻断后续升级
+            # （v1.1.7 升级到 v1.1.8 时实际踩到）。这里隔离旧文件并回到 idle。
+            _logger.warning(
+                "升级状态文件不可读（权限问题），已隔离旧状态并允许重新发起升级：%s",
+                self._state_path,
+            )
+            self._quarantine_unreadable_state()
+            return self._idle_status()
         except (OSError, json.JSONDecodeError, UpdaterProtocolError):
             return UpdaterStatus(
                 protocol_version=UPDATER_PROTOCOL_VERSION,
@@ -226,6 +239,18 @@ class TransientUpdaterLauncher:
         _fsync_directory(self._requests_dir)
         return path
 
+    def _quarantine_unreadable_state(self) -> None:
+        """把读不到的旧状态文件挪到一边，避免它继续阻塞升级。"""
+
+        target = self._state_path.with_name(
+            f"state.unreadable-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
+        )
+        try:
+            os.replace(self._state_path, target)
+            _logger.warning("已隔离不可读的升级状态文件：%s", target)
+        except OSError as exc:  # 目录不可写时只能放弃，保持原状
+            _logger.warning("隔离升级状态文件失败：%s", exc)
+
     def _write_status(self, status: UpdaterStatus) -> None:
         self._updater_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self._updater_dir, 0o700)
@@ -238,9 +263,30 @@ class TransientUpdaterLauncher:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, self._state_path)
+            self._make_state_readable()
             _fsync_directory(self._updater_dir)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _make_state_readable(self) -> None:
+        """状态文件必须让以 PUID 运行的主应用可读。
+
+        一次性 helper 容器以 root(0:0) 运行，默认写出的 0600 文件主应用读不到，
+        会在下一次升级时被误判成「上一轮现场需要人工核对」。
+        """
+
+        try:
+            os.chmod(self._state_path, 0o644)
+        except OSError:
+            return
+        if not hasattr(os, "geteuid") or os.geteuid() != 0:
+            return
+        # root 写入时把属主对齐到配置目录（即主应用的 PUID/PGID）。
+        try:
+            owner = self._updater_dir.stat()
+            os.chown(self._state_path, owner.st_uid, owner.st_gid)
+        except OSError:
+            return
 
     def _helper_payload(
         self,
