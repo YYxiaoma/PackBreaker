@@ -14,9 +14,11 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -135,6 +137,13 @@ def _tags() -> list[tuple[tuple[int, int, int], str, str, str]]:
     return collected
 
 
+def _project_version() -> str:
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project = data.get("project")
+    version = project.get("version") if isinstance(project, dict) else None
+    return version if isinstance(version, str) else ""
+
+
 def build_catalog() -> dict[str, object]:
     entries: list[dict[str, object]] = []
     for version_tuple, tag, released_on, notes in _tags()[:MAX_ENTRIES]:
@@ -150,6 +159,26 @@ def build_catalog() -> dict[str, object]:
                 "sections": sections,
             }
         )
+
+    # 发布准备阶段当前版本还没有 tag，用工作区的 RELEASE_NOTES.md 补一条，
+    # 这样「关于」页在打 tag 之前就能显示这一版，门禁也能要求目录覆盖当前版本。
+    current = _project_version()
+    if current and all(entry["version"] != current for entry in entries):
+        notes_path = ROOT / "RELEASE_NOTES.md"
+        if notes_path.is_file():
+            summary, sections = parse_release_notes_markdown(notes_path.read_text(encoding="utf-8"))
+            if sections:
+                entries.insert(
+                    0,
+                    {
+                        "version": current,
+                        "tag": f"v{current}",
+                        "released_on": datetime.date.today().isoformat(),
+                        "summary": summary,
+                        "sections": sections,
+                    },
+                )
+
     return {"schema_version": SCHEMA_VERSION, "entries": entries}
 
 

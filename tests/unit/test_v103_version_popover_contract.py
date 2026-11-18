@@ -22,7 +22,16 @@ def test_popover_keeps_safe_upgrade_without_reintroducing_manual_rollback() -> N
     assert "pendingIdempotencyKey" in source
     assert 'role="progressbar"' in source
     assert 'aria-label="在线升级进度"' in source
-    assert "helperProgress" in source
+    # v1.1.12：进度按阶段上限缓慢爬升，不再用固定百分比直接跳变。
+    assert "PHASE_PROGRESS_CEILING" in source
+    assert "function advanceProgress" in source
+    assert "setInterval(advanceProgress" in source
+    # 升级成功后自动刷新页面，手动刷新按钮已移除。
+    assert "scheduleReloadAfterUpgrade" in source
+    assert "version-reload-button" not in source
+    assert '@click="reloadAfterUpgrade"' not in source
+    # 升级期间按钮必须锁定，避免重复发起升级。
+    assert "upgradeInProgress" in source
     assert "helperDetailText" in source
     assert "window.location.reload()" in source
     assert "UPDATER_DOCKER_SOCKET_PERMISSION_DENIED" in source
