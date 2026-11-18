@@ -22,6 +22,7 @@ from backend.app.application.backup_schedule import (
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.notification_driver import NotificationDriver
+from backend.app.application.release_notes import load_release_notes
 from backend.app.application.system_health import (
     HealthStatus,
     MetricValue,
@@ -35,6 +36,7 @@ from backend.app.application.system_upgrades import (
     SystemUpgradeStatus,
 )
 from backend.app.application.unpack_driver import UnpackDriver
+from backend.app.config import AppSettings
 from backend.app.domain.unpack import TERMINAL_EXECUTION_STATUSES
 from backend.app.infrastructure.app_logging import redact_fields, sanitize_message
 from backend.app.infrastructure.backups import BackupError
@@ -198,6 +200,25 @@ class SystemUpgradeStatusResponse(BaseModel):
     helper_status: UpdaterStatusResponse | None
     can_upgrade: bool
     blocked_reasons: list[str]
+
+
+class ReleaseNoteSectionResponse(BaseModel):
+    title: str
+    items: list[str]
+
+
+class ReleaseNoteEntryResponse(BaseModel):
+    version: str
+    tag: str
+    released_on: str
+    summary: str
+    sections: list[ReleaseNoteSectionResponse]
+    is_current: bool
+
+
+class ReleaseNotesResponse(BaseModel):
+    current_version: str
+    entries: list[ReleaseNoteEntryResponse]
 
 
 class SystemUpgradeActionRequest(BaseModel):
@@ -785,6 +806,36 @@ async def system_health(
     """聚合已有本地/依赖证据；不会主动访问 PT、下载器或通知渠道。"""
 
     return _health_response(await _health_report(request))
+
+
+@router.get("/system/release-notes", response_model=ReleaseNotesResponse)
+def system_release_notes(
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+) -> JSONResponse:
+    """返回随镜像发布的升级日志；只读本地文件，不访问网络。"""
+
+    settings = cast(AppSettings, request.app.state.settings)
+    version = app_version()
+    catalog = load_release_notes(settings.release_notes_path, current_version=version)
+    response = ReleaseNotesResponse(
+        current_version=version,
+        entries=[
+            ReleaseNoteEntryResponse(
+                version=entry.version,
+                tag=entry.tag,
+                released_on=entry.released_on,
+                summary=entry.summary,
+                sections=[
+                    ReleaseNoteSectionResponse(title=section.title, items=list(section.items))
+                    for section in entry.sections
+                ],
+                is_current=entry.is_current,
+            )
+            for entry in catalog.entries
+        ],
+    )
+    return JSONResponse(response.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
 
 @router.get("/system/diagnostics/export")

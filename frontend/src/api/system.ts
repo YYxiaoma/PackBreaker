@@ -15,6 +15,9 @@ export type SystemUpgradeStatus = components['schemas']['SystemUpgradeStatusResp
 export type SystemUpgradeActionRequest = components['schemas']['SystemUpgradeActionRequest'];
 export type SystemUpgradeActionResponse = components['schemas']['SystemUpgradeActionResponse'];
 export type UpdaterStatus = components['schemas']['UpdaterStatusResponse'];
+export type ReleaseNoteSection = components['schemas']['ReleaseNoteSectionResponse'];
+export type ReleaseNoteEntry = components['schemas']['ReleaseNoteEntryResponse'];
+export type ReleaseNotes = components['schemas']['ReleaseNotesResponse'];
 
 export interface OperationalLogQuery {
   window_minutes?: number;
@@ -41,6 +44,12 @@ function attachmentFilename(contentDisposition: unknown, fallback: string): stri
 
 export async function getReleasePreflight(): Promise<ReleasePreflight> {
   const response = await apiClient.get<ReleasePreflight>('/system/release/preflight');
+  return response.data;
+}
+
+/** 升级日志随镜像发布，离线部署同样可用；只读本地文件，不访问网络。 */
+export async function getReleaseNotes(): Promise<ReleaseNotes> {
+  const response = await apiClient.get<ReleaseNotes>('/system/release-notes');
   return response.data;
 }
 

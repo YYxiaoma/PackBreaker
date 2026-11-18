@@ -1056,6 +1056,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/system/release-notes': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * System Release Notes
+     * @description 返回随镜像发布的升级日志；只读本地文件，不访问网络。
+     */
+    get: operations['system_release_notes_api_v1_system_release_notes_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/system/release/preflight': {
     parameters: {
       query?: never;
@@ -2727,6 +2747,35 @@ export interface components {
       container_prefix: string;
       /** Remote Prefix */
       remote_prefix: string;
+    };
+    /** ReleaseNoteEntryResponse */
+    ReleaseNoteEntryResponse: {
+      /** Is Current */
+      is_current: boolean;
+      /** Released On */
+      released_on: string;
+      /** Sections */
+      sections: components['schemas']['ReleaseNoteSectionResponse'][];
+      /** Summary */
+      summary: string;
+      /** Tag */
+      tag: string;
+      /** Version */
+      version: string;
+    };
+    /** ReleaseNoteSectionResponse */
+    ReleaseNoteSectionResponse: {
+      /** Items */
+      items: string[];
+      /** Title */
+      title: string;
+    };
+    /** ReleaseNotesResponse */
+    ReleaseNotesResponse: {
+      /** Current Version */
+      current_version: string;
+      /** Entries */
+      entries: components['schemas']['ReleaseNoteEntryResponse'][];
     };
     /** ReleasePreflightCheckResponse */
     ReleasePreflightCheckResponse: {
@@ -6907,6 +6956,37 @@ export interface operations {
         };
         content: {
           'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  system_release_notes_api_v1_system_release_notes_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ReleaseNotesResponse'];
         };
       };
       /** @description Validation Error */

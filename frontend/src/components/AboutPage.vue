@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { Box, ExternalLink, GitBranch, RefreshCw, ShieldCheck } from '@lucide/vue';
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 
-import { getSystemHealth } from '../api/system';
+import { getReleaseNotes, getSystemHealth, type ReleaseNoteEntry } from '../api/system';
 
 const emit = defineEmits<{
   'open-version': [];
@@ -10,7 +10,35 @@ const emit = defineEmits<{
 
 const version = ref('—');
 
+// 升级日志：默认只展开最近几个版本，其余折叠，避免关于页被历史条目淹没。
+const VISIBLE_RELEASE_NOTES = 3;
+const releaseNotes = ref<ReleaseNoteEntry[]>([]);
+const releaseNotesLoading = ref(false);
+const releaseNotesFailed = ref(false);
+const showAllReleaseNotes = ref(false);
+const visibleReleaseNotes = computed(() =>
+  showAllReleaseNotes.value
+    ? releaseNotes.value
+    : releaseNotes.value.slice(0, VISIBLE_RELEASE_NOTES),
+);
+const hiddenReleaseNoteCount = computed(() =>
+  Math.max(0, releaseNotes.value.length - VISIBLE_RELEASE_NOTES),
+);
+
+async function loadReleaseNotes(): Promise<void> {
+  releaseNotesLoading.value = true;
+  releaseNotesFailed.value = false;
+  try {
+    releaseNotes.value = (await getReleaseNotes()).entries;
+  } catch {
+    releaseNotesFailed.value = true;
+  } finally {
+    releaseNotesLoading.value = false;
+  }
+}
+
 onMounted(async () => {
+  void loadReleaseNotes();
   try {
     version.value = (await getSystemHealth()).version;
   } catch {
@@ -70,6 +98,56 @@ onMounted(async () => {
           <p class="muted">Copyright © 2026 YYxiaoma</p>
         </div>
       </article>
+    </section>
+
+    <section class="panel about-changelog section-space">
+      <header class="about-changelog-head">
+        <div>
+          <h3>升级日志</h3>
+          <p class="muted">随版本发布的变更说明，按版本倒序排列。</p>
+        </div>
+        <small v-if="releaseNotes.length">共 {{ releaseNotes.length }} 个版本</small>
+      </header>
+
+      <p v-if="releaseNotesLoading && !releaseNotes.length" class="about-changelog-empty">
+        正在加载升级日志…
+      </p>
+      <p v-else-if="releaseNotesFailed && !releaseNotes.length" class="about-changelog-empty">
+        升级日志暂时不可用，不影响其他功能。
+        <el-button link type="primary" @click="loadReleaseNotes">重试</el-button>
+      </p>
+      <p v-else-if="!releaseNotes.length" class="about-changelog-empty">当前镜像未附带升级日志。</p>
+
+      <template v-else>
+        <article
+          v-for="entry in visibleReleaseNotes"
+          :key="entry.version"
+          class="changelog-entry"
+          :class="{ 'is-current': entry.is_current }"
+        >
+          <div class="changelog-entry-head">
+            <strong>v{{ entry.version }}</strong>
+            <span v-if="entry.is_current" class="changelog-badge">当前版本</span>
+            <small v-if="entry.released_on">{{ entry.released_on }}</small>
+          </div>
+          <p v-if="entry.summary" class="changelog-summary">{{ entry.summary }}</p>
+          <div v-for="section in entry.sections" :key="section.title" class="changelog-section">
+            <b>{{ section.title }}</b>
+            <ul>
+              <li v-for="(item, index) in section.items" :key="index">{{ item }}</li>
+            </ul>
+          </div>
+        </article>
+        <el-button
+          v-if="hiddenReleaseNoteCount && !showAllReleaseNotes"
+          class="changelog-more"
+          link
+          type="primary"
+          @click="showAllReleaseNotes = true"
+        >
+          展开其余 {{ hiddenReleaseNoteCount }} 个版本
+        </el-button>
+      </template>
     </section>
   </div>
 </template>
@@ -144,6 +222,89 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+.about-changelog {
+  display: grid;
+  gap: 4px;
+}
+.about-changelog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.about-changelog-head h3 {
+  margin: 0 0 4px;
+}
+.about-changelog-head p {
+  margin: 0;
+  line-height: 1.6;
+}
+.about-changelog-head small {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.about-changelog-empty {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.changelog-entry {
+  display: grid;
+  gap: 8px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.changelog-entry:first-of-type {
+  padding-top: 10px;
+  border-top: 0;
+}
+.changelog-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.changelog-entry-head strong {
+  font-size: 16px;
+}
+.changelog-entry-head small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.changelog-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+.changelog-summary {
+  margin: 0;
+  line-height: 1.7;
+}
+.changelog-section b {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--accent);
+  font-size: 13px;
+}
+.changelog-section ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+.changelog-section li {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.changelog-more {
+  justify-self: start;
+  margin-top: 4px;
 }
 .about-card {
   display: flex;

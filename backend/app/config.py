@@ -28,6 +28,8 @@ class AppSettings(BaseSettings):
     unpack_template_mapping_root: Path | None = None
     # 镜像内置官方模板目录；可由 PACKBREAKER_OFFICIAL_TEMPLATE_DIR 覆盖。
     official_template_dir: Path = _REPO_ROOT / "resources" / "official_templates"
+    # 随镜像发布的升级日志（关于页展示）；可由 PACKBREAKER_RELEASE_NOTES_PATH 覆盖。
+    release_notes_path: Path = _REPO_ROOT / "resources" / "release_notes.json"
     frontend_dir: Path | None = None
     secret_key_file: Path | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"

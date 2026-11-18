@@ -3079,6 +3079,89 @@
         "title": "PathMappingInput",
         "type": "object"
       },
+      "ReleaseNoteEntryResponse": {
+        "properties": {
+          "is_current": {
+            "title": "Is Current",
+            "type": "boolean"
+          },
+          "released_on": {
+            "title": "Released On",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ReleaseNoteSectionResponse"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "tag",
+          "released_on",
+          "summary",
+          "sections",
+          "is_current"
+        ],
+        "title": "ReleaseNoteEntryResponse",
+        "type": "object"
+      },
+      "ReleaseNoteSectionResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "items"
+        ],
+        "title": "ReleaseNoteSectionResponse",
+        "type": "object"
+      },
+      "ReleaseNotesResponse": {
+        "properties": {
+          "current_version": {
+            "title": "Current Version",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/ReleaseNoteEntryResponse"
+            },
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "current_version",
+          "entries"
+        ],
+        "title": "ReleaseNotesResponse",
+        "type": "object"
+      },
       "ReleasePreflightCheckResponse": {
         "properties": {
           "code": {
@@ -13758,6 +13841,56 @@
           }
         },
         "summary": "Export System Logs",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/system/release-notes": {
+      "get": {
+        "description": "返回随镜像发布的升级日志；只读本地文件，不访问网络。",
+        "operationId": "system_release_notes_api_v1_system_release_notes_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseNotesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "System Release Notes",
         "tags": [
           "system"
         ]
