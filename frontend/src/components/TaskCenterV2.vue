@@ -1639,12 +1639,20 @@ async function loadTreeNode(
 }
 
 const treeContainer = ref<HTMLElement | null>(null);
+/** el-tree 节点里我们真正用到的部分：懒加载缓存状态与展开入口。 */
+type PickTreeNode = {
+  level: number;
+  data: TreeNodeData;
+  loaded: boolean;
+  childNodes: PickTreeNode[];
+  expand: (callback?: () => void) => void;
+};
+/** 根节点没有业务 data，只需要缓存字段。 */
+type PickTreeRoot = Pick<PickTreeNode, 'loaded' | 'childNodes' | 'expand'>;
+
 const directoryTreeRef = ref<{
-  getNode: (key: string) => {
-    loaded: boolean;
-    childNodes: unknown[];
-    expand: () => void;
-  } | null;
+  getNode: (key: string) => PickTreeNode | null;
+  root: PickTreeRoot;
 } | null>(null);
 const newFolderInputRef = ref<{ focus: () => void } | null>(null);
 const creatingDirectory = ref(false);
@@ -1724,12 +1732,36 @@ async function submitNewDirectory(): Promise<void> {
   }
 }
 
+/** 丢弃子节点缓存并重新拉取；Promise 在这一次加载结束后兑现。 */
+function reloadNodeChildren(node: PickTreeRoot): Promise<void> {
+  return new Promise((resolve) => {
+    node.loaded = false;
+    node.childNodes.length = 0;
+    node.expand(() => resolve());
+  });
+}
+
 function reloadTreeNode(token: string): void {
   const node = directoryTreeRef.value?.getNode(token);
-  if (!node) return;
-  node.loaded = false;
-  node.childNodes.length = 0;
-  node.expand();
+  if (node) void reloadNodeChildren(node);
+}
+
+const refreshingDirectoryTree = ref(false);
+
+/** 刷新当前目录的下一级；未选中节点时重新加载根目录列表。 */
+async function refreshDirectoryTree(): Promise<void> {
+  const tree = directoryTreeRef.value;
+  if (!tree || refreshingDirectoryTree.value) return;
+  if (creatingDirectory.value) cancelNewDirectory();
+  refreshingDirectoryTree.value = true;
+  try {
+    const selected = selectedTreeNode.value;
+    const node = selected ? tree.getNode(selected.token) : null;
+    await reloadNodeChildren(node ?? tree.root);
+    if (!node) selectedTreeNode.value = null;
+  } finally {
+    refreshingDirectoryTree.value = false;
+  }
 }
 
 function confirmDirectorySelection(): void {
@@ -3758,6 +3790,13 @@ onMounted(() => {
         <div class="directory-picker-header">
           <span>选择目录</span>
           <div class="directory-picker-header-actions">
+            <el-button
+              size="small"
+              :loading="refreshingDirectoryTree"
+              title="重新加载当前目录下的内容"
+              @click="refreshDirectoryTree"
+              >刷新</el-button
+            >
             <el-button size="small" @click="confirmDirectorySelection">使用此目录</el-button>
             <el-button
               size="small"
