@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
 
-from backend.app.infrastructure import docker_updater
 from backend.app.infrastructure.docker_updater import DockerEngineClient, DockerUpdaterError
 
 
@@ -26,7 +26,7 @@ def test_pull_image_retries_transient_failures(
             raise DockerUpdaterError("DOCKER_IMAGE_PULL_FAILED", "目标镜像拉取失败")
 
     monkeypatch.setattr(client, "_pull_image_once", flaky)
-    monkeypatch.setattr(docker_updater.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     client.pull_image("ghcr.io/yyxiaoma/packbreaker@sha256:" + "a" * 64)
 
@@ -45,7 +45,7 @@ def test_pull_image_gives_up_after_three_attempts(
         raise DockerUpdaterError("DOCKER_IMAGE_PULL_FAILED", "目标镜像拉取失败")
 
     monkeypatch.setattr(client, "_pull_image_once", always_fail)
-    monkeypatch.setattr(docker_updater.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
     with pytest.raises(DockerUpdaterError):
         client.pull_image("ghcr.io/yyxiaoma/packbreaker@sha256:" + "a" * 64)
