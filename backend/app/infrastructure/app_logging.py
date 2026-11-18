@@ -84,12 +84,9 @@ class JsonLogFormatter(logging.Formatter):
                 else redacted_fields
             )
         if record.exc_info is not None and record.exc_info[0] is not None:
-            exc_type = record.exc_info[0]
-            payload["exception"] = exc_type.__name__
-            # 只写类名会丢掉 "database is locked" 这类关键信息，排障时等于没有。
-            exc_value = record.exc_info[1]
-            if exc_value is not None:
-                payload["exception_message"] = str(exc_value)[:500]
+            # 故意只记录异常类名：异常文本可能包含 DSN、口令等敏感内容
+            # （见 tests/unit/test_app_logging.py 的 canary 守卫）。
+            payload["exception"] = record.exc_info[0].__name__
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
