@@ -55,7 +55,10 @@ from backend.app.application.unpack_item_actions import UnpackItemActionService
 from backend.app.application.unpack_item_reconcile import UnpackItemReconcileService
 from backend.app.application.unpack_lifecycle import refresh_stale_review_executions
 from backend.app.application.unpack_manual_candidates import UnpackManualCandidateService
-from backend.app.application.unpack_manual_torrents import ManualTorrentStore
+from backend.app.application.unpack_manual_torrents import (
+    ManualTorrentStore,
+    ManualTorrentStoreError,
+)
 from backend.app.application.unpack_matching import UnpackMatchCoordinator
 from backend.app.application.unpack_materialization import UnpackMaterializationService
 from backend.app.application.unpack_monitor import UnpackMonitorService
@@ -220,6 +223,19 @@ def create_app(
             config_dir=resolved_settings.config_dir,
         )
         app.state.authorized_path_scope = path_scope
+        # 种子暂存放在必须持久化的 config 卷：与 PUID/PGID 一致，随备份走，
+        # 且不要求用户额外挂载数据卷。旧版写在 data 根下的文件启动时搬迁。
+        manual_torrent_store = ManualTorrentStore(resolved_settings.resolved_torrent_store_dir)
+        try:
+            migrated_torrent_count = manual_torrent_store.import_legacy_directory(
+                resolved_settings.data_dir / "unpack-manual-torrents"
+            )
+        except ManualTorrentStoreError:
+            migrated_torrent_count = 0
+        if migrated_torrent_count:
+            _recovery_logger.warning(
+                "已把 %s 个旧版种子暂存文件迁移到 config 卷", migrated_torrent_count
+            )
         unpack_source_scan_service = UnpackSourceScanService(
             resolved_runtime.session_factory,
             path_scope=path_scope,
@@ -232,6 +248,7 @@ def create_app(
             timezone=resolved_settings.timezone,
             path_scope=path_scope,
             acceptance_scope=acceptance_scope,
+            manual_torrent_store=manual_torrent_store,
         )
         unpack_discovery_service = UnpackDiscoveryService(
             resolved_runtime.session_factory,
@@ -302,7 +319,6 @@ def create_app(
             timezone=resolved_settings.timezone,
         )
         app.state.site_statistics_driver = site_statistics_driver
-        manual_torrent_store = ManualTorrentStore(resolved_settings.data_dir)
         unpack_manual_candidate_service = UnpackManualCandidateService(
             resolved_runtime.session_factory,
             site_service,

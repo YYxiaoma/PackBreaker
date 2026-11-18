@@ -143,11 +143,12 @@ class UnpackDefinitionService:
         timezone: str,
         path_scope: AuthorizedPathScope | None = None,
         acceptance_scope: UnpackAcceptanceScope | None = None,
+        manual_torrent_store: ManualTorrentStore | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._acceptance_scope = acceptance_scope
         self._timezone = timezone
-        self._manual_torrent_store = ManualTorrentStore(data_root)
+        self._manual_torrent_store = manual_torrent_store or ManualTorrentStore(data_root)
         self._path_scope = path_scope or AuthorizedPathScope.legacy_only(legacy_data_root=data_root)
         self._source_scans = UnpackSourceScanService(
             session_factory,

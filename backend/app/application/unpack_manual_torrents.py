@@ -121,6 +121,63 @@ class ManualTorrentStore:
                 "manual torrent payload could not be removed safely"
             ) from exc
 
+    def import_legacy_directory(self, legacy_root: Path) -> int:
+        """把旧数据根下的暂存种子搬入当前根，返回成功迁移的文件数。
+
+        内容寻址的 key 与根目录无关，因此这里只搬文件、不改数据库引用。
+        无法安全读取或摘要不符的条目保持原样跳过，交由人工处理。
+        """
+
+        try:
+            metadata = Path(legacy_root).lstat()
+        except OSError:
+            return 0
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            return 0
+        try:
+            entries = sorted(Path(legacy_root).iterdir())
+        except OSError:
+            return 0
+        migrated = 0
+        for entry in entries:
+            try:
+                if self._migrate_legacy_entry(entry):
+                    migrated += 1
+            except OSError:
+                continue
+        return migrated
+
+    def _migrate_legacy_entry(self, source: Path) -> bool:
+        if source.suffix != ".torrent":
+            return False
+        key = source.stem
+        if not self.is_valid_key(key):
+            return False
+        try:
+            metadata = source.lstat()
+        except OSError:
+            return False
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size < 1
+            or metadata.st_size > self._max_bytes
+        ):
+            return False
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            payload = stream.read(self._max_bytes + 1)
+        if not payload or len(payload) > self._max_bytes or self.key_for(payload) != key:
+            return False
+        try:
+            if self.store(payload) != key:
+                return False
+        except ManualTorrentStoreError:
+            return False
+        # 只有新根确认写入成功后才移除旧文件，避免迁移中断造成数据丢失。
+        source.unlink()
+        return True
+
     def _ensure_root(self, *, create: bool, missing_ok: bool = False) -> Path | None:
         try:
             if create:

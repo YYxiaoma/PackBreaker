@@ -22,6 +22,9 @@ class AppSettings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     config_dir: Path = Path("/config")
     data_dir: Path = Path("/data")
+    # 种子暂存属于应用私有状态，默认落在必须持久化的 config 卷：用户不必为它
+    # 额外挂载数据卷，也不会再因为 PUID 与镜像内 /data 属主不一致而写不进去。
+    torrent_store_dir: Path | None = None
     unpack_template_mapping_root: Path | None = None
     # 镜像内置官方模板目录；可由 PACKBREAKER_OFFICIAL_TEMPLATE_DIR 覆盖。
     official_template_dir: Path = _REPO_ROOT / "resources" / "official_templates"
@@ -91,7 +94,12 @@ class AppSettings(BaseSettings):
             raise ValueError("启动目录必须使用绝对路径")
         return value
 
-    @field_validator("secret_key_file", "frontend_dir", "unpack_template_mapping_root")
+    @field_validator(
+        "secret_key_file",
+        "frontend_dir",
+        "torrent_store_dir",
+        "unpack_template_mapping_root",
+    )
     @classmethod
     def require_absolute_optional_path(cls, value: Path | None) -> Path | None:
         if value is not None and not value.is_absolute():
@@ -162,6 +170,12 @@ class AppSettings(BaseSettings):
     @property
     def updater_token_path(self) -> Path:
         return self.config_dir / "updater" / "token"
+
+    @property
+    def resolved_torrent_store_dir(self) -> Path:
+        """种子暂存根；默认随 config 卷持久化，可用环境变量单独覆盖。"""
+
+        return self.torrent_store_dir or self.config_dir / "torrents"
 
     @property
     def resolved_secret_key_file(self) -> Path:
