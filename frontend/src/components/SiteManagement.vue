@@ -88,6 +88,9 @@ const visibleItems = computed(() => {
 });
 const saving = ref(false);
 const probingDraft = ref(false);
+// 新增站点的表单默认值：PT 站点普遍有风控，默认就放宽超时与搜索间隔。
+const DEFAULT_REQUEST_TIMEOUT_SECONDS = 60;
+const DEFAULT_SEARCH_INTERVAL_SECONDS = 30;
 const draft = reactive<SiteDraft>({
   id: null,
   originalType: null,
@@ -99,8 +102,8 @@ const draft = reactive<SiteDraft>({
   downloadCookie: '',
   clearDownloadCookie: false,
   downloadCredentialConfigured: false,
-  requestTimeoutSeconds: 15,
-  searchIntervalSeconds: 0,
+  requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+  searchIntervalSeconds: DEFAULT_SEARCH_INTERVAL_SECONDS,
   riskControlLimit: 3,
   riskRetryIntervalMinutes: 1,
   userAgent: '',
@@ -228,8 +231,8 @@ function resetDraft() {
     downloadCookie: '',
     clearDownloadCookie: false,
     downloadCredentialConfigured: false,
-    requestTimeoutSeconds: 15,
-    searchIntervalSeconds: 0,
+    requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    searchIntervalSeconds: DEFAULT_SEARCH_INTERVAL_SECONDS,
     riskControlLimit: 3,
     riskRetryIntervalMinutes: 1,
     userAgent: '',
@@ -248,8 +251,16 @@ function resetDraft() {
 function applyProfileDefaults() {
   const profile = selectedProfile.value;
   if (!profile) return;
-  draft.requestTimeoutSeconds = profile.request_timeout_seconds;
-  draft.searchIntervalSeconds = Math.round(profile.search_interval_seconds);
+  // 配置档给的是该站的最低要求，不是界面默认值：取较大者，既不低于站点要求，
+  // 也不会把新增站点的默认值拉回去。
+  draft.requestTimeoutSeconds = Math.max(
+    profile.request_timeout_seconds,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+  );
+  draft.searchIntervalSeconds = Math.max(
+    Math.round(profile.search_interval_seconds),
+    DEFAULT_SEARCH_INTERVAL_SECONDS,
+  );
   draft.userAgent = '';
   draft.browserEmulationEnabled = false;
   draft.downloadCookie = '';
