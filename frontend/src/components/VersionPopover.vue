@@ -24,7 +24,6 @@ import {
   LAST_RELOADED_UPGRADE_REQUEST_KEY,
   PENDING_UPGRADE_SESSION_KEY,
   parsePendingUpgradeRequest,
-  shouldReloadAfterUpgrade,
   shouldMarkUpdateUnseen,
   upgradeMutationResultIsUnknown,
 } from '../versionUpdateIndicator';
@@ -43,6 +42,11 @@ const unseenUpdate = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let releaseCheckTimer: ReturnType<typeof setInterval> | undefined;
 
+// 升级会话：容器切换期间接口会短暂不可用，必须靠本地状态把进度条与成功提示维持住。
+const UPGRADE_SESSION_KEY = 'packbreaker-upgrade-progress';
+const upgradeTargetVersion = ref('');
+const upgradeSucceeded = ref(false);
+
 function persistPendingUpgrade(
   idempotencyKey: string,
   targetVersion: string,
@@ -56,6 +60,39 @@ function persistPendingUpgrade(
 
 function clearPendingUpgrade(): void {
   sessionStorage.removeItem(PENDING_UPGRADE_SESSION_KEY);
+}
+
+function persistUpgradeSession(targetVersion: string): void {
+  upgradeTargetVersion.value = targetVersion;
+  upgradeSucceeded.value = false;
+  sessionStorage.setItem(
+    UPGRADE_SESSION_KEY,
+    JSON.stringify({ targetVersion, startedAt: Date.now() }),
+  );
+}
+
+function clearUpgradeSession(): void {
+  upgradeTargetVersion.value = '';
+  upgradeSucceeded.value = false;
+  sessionStorage.removeItem(UPGRADE_SESSION_KEY);
+}
+
+function restoreUpgradeSession(): void {
+  const raw = sessionStorage.getItem(UPGRADE_SESSION_KEY);
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw) as { targetVersion?: string };
+    if (typeof parsed.targetVersion === 'string' && parsed.targetVersion) {
+      upgradeTargetVersion.value = parsed.targetVersion;
+    }
+  } catch {
+    sessionStorage.removeItem(UPGRADE_SESSION_KEY);
+  }
+}
+
+function reloadAfterUpgrade(): void {
+  clearUpgradeSession();
+  window.location.reload();
 }
 
 function restorePendingUpgrade(): void {
@@ -153,6 +190,24 @@ const helperDetailText = computed(() => {
   const message = upgrade.value?.helper_status?.message?.trim();
   return message || helperPhaseText.value;
 });
+const showProgress = computed(
+  () => upgradeActive.value || (upgradeTargetVersion.value !== '' && !upgradeSucceeded.value),
+);
+const progressPercent = computed(() => {
+  if (upgradeActive.value) return helperProgress.value;
+  return upgradeSucceeded.value ? 100 : 92;
+});
+const progressHeading = computed(() => {
+  if (upgradeActive.value) return helperPhaseText.value;
+  return upgradeSucceeded.value ? '升级成功' : '正在等待新版本启动';
+});
+const progressDetail = computed(() => {
+  if (upgradeActive.value) return helperDetailText.value;
+  if (upgradeSucceeded.value) {
+    return `当前已运行 v${displayedVersion.value}，刷新页面即可看到最新界面。`;
+  }
+  return '容器正在切换，接口短暂不可用属于正常现象；完成后进度条会直接变为成功提示。';
+});
 const releaseUrl = computed(() => {
   const tag = upgrade.value?.target_tag;
   return tag
@@ -193,6 +248,36 @@ async function refreshRelease(): Promise<void> {
   }
 }
 
+function markUpgradeProgress(
+  phase: UpdaterStatus['phase'] | undefined,
+  helperRequestId: string | undefined,
+  currentVersionText: string,
+): void {
+  if (!upgradeTargetVersion.value) return;
+  // 新容器起来了：接口能应答且版本号已是目标版本，视为升级成功，停在成功态等用户点刷新。
+  if (currentVersionText === upgradeTargetVersion.value) {
+    upgradeSucceeded.value = true;
+    targetInFlight.value = '';
+    pendingIdempotencyKey.value = '';
+    clearPendingUpgrade();
+    if (helperRequestId) {
+      sessionStorage.setItem(LAST_RELOADED_UPGRADE_REQUEST_KEY, helperRequestId);
+    }
+    return;
+  }
+  if (phase === 'failed' || phase === 'rolled_back' || phase === 'manual_recovery_required') {
+    clearUpgradeSession();
+    targetInFlight.value = '';
+    pendingIdempotencyKey.value = '';
+    clearPendingUpgrade();
+    ElMessage.error(
+      phase === 'rolled_back'
+        ? '升级失败，已自动回滚到原版本，请查看升级日志。'
+        : '升级未完成，请查看升级日志后再重试。',
+    );
+  }
+}
+
 async function refreshReleaseQuietly(): Promise<void> {
   if (quietReleaseLoading.value || releaseLoading.value) return;
   quietReleaseLoading.value = true;
@@ -217,24 +302,7 @@ async function refreshReleaseQuietly(): Promise<void> {
         clearPendingUpgrade();
       }
     }
-    if (
-      shouldReloadAfterUpgrade(
-        phase,
-        helperRequestId,
-        next.current_version,
-        helperTargetVersion,
-        sessionStorage.getItem(LAST_RELOADED_UPGRADE_REQUEST_KEY),
-      )
-    ) {
-      if (helperRequestId) {
-        sessionStorage.setItem(LAST_RELOADED_UPGRADE_REQUEST_KEY, helperRequestId);
-      }
-      targetInFlight.value = '';
-      pendingIdempotencyKey.value = '';
-      clearPendingUpgrade();
-      ElMessage.success(`PackBreaker 已升级到 v${next.current_version}，正在刷新页面。`);
-      window.setTimeout(() => window.location.reload(), 600);
-    }
+    markUpgradeProgress(phase, helperRequestId, next.current_version ?? '');
   } catch {
     // 后台检查与容器切换期间的短暂离线都保持静默，避免打扰当前操作。
   } finally {
@@ -266,6 +334,7 @@ async function startUpgrade(): Promise<void> {
       idempotencyKey,
     );
     upgradeResultUnknown.value = false;
+    persistUpgradeSession(targetVersion);
     if (upgrade.value) upgrade.value.helper_status = result.helper_status;
     ElMessage.success(
       result.idempotency_replayed
@@ -303,6 +372,7 @@ watch(visible, (isVisible) => {
 });
 onMounted(() => {
   restorePendingUpgrade();
+  restoreUpgradeSession();
   void loadCurrentVersion();
   void refreshReleaseQuietly();
   releaseCheckTimer = setInterval(() => {
@@ -370,10 +440,10 @@ defineExpose({ open });
         <p v-if="statusKind === 'error'" class="version-error-detail">
           {{ upgrade?.release_error_code ?? 'RELEASE_LOOKUP_FAILED' }}
         </p>
-        <div v-if="upgradeActive" class="version-current-upgrade" aria-live="polite">
+        <div v-if="showProgress" class="version-current-upgrade" aria-live="polite">
           <div class="version-progress-heading">
-            <span>{{ helperPhaseText }}</span>
-            <strong>{{ helperProgress }}%</strong>
+            <span>{{ progressHeading }}</span>
+            <strong>{{ progressPercent }}%</strong>
           </div>
           <div
             class="version-progress-track"
@@ -381,11 +451,19 @@ defineExpose({ open });
             aria-label="在线升级进度"
             aria-valuemin="0"
             aria-valuemax="100"
-            :aria-valuenow="helperProgress"
+            :aria-valuenow="progressPercent"
           >
-            <span class="version-progress-bar" :style="{ width: `${helperProgress}%` }"></span>
+            <span class="version-progress-bar" :style="{ width: `${progressPercent}%` }"></span>
           </div>
-          <p class="version-progress-detail">{{ helperDetailText }}</p>
+          <p class="version-progress-detail">{{ progressDetail }}</p>
+          <button
+            v-if="upgradeSucceeded"
+            class="version-reload-button"
+            type="button"
+            @click="reloadAfterUpgrade"
+          >
+            <RefreshCw :size="16" />刷新页面
+          </button>
         </div>
         <a class="release-link" :href="releaseUrl" target="_blank" rel="noreferrer">
           <GitBranch :size="19" />查看发布<ExternalLink :size="13" />
@@ -608,6 +686,24 @@ defineExpose({ open });
   border-radius: inherit;
   background: linear-gradient(90deg, #2f6df6, #6c5ce7);
   transition: width 0.28s ease;
+}
+
+.version-reload-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 6px 14px;
+  border: 1px solid var(--el-color-primary);
+  border-radius: 8px;
+  background: var(--el-color-primary);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.version-reload-button:hover {
+  filter: brightness(1.06);
 }
 
 .version-progress-detail {
