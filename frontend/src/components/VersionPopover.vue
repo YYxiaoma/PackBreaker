@@ -90,9 +90,17 @@ function restoreUpgradeSession(): void {
   }
 }
 
-function reloadAfterUpgrade(): void {
-  clearUpgradeSession();
-  window.location.reload();
+const upgradeReloadScheduled = ref(false);
+
+/** 升级成功后自动刷新页面；先清掉会话，避免刷新后再次判定成功而反复刷新。 */
+function scheduleReloadAfterUpgrade(): void {
+  if (upgradeReloadScheduled.value) return;
+  upgradeReloadScheduled.value = true;
+  window.setTimeout(() => {
+    sessionStorage.removeItem(UPGRADE_SESSION_KEY);
+    sessionStorage.removeItem(PENDING_UPGRADE_SESSION_KEY);
+    window.location.reload();
+  }, 1600);
 }
 
 function restorePendingUpgrade(): void {
@@ -122,11 +130,18 @@ const upgradeActive = computed(() => {
   const phase = upgrade.value?.helper_status?.phase;
   return phase ? activePhases.has(phase) : false;
 });
+// 请求发出后（含容器切换期间接口不可用、以及刷新页面后恢复的会话）都不允许再点。
+const upgradeInProgress = computed(
+  () =>
+    upgradeActive.value ||
+    upgradeLoading.value ||
+    upgradeReloadScheduled.value ||
+    (upgradeTargetVersion.value !== '' && !upgradeSucceeded.value),
+);
 const canAutoUpgrade = computed(
   () =>
     Boolean(upgrade.value?.latest_version && upgrade.value?.target_image_digest) &&
-    !upgradeLoading.value &&
-    !upgradeActive.value &&
+    !upgradeInProgress.value &&
     (upgrade.value?.can_upgrade === true || upgradeResultUnknown.value),
 );
 const automaticUpgradeHint = computed(() => {
@@ -169,23 +184,21 @@ const helperPhaseText = computed(() => {
     manual_recovery_required: '需要人工恢复',
   }[phase];
 });
-const helperProgress = computed(() => {
-  const phase = upgrade.value?.helper_status?.phase;
-  if (!phase) return 0;
-  return {
-    idle: 0,
-    accepted: 8,
-    pulling: 28,
-    stopping: 52,
-    starting: 72,
-    verifying: 90,
-    succeeded: 100,
-    rolling_back: 65,
-    rolled_back: 100,
-    failed: 100,
-    manual_recovery_required: 100,
-  }[phase];
-});
+// 每个阶段只给一个上限：读数在上限内缓慢爬升，阶段前进只抬高上限，
+// 因此升级期间进度条一直在动，不会从 8% 直接跳到 92%。
+const PHASE_PROGRESS_CEILING: Record<UpdaterStatus['phase'], number> = {
+  idle: 0,
+  accepted: 12,
+  pulling: 38,
+  stopping: 58,
+  starting: 76,
+  verifying: 94,
+  succeeded: 100,
+  rolling_back: 88,
+  rolled_back: 100,
+  failed: 100,
+  manual_recovery_required: 100,
+};
 const helperDetailText = computed(() => {
   const message = upgrade.value?.helper_status?.message?.trim();
   return message || helperPhaseText.value;
@@ -193,10 +206,32 @@ const helperDetailText = computed(() => {
 const showProgress = computed(
   () => upgradeActive.value || (upgradeTargetVersion.value !== '' && !upgradeSucceeded.value),
 );
-const progressPercent = computed(() => {
-  if (upgradeActive.value) return helperProgress.value;
+const progressCeiling = computed(() => {
+  const phase = upgrade.value?.helper_status?.phase;
+  if (upgradeActive.value && phase) return PHASE_PROGRESS_CEILING[phase];
   return upgradeSucceeded.value ? 100 : 92;
 });
+
+const progressValue = ref(0);
+let progressTimer: ReturnType<typeof setInterval> | undefined;
+
+function advanceProgress(): void {
+  if (!showProgress.value) {
+    progressValue.value = 0;
+    return;
+  }
+  const ceiling = progressCeiling.value;
+  if (ceiling >= 100) {
+    progressValue.value = 100;
+    return;
+  }
+  if (progressValue.value >= ceiling) return;
+  // 越接近上限步长越小，但保留最小步长，避免长时间停在同一读数上看起来像卡死。
+  const step = Math.max(0.3, (ceiling - progressValue.value) * 0.05);
+  progressValue.value = Math.min(ceiling, progressValue.value + step);
+}
+
+const progressPercent = computed(() => Math.round(progressValue.value));
 const progressHeading = computed(() => {
   if (upgradeActive.value) return helperPhaseText.value;
   return upgradeSucceeded.value ? '升级成功' : '正在等待新版本启动';
@@ -204,7 +239,7 @@ const progressHeading = computed(() => {
 const progressDetail = computed(() => {
   if (upgradeActive.value) return helperDetailText.value;
   if (upgradeSucceeded.value) {
-    return `当前已运行 v${displayedVersion.value}，刷新页面即可看到最新界面。`;
+    return `已运行 v${displayedVersion.value}，页面正在自动刷新…`;
   }
   return '容器正在切换，接口短暂不可用属于正常现象；完成后进度条会直接变为成功提示。';
 });
@@ -254,7 +289,7 @@ function markUpgradeProgress(
   currentVersionText: string,
 ): void {
   if (!upgradeTargetVersion.value) return;
-  // 新容器起来了：接口能应答且版本号已是目标版本，视为升级成功，停在成功态等用户点刷新。
+  // 新容器起来了：接口能应答且版本号已是目标版本，视为升级成功并自动刷新页面。
   if (currentVersionText === upgradeTargetVersion.value) {
     upgradeSucceeded.value = true;
     targetInFlight.value = '';
@@ -263,6 +298,7 @@ function markUpgradeProgress(
     if (helperRequestId) {
       sessionStorage.setItem(LAST_RELOADED_UPGRADE_REQUEST_KEY, helperRequestId);
     }
+    scheduleReloadAfterUpgrade();
     return;
   }
   if (phase === 'failed' || phase === 'rolled_back' || phase === 'manual_recovery_required') {
@@ -383,8 +419,10 @@ onMounted(() => {
       void refreshReleaseQuietly();
     }
   }, 2500);
+  progressTimer = setInterval(advanceProgress, 240);
 });
 onUnmounted(() => {
+  if (progressTimer !== undefined) clearInterval(progressTimer);
   if (pollTimer !== undefined) clearInterval(pollTimer);
   if (releaseCheckTimer !== undefined) clearInterval(releaseCheckTimer);
 });
@@ -456,14 +494,6 @@ defineExpose({ open });
             <span class="version-progress-bar" :style="{ width: `${progressPercent}%` }"></span>
           </div>
           <p class="version-progress-detail">{{ progressDetail }}</p>
-          <button
-            v-if="upgradeSucceeded"
-            class="version-reload-button"
-            type="button"
-            @click="reloadAfterUpgrade"
-          >
-            <RefreshCw :size="16" />刷新页面
-          </button>
         </div>
         <a class="release-link" :href="releaseUrl" target="_blank" rel="noreferrer">
           <GitBranch :size="19" />查看发布<ExternalLink :size="13" />
@@ -481,9 +511,11 @@ defineExpose({ open });
         >
           <ArrowUpCircle :size="18" />
           {{
-            upgradeResultUnknown
-              ? '重试确认升级请求'
-              : `立即升级到 v${upgrade.latest_version ?? ''}`
+            upgradeInProgress
+              ? '升级进行中…'
+              : upgradeResultUnknown
+                ? '重试确认升级请求'
+                : `立即升级到 v${upgrade.latest_version ?? ''}`
           }}
         </button>
         <p v-if="!upgradeActive && automaticUpgradeHint" class="version-upgrade-hint">
@@ -686,24 +718,6 @@ defineExpose({ open });
   border-radius: inherit;
   background: linear-gradient(90deg, #2f6df6, #6c5ce7);
   transition: width 0.28s ease;
-}
-
-.version-reload-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-  padding: 6px 14px;
-  border: 1px solid var(--el-color-primary);
-  border-radius: 8px;
-  background: var(--el-color-primary);
-  color: #fff;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.version-reload-button:hover {
-  filter: brightness(1.06);
 }
 
 .version-progress-detail {
