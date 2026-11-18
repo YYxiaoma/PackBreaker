@@ -7545,6 +7545,28 @@
         "title": "UnpackTemplateSeedMappingRequest",
         "type": "object"
       },
+      "UnpackTreeDirectoryCreateRequest": {
+        "properties": {
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "selection_token": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Selection Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selection_token",
+          "name"
+        ],
+        "title": "UnpackTreeDirectoryCreateRequest",
+        "type": "object"
+      },
       "UnpackTreeEntryResponse": {
         "properties": {
           "display_path": {
@@ -10116,6 +10138,97 @@
           }
         },
         "summary": "Browse Unpack Tree",
+        "tags": [
+          "unpack-v2"
+        ]
+      }
+    },
+    "/api/v1/files/tree/directories": {
+      "post": {
+        "operationId": "create_unpack_tree_directory_api_v1_files_tree_directories_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnpackTreeDirectoryCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnpackTreeEntryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Unpack Tree Directory",
         "tags": [
           "unpack-v2"
         ]

@@ -129,3 +129,51 @@ def test_source_scan_respects_non_recursive_filter(tmp_path: Path) -> None:
 
     page = service.list_items(scan.id, cursor=None, limit=20)
     assert [item.filename for item in page.items] == ["Top.2026.1080p.mkv"]
+
+
+def _token_for_path(service: UnpackSourceScanService, target: Path) -> str:
+    parts = target.parts[1:]
+    current = next(item for item in service.list_tree_roots() if item.name == parts[0])
+    for part in parts[1:]:
+        browsed = service.browse_tree(current.selection_token)
+        current = next(item for item in browsed.entries if item.name == part)
+    return current.selection_token
+
+
+def test_create_tree_directory_creates_a_child_folder(tmp_path: Path) -> None:
+    service, root = _service(tmp_path)
+    movies = root / "movies"
+    movies.mkdir()
+
+    entry = service.create_tree_directory(_token_for_path(service, movies), "新建 目录")
+
+    created = movies / "新建 目录"
+    assert created.is_dir()
+    assert entry.name == "新建 目录"
+    assert Path(entry.display_path) == created
+    browsed = service.browse_tree(_token_for_path(service, movies))
+    assert any(item.name == "新建 目录" for item in browsed.entries)
+
+
+def test_create_tree_directory_rejects_names_with_separators(tmp_path: Path) -> None:
+    service, root = _service(tmp_path)
+    movies = root / "movies"
+    movies.mkdir()
+    token = _token_for_path(service, movies)
+
+    for bad_name in ("a/b", "..", "", "  ", "trailing.", "bad:name"):
+        with pytest.raises(ApplicationError) as excinfo:
+            service.create_tree_directory(token, bad_name)
+        assert excinfo.value.code == "UNPACK_TREE_DIRECTORY_NAME_INVALID", bad_name
+
+
+def test_create_tree_directory_reports_existing_folder(tmp_path: Path) -> None:
+    service, root = _service(tmp_path)
+    movies = root / "movies"
+    movies.mkdir()
+    (movies / "dup").mkdir()
+    token = _token_for_path(service, movies)
+
+    with pytest.raises(ApplicationError) as excinfo:
+        service.create_tree_directory(token, "dup")
+    assert excinfo.value.code == "UNPACK_TREE_DIRECTORY_EXISTS"

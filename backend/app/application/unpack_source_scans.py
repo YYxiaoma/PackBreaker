@@ -26,6 +26,8 @@ from backend.app.infrastructure.persistence.models import (
 from backend.app.infrastructure.source_inventory import scan_source_inventory_page
 
 _SCAN_TTL = timedelta(minutes=30)
+_NEW_DIRECTORY_MAX_LENGTH = 120
+_FORBIDDEN_DIRECTORY_NAME_CHARS = set('/\\:*?"<>|')
 _SCAN_PAGE_SIZE = 250
 _MAX_SCAN_MEDIA = 100_000
 _RESOLUTION_PATTERN = re.compile(
@@ -122,6 +124,56 @@ class UnpackSourceScanService:
                 )
                 for entry in entries
             ),
+        )
+
+    def create_tree_directory(self, selection_token: str, name: str) -> UnpackTreeEntryView:
+        """在选中目录下新建一个子目录。
+
+        目录树本身是可读浏览（可跨出操作根），但新建目录属于写操作，
+        因此这里额外要求父目录落在允许写入的操作根内。
+        """
+
+        raw_path = self._decode_selection_token(selection_token)
+        normalized = normalize_new_directory_name(name)
+        try:
+            reference, resolved = self._path_scope.resolve_existing_directory(raw_path)
+            self._path_scope.authorization_root(Path(reference))
+        except DomainViolation as exc:
+            raise ApplicationError(
+                code="UNPACK_TREE_DIRECTORY_FORBIDDEN",
+                status=403,
+                title="目录不可写入",
+                detail=f"{exc}：该目录不在允许写入的操作范围内，无法新建文件夹",
+            ) from exc
+        target = resolved / normalized
+        try:
+            target.mkdir(mode=0o755)
+        except FileExistsError as exc:
+            raise ApplicationError(
+                code="UNPACK_TREE_DIRECTORY_EXISTS",
+                status=409,
+                title="同名文件夹已存在",
+                detail=f"该目录下已存在名为 {normalized} 的条目",
+            ) from exc
+        except PermissionError as exc:
+            raise ApplicationError(
+                code="UNPACK_TREE_DIRECTORY_FORBIDDEN",
+                status=403,
+                title="目录不可写入",
+                detail="当前进程没有在该目录下创建文件夹的权限",
+            ) from exc
+        except OSError as exc:
+            raise ApplicationError(
+                code="UNPACK_TREE_DIRECTORY_CREATE_FAILED",
+                status=422,
+                title="新建文件夹失败",
+                detail=str(exc),
+            ) from exc
+        entry_path = (Path(reference) / normalized).as_posix()
+        return UnpackTreeEntryView(
+            name=normalized,
+            display_path=entry_path,
+            selection_token=self._encode_selection_token(entry_path),
         )
 
     def create_scan(
@@ -432,6 +484,54 @@ class UnpackSourceScanService:
             title="目录选择无效",
             detail=detail,
         )
+
+
+def normalize_new_directory_name(value: str) -> str:
+    """校验并规范化新建文件夹名称。
+
+    只允许单层名称：任何路径分隔符、控制字符、Windows 保留字符都会被拒绝，
+    避免借新建目录穿越到操作根之外或产生不可移植的名字。
+    """
+
+    name = value.strip()
+    if not name:
+        raise ApplicationError(
+            code="UNPACK_TREE_DIRECTORY_NAME_INVALID",
+            status=422,
+            title="文件夹名称无效",
+            detail="名称不能为空",
+        )
+    if len(name) > _NEW_DIRECTORY_MAX_LENGTH:
+        raise ApplicationError(
+            code="UNPACK_TREE_DIRECTORY_NAME_INVALID",
+            status=422,
+            title="文件夹名称无效",
+            detail=f"名称长度不能超过 {_NEW_DIRECTORY_MAX_LENGTH} 个字符",
+        )
+    if name in {".", ".."}:
+        raise ApplicationError(
+            code="UNPACK_TREE_DIRECTORY_NAME_INVALID",
+            status=422,
+            title="文件夹名称无效",
+            detail="不能使用 . 或 .. 作为文件夹名称",
+        )
+    if any(char in _FORBIDDEN_DIRECTORY_NAME_CHARS for char in name) or any(
+        ord(char) < 32 or ord(char) == 127 for char in name
+    ):
+        raise ApplicationError(
+            code="UNPACK_TREE_DIRECTORY_NAME_INVALID",
+            status=422,
+            title="文件夹名称无效",
+            detail='名称不能包含 / \\ : * ? " < > | 或控制字符',
+        )
+    if name.endswith((".", " ")):
+        raise ApplicationError(
+            code="UNPACK_TREE_DIRECTORY_NAME_INVALID",
+            status=422,
+            title="文件夹名称无效",
+            detail="名称不能以点或空格结尾",
+        )
+    return name
 
 
 def normalize_unpack_file_filter(raw: dict[str, Any]) -> dict[str, Any]:

@@ -69,6 +69,11 @@ class UnpackTreeEntryResponse(BaseModel):
     selection_token: str
 
 
+class UnpackTreeDirectoryCreateRequest(BaseModel):
+    selection_token: str = Field(min_length=1, max_length=8192)
+    name: str = Field(min_length=1, max_length=120)
+
+
 class UnpackTreeRootsResponse(BaseModel):
     items: list[UnpackTreeEntryResponse]
 
@@ -924,6 +929,22 @@ async def browse_unpack_tree(
         selection_token=view.selection_token,
         entries=[_tree_entry_response(item) for item in view.entries],
     )
+
+
+@router.post(
+    "/files/tree/directories",
+    response_model=UnpackTreeEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_unpack_tree_directory(
+    request: Request,
+    payload: UnpackTreeDirectoryCreateRequest,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+) -> UnpackTreeEntryResponse:
+    view = unpack_source_scan_service(request).create_tree_directory(
+        selection_token=payload.selection_token, name=payload.name
+    )
+    return _tree_entry_response(view)
 
 
 @router.post(

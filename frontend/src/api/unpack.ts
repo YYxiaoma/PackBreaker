@@ -175,6 +175,23 @@ export async function browseUnpackTree(selectionToken: string): Promise<UnpackTr
   }
 }
 
+export async function createUnpackTreeDirectory(
+  selectionToken: string,
+  name: string,
+): Promise<UnpackTreeEntry> {
+  const token = selectionToken.trim();
+  if (!token) throw new Error('selectionToken 不能为空');
+  try {
+    const response = await apiClient.post<UnpackTreeEntry>('/files/tree/directories', {
+      selection_token: token,
+      name,
+    });
+    return response.data;
+  } catch (error) {
+    throw toApiProblem(error);
+  }
+}
+
 export async function createUnpackSourceScan(
   payload: UnpackSourceScanCreate,
 ): Promise<UnpackSourceScan> {
