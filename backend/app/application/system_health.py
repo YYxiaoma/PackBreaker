@@ -173,6 +173,7 @@ class SystemHealthService:
         checks = [
             self._runtime_check(),
             self._storage_check(),
+            self._torrent_store_check(),
             self._resources_check(),
             self._backup_check(database, now=timestamp),
             self._task_check(database),
@@ -304,6 +305,23 @@ class SystemHealthService:
                 "data_free_bytes": data["free_bytes"],
                 "data_free_ratio": data["free_ratio"],
             },
+        )
+
+    def _torrent_store_check(self) -> SystemHealthCheck:
+        """种子暂存目录必须可写：否则内容校验与执行计划会整批失败。"""
+
+        root = self._settings.resolved_torrent_store_dir
+        try:
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            writable = os.access(root, os.W_OK | os.X_OK)
+        except OSError:
+            writable = False
+        return SystemHealthCheck(
+            "torrent_store",
+            "ok" if writable else "blocked",
+            "TORRENT_STORAGE_OK" if writable else "TORRENT_STORAGE_UNAVAILABLE",
+            "种子暂存目录可写" if writable else "种子暂存目录不可写，内容校验与执行计划会失败",
+            {"path": str(root), "writable": writable},
         )
 
     def _resources_check(self) -> SystemHealthCheck:
