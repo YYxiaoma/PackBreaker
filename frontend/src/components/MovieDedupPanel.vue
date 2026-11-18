@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import { Plus, RefreshCw, Search } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 import { toApiProblem } from '../api/client';
 import { createClientNonce } from '../clientNonce';
-import { browseUnpackTree, listUnpackTreeRoots, type UnpackTreeEntry } from '../api/unpack';
+import {
+  browseUnpackTree,
+  createUnpackTreeDirectory,
+  listUnpackTreeRoots,
+  type UnpackTreeEntry,
+} from '../api/unpack';
 import {
   createMovieDedupJob,
   deleteMovieDedupJob,
@@ -64,6 +69,29 @@ interface DirectoryTreeNode {
 }
 const selectedTreeNode = ref<DirectoryTreeNode | null>(null);
 const directoryLoading = ref(false);
+/** el-tree 节点里我们真正用到的部分：懒加载缓存状态与展开入口。 */
+type PickTreeNode = {
+  level: number;
+  data: DirectoryTreeNode;
+  loaded: boolean;
+  childNodes: PickTreeNode[];
+  expand: (callback?: () => void) => void;
+};
+/** 根节点没有业务 data，只需要缓存字段。 */
+type PickTreeRoot = Pick<PickTreeNode, 'loaded' | 'childNodes' | 'expand'>;
+
+const treeContainer = ref<HTMLElement | null>(null);
+const directoryTreeRef = ref<{
+  getNode: (key: string) => PickTreeNode | null;
+  root: PickTreeRoot;
+} | null>(null);
+const newFolderInputRef = ref<{ focus: () => void } | null>(null);
+const creatingDirectory = ref(false);
+const newFolderName = ref('');
+const newFolderParentToken = ref('');
+const newFolderStyle = ref<Record<string, string>>({});
+const submittingNewFolder = ref(false);
+const refreshingDirectoryTree = ref(false);
 
 const draft = reactive<Draft>(freshDraft());
 
@@ -354,6 +382,7 @@ async function executeSelected(): Promise<void> {
 function openDirectoryPicker(target: 'source' | 'target'): void {
   directoryPickerTarget.value = target;
   selectedTreeNode.value = null;
+  cancelNewDirectory();
   directoryPickerVisible.value = true;
 }
 
@@ -382,8 +411,105 @@ async function loadTreeNode(
   }
 }
 
+/** 丢弃子节点缓存并重新拉取；Promise 在这一次加载结束后兑现。 */
+function reloadNodeChildren(node: PickTreeRoot): Promise<void> {
+  return new Promise((resolve) => {
+    node.loaded = false;
+    node.childNodes.length = 0;
+    node.expand(() => resolve());
+  });
+}
+
+function reloadTreeNode(token: string): void {
+  const node = directoryTreeRef.value?.getNode(token);
+  if (node) void reloadNodeChildren(node);
+}
+
+/** 刷新当前目录的下一级；未选中节点时重新加载根目录列表。 */
+async function refreshDirectoryTree(): Promise<void> {
+  const tree = directoryTreeRef.value;
+  if (!tree || refreshingDirectoryTree.value) return;
+  cancelNewDirectory();
+  refreshingDirectoryTree.value = true;
+  try {
+    const selected = selectedTreeNode.value;
+    const node = selected ? tree.getNode(selected.token) : null;
+    await reloadNodeChildren(node ?? tree.root);
+    if (!node) selectedTreeNode.value = null;
+  } finally {
+    refreshingDirectoryTree.value = false;
+  }
+}
+
 function onTreeNodeClick(data: DirectoryTreeNode): void {
+  if (creatingDirectory.value) cancelNewDirectory();
   selectedTreeNode.value = data;
+}
+
+function startCreateDirectory(): void {
+  const selected = selectedTreeNode.value;
+  if (!selected) return;
+  creatingDirectory.value = true;
+  newFolderName.value = '';
+  newFolderParentToken.value = selected.token;
+  positionNewFolderInput();
+  void nextTick(() => {
+    positionNewFolderInput();
+    newFolderInputRef.value?.focus();
+  });
+}
+
+/** 把输入框定位到当前选中节点下方，看起来就像树里新起了一行。 */
+function positionNewFolderInput(): void {
+  const container = treeContainer.value;
+  const currentNode = container?.querySelector('.el-tree-node.is-current') as HTMLElement | null;
+  if (!container || !currentNode) {
+    newFolderStyle.value = {};
+    return;
+  }
+  const containerRect = container.getBoundingClientRect();
+  const nodeRect = currentNode.getBoundingClientRect();
+  newFolderStyle.value = {
+    top: `${Math.max(0, nodeRect.bottom - containerRect.top + container.scrollTop)}px`,
+    left: `${Math.max(0, nodeRect.left - containerRect.left + 18)}px`,
+    width: `${Math.max(200, nodeRect.width - 24)}px`,
+  };
+}
+
+function cancelNewDirectory(): void {
+  if (!creatingDirectory.value) return;
+  creatingDirectory.value = false;
+  newFolderName.value = '';
+  newFolderParentToken.value = '';
+}
+
+async function submitNewDirectory(): Promise<void> {
+  if (!creatingDirectory.value || submittingNewFolder.value) return;
+  const name = newFolderName.value.trim();
+  const parentToken = newFolderParentToken.value;
+  if (!name || !parentToken) {
+    cancelNewDirectory();
+    return;
+  }
+  submittingNewFolder.value = true;
+  try {
+    const entry = await createUnpackTreeDirectory(parentToken, name);
+    ElMessage.success(`已创建文件夹 ${entry.name}`);
+    creatingDirectory.value = false;
+    newFolderName.value = '';
+    newFolderParentToken.value = '';
+    reloadTreeNode(parentToken);
+    selectedTreeNode.value = {
+      name: entry.name,
+      path: entry.display_path,
+      token: entry.selection_token,
+    };
+  } catch (caught) {
+    ElMessage.error(toApiProblem(caught).message);
+    void nextTick(() => newFolderInputRef.value?.focus());
+  } finally {
+    submittingNewFolder.value = false;
+  }
 }
 
 function confirmDirectorySelection(): void {
@@ -721,20 +847,49 @@ defineExpose({ openCreate, refresh });
         <div class="directory-picker-header">
           <span>选择目录</span>
           <div class="directory-picker-header-actions">
+            <el-button
+              size="small"
+              :loading="refreshingDirectoryTree"
+              title="重新加载当前目录下的内容"
+              @click="refreshDirectoryTree"
+              >刷新</el-button
+            >
             <el-button size="small" @click="confirmDirectorySelection">使用此目录</el-button>
+            <el-button
+              size="small"
+              :disabled="!selectedTreeNode || creatingDirectory"
+              @click="startCreateDirectory"
+              >新建文件夹</el-button
+            >
             <el-button size="small" @click="directoryPickerVisible = false">取消</el-button>
           </div>
         </div>
       </template>
       <div class="dedup-tree-picker" v-loading="directoryLoading">
-        <el-tree
-          lazy
-          :load="loadTreeNode"
-          node-key="token"
-          :props="{ label: 'name', isLeaf: () => false }"
-          highlight-current
-          @node-click="onTreeNodeClick"
-        />
+        <div ref="treeContainer" class="dedup-tree-picker-tree" @scroll="cancelNewDirectory">
+          <el-tree
+            ref="directoryTreeRef"
+            lazy
+            :load="loadTreeNode"
+            node-key="token"
+            :props="{ label: 'name', isLeaf: () => false }"
+            highlight-current
+            :expand-on-click-node="false"
+            @node-click="onTreeNodeClick"
+          />
+          <div v-if="creatingDirectory" class="tree-new-folder" :style="newFolderStyle">
+            <el-input
+              ref="newFolderInputRef"
+              v-model="newFolderName"
+              size="small"
+              maxlength="120"
+              placeholder="输入文件夹名称后回车"
+              @keyup.enter.stop="submitNewDirectory"
+              @keyup.esc.stop="cancelNewDirectory"
+              @blur="submitNewDirectory"
+            />
+          </div>
+        </div>
         <aside>
           <b>当前选择</b>
           <p>{{ selectedTreeNode?.path || '请选择目录节点' }}</p>
@@ -1059,11 +1214,21 @@ defineExpose({ openCreate, refresh });
   gap: 16px;
   min-height: 420px;
 }
-.dedup-tree-picker :deep(.el-tree) {
+.dedup-tree-picker-tree {
+  position: relative;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
   overflow: auto;
+  min-height: 380px;
+}
+.dedup-tree-picker-tree :deep(.el-tree) {
+  padding: 0;
+  border: 0;
+}
+.tree-new-folder {
+  position: absolute;
+  z-index: 2;
 }
 .dedup-tree-picker aside {
   padding: 14px;
