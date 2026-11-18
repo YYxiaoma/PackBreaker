@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Activity, BarChart3, Clock3, Link2, RefreshCw, UserRound } from '@lucide/vue';
 
@@ -39,7 +39,16 @@ let seedingRequestSequence = 0;
 const history = ref<SiteSyncHistoryItem[]>([]);
 const seeding = ref<SiteSeeding | null>(null);
 const loading = ref(false);
-const syncing = ref(false);
+// 同步状态按站点记录：一个站点在同步时，不能让其他站点的「立即同步」也置灰。
+const syncingSiteIds = ref<Set<string>>(new Set());
+const syncing = computed(() => (props.siteId ? syncingSiteIds.value.has(props.siteId) : false));
+
+function setSiteSyncing(siteId: string, active: boolean): void {
+  const next = new Set(syncingSiteIds.value);
+  if (active) next.add(siteId);
+  else next.delete(siteId);
+  syncingSiteIds.value = next;
+}
 const historyLoading = ref(false);
 const seedingLoading = ref(false);
 const error = ref('');
@@ -113,8 +122,9 @@ async function loadDetail() {
 }
 
 async function syncNow(silent = false, siteId = props.siteId) {
-  if (!siteId || syncing.value) return;
-  syncing.value = true;
+  // 只拦「同一站点重复点击」，不同站点允许并行同步。
+  if (!siteId || syncingSiteIds.value.has(siteId)) return;
+  setSiteSyncing(siteId, true);
   error.value = '';
   try {
     const configuredTimeoutSeconds =
@@ -139,7 +149,7 @@ async function syncNow(silent = false, siteId = props.siteId) {
       : problem.message;
     if (!silent) ElMessage.error(error.value);
   } finally {
-    syncing.value = false;
+    setSiteSyncing(siteId, false);
   }
 }
 async function loadHistory() {
