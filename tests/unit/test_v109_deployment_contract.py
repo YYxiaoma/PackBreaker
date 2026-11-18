@@ -167,3 +167,21 @@ def test_v1015_candidate_delivery_requires_reviewed_sha_and_is_manual_only() -> 
     assert ":latest" not in workflow
     assert ":stable" not in workflow
     assert "gh release" not in workflow
+
+
+def test_release_image_ships_the_builtin_official_templates() -> None:
+    """官方内置模板必须随镜像发布。
+
+    v1.1.6 的镜像漏了 resources/，启动时静默跳过安装，
+    表现为「模板拆包下拉框没有任何模板」。
+    """
+
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY --chown=packbreaker:packbreaker resources ./resources" in dockerfile
+
+    config = (ROOT / "backend" / "app" / "config.py").read_text(encoding="utf-8")
+    assert 'official_template_dir: Path = _REPO_ROOT / "resources" / "official_templates"' in config
+
+    # backend 在 /app/backend 时 _REPO_ROOT 为 /app，resources 必须落在 /app/resources。
+    index = ROOT / "resources" / "official_templates" / "index.json"
+    assert index.is_file()

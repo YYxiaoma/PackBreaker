@@ -921,8 +921,13 @@ def install_builtin_templates(
     import logging
 
     logger = logging.getLogger("packbreaker.recovery")
+    if not root.is_dir():
+        # 镜像漏打包 resources 时会走到这里；必须留下痕迹，否则只会表现为「模板下拉框为空」。
+        logger.warning("内置模板目录不存在，已跳过安装：%s", root)
+        return 0
     index_path = root / "index.json"
     if not index_path.is_file():
+        logger.warning("内置模板索引不存在，已跳过安装：%s", index_path)
         return 0
     try:
         index = json.loads(index_path.read_text(encoding="utf-8"))

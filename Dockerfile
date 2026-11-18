@@ -54,6 +54,8 @@ WORKDIR /app
 COPY --from=python-builder /opt/venv /opt/venv
 COPY --chown=packbreaker:packbreaker backend ./backend
 COPY --chown=packbreaker:packbreaker docs ./docs
+# 官方内置模板随镜像发布：缺了它启动时会静默跳过安装，模板下拉框为空。
+COPY --chown=packbreaker:packbreaker resources ./resources
 COPY --from=frontend-builder --chown=packbreaker:packbreaker /build/frontend/dist ./frontend/dist
 COPY --chown=packbreaker:packbreaker LICENSE README.md ./
 
