@@ -470,23 +470,41 @@ body {
   font-weight: 650;
 }
 
-/* 表格操作列：统一成紧凑的纯文本链接，避免不同页面间距/内边距不一致。 */
+/* 链接按钮不带阴影：primary 的投影是给实心按钮用的，套在纯文本按钮上像贴了块底。 */
+#app .el-button.is-link {
+  box-shadow: none;
+}
+
+/* 表格操作列：所有行内操作统一为紧凑的纯文本链接，水平居中、垂直对齐。 */
 #app .table-row-actions {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: 2px;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
   white-space: nowrap;
 }
-#app .table-row-actions .el-button {
-  margin: 0;
-  flex-shrink: 0;
+#app .table-row-actions > span {
+  display: inline-flex;
+  align-items: center;
 }
-#app .table-row-actions .el-button.is-link {
-  height: auto;
-  min-height: auto;
+#app .table-row-actions .el-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  min-height: 0;
+  margin: 0;
   padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+  box-shadow: none;
+}
+#app .table-row-actions .el-button.is-link:not(.is-disabled):hover,
+#app .table-row-actions .el-button.is-link:not(.is-disabled):active {
+  background: transparent;
+  box-shadow: none;
 }
 
 #app .el-input__wrapper,

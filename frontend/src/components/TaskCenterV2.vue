@@ -2608,7 +2608,7 @@ onMounted(() => {
           class-name="unpack-actions-column"
         >
           <template #default="{ row }">
-            <div class="task-row-actions">
+            <div class="table-row-actions">
               <el-button
                 v-if="showExecuteAction(row)"
                 link
@@ -4086,7 +4086,7 @@ onMounted(() => {
           </el-table-column>
           <el-table-column label="操作" width="300" fixed="right">
             <template #default="{ row }">
-              <div class="task-row-actions execution-item-actions">
+              <div class="table-row-actions">
                 <el-button
                   v-if="row.has_external_operations || unpackItemExternalRiskLabel(row)"
                   link
@@ -5016,39 +5016,11 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.task-row-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  /* 放不下时换行而不是向左溢出被单元格裁掉（否则最左侧的「查看」最先被吃掉）。 */
-  flex-wrap: wrap;
-  gap: 6px 8px;
-  width: 100%;
-  min-width: 0;
-  white-space: nowrap;
-}
-.task-row-actions :deep(.el-button) {
-  flex-shrink: 0;
-  margin: 0;
-}
-.task-row-actions :deep(.el-button.is-link) {
-  padding: 0 2px !important;
-}
-.execution-item-actions {
-  justify-content: center;
-  flex-wrap: nowrap;
-  gap: 2px;
-  white-space: nowrap;
-}
-.execution-item-actions :deep(.el-button.is-link) {
-  padding: 0 2px !important;
-}
-.execution-item-actions .best-candidate-score {
-  margin-right: 4px;
+.best-candidate-score {
+  margin-right: 2px;
 }
 .task-more-trigger {
-  width: 32px;
-  height: 30px;
+  width: 24px;
   padding: 0;
   border-radius: 6px;
 }
