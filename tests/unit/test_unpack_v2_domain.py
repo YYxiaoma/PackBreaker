@@ -1,6 +1,7 @@
 import pytest
 
 from backend.app.domain.unpack import (
+    REVIEWABLE_ITEM_STATUSES,
     UnpackExecutionStatus,
     UnpackItemStatus,
     execution_transition_allowed,
@@ -37,6 +38,25 @@ def test_item_flow_requires_content_verification_before_execution() -> None:
         UnpackItemStatus.PLAN_PENDING,
         UnpackItemStatus.EXECUTING,
     )
+
+
+def test_no_match_can_be_manually_matched_or_retried() -> None:
+    assert item_transition_allowed(
+        UnpackItemStatus.NO_MATCH,
+        UnpackItemStatus.MATCHED_MANUAL,
+    )
+    assert item_transition_allowed(
+        UnpackItemStatus.NO_MATCH,
+        UnpackItemStatus.MATCH_PENDING,
+    )
+    # 无匹配仍是终态：不能直接跳到落位、完成或取消之外的执行阶段。
+    for target in (
+        UnpackItemStatus.TORRENT_FETCHING,
+        UnpackItemStatus.EXECUTING,
+        UnpackItemStatus.COMPLETED,
+    ):
+        assert not item_transition_allowed(UnpackItemStatus.NO_MATCH, target)
+    assert UnpackItemStatus.NO_MATCH in REVIEWABLE_ITEM_STATUSES
 
 
 def test_item_can_return_to_review_after_content_mismatch() -> None:

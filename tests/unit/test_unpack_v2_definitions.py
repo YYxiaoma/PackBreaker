@@ -371,16 +371,19 @@ class _ManualCandidateSiteProvider:
         )
 
 
+@pytest.mark.parametrize(
+    "item_status",
+    [UnpackItemStatus.REVIEW_REQUIRED, UnpackItemStatus.NO_MATCH],
+)
 def test_manual_torrent_preview_is_read_only_then_confirm_persists_candidate(
     tmp_path: Path,
+    item_status: UnpackItemStatus,
 ) -> None:
     definition_service, factory, source = _service(tmp_path)
     created = definition_service.create(_request(source))
     run = definition_service.run(created.id)
     assert run.execution_id is not None
-    item_id = _set_execution_items(
-        factory, run.execution_id, (UnpackItemStatus.REVIEW_REQUIRED.value,)
-    )[0]
+    item_id = _set_execution_items(factory, run.execution_id, (item_status.value,))[0]
     torrent_content = _manual_torrent_payload()
     store = ManualTorrentStore(source.parent)
     manual_service = UnpackManualCandidateService(

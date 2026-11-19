@@ -451,12 +451,15 @@ class UnpackManualCandidateService:
                 title="候选列表已更新",
                 detail="候选代次已变化，请刷新审核弹窗后重新预览",
             )
-        if item.status != UnpackItemStatus.REVIEW_REQUIRED.value:
+        if item.status not in {
+            UnpackItemStatus.REVIEW_REQUIRED.value,
+            UnpackItemStatus.NO_MATCH.value,
+        }:
             raise ApplicationError(
                 code="UNPACK_MANUAL_CANDIDATE_NOT_REVIEWABLE",
                 status=409,
-                title="影片当前不需要人工审核",
-                detail="仅待人工审核的影片可以手动添加候选",
+                title="影片当前不需要人工匹配",
+                detail="仅待人工审核或无匹配的影片可以手动添加候选",
             )
         if session.scalar(
             select(UnpackExternalOperationJournal.id)

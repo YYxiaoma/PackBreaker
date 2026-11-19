@@ -204,6 +204,38 @@ def test_review_approve_moves_item_to_manual_match_and_is_idempotent() -> None:
         assert session.scalar(select(UnpackReviewDecisionModel)) is not None
 
 
+def test_manual_match_reopens_a_finished_no_match_item() -> None:
+    service, factory = _fixture(item_status=UnpackItemStatus.NO_MATCH)
+
+    with factory() as session:
+        execution = session.get(UnpackExecution, "execution-1")
+        assert execution is not None
+        assert execution.status == UnpackExecutionStatus.COMPLETED_WITH_ERRORS.value
+        execution.finished_at = utc_now()
+        session.commit()
+
+    result = service.review(
+        "item-1",
+        decision=UnpackReviewDecision.APPROVE,
+        candidate_id="candidate-1",
+        generation=2,
+        expected_item_version=3,
+        idempotency_key="review-no-match",
+    )
+
+    assert result.item_status is UnpackItemStatus.MATCHED_MANUAL
+    with factory() as session:
+        item = session.get(UnpackExecutionItem, "item-1")
+        execution = session.get(UnpackExecution, "execution-1")
+        assert item is not None and execution is not None
+        assert item.status == UnpackItemStatus.MATCHED_MANUAL.value
+        assert item.match_origin == "MANUAL"
+        assert item.selected_candidate_id == "candidate-1"
+        # 执行从「已完成（带失败）」被拉回内容校验，finished_at 清空以便驱动继续推进。
+        assert execution.status == UnpackExecutionStatus.CONTENT_VERIFYING.value
+        assert execution.finished_at is None
+
+
 def test_auto_matched_item_does_not_require_manual_review() -> None:
     service, factory = _fixture(
         item_status=UnpackItemStatus.MATCHED_AUTO,
@@ -236,6 +268,7 @@ def test_auto_matched_item_does_not_require_manual_review() -> None:
         UnpackItemStatus.CONTENT_VERIFYING,
         UnpackItemStatus.CONTENT_VERIFIED,
         UnpackItemStatus.PLAN_PENDING,
+        UnpackItemStatus.NO_MATCH,
     ],
 )
 def test_review_is_allowed_before_external_side_effects(status: UnpackItemStatus) -> None:

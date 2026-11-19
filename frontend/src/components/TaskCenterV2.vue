@@ -1917,6 +1917,22 @@ function itemCanReview(item: UnpackExecutionItem): boolean {
   return item.review_allowed;
 }
 
+/** 无匹配的影片给「人工匹配」入口：逻辑与人工审核一致，只是语义不同。 */
+function reviewActionLabel(item: UnpackExecutionItem): string {
+  if (item.match_origin === 'AUTO' && item.status !== 'REVIEW_REQUIRED') return '更换候选';
+  if (item.status === 'NO_MATCH') return '人工匹配';
+  return '审核';
+}
+
+function reviewActionHint(item: UnpackExecutionItem): string {
+  if (item.match_origin === 'AUTO' && item.status !== 'REVIEW_REQUIRED') {
+    return '自动匹配结果会自动进入内容验证；此处仅用于主动更换候选，不需要人工确认。';
+  }
+  if (item.status === 'NO_MATCH') return '该影片被判为无匹配，可手动指定候选后继续。';
+  if (item.status === 'REVIEW_REQUIRED') return '该影片需要人工处理，请选择并确认候选。';
+  return '可在外部操作开始前主动更换候选。';
+}
+
 function itemCanRetry(item: UnpackExecutionItem): boolean {
   return ['match', 'verification', 'plan', 'resume'].includes(unpackItemRetryAvailability(item));
 }
@@ -2076,6 +2092,33 @@ async function openReview(item: UnpackExecutionItem): Promise<void> {
     reviewLoading.value = false;
   }
 }
+
+const reviewDialogTitle = computed(() => {
+  const item = reviewItem.value;
+  if (!item) return '人工审核候选';
+  if (item.match_origin === 'AUTO' && item.status !== 'REVIEW_REQUIRED') return '更换匹配候选';
+  if (item.status === 'NO_MATCH') return '人工匹配候选';
+  return '人工审核候选';
+});
+
+const reviewDialogHint = computed(() => {
+  const item = reviewItem.value;
+  if (!item) return '默认选中匹配度最高的一条，但必须点击确认后才会继续。';
+  if (item.match_origin === 'AUTO' && item.status !== 'REVIEW_REQUIRED') {
+    return '自动匹配结果会自动进入内容验证；只有需要更换候选时才需要确认。';
+  }
+  if (item.status === 'NO_MATCH') {
+    return '该影片已判定为无匹配；选中候选并确认后会重新进入内容校验。';
+  }
+  return '默认选中匹配度最高的一条，但必须点击确认后才会继续。';
+});
+
+const reviewDialogTag = computed(() => {
+  const item = reviewItem.value;
+  if (item?.match_origin === 'AUTO' && item.status !== 'REVIEW_REQUIRED') return '主动更换候选';
+  if (item?.status === 'NO_MATCH') return '人工匹配';
+  return '人工审核';
+});
 
 function openManualCandidate(): void {
   if (!reviewItem.value || !reviewCandidates.value) return;
@@ -2388,7 +2431,13 @@ async function submitReview(decision: 'APPROVE' | 'NO_MATCH'): Promise<void> {
         idempotencyKey: createClientNonce(),
       },
     );
-    ElMessage.success(decision === 'APPROVE' ? '审核已确认，影片将继续内容校验' : '已标记为无匹配');
+    ElMessage.success(
+      decision === 'APPROVE'
+        ? item.status === 'NO_MATCH'
+          ? '已人工匹配，影片将继续内容校验'
+          : '审核已确认，影片将继续内容校验'
+        : '已标记为无匹配',
+    );
     reviewVisible.value = false;
     await loadExecutionItems(itemCursor.value);
     await refresh();
@@ -4052,23 +4101,10 @@ onMounted(() => {
                     title="本轮候选队列中的最高匹配度，仅供审核参考，不代表已完成内容校验"
                     >最高 {{ (row.highest_candidate_score_bps / 100).toFixed(1) }}%</span
                   >
-                  <el-tooltip
-                    :content="
-                      row.match_origin === 'AUTO' && row.status !== 'REVIEW_REQUIRED'
-                        ? '自动匹配结果会自动进入内容验证；此处仅用于主动更换候选，不需要人工确认。'
-                        : row.status === 'REVIEW_REQUIRED'
-                          ? '该影片需要人工处理，请选择并确认候选。'
-                          : '可在外部操作开始前主动更换候选。'
-                    "
-                    placement="top"
-                  >
-                    <el-button link type="primary" @click="openReview(row)">
-                      {{
-                        row.match_origin === 'AUTO' && row.status !== 'REVIEW_REQUIRED'
-                          ? '更换候选'
-                          : '审核'
-                      }}
-                    </el-button>
+                  <el-tooltip :content="reviewActionHint(row)" placement="top">
+                    <el-button link type="primary" @click="openReview(row)">{{
+                      reviewActionLabel(row)
+                    }}</el-button>
                   </el-tooltip>
                 </div>
                 <el-button v-if="itemCanRetry(row)" link type="warning" @click="retryItem(row)"
@@ -4116,12 +4152,7 @@ onMounted(() => {
       <template #header>
         <div class="review-dialog-header">
           <strong class="review-dialog-title"
-            >{{
-              reviewItem?.match_origin === 'AUTO' && reviewItem.status !== 'REVIEW_REQUIRED'
-                ? '更换匹配候选'
-                : '人工审核候选'
-            }}
-            · {{ reviewItem ? mediaTitle(reviewItem) : '' }}</strong
+            >{{ reviewDialogTitle }} · {{ reviewItem ? mediaTitle(reviewItem) : '' }}</strong
           >
         </div>
       </template>
@@ -4134,19 +4165,10 @@ onMounted(() => {
         </div>
         <div class="review-heading">
           <div class="review-heading-description">
-            <b>候选列表</b
-            ><small>{{
-              reviewItem?.match_origin === 'AUTO' && reviewItem.status !== 'REVIEW_REQUIRED'
-                ? '自动匹配结果会自动进入内容验证；只有需要更换候选时才需要确认。'
-                : '默认选中匹配度最高的一条，但必须点击确认后才会继续。'
-            }}</small>
+            <b>候选列表</b><small>{{ reviewDialogHint }}</small>
           </div>
           <div class="review-heading-actions">
-            <el-tag type="warning">{{
-              reviewItem?.match_origin === 'AUTO' && reviewItem.status !== 'REVIEW_REQUIRED'
-                ? '主动更换候选'
-                : '人工审核'
-            }}</el-tag>
+            <el-tag type="warning">{{ reviewDialogTag }}</el-tag>
             <el-button
               type="primary"
               plain
@@ -4229,7 +4251,12 @@ onMounted(() => {
         />
       </div>
       <template #footer>
-        <el-button :loading="reviewSaving" @click="submitReview('NO_MATCH')">标记无匹配</el-button>
+        <el-button
+          v-if="reviewItem?.status !== 'NO_MATCH'"
+          :loading="reviewSaving"
+          @click="submitReview('NO_MATCH')"
+          >标记无匹配</el-button
+        >
         <el-button
           type="primary"
           :loading="reviewSaving"

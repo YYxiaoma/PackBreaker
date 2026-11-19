@@ -136,6 +136,8 @@ TERMINAL_ITEM_STATUSES = frozenset(
 REVIEWABLE_ITEM_STATUSES = frozenset(
     {
         UnpackItemStatus.REVIEW_REQUIRED,
+        # 无匹配是人工可逆的：允许人工指定候选后重新进入校验流程。
+        UnpackItemStatus.NO_MATCH,
         UnpackItemStatus.TORRENT_FETCHING,
         UnpackItemStatus.CONTENT_VERIFYING,
         UnpackItemStatus.CONTENT_VERIFIED,
@@ -362,6 +364,9 @@ def item_transition_allowed(current: UnpackItemStatus, target: UnpackItemStatus)
         return True
     if current is UnpackItemStatus.NO_MATCH and target is UnpackItemStatus.MATCH_PENDING:
         # An explicit, policy-gated retry may reopen a terminal no-match item.
+        return True
+    if current is UnpackItemStatus.NO_MATCH and target is UnpackItemStatus.MATCHED_MANUAL:
+        # 人工匹配直接把无匹配的影片绑定到选定候选，不需要重跑自动匹配。
         return True
     if current in TERMINAL_ITEM_STATUSES:
         return False
