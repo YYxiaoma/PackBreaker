@@ -1920,7 +1920,6 @@ function itemCanReview(item: UnpackExecutionItem): boolean {
 /** 无匹配的影片给「人工匹配」入口：逻辑与人工审核一致，只是语义不同。 */
 function reviewActionLabel(item: UnpackExecutionItem): string {
   if (item.match_origin === 'AUTO' && item.status !== 'REVIEW_REQUIRED') return '更换候选';
-  if (item.status === 'NO_MATCH') return '人工匹配';
   return '审核';
 }
 
@@ -4094,7 +4093,18 @@ onMounted(() => {
                   @click="openItemDiagnostics(row)"
                   >执行明细</el-button
                 >
-                <div v-if="itemCanReview(row)" class="review-action-group">
+                <el-button
+                  v-if="row.status === 'NO_MATCH' && itemCanReview(row)"
+                  link
+                  type="primary"
+                  :title="reviewActionHint(row)"
+                  @click="openReview(row)"
+                  >人工匹配</el-button
+                >
+                <div
+                  v-if="itemCanReview(row) && row.status !== 'NO_MATCH'"
+                  class="review-action-group"
+                >
                   <span
                     v-if="row.highest_candidate_score_bps !== null"
                     class="best-candidate-score"
