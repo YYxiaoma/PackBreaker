@@ -556,6 +556,30 @@ jobs:
             fi
           done
 
+  announce-telegram:
+    # 发布已落地（镜像、Release 附件、stable/latest 通道都确认过）之后再通知频道。
+    # 通知属于收尾动作：失败不影响发布结论，也不触发镜像清理，只留一条注解。
+    needs: [release, release-assets]
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Announce the published version in the Telegram channel
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/announce_release.py \
+            --tag "$GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md \
+            --release-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" \
+            --image "${{ needs.release.outputs.image }}"
+
   cleanup-published-image:
     # 发布失败时删除本次刚推上去的版本 tag。
     # release job 采用不可覆盖策略：同名镜像一旦存在，下次重跑会在
