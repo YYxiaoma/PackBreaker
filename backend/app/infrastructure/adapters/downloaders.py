@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from base64 import b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -822,6 +823,8 @@ class TransmissionAdapter:
         self._base_url = base_url
         self._credential = credential
         self._transport = transport
+        # None=尚未探测；"jsonrpc2"=Transmission 4.1+；"legacy"=4.0.x 及更早的旧信封。
+        self._dialect: str | None = None
 
     async def test_connection(self) -> ConnectionTestResult:
         result, rpc_header = await self._rpc(
@@ -1117,18 +1120,42 @@ class TransmissionAdapter:
         method: str,
         params: dict[str, object],
     ) -> tuple[dict[str, object], str | None]:
+        """按协商出的方言发一次 RPC。
+
+        Transmission 4.1 起改用 JSON-RPC 2.0（snake_case、params/result/id）；
+        4.0.x 及更早仍是旧信封（kebab-case 方法名、arguments/tag、camelCase 字段）。
+        首次调用探测一次方言，之后固定下来，避免每次请求都多打一轮。
+        """
+
+        if self._dialect in (None, "jsonrpc2"):
+            body, rpc_header = await self._post(_jsonrpc2_payload(method, params))
+            if _is_jsonrpc2_envelope(body):
+                self._dialect = "jsonrpc2"
+                return _jsonrpc2_result(body), rpc_header
+            if self._dialect == "jsonrpc2":
+                raise DownloaderAdapterError(
+                    "DOWNLOADER_INVALID_RESPONSE", "Transmission JSON-RPC 响应标识无效"
+                )
+            # 旧协议不认 JSON-RPC 2.0 信封：换成旧信封重发同一次调用。
+            self._dialect = "legacy"
+
+        body, rpc_header = await self._post(_legacy_payload(method, params))
+        if not _is_legacy_envelope(body):
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC 响应标识无效"
+            )
+        return _legacy_result(body), rpc_header
+
+    async def _post(
+        self,
+        payload: dict[str, object],
+    ) -> tuple[dict[str, object], str | None]:
         auth: httpx2.Auth | None = None
         if self._credential is not None and self._credential.username:
             auth = httpx2.BasicAuth(
                 self._credential.username,
                 self._credential.password or "",
             )
-        payload: dict[str, object] = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": 1,
-        }
         try:
             async with httpx2.AsyncClient(
                 auth=auth,
@@ -1158,24 +1185,6 @@ class TransmissionAdapter:
                         "DOWNLOADER_CONNECTION_FAILED", "Transmission RPC 返回异常状态"
                     )
                 body = response.json()
-                if not isinstance(body, dict):
-                    raise DownloaderAdapterError(
-                        "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC 响应格式无效"
-                    )
-                if body.get("jsonrpc") != "2.0" or body.get("id") != 1:
-                    raise DownloaderAdapterError(
-                        "DOWNLOADER_INVALID_RESPONSE", "Transmission JSON-RPC 响应标识无效"
-                    )
-                if "error" in body:
-                    raise DownloaderAdapterError(
-                        "DOWNLOADER_WRITE_FAILED", "Transmission RPC 返回失败结果"
-                    )
-                result = body.get("result")
-                if not isinstance(result, dict):
-                    raise DownloaderAdapterError(
-                        "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC result 格式无效"
-                    )
-                return cast(dict[str, object], result), rpc_header
         except DownloaderAdapterError:
             raise
         except (httpx2.TimeoutException, httpx2.NetworkError) as exc:
@@ -1186,6 +1195,108 @@ class TransmissionAdapter:
             raise DownloaderAdapterError(
                 "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC 响应无法解析"
             ) from exc
+        if not isinstance(body, dict):
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC 响应格式无效"
+            )
+        return cast(dict[str, object], body), rpc_header
+
+
+# --- Transmission RPC 双协议兼容 -------------------------------------------------
+#
+# Transmission 4.1 起把 RPC 换成 JSON-RPC 2.0：方法名与字段名统一 snake_case，
+# 参数在 params 里，响应把结果放进 result 对象。4.0.x 及更早是旧信封：
+# 方法名 kebab-case，参数在 arguments 里，响应是 {"result": "success", "arguments": {...}}，
+# 字段名在 session-* 里是 kebab-case（download-dir），在 torrent-* 里是 camelCase
+# （hashString/percentDone/torrent-added）。两者不能共用同一份 payload，这里做显式映射。
+
+_TRANSMISSION_LEGACY_PARAM_KEYS = {
+    "download_dir": "download-dir",
+    "files_wanted": "files-wanted",
+    "files_unwanted": "files-unwanted",
+    "delete_local_data": "delete-local-data",
+}
+_TRANSMISSION_LEGACY_SESSION_FIELDS = {
+    "download_dir": "download-dir",
+    "download_dir_free_space": "download-dir-free-space",
+    "rpc_version_semver": "rpc-version-semver",
+}
+_TRANSMISSION_LEGACY_TORRENT_FIELDS = {
+    "hash_string": "hashString",
+    "download_dir": "downloadDir",
+    "percent_done": "percentDone",
+    "recheck_progress": "recheckProgress",
+    "total_size": "totalSize",
+}
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _snake_key(key: str) -> str:
+    """把旧协议的 download-dir / hashString / size-bytes 统一成 snake_case。"""
+
+    return _CAMEL_BOUNDARY.sub("_", key.replace("-", "_")).lower()
+
+
+def _snake_keys(value: object) -> object:
+    if isinstance(value, dict):
+        return {_snake_key(str(key)): _snake_keys(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_snake_keys(item) for item in value]
+    return value
+
+
+def _jsonrpc2_payload(method: str, params: dict[str, object]) -> dict[str, object]:
+    return {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
+
+
+def _legacy_payload(method: str, params: dict[str, object]) -> dict[str, object]:
+    arguments: dict[str, object] = {}
+    for key, value in params.items():
+        if key == "fields" and isinstance(value, list):
+            arguments["fields"] = [_legacy_field_name(method, str(item)) for item in value]
+            continue
+        arguments[_TRANSMISSION_LEGACY_PARAM_KEYS.get(key, key)] = value
+    return {"method": method.replace("_", "-"), "arguments": arguments, "tag": 1}
+
+
+def _legacy_field_name(method: str, field: str) -> str:
+    if method.startswith("torrent_"):
+        return _TRANSMISSION_LEGACY_TORRENT_FIELDS.get(field, field)
+    return _TRANSMISSION_LEGACY_SESSION_FIELDS.get(field, field)
+
+
+def _is_jsonrpc2_envelope(body: dict[str, object]) -> bool:
+    return body.get("jsonrpc") == "2.0"
+
+
+def _is_legacy_envelope(body: dict[str, object]) -> bool:
+    return "jsonrpc" not in body and "result" in body
+
+
+def _jsonrpc2_result(body: dict[str, object]) -> dict[str, object]:
+    if "error" in body:
+        raise DownloaderAdapterError("DOWNLOADER_WRITE_FAILED", "Transmission RPC 返回失败结果")
+    result = body.get("result")
+    if not isinstance(result, dict):
+        raise DownloaderAdapterError(
+            "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC result 格式无效"
+        )
+    return cast(dict[str, object], result)
+
+
+def _legacy_result(body: dict[str, object]) -> dict[str, object]:
+    # 旧协议把失败原因直接放在 result 字符串里（如 "method name not recognized"）。
+    if body.get("result") != "success":
+        raise DownloaderAdapterError("DOWNLOADER_WRITE_FAILED", "Transmission RPC 返回失败结果")
+    arguments = body.get("arguments")
+    if arguments is None:
+        return {}
+    normalized = _snake_keys(arguments)
+    if not isinstance(normalized, dict):
+        raise DownloaderAdapterError(
+            "DOWNLOADER_INVALID_RESPONSE", "Transmission RPC arguments 格式无效"
+        )
+    return cast(dict[str, object], normalized)
 
 
 def _normalize_file_selection(

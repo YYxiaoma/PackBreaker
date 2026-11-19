@@ -753,3 +753,172 @@ async def test_file_selection_rejects_overlap() -> None:
             wanted=(1, 2),
             unwanted=(2, 3),
         )
+
+
+# --- Transmission 4.0.x 旧协议（kebab-case 方法名 + arguments/tag）-----------------
+#
+# 用户现场跑的 4.0.5 仍是旧信封：不返回 jsonrpc/id，方法名是 session-get，
+# 字段名在 session-* 里是 download-dir、在 torrent-* 里是 hashString/percentDone。
+# 之前只实现了 4.1 的 JSON-RPC 2.0，连接测试直接报「响应标识无效」。
+
+
+def _legacy_handshake(request: httpx2.Request) -> httpx2.Response | None:
+    if request.headers.get("X-Transmission-Session-Id") != "synthetic-session":
+        return httpx2.Response(409, headers={"X-Transmission-Session-Id": "synthetic-session"})
+    return None
+
+
+@pytest.mark.asyncio
+async def test_transmission_40_legacy_envelope_is_detected_and_reports_version() -> None:
+    legacy_requests: list[dict[str, object]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        handshake = _legacy_handshake(request)
+        if handshake is not None:
+            return handshake
+        body = json.loads(request.content.decode())
+        if body.get("jsonrpc") == "2.0":
+            # 4.0.x 认不出 JSON-RPC 2.0 信封，用旧信封回一个失败结果。
+            return httpx2.Response(
+                200, json={"arguments": {}, "result": "method name not recognized"}
+            )
+        legacy_requests.append(body)
+        assert body == {
+            "method": "session-get",
+            "arguments": {"fields": ["version", "rpc-version-semver"]},
+            "tag": 1,
+        }
+        return httpx2.Response(
+            200,
+            json={
+                "arguments": {"version": "4.0.5", "rpc-version-semver": "17"},
+                "result": "success",
+            },
+        )
+
+    adapter = TransmissionAdapter(
+        "http://tr.invalid:9091/transmission/rpc",
+        DownloaderCredential(username="rpc", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    result = await adapter.test_connection()
+
+    assert len(legacy_requests) == 1
+    assert result.capabilities.client == "Transmission"
+    assert result.capabilities.version == "4.0.5"
+    assert result.capabilities.api_version == "17"
+    assert result.capabilities.supports_verify_progress is True
+
+
+@pytest.mark.asyncio
+async def test_transmission_40_legacy_runtime_metrics_map_camel_case_fields() -> None:
+    legacy_methods: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        handshake = _legacy_handshake(request)
+        if handshake is not None:
+            return handshake
+        body = json.loads(request.content.decode())
+        if body.get("jsonrpc") == "2.0":
+            return httpx2.Response(
+                200, json={"arguments": {}, "result": "method name not recognized"}
+            )
+        method = body["method"]
+        legacy_methods.append(method)
+        arguments: dict[str, object]
+        if method == "session-stats":
+            arguments = {
+                "uploadSpeed": 300,
+                "downloadSpeed": 400,
+                "activeTorrentCount": 2,
+                "torrentCount": 3,
+            }
+        elif method == "session-get":
+            assert body["arguments"] == {"fields": ["download-dir", "download-dir-free-space"]}
+            arguments = {"download-dir": "/downloads", "download-dir-free-space": 4500}
+        elif method == "torrent-get":
+            assert body["arguments"] == {"fields": ["totalSize"]}
+            arguments = {"torrents": [{"totalSize": 1000}, {"totalSize": 2000}]}
+        elif method == "free-space":
+            assert body["arguments"] == {"path": "/downloads"}
+            arguments = {"path": "/downloads", "size-bytes": 5000}
+        else:
+            raise AssertionError(f"unexpected method {method}")
+        return httpx2.Response(200, json={"arguments": arguments, "result": "success"})
+
+    adapter = TransmissionAdapter(
+        "http://tr.invalid:9091/transmission/rpc",
+        DownloaderCredential(username="rpc", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    metrics = await adapter.runtime_metrics()
+
+    # 首次调用先用 JSON-RPC 2.0 探测（旧服务端回的是旧信封），判定后按旧方法名重发，
+    # 之后每次调用都直接走旧信封。
+    assert legacy_methods == ["session-stats", "session-get", "torrent-get", "free-space"]
+    assert metrics.upload_speed_bytes_per_second == 300
+    assert metrics.download_speed_bytes_per_second == 400
+    assert metrics.total_content_size_bytes == 3000
+    assert metrics.free_space_bytes == 5000
+    assert metrics.active_torrent_count == 2
+    assert metrics.total_torrent_count == 3
+
+
+@pytest.mark.asyncio
+async def test_transmission_40_legacy_write_primitives_use_legacy_argument_names() -> None:
+    torrent_hash = "a" * 40
+    seen: dict[str, dict[str, object]] = {}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        handshake = _legacy_handshake(request)
+        if handshake is not None:
+            return handshake
+        body = json.loads(request.content.decode())
+        if body.get("jsonrpc") == "2.0":
+            return httpx2.Response(
+                200, json={"arguments": {}, "result": "method name not recognized"}
+            )
+        method = body["method"]
+        seen[method] = body["arguments"]
+        if method == "torrent-add":
+            arguments: dict[str, object] = {
+                "torrent-added": {"id": 7, "name": "Synthetic", "hashString": torrent_hash}
+            }
+        elif method == "torrent-set" or method == "torrent-remove":
+            arguments = {}
+        else:
+            raise AssertionError(f"unexpected method {method}")
+        return httpx2.Response(200, json={"arguments": arguments, "result": "success"})
+
+    adapter = TransmissionAdapter(
+        "http://tr.invalid:9091/transmission/rpc",
+        DownloaderCredential(username="rpc", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    added = await adapter.add_torrent(
+        TransmissionAddRequest(
+            torrent_content=b"synthetic-torrent-payload",
+            save_path="/downloads/seed",
+            labels=("packbreaker-test",),
+        )
+    )
+    await adapter.set_file_selection(torrent_hash, wanted=(2, 4), unwanted=(0, 1))
+    await adapter.remove_torrent_keep_files(torrent_hash)
+
+    assert added.torrent_hash == torrent_hash
+    assert added.duplicate is False
+    assert seen["torrent-add"] == {
+        "metainfo": b64encode(b"synthetic-torrent-payload").decode("ascii"),
+        "download-dir": "/downloads/seed",
+        "paused": True,
+        "labels": ["packbreaker-test"],
+    }
+    assert seen["torrent-set"] == {
+        "ids": [torrent_hash],
+        "files-wanted": [2, 4],
+        "files-unwanted": [0, 1],
+    }
+    assert seen["torrent-remove"] == {"ids": [torrent_hash], "delete-local-data": False}
