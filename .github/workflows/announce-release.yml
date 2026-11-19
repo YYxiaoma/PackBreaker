@@ -1,0 +1,38 @@
+name: Announce Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要公告到 Telegram 的 tag（对应的 RELEASE_NOTES.md 必须存在于该 tag）"
+        required: true
+        default: "v1.1.13"
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Send the release announcement
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          git checkout "$tag" -- RELEASE_NOTES.md
+          head -1 RELEASE_NOTES.md
+          python3 scripts/announce_release.py \
+            --tag "$tag" \
+            --notes-file RELEASE_NOTES.md \
+            --release-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag" \
+            --image ghcr.io/yyxiaoma/packbreaker
