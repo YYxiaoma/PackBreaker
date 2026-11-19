@@ -718,20 +718,22 @@ defineExpose({ openCreate, refresh });
         </el-table-column>
         <el-table-column label="操作" width="170" fixed="right">
           <template #default="scope">
-            <el-button
-              link
-              type="primary"
-              :loading="Boolean(starting[scope.row.id])"
-              @click="runJob(scope.row)"
-              >{{ scope.row.status === 'PENDING' ? '开始' : '查看' }}</el-button
-            >
-            <el-button
-              link
-              type="danger"
-              :disabled="!canDeleteJob(scope.row)"
-              @click="removeJob(scope.row)"
-              >删除</el-button
-            >
+            <div class="table-row-actions">
+              <el-button
+                link
+                type="primary"
+                :loading="Boolean(starting[scope.row.id])"
+                @click="runJob(scope.row)"
+                >{{ scope.row.status === 'PENDING' ? '开始' : '查看' }}</el-button
+              >
+              <el-button
+                link
+                type="danger"
+                :disabled="!canDeleteJob(scope.row)"
+                @click="removeJob(scope.row)"
+                >删除</el-button
+              >
+            </div>
           </template>
         </el-table-column>
       </el-table>

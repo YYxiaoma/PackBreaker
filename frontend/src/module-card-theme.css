@@ -470,6 +470,25 @@ body {
   font-weight: 650;
 }
 
+/* 表格操作列：统一成紧凑的纯文本链接，避免不同页面间距/内边距不一致。 */
+#app .table-row-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  white-space: nowrap;
+}
+#app .table-row-actions .el-button {
+  margin: 0;
+  flex-shrink: 0;
+}
+#app .table-row-actions .el-button.is-link {
+  height: auto;
+  min-height: auto;
+  padding: 0 2px;
+}
+
 #app .el-input__wrapper,
 #app .el-select__wrapper,
 #app .el-textarea__inner,

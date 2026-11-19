@@ -1920,6 +1920,7 @@ function itemCanReview(item: UnpackExecutionItem): boolean {
 /** 无匹配的影片给「人工匹配」入口：逻辑与人工审核一致，只是语义不同。 */
 function reviewActionLabel(item: UnpackExecutionItem): string {
   if (item.match_origin === 'AUTO' && item.status !== 'REVIEW_REQUIRED') return '更换候选';
+  if (item.status === 'NO_MATCH') return '人工匹配';
   return '审核';
 }
 
@@ -4093,30 +4094,20 @@ onMounted(() => {
                   @click="openItemDiagnostics(row)"
                   >执行明细</el-button
                 >
+                <span
+                  v-if="itemCanReview(row) && row.highest_candidate_score_bps !== null"
+                  class="best-candidate-score"
+                  title="本轮候选队列中的最高匹配度，仅供审核参考，不代表已完成内容校验"
+                  >最高 {{ (row.highest_candidate_score_bps / 100).toFixed(1) }}%</span
+                >
                 <el-button
-                  v-if="row.status === 'NO_MATCH' && itemCanReview(row)"
+                  v-if="itemCanReview(row)"
                   link
                   type="primary"
                   :title="reviewActionHint(row)"
                   @click="openReview(row)"
-                  >人工匹配</el-button
+                  >{{ reviewActionLabel(row) }}</el-button
                 >
-                <div
-                  v-if="itemCanReview(row) && row.status !== 'NO_MATCH'"
-                  class="review-action-group"
-                >
-                  <span
-                    v-if="row.highest_candidate_score_bps !== null"
-                    class="best-candidate-score"
-                    title="本轮候选队列中的最高匹配度，仅供审核参考，不代表已完成内容校验"
-                    >最高 {{ (row.highest_candidate_score_bps / 100).toFixed(1) }}%</span
-                  >
-                  <el-tooltip :content="reviewActionHint(row)" placement="top">
-                    <el-button link type="primary" @click="openReview(row)">{{
-                      reviewActionLabel(row)
-                    }}</el-button>
-                  </el-tooltip>
-                </div>
                 <el-button v-if="itemCanRetry(row)" link type="warning" @click="retryItem(row)"
                   ><RotateCcw :size="14" />{{ itemRetryLabel(row) }}</el-button
                 >
@@ -4866,26 +4857,10 @@ onMounted(() => {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.review-action-group {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  line-height: 1;
-}
-.review-action-group :deep(.el-button) {
-  display: inline-flex;
-  align-items: center;
-  height: 32px;
-  line-height: 1;
-}
 .best-candidate-score {
-  display: inline-flex;
-  align-items: center;
-  height: 32px;
-  line-height: 1;
+  flex: 0 0 auto;
   font-size: 12px;
+  line-height: 1;
   color: var(--muted);
   white-space: nowrap;
 }
@@ -5056,6 +5031,9 @@ onMounted(() => {
   flex-shrink: 0;
   margin: 0;
 }
+.task-row-actions :deep(.el-button.is-link) {
+  padding: 0 2px !important;
+}
 .execution-item-actions {
   justify-content: center;
   flex-wrap: nowrap;
@@ -5065,8 +5043,8 @@ onMounted(() => {
 .execution-item-actions :deep(.el-button.is-link) {
   padding: 0 2px !important;
 }
-.execution-item-actions .review-action-group {
-  gap: 2px;
+.execution-item-actions .best-candidate-score {
+  margin-right: 4px;
 }
 .task-more-trigger {
   width: 32px;
