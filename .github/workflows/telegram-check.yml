@@ -1,0 +1,50 @@
+name: Telegram Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify bot token and channel access without sending a message
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+          chat_id = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
+          print("token 长度:", len(token), "| chat_id 形态:", ("数字/-100 开头" if chat_id.lstrip("-").isdigit() else chat_id[:6] + "…"))
+
+          def call(method, payload=None):
+              url = "https://api.telegram.org/bot" + token + "/" + method
+              data = json.dumps(payload).encode() if payload is not None else None
+              request = urllib.request.Request(
+                  url, data=data, headers={"Content-Type": "application/json"}
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      body = json.loads(response.read())
+              except urllib.error.HTTPError as exc:
+                  body = json.loads(exc.read())
+              print(method, "->", json.dumps(body, ensure_ascii=False)[:400])
+              return body
+
+          me = call("getMe")
+          chat = call("getChat", {"chat_id": chat_id})
+          ok = bool(me.get("ok")) and bool(chat.get("ok"))
+          can_post = chat.get("result", {}).get("type") in {"channel", "supergroup", "group"}
+          print("结论:", "凭据可用" if ok else "凭据不可用", "| 目标类型:", chat.get("result", {}).get("type"), "| 可发布:", can_post)
+          raise SystemExit(0 if ok and can_post else 1)
+          PY
