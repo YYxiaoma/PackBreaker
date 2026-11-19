@@ -10,20 +10,20 @@ from scripts.validate_release_baseline import load_release_baseline, project_ver
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_repository_release_baseline_is_immutable_v1112_multiarch() -> None:
+def test_repository_release_baseline_is_immutable_v1113_multiarch() -> None:
     baseline = load_release_baseline()
 
-    assert baseline.version == "1.1.12"
-    assert baseline.tag == "v1.1.12"
-    assert baseline.commit == "900cbcd045c04397df0bf69eec29acf7ed78bce9"
+    assert baseline.version == "1.1.13"
+    assert baseline.tag == "v1.1.13"
+    assert baseline.commit == "d912bbc89a39b884d3c1e02659b1a15a1ed2e0ea"
     assert baseline.format_version == 2
     assert baseline.platform == "multi"
     assert baseline.platforms == ("linux/amd64", "linux/arm64")
     assert baseline.alembic_revision == "0056_movie_dedup_shared_link_bytes"
-    assert baseline.release_workflow_run_id == 44293262658
+    assert baseline.release_workflow_run_id == 44450797045
     assert baseline.immutable_image == (
         "ghcr.io/yyxiaoma/packbreaker@"
-        "sha256:115b6bb9f25ea5d1e733be8fcff342974180d9c8a4b3250a6f4360b25e1647b3"
+        "sha256:11419c246e0b5756a6ab02e6eb34f56381d5ec0bf584119ca37a7c942ebbc9c1"
     )
 
 
