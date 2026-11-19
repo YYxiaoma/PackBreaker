@@ -62,6 +62,8 @@ def _create_qb(
 ) -> dict[str, object]:
     source_root = data_root / "source"
     source_root.mkdir(parents=True, exist_ok=True)
+    # 保存即探测：先装好确定性的探测响应，避免测试里打真实网络。
+    _install_qb_probe(cast(FastAPI, client.app))
     response = client.post(
         "/api/v1/downloaders",
         headers=_csrf(client),
@@ -599,5 +601,55 @@ def test_delete_is_blocked_while_tasks_reference_downloader(tmp_path: Path) -> N
         )
         assert response.status_code == 409
         assert response.json()["code"] == "DOWNLOADER_IN_USE"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_create_downloader_probes_connection_immediately(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+        created = _create_qb(client, data_root=app.state.settings.data_dir)
+
+        capabilities = cast(dict[str, object], created["capabilities"])
+        assert created["connection_status"] == "OK"
+        assert capabilities["version"] == "v5.2.1"
+        assert created["last_test_at"] is not None
+        # 探测只写状态与能力，不推进乐观锁版本。
+        assert created["version"] == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_create_downloader_keeps_config_when_probe_fails(tmp_path: Path) -> None:
+    client, app = _authenticated_client(tmp_path)
+    try:
+
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(500, text="boom")
+
+        app.state.downloader_service._adapter_factory = DownloaderAdapterFactory(  # noqa: SLF001
+            transport=httpx2.MockTransport(handler)
+        )
+        source_root = app.state.settings.data_dir / "probe-fail-source"
+        source_root.mkdir(parents=True, exist_ok=True)
+        response = client.post(
+            "/api/v1/downloaders",
+            headers=_csrf(client),
+            json={
+                "name": "探测失败的 qB",
+                "type": "QBITTORRENT",
+                "base_url": "http://qb-fail.invalid:8080",
+                "credential": {"username": "admin", "password": "synthetic-probe-fail"},
+                "monitor_rules": {"category": "pack"},
+                "path_mappings": [
+                    {"remote_prefix": "/downloads", "container_prefix": str(source_root)}
+                ],
+            },
+        )
+
+        assert response.status_code == 201
+        body = cast(dict[str, object], response.json())
+        assert body["connection_status"] == "FAILED"
+        assert body["enabled"] is True
     finally:
         client.__exit__(None, None, None)

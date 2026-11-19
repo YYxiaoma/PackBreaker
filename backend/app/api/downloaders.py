@@ -178,7 +178,7 @@ async def create_downloader(
     payload: DownloaderCreateRequest,
     _principal: Annotated[AccessPrincipal, Depends(CONFIG_WRITE_ACCESS)],
 ) -> JSONResponse:
-    created = downloader_service(request).create(
+    created = await downloader_service(request).create_with_probe(
         name=payload.name,
         kind=payload.type,
         base_url=payload.base_url,

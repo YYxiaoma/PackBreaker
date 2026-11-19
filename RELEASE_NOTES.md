@@ -1,36 +1,28 @@
-# PackBreaker v1.1.13
+# PackBreaker v1.1.14
 
-两个现场问题的修复：Transmission 4.0.x 连不上，以及 CookieCloud 换域名后只提示「测试失败」看不出原因。
+下载器安全门的两个体验缺口：保存即验证，报错说人话。
 
-## 修复：Transmission 4.0.x 连接失败
+## 改进
 
-适配器此前只实现了 Transmission **4.1 起**的 JSON-RPC 2.0 信封（`jsonrpc`/`params`/`result` + snake_case），而 **4.0.x 仍是旧信封**：方法是 `session-get`，参数在 `arguments` 里，响应是 `{"result":"success","arguments":{…}}`（没有 `jsonrpc`/`id`），字段名在 session 侧是 `download-dir`、在 torrent 侧是 `hashString`/`percentDone`。
-
-于是连接测试会在校验响应标识那一步直接失败，报「Transmission JSON-RPC 响应标识无效」。
-
-现在：
-
-- 首次调用自动探测协议方言，识别出旧信封就按旧格式重发同一次调用，方言缓存在连接上，不会每次多打一轮
-- 旧信封的请求方法与参数做显式映射，响应递归归一成 snake_case，上层解析逻辑不变
-- 4.0.x 的加种、查询、改文件选择、删种、运行时指标都在真实 4.0.5 上验证通过（含 `torrent-added`/`hashString` 回包）
-
-## 修复：CookieCloud 测试失败看不到原因
-
-- 草稿测试的失败原因（后端消息 + 错误码）现在常驻显示在「连接状态」卡片里，不再只有一闪而过的提示；下次测试成功自动清空
-- HTTP 404 的提示补上排查方向：除了 UUID 不对，也可能是服务器地址少了路径前缀（例如原本是 `http://ip:3000/cookiecloud`，换成域名时漏了 `/cookiecloud`）
+- **添加下载器时自动探测连接**：保存后立即用真实凭证探测一次，连接状态与能力信息（客户端版本、WebAPI 版本）直接写进返回结果，列表里就能看到，不必再单独点一次「测试连接」。
+  - 探测失败不回滚创建：配置照样保存，连接状态写成 `FAILED` 而不是一直停在 `UNTESTED`，界面上看到的是可以直接修正的问题，修正后重新测试即可。
+  - 探测有 8 秒上限，目标不可达时最多等这么久就返回，不会把保存动作拖到适配器的完整超时。
+  - 探测只写连接状态与能力，不推进乐观锁版本，不影响并发编辑时的 `If-Match` 判断。
+- **安全门报错指出具体状态**：执行写入前若连接探测不是 `OK`，错误里带上下载器名称与当前状态（例如 `UNTESTED` / `FAILED`），并明确「跳过下载器检查」只影响加种后的逐文件校验，不豁免连接探测。此前这条提示把「连接探测」与「路径映射」拼成一句，容易让人误判成映射配置问题。
+- 「跳过下载器检查」的界面说明与部署文档同步这层边界。
 
 ## 升级说明
 
-- 无数据库迁移（仍为 `0056_movie_dedup_shared_link_bytes`）
-- 已保存的下载器与 CookieCloud 配置不需要改动；Transmission 用户在升级后直接重新测试连接即可
+- 无数据库迁移（仍为 `0056_movie_dedup_shared_link_bytes`）。
+- 升级后已有的下载器不会自动补测：仍停在 `UNTESTED` 的配置需要手动点一次「测试连接」；新建的下载器从这一版起保存即探测。
 
-## 包含 v1.1.12 的内容
+## 包含 v1.1.13 的内容
 
-- 在线升级进度条按阶段上限缓慢增长、升级期间按钮锁定、成功后自动刷新
-- 「关于」页新增升级日志卡片（随镜像发布，离线可见）
+- Transmission 4.0.x 走旧 RPC 信封（kebab 方法名 + `arguments`/`tag`），首次调用探测方言并做字段映射
+- CookieCloud 草稿测试的失败原因常驻显示；`/get` 返回 404 时补上路径前缀的排查方向
 
 ## 镜像
 
-- `ghcr.io/yyxiaoma/packbreaker:1.1.13`
-- `docker.io/yyxiaoma01/packbreaker:1.1.13`
+- `ghcr.io/yyxiaoma/packbreaker:1.1.14`
+- `docker.io/yyxiaoma01/packbreaker:1.1.14`
 - 支持 `linux/amd64` 与 `linux/arm64`，不可变摘要、SBOM 与 SHA256SUMS 见 GitHub Release 附件。

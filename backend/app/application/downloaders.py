@@ -1,3 +1,4 @@
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -118,6 +119,10 @@ class TransmissionWriteBinding:
             remote_path,
             list(self.path_mappings),
         ).container_path
+
+
+# 创建时的自动探测：目标不可达不应把保存动作拖成一分钟的等待。
+_CREATE_PROBE_TIMEOUT_SECONDS = 8.0
 
 
 class DownloaderService:
@@ -253,7 +258,11 @@ class DownloaderService:
                     code="DOWNLOADER_NOT_READY",
                     status=409,
                     title="目标下载器安全门未就绪",
-                    detail="连接探测必须保持 OK；路径映射在任务执行时按实际路径安全校验",
+                    detail=(
+                        f"下载器“{record.name}”的连接探测状态为 {record.connection_status}，"
+                        "必须为 OK 才能执行写入；跳过下载器检查只影响加种后的逐文件校验，"
+                        "不豁免连接探测"
+                    ),
                 )
             if record.secret_id is None:
                 raise ApplicationError(
@@ -321,7 +330,11 @@ class DownloaderService:
                     code="DOWNLOADER_NOT_READY",
                     status=409,
                     title="目标下载器安全门未就绪",
-                    detail="连接探测必须保持 OK；路径映射在任务执行时按实际路径安全校验",
+                    detail=(
+                        f"下载器“{record.name}”的连接探测状态为 {record.connection_status}，"
+                        "必须为 OK 才能执行写入；跳过下载器检查只影响加种后的逐文件校验，"
+                        "不豁免连接探测"
+                    ),
                 )
             api_version = record.capabilities.get("api_version")
             if not isinstance(api_version, str) or not api_version:
@@ -403,6 +416,38 @@ class DownloaderService:
                 session.rollback()
                 raise self._name_conflict() from exc
             return self._view(record)
+
+    async def create_with_probe(
+        self,
+        *,
+        name: str,
+        kind: DownloaderKind,
+        base_url: str,
+        credential: DownloaderCredential | None,
+        monitor_rules: dict[str, Any],
+        path_mappings: list[PathMappingRule],
+    ) -> DownloaderView:
+        """创建后立刻探测一次连接，让「保存」本身就是一次验证。
+
+        探测失败不回滚创建：配置已经落库，状态会写成 FAILED 并留下能力缺口，
+        用户看到的是能直接修正的问题，而不是一个永远停在 UNTESTED 的幽灵配置。
+        探测本身有短超时，避免目标不可达时把创建请求拖到 adapter 的完整超时。
+        """
+
+        created = self.create(
+            name=name,
+            kind=kind,
+            base_url=base_url,
+            credential=credential,
+            monitor_rules=monitor_rules,
+            path_mappings=path_mappings,
+        )
+        try:
+            async with asyncio.timeout(_CREATE_PROBE_TIMEOUT_SECONDS):
+                await self.test_connection(created.id)
+        except (TimeoutError, ApplicationError):
+            pass
+        return self.get(created.id)
 
     def update(
         self,
