@@ -17,6 +17,7 @@
   <a href="#快速开始docker">快速开始</a> ·
   <a href="#docker-部署方案">Docker 部署</a> ·
   <a href="#安全边界">安全边界</a> ·
+  <a href="#社区与交流">社区</a> ·
   <a href="#本地开发">本地开发</a>
 </p>
 
@@ -209,6 +210,11 @@ uv run python scripts/test.py    # 后端测试、前端测试与构建
 | [已知限制](docs/known-limitations.md) | 当前有意保留的限制 |
 | [测试说明](docs/testing.md) | 质量门与测试范围 |
 | [AGENTS.md](AGENTS.md) | 开发约束与安全不变量 |
+
+## 社区与交流
+
+- [Telegram 群组](https://t.me/+rPle2TSH1eg2ZTA1)：使用交流、问题反馈与经验分享。
+- [Telegram 频道](https://t.me/PackBreaker)：版本更新、使用说明与重要公告。
 
 ## 贡献
 
