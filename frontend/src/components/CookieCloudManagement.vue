@@ -46,6 +46,8 @@ const syncing = ref(false);
 const draftProbeStatus = ref<'OK' | 'FAILED' | null>(null);
 const draftProbeAt = ref<string | null>(null);
 let draftProbeSequence = 0;
+// 失败原因要留在状态卡里：toast 一闪而过，用户回来就只剩「测试失败」四个字。
+const draftProbeError = ref('');
 const cronPreview = ref<CookieCloudCronPreview | null>(null);
 const cronPreviewLoading = ref(false);
 const cronPreviewError = ref('');
@@ -325,6 +327,7 @@ async function probe(): Promise<void> {
     const result = await testCookieCloudDraft(payload);
     if (sequence !== draftProbeSequence) return;
     draftProbeStatus.value = 'OK';
+    draftProbeError.value = '';
     draftProbeAt.value = result.tested_at;
     ElMessage.success(
       `连接与解密正常：发现 ${result.domain_count} 个域名、${result.cookie_count} 条 Cookie`,
@@ -333,6 +336,10 @@ async function probe(): Promise<void> {
     if (sequence !== draftProbeSequence) return;
     draftProbeStatus.value = 'FAILED';
     draftProbeAt.value = new Date().toISOString();
+    const problem = caught instanceof ApiProblem ? caught : null;
+    draftProbeError.value = problem
+      ? `${problem.message}${problem.code ? `（${problem.code}）` : ''}`
+      : 'CookieCloud 测试失败';
     ElMessage.error(errorText(caught, 'CookieCloud 测试失败'));
   } finally {
     if (sequence === draftProbeSequence) probing.value = false;
@@ -401,6 +408,9 @@ onMounted(() => void refresh());
               draftProbeStatus ? ' · 当前草稿' : connectionDraftChanged ? ' · 当前草稿未测试' : ''
             }}</small
           >
+          <small v-if="draftProbeError" class="cookiecloud-probe-error">
+            失败原因：{{ draftProbeError }}
+          </small>
         </div>
       </article>
       <article class="cookiecloud-status-card">
@@ -715,6 +725,11 @@ onMounted(() => void refresh());
 }
 .status-text-danger {
   color: var(--el-color-danger);
+}
+.cookiecloud-probe-error {
+  margin-top: 4px;
+  color: var(--el-color-danger);
+  overflow-wrap: anywhere;
 }
 .status-text-info {
   color: var(--el-text-color-primary);
