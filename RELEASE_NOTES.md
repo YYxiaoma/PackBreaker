@@ -1,31 +1,36 @@
-# PackBreaker v1.1.12
+# PackBreaker v1.1.13
 
-在线升级的观感与「关于」页的信息完整度：进度条不再跳变、升级中无法重复点击、成功后自动刷新；关于页可以看到每个版本到底改了什么。
+两个现场问题的修复：Transmission 4.0.x 连不上，以及 CookieCloud 换域名后只提示「测试失败」看不出原因。
 
-## 改进：在线升级
+## 修复：Transmission 4.0.x 连接失败
 
-- **进度条平滑增长**：原来按阶段直接跳（8% → 28% → 52% …），拉镜像这类长阶段读数会长时间不动，看起来像卡死。现在每个阶段只给一个上限（已接管 12%、拉取 38%、停止旧容器 58%、启动新容器 76%、健康检查 94%），读数每 240ms 向上限逼近、越接近越慢，阶段前进只抬高上限，因此整个升级期间进度条一直在动。
-- **升级期间按钮锁定**：请求发出后「立即升级」按钮置灰并显示「升级进行中…」。容器切换期间接口短暂不可用、以及刷新页面后恢复的升级会话，同样保持锁定，避免重复发起升级。
-- **成功后自动刷新**：检测到新实例版本号已是目标版本后约 1.6 秒自动刷新页面，成功提示不再需要用户自己点按钮。刷新前会清理本地升级会话，不会反复刷新。
+适配器此前只实现了 Transmission **4.1 起**的 JSON-RPC 2.0 信封（`jsonrpc`/`params`/`result` + snake_case），而 **4.0.x 仍是旧信封**：方法是 `session-get`，参数在 `arguments` 里，响应是 `{"result":"success","arguments":{…}}`（没有 `jsonrpc`/`id`），字段名在 session 侧是 `download-dir`、在 torrent 侧是 `hashString`/`percentDone`。
 
-## 新增：关于页升级日志
+于是连接测试会在校验响应标识那一步直接失败，报「Transmission JSON-RPC 响应标识无效」。
 
-- 「关于」页在原内容下方新增升级日志卡片：按版本倒序展示每次发布的摘要与分节条目，标注当前版本，默认展开最近 3 个版本，可展开全部。
-- 数据来自随镜像发布的 `resources/release_notes.json`，由 `scripts/build_release_notes.py` 从各版本 tag 的 `RELEASE_NOTES.md` 生成，离线部署同样可见。
-- 新增只读接口 `GET /system/release-notes`：只读本地文件，缺失或损坏时返回空列表，不影响其它功能。
-- 发布门禁增加一条：目录必须覆盖当前运行版本，否则 `scripts/test.py` 会失败，避免关于页漏掉刚发布的版本。
+现在：
+
+- 首次调用自动探测协议方言，识别出旧信封就按旧格式重发同一次调用，方言缓存在连接上，不会每次多打一轮
+- 旧信封的请求方法与参数做显式映射，响应递归归一成 snake_case，上层解析逻辑不变
+- 4.0.x 的加种、查询、改文件选择、删种、运行时指标都在真实 4.0.5 上验证通过（含 `torrent-added`/`hashString` 回包）
+
+## 修复：CookieCloud 测试失败看不到原因
+
+- 草稿测试的失败原因（后端消息 + 错误码）现在常驻显示在「连接状态」卡片里，不再只有一闪而过的提示；下次测试成功自动清空
+- HTTP 404 的提示补上排查方向：除了 UUID 不对，也可能是服务器地址少了路径前缀（例如原本是 `http://ip:3000/cookiecloud`，换成域名时漏了 `/cookiecloud`）
 
 ## 升级说明
 
-- 无数据库迁移（仍为 `0056_movie_dedup_shared_link_bytes`）。
-- 升级日志覆盖 v1.0.15 以来的版本；更早的版本没有归档发布说明，因此不在列表中。
+- 无数据库迁移（仍为 `0056_movie_dedup_shared_link_bytes`）
+- 已保存的下载器与 CookieCloud 配置不需要改动；Transmission 用户在升级后直接重新测试连接即可
 
-## 包含 v1.1.11 的内容
+## 包含 v1.1.12 的内容
 
-- 种子暂存目录从媒体数据根搬到 `/config/torrents`：镜像把 `/data` 属主固化为 1000，PUID 不是 1000 时暂存会失败（现场表现为换过 Cookie 后卡在「无法安全保存已获取的候选种子」）。config 卷在降权前已对齐 PUID/PGID，并随 config 卷持久化。
+- 在线升级进度条按阶段上限缓慢增长、升级期间按钮锁定、成功后自动刷新
+- 「关于」页新增升级日志卡片（随镜像发布，离线可见）
 
 ## 镜像
 
-- `ghcr.io/yyxiaoma/packbreaker:1.1.12`
-- `docker.io/yyxiaoma01/packbreaker:1.1.12`
+- `ghcr.io/yyxiaoma/packbreaker:1.1.13`
+- `docker.io/yyxiaoma01/packbreaker:1.1.13`
 - 支持 `linux/amd64` 与 `linux/arm64`，不可变摘要、SBOM 与 SHA256SUMS 见 GitHub Release 附件。
