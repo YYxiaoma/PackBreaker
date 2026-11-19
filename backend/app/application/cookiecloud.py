@@ -819,7 +819,11 @@ class CookieCloudService:
             "COOKIECLOUD_TIMEOUT": "CookieCloud 请求超时",
             "COOKIECLOUD_CONNECTION_FAILED": "无法连接 CookieCloud 服务器",
             "COOKIECLOUD_REDIRECT_REJECTED": "CookieCloud 服务器返回了不允许的重定向",
-            "COOKIECLOUD_UUID_NOT_FOUND": "CookieCloud 未找到对应 UUID",
+            # 404 有两种常见来源：UUID 不对，以及服务器地址少了路径前缀（如 /cookiecloud）。
+            "COOKIECLOUD_UUID_NOT_FOUND": (
+                "CookieCloud 未找到对应 UUID；"
+                "若服务器地址带路径前缀（如 /cookiecloud），请一并填在地址里"
+            ),
             "COOKIECLOUD_SERVER_ERROR": "CookieCloud 服务器暂时不可用",
             "COOKIECLOUD_REQUEST_FAILED": "CookieCloud 请求失败",
             "COOKIECLOUD_RESPONSE_TOO_LARGE": "CookieCloud 返回数据超过安全上限",
