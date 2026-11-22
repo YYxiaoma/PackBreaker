@@ -1,16 +1,16 @@
 {
   "format_version": 2,
-  "version": "1.1.15",
-  "tag": "v1.1.15",
-  "commit": "156dca8a47821bf61351a1e74651b0044653f1e4",
+  "version": "1.1.16",
+  "tag": "v1.1.16",
+  "commit": "52b7a811365bb578fc2f4c2e18aaa6652f01d6a1",
   "platform": "multi",
   "platforms": [
     "linux/amd64",
     "linux/arm64"
   ],
   "image": "ghcr.io/yyxiaoma/packbreaker",
-  "image_digest": "sha256:127fadf3e8e95d32c3483de22a558c87cae30015a8219a74f6ad5a38c3d76f22",
-  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:127fadf3e8e95d32c3483de22a558c87cae30015a8219a74f6ad5a38c3d76f22",
-  "alembic_revision": "0056_movie_dedup_shared_link_bytes",
-  "release_workflow_run_id": 44489942342
+  "image_digest": "sha256:2edb0d4bf4586045b37e49f1036b65545d59792987a85060c3b17b2cd874f7bf",
+  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:2edb0d4bf4586045b37e49f1036b65545d59792987a85060c3b17b2cd874f7bf",
+  "alembic_revision": "0060_seeding_repair_journal",
+  "release_workflow_run_id": 44971566547
 }
