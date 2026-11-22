@@ -13,6 +13,7 @@ from weakref import WeakValueDictionary
 from backend.app.domain.site_adapter import (
     SiteAdapter,
     SiteConnectionResult,
+    SiteSeedingList,
     SiteUserProfile,
     TorrentDetails,
     TorrentPayload,
@@ -326,6 +327,14 @@ class ReliableSiteAdapter:
             retry_allowed=False,
             refresh=True,
         )
+
+    async def list_seeding(self, cursor: str | None = None) -> SiteSeedingList:
+        # 站点做种列表不能被缓存：巡查需要对账当前状态。
+        delegate = getattr(self._delegate, "list_seeding", None)
+        if delegate is None:
+            return SiteSeedingList(supported=False)
+        result = await self._invoke(lambda: delegate(cursor))
+        return cast(SiteSeedingList, result)
 
     async def fetch_details(self, torrent_id: str) -> TorrentDetails:
         normalized_id = torrent_id.strip()

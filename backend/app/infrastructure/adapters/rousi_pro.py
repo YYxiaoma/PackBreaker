@@ -11,6 +11,7 @@ import httpx2
 from backend.app.domain.errors import DomainViolation
 from backend.app.domain.site_adapter import (
     SiteConnectionResult,
+    SiteSeedingList,
     SiteUserProfile,
     TorrentDetails,
     TorrentPayload,
@@ -326,6 +327,9 @@ class RousiProCandidateAdapter:
             return SearchPage("rousi_pro", query.page, items, has_more, total)
         except (ValueError, TypeError) as exc:
             raise SiteAdapterError("SITE_INVALID_RESPONSE", "Rousi Pro 搜索候选字段无效") from exc
+
+    async def list_seeding(self, cursor: str | None = None) -> SiteSeedingList:
+        return SiteSeedingList(supported=False)
 
     async def fetch_details(self, torrent_id: str) -> TorrentDetails:
         raise SiteAdapterError("SITE_ADAPTER_PENDING", "Rousi Pro 种子详情尚未完成契约验收")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -122,6 +123,31 @@ class TorrentPayload:
         object.__setattr__(self, "sha256_digest", digest)
 
 
+@dataclass(frozen=True, slots=True)
+class SiteSeedingItem:
+    """站点侧一条做种记录。SITE_ONLY 判定只需要 torrent_id。"""
+
+    torrent_id: str
+    title: str
+    size_bytes: int | None = None
+    status: str | None = None
+    seeding_time_seconds: int | None = None
+    last_activity_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[0-9]{1,20}", self.torrent_id):
+            raise ValueError("站点种子 ID 必须是 1-20 位数字")
+
+
+@dataclass(frozen=True, slots=True)
+class SiteSeedingList:
+    supported: bool = False
+    items: tuple[SiteSeedingItem, ...] = ()
+    # 页码从 0 开始；None 表示没有下一页。
+    next_cursor: str | None = None
+    total_hint: int | None = None
+
+
 class SiteAdapter(Protocol):
     async def capabilities(self) -> SiteSearchCapabilities: ...
 
@@ -134,3 +160,9 @@ class SiteAdapter(Protocol):
     async def fetch_details(self, torrent_id: str) -> TorrentDetails: ...
 
     async def fetch_torrent(self, torrent_id: str) -> TorrentPayload: ...
+
+
+class SiteSeedingLister(Protocol):
+    """可选能力：站点做种列表。并非所有站点适配器都实现。"""
+
+    async def list_seeding(self, cursor: str | None = None) -> SiteSeedingList: ...

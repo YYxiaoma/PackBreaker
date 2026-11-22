@@ -16,6 +16,8 @@ from backend.app.domain.errors import DomainViolation
 from backend.app.domain.media_matching import ExternalMediaId, parse_media_name
 from backend.app.domain.site_adapter import (
     SiteConnectionResult,
+    SiteSeedingItem,
+    SiteSeedingList,
     SiteUserProfile,
     TorrentDetails,
     TorrentPayload,
@@ -552,6 +554,34 @@ class NexusPhpWebAdapter:
         ):
             raise SiteAdapterError("SITE_AUTH_FAILED", "NexusPHP Cookie 无效或会话已失效")
         return SiteConnectionResult(self._profile.site_id)
+
+    async def list_seeding(self, cursor: str | None = None) -> SiteSeedingList:
+        """读取站点侧做种列表。page 参数 0 基，不传即第一页。
+
+        拿不到 UID 时明确返回不支持，绝不把空列表当成「站点没有做种」。
+        """
+        site_key = self._profile.site_id
+        profile = await self.fetch_user_profile()
+        if not profile.uid:
+            return SiteSeedingList(supported=False)
+        page = int(cursor or "0")
+        path = "/getusertorrentlist.php" if site_key == "pttime" else "/getusertorrentlistajax.php"
+        params: dict[str, str] = {"userid": profile.uid, "type": "seeding"}
+        if page:
+            params["page"] = str(page)
+        html = await self._get_html(path, params=params)
+        parser = _parse_html(html)
+        self._reject_login_page(parser)
+        items = _parse_nexus_seeding_rows(parser)
+        pages = [int(value) for value in re.findall(r"[?&]page=([0-9]{1,4})", html)]
+        max_page = max(pages, default=0)
+        next_cursor = str(page + 1) if items and page < max_page else None
+        return SiteSeedingList(
+            supported=True,
+            items=tuple(items),
+            next_cursor=next_cursor,
+            total_hint=_seeding_total_hint(html),
+        )
 
     async def fetch_user_profile(self) -> SiteUserProfile:
         site_key = self._profile.site_id.replace("_", "").lower()
@@ -1356,6 +1386,10 @@ class NexusPhpWebAdapter:
             if "login.php" in response.headers.get("location", ""):
                 raise SiteAdapterError("SITE_AUTH_FAILED", "NexusPHP Cookie 无效或会话已失效")
             raise SiteAdapterError("SITE_HTTP_ERROR", "NexusPHP 返回了未允许的重定向")
+        if response.status_code == 404:
+            # 明确「资源不存在」是删种的唯一可信信号；与网络/限流错误区分开，
+            # 否则一次凭证过期就会被判成大面积删种。
+            raise SiteAdapterError("SITE_NOT_FOUND", "NexusPHP 该资源不存在")
         if response.status_code in {401, 403}:
             raise SiteAdapterError("SITE_AUTH_FAILED", "NexusPHP Cookie 无效或权限不足")
         if response.status_code == 429:
@@ -2480,6 +2514,46 @@ def _parse_nexus_ajax_total_count(html: str, parser: _NexusHtmlParser) -> int | 
     table_index = max((row.table_index for row in parser.rows), default=0)
     rows = [row for row in parser.rows if row.table_index == table_index]
     return max(0, len(rows) - 1) if rows else None
+
+
+def _parse_nexus_seeding_rows(parser: _NexusHtmlParser) -> list[SiteSeedingItem]:
+    """从做种列表表格提取种子 ID 与标题；只认 details.php?id=数字。"""
+    counts: dict[int, int] = {}
+    for row in parser.rows:
+        for href, _title, _label in row.links:
+            if "details.php" in href and re.search(r"[?&]id=[0-9]{1,20}", href):
+                counts[row.table_index] = counts.get(row.table_index, 0) + 1
+    if not counts:
+        return []
+    table_index = max(counts, key=lambda key: counts[key])
+    items: list[SiteSeedingItem] = []
+    for row in parser.rows:
+        if row.table_index != table_index:
+            continue
+        for href, title, label in row.links:
+            match = re.search(r"[?&]id=([0-9]{1,20})", href)
+            if match is None or "details.php" not in href:
+                continue
+            size = None
+            for cell in row.cells:
+                candidate = _parse_size(cell)
+                if candidate is not None:
+                    size = candidate
+                    break
+            items.append(
+                SiteSeedingItem(
+                    torrent_id=match.group(1),
+                    title=_clean_text(label or title or "")[:1024],
+                    size_bytes=size,
+                )
+            )
+            break
+    return items
+
+
+def _seeding_total_hint(html: str) -> int | None:
+    match = re.search(r"<b>\s*([0-9][0-9,]*)\s*</b>\s*条记录", html)
+    return _parse_nonnegative_int(match.group(1)) if match else None
 
 
 def _parse_nexus_ajax_seeding_summary(

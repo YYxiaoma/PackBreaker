@@ -7,8 +7,10 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -34,6 +36,18 @@ from backend.app.domain.notification import (
     NotificationSeverity,
 )
 from backend.app.domain.operation import OperationStatus
+from backend.app.domain.seeding_health import (
+    ACTIVE_ISSUE_STATUSES,
+    SeedingIdentitySource,
+    SeedingIssueKind,
+    SeedingIssueResolution,
+    SeedingIssueSeverity,
+    SeedingIssueStatus,
+    SeedingRunStatus,
+    SeedingRunTrigger,
+    SeedingSuggestion,
+    SeedingWatchPresence,
+)
 from backend.app.domain.site_config import (
     DATABASE_SITE_KINDS,
     PERSISTED_SITE_CREDENTIAL_KINDS,
@@ -2001,5 +2015,211 @@ class TaskActionReceipt(Base):
     state: Mapped[str] = mapped_column(String(16), nullable=False)
     response_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+_SEEDING_ISSUE_KIND_SQL = ", ".join(f"'{item.value}'" for item in SeedingIssueKind)
+_SEEDING_ISSUE_SEVERITY_SQL = ", ".join(f"'{item.value}'" for item in SeedingIssueSeverity)
+_SEEDING_ISSUE_STATUS_SQL = ", ".join(f"'{item.value}'" for item in SeedingIssueStatus)
+_SEEDING_ISSUE_RESOLUTION_SQL = ", ".join(f"'{item.value}'" for item in SeedingIssueResolution)
+_SEEDING_SUGGESTION_SQL = ", ".join(f"'{item.value}'" for item in SeedingSuggestion)
+_SEEDING_RUN_STATUS_SQL = ", ".join(f"'{item.value}'" for item in SeedingRunStatus)
+_SEEDING_RUN_TRIGGER_SQL = ", ".join(f"'{item.value}'" for item in SeedingRunTrigger)
+_SEEDING_IDENTITY_SOURCE_SQL = ", ".join(f"'{item.value}'" for item in SeedingIdentitySource)
+_SEEDING_PRESENCE_SQL = ", ".join(f"'{item.value}'" for item in SeedingWatchPresence)
+# 活跃异常的唯一性靠部分索引约束，这里维护同一份状态集合。
+_SEEDING_ACTIVE_STATUS_SQL = ", ".join(f"'{item.value}'" for item in ACTIVE_ISSUE_STATUSES)
+
+
+class SeedingWatch(Base):
+    """一个下载器里的一个种子，是巡查的最小对象。"""
+
+    __tablename__ = "seeding_watch"
+    __table_args__ = (
+        CheckConstraint(
+            f"identity_source IS NULL OR identity_source IN ({_SEEDING_IDENTITY_SOURCE_SQL})",
+            name="identity_source",
+        ),
+        CheckConstraint(f"presence IN ({_SEEDING_PRESENCE_SQL})", name="presence"),
+        CheckConstraint("size_bytes >= 0", name="size_bytes"),
+        CheckConstraint(
+            "seeding_time_seconds IS NULL OR seeding_time_seconds >= 0",
+            name="seeding_time_seconds",
+        ),
+        CheckConstraint(
+            "site_outcome IS NULL OR site_outcome IN ('FOUND', 'MISSING', 'UNKNOWN')",
+            name="site_outcome",
+        ),
+        CheckConstraint("consecutive_misses >= 0", name="consecutive_misses"),
+        UniqueConstraint("downloader_id", "torrent_hash", name="uq_seeding_watch_hash"),
+        Index("ix_seeding_watch_site", "site_key", "remote_torrent_id"),
+        Index("ix_seeding_watch_presence", "presence", "last_seen_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    # SITE_ONLY 的虚拟 watch 不属于任何下载器。
+    downloader_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("downloader.id", ondelete="CASCADE"), nullable=True
+    )
+    torrent_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    torrent_name: Mapped[str] = mapped_column(String(1024), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger(), nullable=False)
+    save_path: Mapped[str] = mapped_column(String(2048), nullable=False)
+    content_path: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    site_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    remote_torrent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    identity_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    identity_locked: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
+    seeding_time_seconds: Mapped[int | None] = mapped_column(BigInteger(), nullable=True)
+    tracker_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    tracker_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    tracker_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # 站点侧探测的缓存与连续命中计数，避免每轮都重复请求同一批种子。
+    site_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    site_outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    consecutive_misses: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    presence: Mapped[str] = mapped_column(String(16), nullable=False, default="ACTIVE")
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class SeedingHealthIssue(Base):
+    """一条异常实例，带完整生命周期；同一对象同类异常只允许一个活跃实例。"""
+
+    __tablename__ = "seeding_health_issue"
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_SEEDING_ISSUE_KIND_SQL})", name="kind"),
+        CheckConstraint(f"severity IN ({_SEEDING_ISSUE_SEVERITY_SQL})", name="severity"),
+        CheckConstraint(f"status IN ({_SEEDING_ISSUE_STATUS_SQL})", name="status"),
+        CheckConstraint(
+            f"resolved_reason IS NULL OR resolved_reason IN ({_SEEDING_ISSUE_RESOLUTION_SQL})",
+            name="resolved_reason",
+        ),
+        CheckConstraint(f"suggestion IN ({_SEEDING_SUGGESTION_SQL})", name="suggestion"),
+        CheckConstraint("risk_score BETWEEN 0 AND 100", name="risk_score"),
+        CheckConstraint(
+            "hnr_remaining_hours IS NULL OR hnr_remaining_hours >= 0",
+            name="hnr_remaining_hours",
+        ),
+        CheckConstraint("detect_count >= 1", name="detect_count"),
+        Index(
+            "uq_seeding_health_issue_active",
+            "watch_id",
+            "kind",
+            unique=True,
+            sqlite_where=text(f"status IN ({_SEEDING_ACTIVE_STATUS_SQL})"),
+        ),
+        Index("ix_seeding_health_issue_list", "status", "kind", "severity", "last_detected_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    watch_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("seeding_watch.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    severity: Mapped[str] = mapped_column(String(8), nullable=False)
+    risk_score: Mapped[int] = mapped_column(Integer(), nullable=False)
+    # 站点要求且尚未完成的最小做种时长；None 表示站点规则未知，不参与 H&R 统计。
+    hnr_remaining_hours: Mapped[float | None] = mapped_column(Float(), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    evidence: Mapped[str] = mapped_column(Text(), nullable=False)
+    suggestion: Mapped[str] = mapped_column(String(32), nullable=False)
+    detect_count: Mapped[int] = mapped_column(Integer(), nullable=False, default=1)
+    first_detected_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    last_detected_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    resolved_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class SeedingHealthRun(Base):
+    """一次巡查批次，用于「最近巡查 / 下次巡查 / 历史」与降级追溯。"""
+
+    __tablename__ = "seeding_health_run"
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_SEEDING_RUN_STATUS_SQL})", name="status"),
+        CheckConstraint(f"trigger IN ({_SEEDING_RUN_TRIGGER_SQL})", name="trigger"),
+        Index("ix_seeding_health_run_started", "started_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    trigger: Mapped[str] = mapped_column(String(12), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="RUNNING")
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    scanned_watches: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    created_issues: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    resolved_issues: Mapped[int] = mapped_column(Integer(), nullable=False, default=0)
+    degraded_sites: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    error_summary: Mapped[str | None] = mapped_column(Text(), nullable=True)
+
+
+class SeedingPolicy(Base):
+    """站点侧 H&R 规则。source=DEFAULT 表示内置假设，UI 必须如实标注。"""
+
+    __tablename__ = "seeding_policy"
+    __table_args__ = (
+        CheckConstraint("source IN ('DEFAULT', 'MANUAL')", name="source"),
+        CheckConstraint(
+            "min_seeding_hours IS NULL OR min_seeding_hours BETWEEN 0 AND 8760",
+            name="min_seeding_hours",
+        ),
+    )
+
+    site_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    min_seeding_hours: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    requires_hr: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=True)
+    source: Mapped[str] = mapped_column(String(12), nullable=False, default="DEFAULT")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class SeedingHealthConfig(Base):
+    """巡查的运行时开关。无记录时沿用环境变量默认值。"""
+
+    __tablename__ = "seeding_health_config"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    site_probe_enabled: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class SeedingRepairJournal(Base):
+    """做种健康修复动作的外部写 journal：意图先行、结果回写、未定对账。"""
+
+    __tablename__ = "seeding_repair_journal"
+    __table_args__ = (
+        CheckConstraint(
+            "operation_type IN ('RETRIEVE_TORRENT', 'RESEED')",
+            name="ck_seeding_repair_operation_type",
+        ),
+        CheckConstraint(
+            "status IN ('INTENT_RECORDED', 'APPLIED', 'NOOP', 'ROLLBACK_PENDING', "
+            "'ROLLED_BACK', 'RECONCILE_REQUIRED', 'ROLLBACK_BLOCKED')",
+            name="ck_seeding_repair_status",
+        ),
+        UniqueConstraint("idempotency_key", name="uq_seeding_repair_idempotency_key"),
+        Index("ix_seeding_repair_issue", "issue_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    issue_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("seeding_health_issue.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    target: Mapped[str] = mapped_column(Text(), nullable=False)
+    intent: Mapped[str] = mapped_column(Text(), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default=OperationStatus.INTENT_RECORDED.value
+    )
+    before_snapshot: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    after_snapshot: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)

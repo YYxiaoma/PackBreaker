@@ -1639,6 +1639,44 @@
         "title": "InboxNotificationActionRequest",
         "type": "object"
       },
+      "IssueActionRequest": {
+        "properties": {
+          "action": {
+            "enum": [
+              "ACK",
+              "IGNORE",
+              "RECHECK",
+              "RETRIEVE_TORRENT",
+              "RESEED"
+            ],
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "IssueActionRequest",
+        "type": "object"
+      },
+      "IssueActionResultResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "IssueActionResultResponse",
+        "type": "object"
+      },
       "LoginRequest": {
         "properties": {
           "password": {
@@ -3223,6 +3261,721 @@
           "checks"
         ],
         "title": "ReleasePreflightResponse",
+        "type": "object"
+      },
+      "RepairExecuteRequest": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "downloader_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloader Id"
+          },
+          "expected_payload_sha256": {
+            "title": "Expected Payload Sha256",
+            "type": "string"
+          },
+          "save_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Save Path"
+          }
+        },
+        "required": [
+          "action",
+          "expected_payload_sha256"
+        ],
+        "title": "RepairExecuteRequest",
+        "type": "object"
+      },
+      "RepairExecuteResponse": {
+        "properties": {
+          "already_recorded": {
+            "title": "Already Recorded",
+            "type": "boolean"
+          },
+          "journal_id": {
+            "title": "Journal Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "torrent_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrent Hash"
+          }
+        },
+        "required": [
+          "journal_id",
+          "status",
+          "already_recorded"
+        ],
+        "title": "RepairExecuteResponse",
+        "type": "object"
+      },
+      "RepairPreviewRequest": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "downloader_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloader Id"
+          },
+          "save_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Save Path"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "RepairPreviewRequest",
+        "type": "object"
+      },
+      "SeedingHealthSettingsRequest": {
+        "properties": {
+          "site_probe_enabled": {
+            "title": "Site Probe Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "site_probe_enabled"
+        ],
+        "title": "SeedingHealthSettingsRequest",
+        "type": "object"
+      },
+      "SeedingHealthSettingsResponse": {
+        "properties": {
+          "site_probe_enabled": {
+            "title": "Site Probe Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "site_probe_enabled"
+        ],
+        "title": "SeedingHealthSettingsResponse",
+        "type": "object"
+      },
+      "SeedingHealthSummaryResponse": {
+        "properties": {
+          "abnormal": {
+            "title": "Abnormal",
+            "type": "integer"
+          },
+          "by_kind": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Kind",
+            "type": "object"
+          },
+          "coverage": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Coverage",
+            "type": "object"
+          },
+          "healthy": {
+            "title": "Healthy",
+            "type": "integer"
+          },
+          "hnr_risk": {
+            "title": "Hnr Risk",
+            "type": "integer"
+          },
+          "interval_hours": {
+            "title": "Interval Hours",
+            "type": "integer"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SeedingRunResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "recovered": {
+            "title": "Recovered",
+            "type": "integer"
+          },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "watched": {
+            "title": "Watched",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "watched",
+          "healthy",
+          "abnormal",
+          "hnr_risk",
+          "pending",
+          "recovered",
+          "by_kind",
+          "last_run",
+          "next_run_at",
+          "stale",
+          "interval_hours",
+          "coverage"
+        ],
+        "title": "SeedingHealthSummaryResponse",
+        "type": "object"
+      },
+      "SeedingIssueDetailResponse": {
+        "properties": {
+          "affected_torrents": {
+            "title": "Affected Torrents",
+            "type": "integer"
+          },
+          "consecutive_misses": {
+            "title": "Consecutive Misses",
+            "type": "integer"
+          },
+          "content_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Path"
+          },
+          "detect_count": {
+            "title": "Detect Count",
+            "type": "integer"
+          },
+          "downloader_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloader Id"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "title": "Evidence",
+            "type": "object"
+          },
+          "first_detected_at": {
+            "format": "date-time",
+            "title": "First Detected At",
+            "type": "string"
+          },
+          "hnr_remaining_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hnr Remaining Hours"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "identity_locked": {
+            "title": "Identity Locked",
+            "type": "boolean"
+          },
+          "identity_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity Source"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "kind_label": {
+            "title": "Kind Label",
+            "type": "string"
+          },
+          "last_detected_at": {
+            "format": "date-time",
+            "title": "Last Detected At",
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolved_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Reason"
+          },
+          "risk_score": {
+            "title": "Risk Score",
+            "type": "integer"
+          },
+          "save_path": {
+            "title": "Save Path",
+            "type": "string"
+          },
+          "seeding_time_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seeding Time Seconds"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "site_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Key"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "suggestion": {
+            "title": "Suggestion",
+            "type": "string"
+          },
+          "torrent_hash": {
+            "title": "Torrent Hash",
+            "type": "string"
+          },
+          "torrent_name": {
+            "title": "Torrent Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "kind_label",
+          "severity",
+          "risk_score",
+          "status",
+          "suggestion",
+          "detect_count",
+          "first_detected_at",
+          "last_detected_at",
+          "torrent_name",
+          "torrent_hash",
+          "site_key",
+          "size_bytes",
+          "consecutive_misses",
+          "affected_torrents",
+          "evidence",
+          "hnr_remaining_hours",
+          "resolved_at",
+          "resolved_reason",
+          "save_path",
+          "content_path",
+          "identity_source",
+          "identity_locked",
+          "seeding_time_seconds"
+        ],
+        "title": "SeedingIssueDetailResponse",
+        "type": "object"
+      },
+      "SeedingIssueListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SeedingIssueRowResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "SeedingIssueListResponse",
+        "type": "object"
+      },
+      "SeedingIssueRowResponse": {
+        "properties": {
+          "affected_torrents": {
+            "title": "Affected Torrents",
+            "type": "integer"
+          },
+          "consecutive_misses": {
+            "title": "Consecutive Misses",
+            "type": "integer"
+          },
+          "detect_count": {
+            "title": "Detect Count",
+            "type": "integer"
+          },
+          "downloader_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloader Id"
+          },
+          "first_detected_at": {
+            "format": "date-time",
+            "title": "First Detected At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "kind_label": {
+            "title": "Kind Label",
+            "type": "string"
+          },
+          "last_detected_at": {
+            "format": "date-time",
+            "title": "Last Detected At",
+            "type": "string"
+          },
+          "risk_score": {
+            "title": "Risk Score",
+            "type": "integer"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "site_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Key"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "suggestion": {
+            "title": "Suggestion",
+            "type": "string"
+          },
+          "torrent_hash": {
+            "title": "Torrent Hash",
+            "type": "string"
+          },
+          "torrent_name": {
+            "title": "Torrent Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "kind_label",
+          "severity",
+          "risk_score",
+          "status",
+          "suggestion",
+          "detect_count",
+          "first_detected_at",
+          "last_detected_at",
+          "torrent_name",
+          "torrent_hash",
+          "site_key",
+          "size_bytes",
+          "consecutive_misses",
+          "affected_torrents"
+        ],
+        "title": "SeedingIssueRowResponse",
+        "type": "object"
+      },
+      "SeedingPolicyRequest": {
+        "properties": {
+          "min_seeding_hours": {
+            "anyOf": [
+              {
+                "maximum": 8760.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Seeding Hours"
+          }
+        },
+        "title": "SeedingPolicyRequest",
+        "type": "object"
+      },
+      "SeedingPolicyResponse": {
+        "properties": {
+          "min_seeding_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Seeding Hours"
+          },
+          "requires_hr": {
+            "title": "Requires Hr",
+            "type": "boolean"
+          },
+          "site_key": {
+            "title": "Site Key",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_key",
+          "min_seeding_hours",
+          "requires_hr",
+          "source"
+        ],
+        "title": "SeedingPolicyResponse",
+        "type": "object"
+      },
+      "SeedingRunAcceptedResponse": {
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          }
+        },
+        "required": [
+          "run_id",
+          "accepted"
+        ],
+        "title": "SeedingRunAcceptedResponse",
+        "type": "object"
+      },
+      "SeedingRunResponse": {
+        "properties": {
+          "created_issues": {
+            "title": "Created Issues",
+            "type": "integer"
+          },
+          "degraded_sites": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Degraded Sites",
+            "type": "array"
+          },
+          "error_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Summary"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "resolved_issues": {
+            "title": "Resolved Issues",
+            "type": "integer"
+          },
+          "scanned_watches": {
+            "title": "Scanned Watches",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "trigger",
+          "status",
+          "started_at",
+          "finished_at",
+          "scanned_watches",
+          "created_issues",
+          "resolved_issues",
+          "degraded_sites",
+          "error_summary"
+        ],
+        "title": "SeedingRunResponse",
         "type": "object"
       },
       "ServerChanCredentialInput": {
@@ -7909,7 +8662,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.1.15"
+    "version": "1.1.16"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10412,6 +11165,1041 @@
         ]
       }
     },
+    "/api/v1/monitor/seeding-health/issues": {
+      "get": {
+        "operationId": "list_issues_api_v1_monitor_seeding_health_issues_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "site_key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Site Key"
+            }
+          },
+          {
+            "in": "query",
+            "name": "downloader_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Downloader Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeedingIssueListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Issues",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/v1/monitor/seeding-health/issues/{issue_id}": {
+      "get": {
+        "operationId": "get_issue_api_v1_monitor_seeding_health_issues__issue_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "issue_id",
+            "required": true,
+            "schema": {
+              "title": "Issue Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeedingIssueDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Issue",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/v1/monitor/seeding-health/issues/{issue_id}/actions": {
+      "post": {
+        "operationId": "act_on_issue_api_v1_monitor_seeding_health_issues__issue_id__actions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "issue_id",
+            "required": true,
+            "schema": {
+              "title": "Issue Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueActionResultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Act On Issue",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/v1/monitor/seeding-health/issues/{issue_id}/repair": {
+      "post": {
+        "description": "确认执行：校验摘要值后记 journal intent，再以暂停状态加种并对账。",
+        "operationId": "execute_issue_repair_api_v1_monitor_seeding_health_issues__issue_id__repair_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "issue_id",
+            "required": true,
+            "schema": {
+              "title": "Issue Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepairExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairExecuteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Issue Repair",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/v1/monitor/seeding-health/issues/{issue_id}/repair-preview": {
+      "post": {
+        "description": "只读预览：拉种、解析、返回摘要与 payload 摘要值，不产生任何外部写操作。",
+        "operationId": "preview_issue_repair_api_v1_monitor_seeding_health_issues__issue_id__repair_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "issue_id",
+            "required": true,
+            "schema": {
+              "title": "Issue Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepairPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Preview Issue Repair Api V1 Monitor Seeding Health Issues  Issue Id  Repair Preview Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Issue Repair",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/v1/monitor/seeding-health/policies": {
+      "get": {
+        "operationId": "list_policies_api_v1_monitor_seeding_health_policies_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SeedingPolicyResponse"
+                  },
+                  "title": "Response List Policies Api V1 Monitor Seeding Health Policies Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Policies",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/v1/monitor/seeding-health/policies/{site_key}": {
+      "put": {
+        "operationId": "set_policy_api_v1_monitor_seeding_health_policies__site_key__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "site_key",
+            "required": true,
+            "schema": {
+              "title": "Site Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeedingPolicyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeedingPolicyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Policy",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/v1/monitor/seeding-health/runs": {
+      "get": {
+        "operationId": "list_runs_api_v1_monitor_seeding_health_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SeedingRunResponse"
+                  },
+                  "title": "Response List Runs Api V1 Monitor Seeding Health Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Runs",
+        "tags": [
+          "monitor"
+        ]
+      },
+      "post": {
+        "operationId": "trigger_run_api_v1_monitor_seeding_health_runs_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeedingRunAcceptedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trigger Run",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/v1/monitor/seeding-health/runs/{run_id}": {
+      "get": {
+        "operationId": "get_run_api_v1_monitor_seeding_health_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeedingRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/v1/monitor/seeding-health/settings": {
+      "get": {
+        "operationId": "get_settings_api_v1_monitor_seeding_health_settings_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeedingHealthSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Settings",
+        "tags": [
+          "monitor"
+        ]
+      },
+      "put": {
+        "operationId": "set_settings_api_v1_monitor_seeding_health_settings_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeedingHealthSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeedingHealthSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Settings",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/v1/monitor/seeding-health/summary": {
+      "get": {
+        "operationId": "get_summary_api_v1_monitor_seeding_health_summary_get",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeedingHealthSummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Summary",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
     "/api/v1/movie-dedup/jobs": {
       "get": {
         "operationId": "list_movie_dedup_jobs_api_v1_movie_dedup_jobs_get",
@@ -12806,6 +14594,22 @@
             "schema": {
               "title": "Site Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           },
           {

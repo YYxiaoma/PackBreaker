@@ -2378,12 +2378,27 @@ function candidateScoreBreakdown(candidate: UnpackMatchCandidate): string[] {
   return [...result, ...details];
 }
 
+function hardConflictLabel(code: string): string {
+  if (code === 'YEAR_CONFLICT') return '年份不一致';
+  if (code === 'EPISODE_CONFLICT') return '季集不一致';
+  if (code === 'EXTERNAL_ID_CONFLICT') return '外部 ID 不一致';
+  return code;
+}
+
 function candidateDetailUrl(candidate: UnpackMatchCandidate): string | null {
   const site = sites.value.find((item) => item.id === candidate.site_id);
   if (!site || !/^[0-9]+$/.test(candidate.candidate_key)) return null;
   try {
     const base = new URL(site.base_url);
     if (base.protocol !== 'https:' && base.protocol !== 'http:') return null;
+    // 各站详情页路径不同：M-Team 用 /detail/，Rousi Pro 用 /torrents/，
+    // 其余 NexusPHP 系才是 details.php?id=。
+    if (site.type === 'MTEAM') {
+      return new URL(`/detail/${candidate.candidate_key}`, base.origin).toString();
+    }
+    if (site.type === 'ROUSI_PRO') {
+      return new URL(`/torrents/${candidate.candidate_key}`, base.origin).toString();
+    }
     const detail = new URL('/details.php', base.origin);
     detail.searchParams.set('id', candidate.candidate_key);
     return detail.toString();
@@ -4305,13 +4320,14 @@ onMounted(() => {
             <el-input
               v-model="manualSourceUrl"
               clearable
-              placeholder="https://站点/details.php?id=12345"
+              placeholder="https://站点/details.php?id=12345 或 https://站点/torrents/12345"
               :disabled="manualCandidateSaving || manualCandidatePreviewLoading"
               @input="manualCandidatePreview = null"
             />
             <small
-              >仅接受所选站点自身的 details.php?id=数字
-              链接；系统通过已配置的站点适配器读取，不会直接请求任意外部 URL。</small
+              >仅接受所选站点自身的种子详情页链接（NexusPHP 的 details.php?id=数字、 M-Team 的
+              /detail/数字、Rousi Pro 的
+              /torrents/数字）；系统通过已配置的站点适配器读取，不会直接请求任意外部 URL。</small
             >
           </template>
           <template v-else>
@@ -4386,8 +4402,11 @@ onMounted(() => {
             type="error"
             :closable="false"
             show-icon
-            :title="'检测到硬冲突：' + manualCandidatePreview.hard_conflicts.join('、')"
-            description="现有审核安全规则不允许直接批准存在硬冲突的候选，请核对影片年份、季集或外部 ID。"
+            :title="
+              '检测到硬冲突：' +
+              manualCandidatePreview.hard_conflicts.map(hardConflictLabel).join('、')
+            "
+            description="该种子与影片的年份、季集或外部 ID 不一致，无法直接批准。请确认是否选错了影片，或改用与影片一致的种子。"
           />
           <el-alert
             v-else
@@ -4909,6 +4928,28 @@ onMounted(() => {
 .manual-candidate-form {
   display: grid;
   gap: 14px;
+  /* grid 子项默认 min-width:auto，长标题/长路径会把弹窗撑破。 */
+  min-width: 0;
+}
+.manual-candidate-form > * {
+  min-width: 0;
+}
+.manual-candidate-form :deep(.el-descriptions__body) {
+  overflow-x: auto;
+}
+.manual-candidate-form :deep(.el-descriptions__body table) {
+  table-layout: fixed;
+  width: 100%;
+}
+.manual-candidate-form :deep(.el-descriptions__content) {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.manual-candidate-form :deep(.el-descriptions__label) {
+  width: 110px;
+}
+.manual-file-list :deep(.el-table) {
+  width: 100%;
 }
 .manual-candidate-fields {
   display: grid;

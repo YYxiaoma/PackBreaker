@@ -492,6 +492,201 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/monitor/seeding-health/issues': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Issues */
+    get: operations['list_issues_api_v1_monitor_seeding_health_issues_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/seeding-health/issues/{issue_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Issue */
+    get: operations['get_issue_api_v1_monitor_seeding_health_issues__issue_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/seeding-health/issues/{issue_id}/actions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Act On Issue */
+    post: operations['act_on_issue_api_v1_monitor_seeding_health_issues__issue_id__actions_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/seeding-health/issues/{issue_id}/repair': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Execute Issue Repair
+     * @description 确认执行：校验摘要值后记 journal intent，再以暂停状态加种并对账。
+     */
+    post: operations['execute_issue_repair_api_v1_monitor_seeding_health_issues__issue_id__repair_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/seeding-health/issues/{issue_id}/repair-preview': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Preview Issue Repair
+     * @description 只读预览：拉种、解析、返回摘要与 payload 摘要值，不产生任何外部写操作。
+     */
+    post: operations['preview_issue_repair_api_v1_monitor_seeding_health_issues__issue_id__repair_preview_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/seeding-health/policies': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Policies */
+    get: operations['list_policies_api_v1_monitor_seeding_health_policies_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/seeding-health/policies/{site_key}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Set Policy */
+    put: operations['set_policy_api_v1_monitor_seeding_health_policies__site_key__put'];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/seeding-health/runs': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Runs */
+    get: operations['list_runs_api_v1_monitor_seeding_health_runs_get'];
+    put?: never;
+    /** Trigger Run */
+    post: operations['trigger_run_api_v1_monitor_seeding_health_runs_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/seeding-health/runs/{run_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Run */
+    get: operations['get_run_api_v1_monitor_seeding_health_runs__run_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/seeding-health/settings': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Settings */
+    get: operations['get_settings_api_v1_monitor_seeding_health_settings_get'];
+    /** Set Settings */
+    put: operations['set_settings_api_v1_monitor_seeding_health_settings_put'];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/seeding-health/summary': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Summary */
+    get: operations['get_summary_api_v1_monitor_seeding_health_summary_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/movie-dedup/jobs': {
     parameters: {
       query?: never;
@@ -2255,6 +2450,21 @@ export interface components {
        */
       action: 'mark_read';
     };
+    /** IssueActionRequest */
+    IssueActionRequest: {
+      /**
+       * Action
+       * @enum {string}
+       */
+      action: 'ACK' | 'IGNORE' | 'RECHECK' | 'RETRIEVE_TORRENT' | 'RESEED';
+    };
+    /** IssueActionResultResponse */
+    IssueActionResultResponse: {
+      /** Id */
+      id: string;
+      /** Status */
+      status: string;
+    };
     /** LoginRequest */
     LoginRequest: {
       /**
@@ -2802,6 +3012,243 @@ export interface components {
        * @enum {string}
        */
       status: 'ready' | 'blocked';
+    };
+    /** RepairExecuteRequest */
+    RepairExecuteRequest: {
+      /** Action */
+      action: string;
+      /** Downloader Id */
+      downloader_id?: string | null;
+      /** Expected Payload Sha256 */
+      expected_payload_sha256: string;
+      /** Save Path */
+      save_path?: string | null;
+    };
+    /** RepairExecuteResponse */
+    RepairExecuteResponse: {
+      /** Already Recorded */
+      already_recorded: boolean;
+      /** Journal Id */
+      journal_id: string;
+      /** Status */
+      status: string;
+      /** Torrent Hash */
+      torrent_hash?: string | null;
+    };
+    /** RepairPreviewRequest */
+    RepairPreviewRequest: {
+      /** Action */
+      action: string;
+      /** Downloader Id */
+      downloader_id?: string | null;
+      /** Save Path */
+      save_path?: string | null;
+    };
+    /** SeedingHealthSettingsRequest */
+    SeedingHealthSettingsRequest: {
+      /** Site Probe Enabled */
+      site_probe_enabled: boolean;
+    };
+    /** SeedingHealthSettingsResponse */
+    SeedingHealthSettingsResponse: {
+      /** Site Probe Enabled */
+      site_probe_enabled: boolean;
+    };
+    /** SeedingHealthSummaryResponse */
+    SeedingHealthSummaryResponse: {
+      /** Abnormal */
+      abnormal: number;
+      /** By Kind */
+      by_kind: {
+        [key: string]: number;
+      };
+      /** Coverage */
+      coverage: {
+        [key: string]: number;
+      };
+      /** Healthy */
+      healthy: number;
+      /** Hnr Risk */
+      hnr_risk: number;
+      /** Interval Hours */
+      interval_hours: number;
+      last_run: components['schemas']['SeedingRunResponse'] | null;
+      /** Next Run At */
+      next_run_at: string | null;
+      /** Pending */
+      pending: number;
+      /** Recovered */
+      recovered: number;
+      /** Stale */
+      stale: boolean;
+      /** Watched */
+      watched: number;
+    };
+    /** SeedingIssueDetailResponse */
+    SeedingIssueDetailResponse: {
+      /** Affected Torrents */
+      affected_torrents: number;
+      /** Consecutive Misses */
+      consecutive_misses: number;
+      /** Content Path */
+      content_path: string | null;
+      /** Detect Count */
+      detect_count: number;
+      /** Downloader Id */
+      downloader_id?: string | null;
+      /** Evidence */
+      evidence: {
+        [key: string]: unknown;
+      };
+      /**
+       * First Detected At
+       * Format: date-time
+       */
+      first_detected_at: string;
+      /** Hnr Remaining Hours */
+      hnr_remaining_hours: number | null;
+      /** Id */
+      id: string;
+      /** Identity Locked */
+      identity_locked: boolean;
+      /** Identity Source */
+      identity_source: string | null;
+      /** Kind */
+      kind: string;
+      /** Kind Label */
+      kind_label: string;
+      /**
+       * Last Detected At
+       * Format: date-time
+       */
+      last_detected_at: string;
+      /** Resolved At */
+      resolved_at: string | null;
+      /** Resolved Reason */
+      resolved_reason: string | null;
+      /** Risk Score */
+      risk_score: number;
+      /** Save Path */
+      save_path: string;
+      /** Seeding Time Seconds */
+      seeding_time_seconds: number | null;
+      /** Severity */
+      severity: string;
+      /** Site Key */
+      site_key: string | null;
+      /** Size Bytes */
+      size_bytes: number;
+      /** Status */
+      status: string;
+      /** Suggestion */
+      suggestion: string;
+      /** Torrent Hash */
+      torrent_hash: string;
+      /** Torrent Name */
+      torrent_name: string;
+    };
+    /** SeedingIssueListResponse */
+    SeedingIssueListResponse: {
+      /** Items */
+      items: components['schemas']['SeedingIssueRowResponse'][];
+      /** Page */
+      page: number;
+      /** Page Size */
+      page_size: number;
+      /** Total */
+      total: number;
+    };
+    /** SeedingIssueRowResponse */
+    SeedingIssueRowResponse: {
+      /** Affected Torrents */
+      affected_torrents: number;
+      /** Consecutive Misses */
+      consecutive_misses: number;
+      /** Detect Count */
+      detect_count: number;
+      /** Downloader Id */
+      downloader_id?: string | null;
+      /**
+       * First Detected At
+       * Format: date-time
+       */
+      first_detected_at: string;
+      /** Id */
+      id: string;
+      /** Kind */
+      kind: string;
+      /** Kind Label */
+      kind_label: string;
+      /**
+       * Last Detected At
+       * Format: date-time
+       */
+      last_detected_at: string;
+      /** Risk Score */
+      risk_score: number;
+      /** Severity */
+      severity: string;
+      /** Site Key */
+      site_key: string | null;
+      /** Size Bytes */
+      size_bytes: number;
+      /** Status */
+      status: string;
+      /** Suggestion */
+      suggestion: string;
+      /** Torrent Hash */
+      torrent_hash: string;
+      /** Torrent Name */
+      torrent_name: string;
+    };
+    /** SeedingPolicyRequest */
+    SeedingPolicyRequest: {
+      /** Min Seeding Hours */
+      min_seeding_hours?: number | null;
+    };
+    /** SeedingPolicyResponse */
+    SeedingPolicyResponse: {
+      /** Min Seeding Hours */
+      min_seeding_hours: number | null;
+      /** Requires Hr */
+      requires_hr: boolean;
+      /** Site Key */
+      site_key: string;
+      /** Source */
+      source: string;
+    };
+    /** SeedingRunAcceptedResponse */
+    SeedingRunAcceptedResponse: {
+      /** Accepted */
+      accepted: boolean;
+      /** Run Id */
+      run_id: string | null;
+    };
+    /** SeedingRunResponse */
+    SeedingRunResponse: {
+      /** Created Issues */
+      created_issues: number;
+      /** Degraded Sites */
+      degraded_sites: string[];
+      /** Error Summary */
+      error_summary: string | null;
+      /** Finished At */
+      finished_at: string | null;
+      /** Id */
+      id: string;
+      /** Resolved Issues */
+      resolved_issues: number;
+      /** Scanned Watches */
+      scanned_watches: number;
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string;
+      /** Status */
+      status: string;
+      /** Trigger */
+      trigger: string;
     };
     /** ServerChanCredentialInput */
     ServerChanCredentialInput: {
@@ -5520,6 +5967,469 @@ export interface operations {
       };
     };
   };
+  list_issues_api_v1_monitor_seeding_health_issues_get: {
+    parameters: {
+      query?: {
+        kind?: string | null;
+        status?: string | null;
+        severity?: string | null;
+        site_key?: string | null;
+        downloader_id?: string | null;
+        q?: string | null;
+        page?: number;
+        page_size?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SeedingIssueListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_issue_api_v1_monitor_seeding_health_issues__issue_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        issue_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SeedingIssueDetailResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  act_on_issue_api_v1_monitor_seeding_health_issues__issue_id__actions_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        issue_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['IssueActionRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['IssueActionResultResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  execute_issue_repair_api_v1_monitor_seeding_health_issues__issue_id__repair_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        issue_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['RepairExecuteRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['RepairExecuteResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  preview_issue_repair_api_v1_monitor_seeding_health_issues__issue_id__repair_preview_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        issue_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['RepairPreviewRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_policies_api_v1_monitor_seeding_health_policies_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SeedingPolicyResponse'][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  set_policy_api_v1_monitor_seeding_health_policies__site_key__put: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        site_key: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SeedingPolicyRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SeedingPolicyResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_runs_api_v1_monitor_seeding_health_runs_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SeedingRunResponse'][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  trigger_run_api_v1_monitor_seeding_health_runs_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SeedingRunAcceptedResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_run_api_v1_monitor_seeding_health_runs__run_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SeedingRunResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_settings_api_v1_monitor_seeding_health_settings_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SeedingHealthSettingsResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  set_settings_api_v1_monitor_seeding_health_settings_put: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SeedingHealthSettingsRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SeedingHealthSettingsResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_summary_api_v1_monitor_seeding_health_summary_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SeedingHealthSummaryResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   list_movie_dedup_jobs_api_v1_movie_dedup_jobs_get: {
     parameters: {
       query?: {
@@ -6579,7 +7489,9 @@ export interface operations {
   };
   get_site_seeding_api_v1_sites__site_id__seeding_get: {
     parameters: {
-      query?: never;
+      query?: {
+        cursor?: string | null;
+      };
       header?: never;
       path: {
         site_id: string;

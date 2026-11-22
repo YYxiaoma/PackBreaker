@@ -1,10 +1,17 @@
-export const PRIMARY_ROUTE_NAMES = ['总览', '任务中心', '配置中心', '系统管理'] as const;
+export const PRIMARY_ROUTE_NAMES = [
+  '总览',
+  '任务中心',
+  '监控中心',
+  '配置中心',
+  '系统管理',
+] as const;
 
 export type PrimaryRoute = (typeof PRIMARY_ROUTE_NAMES)[number];
 
 export const SECONDARY_ROUTE_NAMES = [
   '数据拆包',
   '数据去重',
+  '做种健康巡查',
   'CookieCloud配置',
   '站点配置',
   '下载器配置',
@@ -19,6 +26,7 @@ export type SecondaryRoute = (typeof SECONDARY_ROUTE_NAMES)[number];
 export const SECONDARY_ROUTE_PATHS = {
   数据拆包: '任务中心/数据拆包',
   数据去重: '任务中心/数据去重',
+  做种健康巡查: '监控中心/做种健康巡查',
   CookieCloud配置: '配置中心/CookieCloud配置',
   站点配置: '配置中心/站点配置',
   下载器配置: '配置中心/下载器配置',
@@ -34,6 +42,7 @@ export type Route = PrimaryRoute | SecondaryRoutePath | '关于';
 
 export const DEFAULT_ROUTE_BY_PRIMARY: Record<Exclude<PrimaryRoute, '总览'>, SecondaryRoutePath> = {
   任务中心: SECONDARY_ROUTE_PATHS.数据拆包,
+  监控中心: SECONDARY_ROUTE_PATHS.做种健康巡查,
   配置中心: SECONDARY_ROUTE_PATHS.CookieCloud配置,
   系统管理: SECONDARY_ROUTE_PATHS.通知配置,
 };
@@ -41,6 +50,7 @@ export const DEFAULT_ROUTE_BY_PRIMARY: Record<Exclude<PrimaryRoute, '总览'>, S
 export const NAVIGATION_GROUPS = [
   { name: '总览', children: [] },
   { name: '任务中心', children: ['数据拆包', '数据去重'] },
+  { name: '监控中心', children: ['做种健康巡查'] },
   { name: '配置中心', children: ['CookieCloud配置', '站点配置', '下载器配置'] },
   { name: '系统管理', children: ['通知配置', '日志浏览', 'Agent配置', '备份恢复'] },
 ] as const;
@@ -48,6 +58,7 @@ export const NAVIGATION_GROUPS = [
 const ROUTE_PARENT: Record<SecondaryRoutePath, PrimaryRoute> = {
   [SECONDARY_ROUTE_PATHS.数据拆包]: '任务中心',
   [SECONDARY_ROUTE_PATHS.数据去重]: '任务中心',
+  [SECONDARY_ROUTE_PATHS.做种健康巡查]: '监控中心',
   [SECONDARY_ROUTE_PATHS.CookieCloud配置]: '配置中心',
   [SECONDARY_ROUTE_PATHS.站点配置]: '配置中心',
   [SECONDARY_ROUTE_PATHS.下载器配置]: '配置中心',
@@ -71,6 +82,9 @@ const LEGACY_ROUTE_ALIASES: Record<string, Route> = {
   配置中心: SECONDARY_ROUTE_PATHS.CookieCloud配置,
   系统管理: SECONDARY_ROUTE_PATHS.通知配置,
   任务中心: SECONDARY_ROUTE_PATHS.数据拆包,
+  监控中心: SECONDARY_ROUTE_PATHS.做种健康巡查,
+  做种巡查: SECONDARY_ROUTE_PATHS.做种健康巡查,
+  监控: SECONDARY_ROUTE_PATHS.做种健康巡查,
 };
 
 function isSecondaryRoutePath(value: string): value is SecondaryRoutePath {

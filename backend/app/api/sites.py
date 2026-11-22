@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -688,9 +688,32 @@ async def get_site_seeding(
     site_id: str,
     request: Request,
     _principal: Annotated[AccessPrincipal, Depends(CONFIG_READ_ACCESS)],
+    cursor: str | None = Query(default=None),
 ) -> SiteSeedingResponse:
-    site_service(request).get(site_id)
-    return SiteSeedingResponse(supported=False, items=[], next_cursor=None)
+    service = site_service(request)
+    service.get(site_id)
+    binding = next((item for item in service.enabled_adapters() if item.config_id == site_id), None)
+    if binding is None:
+        return SiteSeedingResponse(supported=False, items=[], next_cursor=None)
+    list_seeding = getattr(binding.adapter, "list_seeding", None)
+    if list_seeding is None:
+        return SiteSeedingResponse(supported=False, items=[], next_cursor=None)
+    page = await list_seeding(cursor)
+    return SiteSeedingResponse(
+        supported=page.supported,
+        items=[
+            SiteSeedingItemResponse(
+                torrent_id=item.torrent_id,
+                title=item.title,
+                size_bytes=item.size_bytes,
+                status=item.status,
+                seeding_time_seconds=item.seeding_time_seconds,
+                last_activity_at=item.last_activity_at,
+            )
+            for item in page.items
+        ],
+        next_cursor=page.next_cursor,
+    )
 
 
 @router.patch("/sites/{site_id}", response_model=SiteViewResponse)

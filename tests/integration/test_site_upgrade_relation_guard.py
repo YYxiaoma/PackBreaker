@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from backend.app.domain.site_config import DATABASE_SITE_KINDS, PERSISTED_SITE_KINDS
 from backend.app.infrastructure import runtime as runtime_module
@@ -15,6 +16,11 @@ from backend.app.infrastructure.backups import BackupError
 from backend.app.infrastructure.persistence.database import sqlite_database_url
 from backend.app.infrastructure.runtime import InstanceLock
 from backend.app.infrastructure.upgrades import upgrade_database_safely
+
+
+def _head_revision() -> str:
+    """避免每次加迁移都要改测试里的硬编码版本号。"""
+    return ScriptDirectory.from_config(Config("alembic.ini")).get_current_head() or ""
 
 
 def _historic_linked_database(path: Path) -> None:
@@ -129,7 +135,7 @@ def test_v110_formal_adjacent_sqlite_upgrade_preserves_existing_site_task_and_se
     assert _identity(database) == before
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0056_movie_dedup_shared_link_bytes",
+            _head_revision(),
         )
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -403,7 +409,7 @@ def test_v114_site_profile_migration_downgrade_and_reupgrade_are_isolated(
     command.upgrade(config, "head")
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0056_movie_dedup_shared_link_bytes",
+            _head_revision(),
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)

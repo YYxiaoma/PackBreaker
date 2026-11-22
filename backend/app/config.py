@@ -84,6 +84,19 @@ class AppSettings(BaseSettings):
     notification_driver_limit: int = Field(default=50, ge=1, le=500)
     notification_max_attempts: int = Field(default=5, ge=1, le=20)
     ai_telegram_driver_interval_seconds: float = Field(default=1.0, ge=0.2, le=3600.0)
+    # 做种健康巡查：定时读库展示，不做实时跟踪。默认 6 小时一轮。
+    seeding_health_enabled: bool = True
+    seeding_health_interval_hours: int = Field(default=6, ge=1, le=24)
+    seeding_health_startup_delay_seconds: float = Field(default=60.0, ge=0.0, le=3600.0)
+    seeding_health_run_timeout_seconds: float = Field(default=1200.0, ge=30.0, le=7200.0)
+    seeding_health_confirm_threshold: int = Field(default=2, ge=1, le=10)
+    seeding_health_detail_ttl_hours: int = Field(default=72, ge=1, le=336)
+    seeding_health_degrade_ratio: float = Field(default=0.5, ge=0.1, le=1.0)
+    seeding_health_tracker_batch: int = Field(default=50, ge=1, le=200)
+    seeding_health_max_watches: int = Field(default=20000, ge=100, le=200000)
+    seeding_health_site_probe_budget: int = Field(default=20, ge=1, le=2000)
+    # 站点侧核对会按站点请求间隔逐个访问详情页，7k 规模的库建议按需开启。
+    seeding_health_site_probe_enabled: bool = False
     ai_telegram_poll_timeout_seconds: int = Field(default=20, ge=5, le=50)
     ai_telegram_poll_limit: int = Field(default=20, ge=1, le=100)
     backup_driver_interval_seconds: float = Field(default=60.0, ge=1.0, le=3600.0)

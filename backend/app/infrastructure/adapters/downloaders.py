@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -36,6 +36,12 @@ _SEEDING_STATES = frozenset({"uploading", "stalledUP", "queuedUP", "forcedUP"})
 _TRANSMISSION_STOPPED = 0
 _TRANSMISSION_CHECKING_STATES = frozenset({1, 2})
 _TRANSMISSION_SEEDING_STATES = frozenset({5, 6})
+TRACKER_STATE_OK = "OK"
+TRACKER_STATE_ERROR = "ERROR"
+TRACKER_STATE_UNKNOWN = "UNKNOWN"
+_TRACKER_STATES = frozenset({TRACKER_STATE_OK, TRACKER_STATE_ERROR, TRACKER_STATE_UNKNOWN})
+_QBITTORRENT_TRACKER_WORKING = 2
+_QBITTORRENT_TRACKER_NOT_WORKING = 4
 
 
 class DownloaderAdapterError(RuntimeError):
@@ -62,6 +68,14 @@ class DownloaderTorrent:
     tracker: str | None
     save_path: str
     content_path: str | None
+    # 做种健康巡查所需的只读观测字段；下载器未提供时保持 None，绝不猜测。
+    seeding_time_seconds: int | None = None
+    added_at: datetime | None = None
+    tracker_state: str | None = None
+    tracker_message: str | None = None
+    tracker_last_announce_at: datetime | None = None
+    # 种子自带 comment，身份解析（站点详情页链接）直接读它，无需导出 .torrent。
+    comment: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name or len(self.name) > 4096:
@@ -74,10 +88,49 @@ class DownloaderTorrent:
             raise ValueError("torrent 大小必须是整数")
         if self.size_bytes < 0:
             raise ValueError("torrent 大小不能小于 0")
+        if self.seeding_time_seconds is not None and (
+            isinstance(self.seeding_time_seconds, bool)
+            or not isinstance(self.seeding_time_seconds, int)
+            or self.seeding_time_seconds < 0
+        ):
+            raise ValueError("torrent 做种时长必须是非负整数")
+        if self.added_at is not None and not isinstance(self.added_at, datetime):
+            raise ValueError("torrent 添加时间必须是 datetime")
+        if self.tracker_state is not None and self.tracker_state not in _TRACKER_STATES:
+            raise ValueError("torrent tracker 状态无效")
+        if self.tracker_last_announce_at is not None and not isinstance(
+            self.tracker_last_announce_at, datetime
+        ):
+            raise ValueError("torrent tracker 最后通告时间必须是 datetime")
+        if self.comment is not None and not isinstance(self.comment, str):
+            raise ValueError("torrent comment 必须是字符串")
+
+
+@dataclass(frozen=True, slots=True)
+class DownloaderTrackerState:
+    """单个种子的 tracker 观测结果。message 保留原始文案，供用户自行判断。"""
+
+    state: str
+    message: str | None = None
+    last_announce_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.state not in _TRACKER_STATES:
+            raise ValueError("tracker 状态无效")
 
 
 class DownloaderTorrentListAdapter(Protocol):
     async def list_torrents(self) -> tuple[DownloaderTorrent, ...]: ...
+
+
+class DownloaderTrackerProbeAdapter(Protocol):
+    async def get_tracker_states(
+        self, torrent_hashes: tuple[str, ...]
+    ) -> dict[str, DownloaderTrackerState]: ...
+
+
+class DownloaderTorrentExportAdapter(Protocol):
+    async def export_torrent(self, torrent_hash: str) -> bytes: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -549,6 +602,9 @@ class QbittorrentAdapter:
                 tracker = raw.get("tracker", "")
                 save_path = raw.get("save_path")
                 content_path = raw.get("content_path")
+                seeding_time = raw.get("seeding_time")
+                added_on = raw.get("added_on")
+                comment = raw.get("comment")
                 if (
                     not isinstance(torrent_hash, str)
                     or not isinstance(name, str)
@@ -581,6 +637,9 @@ class QbittorrentAdapter:
                             content_path=(
                                 normalize_remote_path(content_path) if content_path else None
                             ),
+                            seeding_time_seconds=_optional_seeding_seconds(seeding_time),
+                            added_at=_optional_unix_datetime(added_on),
+                            comment=comment if isinstance(comment, str) else None,
                         )
                     )
                 except (ValueError, TypeError) as exc:
@@ -588,6 +647,54 @@ class QbittorrentAdapter:
                         "DOWNLOADER_INVALID_RESPONSE", "qBittorrent torrent 列表字段无效"
                     ) from exc
             return tuple(items)
+
+    async def get_tracker_states(
+        self, torrent_hashes: tuple[str, ...]
+    ) -> dict[str, DownloaderTrackerState]:
+        """Read tracker status per hash. qBittorrent exposes no batch form.
+
+        Callers decide the sampling policy; this method performs exactly one
+        request per hash and never retries.
+        """
+        normalized = tuple(dict.fromkeys(_normalize_torrent_hash(item) for item in torrent_hashes))
+        if not normalized:
+            return {}
+        states: dict[str, DownloaderTrackerState] = {}
+        async with self._authenticated_client() as client:
+            for torrent_hash in normalized:
+                response = await client.get(
+                    f"{self._base_url}/api/v2/torrents/trackers",
+                    params={"hash": torrent_hash},
+                )
+                self._raise_for_probe_status(response)
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_INVALID_RESPONSE", "qBittorrent tracker 列表响应无法解析"
+                    ) from exc
+                if not isinstance(payload, list):
+                    raise DownloaderAdapterError(
+                        "DOWNLOADER_INVALID_RESPONSE", "qBittorrent tracker 列表响应格式无效"
+                    )
+                states[torrent_hash] = _qbittorrent_tracker_state(payload)
+        return states
+
+    async def export_torrent(self, torrent_hash: str) -> bytes:
+        """Export the stored .torrent; used once to resolve site identity."""
+        normalized = _normalize_torrent_hash(torrent_hash)
+        async with self._authenticated_client() as client:
+            response = await client.get(
+                f"{self._base_url}/api/v2/torrents/export",
+                params={"hash": normalized},
+            )
+            self._raise_for_probe_status(response)
+            content = response.content
+        if not content or content[:1] != b"d":
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "qBittorrent 导出的 torrent 内容无效"
+            )
+        return content
 
     async def stop_torrent(self, torrent_hash: str) -> None:
         await self._torrent_action("stop", torrent_hash)
@@ -1021,6 +1128,10 @@ class TransmissionAdapter:
                     "labels",
                     "percent_done",
                     "total_size",
+                    "secondsSeeding",
+                    "addedDate",
+                    "trackerStats",
+                    "comment",
                 ]
             },
         )
@@ -1042,6 +1153,10 @@ class TransmissionAdapter:
             labels = raw.get("labels")
             percent_done = raw.get("percent_done")
             total_size = raw.get("total_size")
+            seconds_seeding = raw.get("secondsSeeding")
+            added_date = raw.get("addedDate")
+            tracker_stats = raw.get("trackerStats")
+            comment = raw.get("comment")
             if (
                 not isinstance(torrent_hash, str)
                 or not isinstance(name, str)
@@ -1058,6 +1173,9 @@ class TransmissionAdapter:
                 raise DownloaderAdapterError(
                     "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 列表字段无效"
                 )
+            tracker_state, tracker_message, last_announce_at = _transmission_tracker_state(
+                tracker_stats
+            )
             try:
                 normalized_dir = normalize_remote_path(download_dir)
                 items.append(
@@ -1072,6 +1190,12 @@ class TransmissionAdapter:
                         tracker=None,
                         save_path=normalized_dir,
                         content_path=_remote_child(normalized_dir, name),
+                        seeding_time_seconds=_optional_seeding_seconds(seconds_seeding),
+                        added_at=_optional_unix_datetime(added_date),
+                        tracker_state=tracker_state,
+                        tracker_message=tracker_message,
+                        tracker_last_announce_at=last_announce_at,
+                        comment=comment if isinstance(comment, str) else None,
                     )
                 )
             except (ValueError, TypeError) as exc:
@@ -1079,6 +1203,68 @@ class TransmissionAdapter:
                     "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 列表字段无效"
                 ) from exc
         return tuple(items)
+
+    async def get_tracker_states(
+        self, torrent_hashes: tuple[str, ...]
+    ) -> dict[str, DownloaderTrackerState]:
+        """Re-read tracker stats for explicit hash sets.
+
+        The list phase already returns tracker_state, so this exists for
+        samplers that need a fresh value without a full list refresh.
+        """
+        normalized = tuple(dict.fromkeys(_normalize_torrent_hash(item) for item in torrent_hashes))
+        if not normalized:
+            return {}
+        result, _ = await self._rpc(
+            "torrent_get",
+            {"ids": list(normalized), "fields": ["hash_string", "trackerStats"]},
+        )
+        raw_torrents = result.get("torrents")
+        if not isinstance(raw_torrents, list):
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission tracker 响应格式无效"
+            )
+        states: dict[str, DownloaderTrackerState] = {}
+        for raw in raw_torrents:
+            if not isinstance(raw, dict):
+                continue
+            torrent_hash = raw.get("hash_string")
+            if not isinstance(torrent_hash, str):
+                continue
+            state, message, last_announce_at = _transmission_tracker_state(raw.get("trackerStats"))
+            states[_normalize_torrent_hash(torrent_hash)] = DownloaderTrackerState(
+                state=state, message=message, last_announce_at=last_announce_at
+            )
+        return states
+
+    async def export_torrent(self, torrent_hash: str) -> bytes:
+        normalized = _normalize_torrent_hash(torrent_hash)
+        result, _ = await self._rpc(
+            "torrent_get",
+            {"ids": [normalized], "fields": ["hash_string", "torrentFile"]},
+        )
+        raw_torrents = result.get("torrents")
+        if not isinstance(raw_torrents, list) or not raw_torrents:
+            raise DownloaderAdapterError(
+                "DOWNLOADER_TORRENT_NOT_FOUND", "Transmission 中找不到该种子"
+            )
+        raw = raw_torrents[0]
+        encoded = raw.get("torrentFile") if isinstance(raw, dict) else None
+        if not isinstance(encoded, str) or not encoded:
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission 未返回 torrent 内容"
+            )
+        try:
+            content = b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission torrent 内容无法解码"
+            ) from exc
+        if content[:1] != b"d":
+            raise DownloaderAdapterError(
+                "DOWNLOADER_INVALID_RESPONSE", "Transmission 导出的 torrent 内容无效"
+            )
+        return content
 
     async def stop_torrent(self, torrent_hash: str) -> None:
         await self._torrent_action("torrent_stop", torrent_hash)
@@ -1323,3 +1509,83 @@ def _remote_child(root: str, name: str) -> str:
     if "\\" in root or (len(root) >= 2 and root[1] == ":"):
         return normalize_remote_path(str(PureWindowsPath(root) / name))
     return normalize_remote_path(str(PurePosixPath(root) / name))
+
+
+def _optional_seeding_seconds(value: object) -> int | None:
+    """Accept only a non-negative numeric seeding duration."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    seconds = int(value)
+    return seconds if seconds >= 0 else None
+
+
+def _optional_unix_datetime(value: object) -> datetime | None:
+    """Convert a positive unix timestamp to an aware UTC datetime."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value), tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _qbittorrent_tracker_state(payload: list[object]) -> DownloaderTrackerState:
+    """Collapse qBittorrent tracker rows into one verdict.
+
+    qBittorrent mixes DHT/PeX/LSD pseudo-rows (url starts with "**") into the
+    same payload; those are not trackers and must not affect the verdict.
+    """
+    entries = [
+        item
+        for item in payload
+        if isinstance(item, dict)
+        and isinstance(item.get("url"), str)
+        and not str(item["url"]).startswith("**")
+    ]
+    if not entries:
+        return DownloaderTrackerState(TRACKER_STATE_UNKNOWN)
+    if any(item.get("status") == _QBITTORRENT_TRACKER_WORKING for item in entries):
+        return DownloaderTrackerState(TRACKER_STATE_OK)
+    failed = [item for item in entries if item.get("status") == _QBITTORRENT_TRACKER_NOT_WORKING]
+    if len(failed) == len(entries):
+        message = next((str(item.get("msg")) for item in failed if item.get("msg")), None)
+        return DownloaderTrackerState(TRACKER_STATE_ERROR, message)
+    return DownloaderTrackerState(TRACKER_STATE_UNKNOWN)
+
+
+def _transmission_tracker_state(raw: object) -> tuple[str, str | None, datetime | None]:
+    """Collapse Transmission trackerStats into (state, message, last_announce).
+
+    A torrent with several trackers is healthy when at least one announce
+    succeeds; only an all-failed set is reported as an error.
+    """
+    if not isinstance(raw, list):
+        return TRACKER_STATE_UNKNOWN, None, None
+    stats = [item for item in raw if isinstance(item, dict)]
+    if not stats:
+        return TRACKER_STATE_UNKNOWN, None, None
+    last_announce_at = _latest_announce_at(stats)
+    if any(item.get("lastAnnounceSucceeded") is True for item in stats):
+        return TRACKER_STATE_OK, None, last_announce_at
+    results = [
+        str(item["lastAnnounceResult"])
+        for item in stats
+        if isinstance(item.get("lastAnnounceResult"), str) and item["lastAnnounceResult"]
+    ]
+    return TRACKER_STATE_ERROR, results[0] if results else None, last_announce_at
+
+
+def _latest_announce_at(stats: list[dict[str, object]]) -> datetime | None:
+    stamps: list[float] = []
+    for item in stats:
+        value = item.get("lastAnnounceTime")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        stamp = float(value)
+        if stamp > 0:
+            stamps.append(stamp)
+    if not stamps:
+        return None
+    return _optional_unix_datetime(max(stamps))

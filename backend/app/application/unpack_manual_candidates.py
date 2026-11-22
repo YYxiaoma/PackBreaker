@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import re
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Any, Protocol
-from urllib.parse import parse_qs, urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -19,6 +17,11 @@ from backend.app.application.unpack_manual_torrents import (
 )
 from backend.app.application.unpack_matching import _task_unit_from_item
 from backend.app.domain.media_matching import MediaDescriptor, MediaFileSummary, parse_media_name
+from backend.app.domain.site_config import SiteKind
+from backend.app.domain.site_detail_url import (
+    build_torrent_detail_url,
+    parse_torrent_detail_id,
+)
 from backend.app.domain.site_search import CandidateMeta
 from backend.app.domain.torrent import TorrentMeta
 from backend.app.domain.unpack import UnpackItemStatus
@@ -101,6 +104,18 @@ class _ResolvedCandidate:
     imdb_id: str | None
     douban_id: str | None
     assessment: Any
+
+
+def _coerce_site_kind(value: object) -> SiteKind | None:
+    """站点类型可能来自枚举或字符串；未知时返回 None，只影响提示文案。"""
+    if isinstance(value, SiteKind):
+        return value
+    if isinstance(value, str):
+        try:
+            return SiteKind(value)
+        except ValueError:
+            return None
+    return None
 
 
 class UnpackManualCandidateService:
@@ -316,7 +331,9 @@ class UnpackManualCandidateService:
 
         candidate_meta: CandidateMeta | None = None
         if has_url:
-            torrent_id = self._torrent_id_from_details_url(source_url or "", site.base_url)
+            torrent_id = self._torrent_id_from_details_url(
+                source_url or "", site.base_url, _coerce_site_kind(getattr(site, "type", None))
+            )
             try:
                 async with asyncio.timeout(self._fetch_timeout_seconds):
                     details = await binding.adapter.fetch_details(torrent_id)
@@ -486,32 +503,23 @@ class UnpackManualCandidateService:
             )
 
     @staticmethod
-    def _torrent_id_from_details_url(value: str, base_url: str) -> str:
-        try:
-            parsed = urlsplit(value.strip())
-            base = urlsplit(base_url)
-            if (
-                parsed.scheme not in {"http", "https"}
-                or parsed.username is not None
-                or parsed.password is not None
-                or parsed.fragment
-                or parsed.scheme.casefold() != base.scheme.casefold()
-                or (parsed.hostname or "").casefold() != (base.hostname or "").casefold()
-                or parsed.port != base.port
-                or PurePosixPath(parsed.path).name.casefold() != "details.php"
-            ):
-                raise ValueError
-            values = parse_qs(parsed.query, keep_blank_values=True).get("id", [])
-            if len(values) != 1 or re.fullmatch(r"[0-9]{1,20}", values[0]) is None:
-                raise ValueError
-            return values[0]
-        except (TypeError, ValueError) as exc:
+    def _torrent_id_from_details_url(
+        value: str, base_url: str, site_kind: SiteKind | None = None
+    ) -> str:
+        torrent_id = parse_torrent_detail_id(value, base_url)
+        if torrent_id is None:
+            sample = (
+                f"（{build_torrent_detail_url(site_kind, base_url, '数字ID')}）"
+                if site_kind is not None
+                else ""
+            )
             raise ApplicationError(
                 code="UNPACK_MANUAL_CANDIDATE_URL_INVALID",
                 status=422,
                 title="种子详情链接无效",
-                detail="请输入所选站点自身的 details.php?id=数字 链接，不支持任意外部 URL",
-            ) from exc
+                detail=(f"请输入所选站点自身的种子详情链接{sample}，不支持任意外部 URL"),
+            )
+        return torrent_id
 
     def _preview_view(self, resolved: _ResolvedCandidate) -> ManualCandidatePreview:
         meta = resolved.torrent_meta

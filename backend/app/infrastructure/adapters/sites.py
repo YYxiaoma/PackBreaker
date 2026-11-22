@@ -13,6 +13,7 @@ from backend.app.domain.media_matching import ExternalMediaId
 from backend.app.domain.site_adapter import (
     SiteAdapter,
     SiteConnectionResult,
+    SiteSeedingList,
     SiteUserProfile,
     TorrentDetails,
     TorrentPayload,
@@ -391,6 +392,9 @@ class MTeamAdapter:
         has_more = total_hint is not None and query.page * query.page_size < total_hint
         return SearchPage(_MTEAM_SITE_ID, query.page, items, has_more, total_hint)
 
+    async def list_seeding(self, cursor: str | None = None) -> SiteSeedingList:
+        return SiteSeedingList(supported=False)
+
     async def fetch_details(self, torrent_id: str) -> TorrentDetails:
         normalized_id = _validate_torrent_id(torrent_id)
         data = await self._post_api("/api/torrent/detail", form={"id": normalized_id})
@@ -451,6 +455,9 @@ class MTeamAdapter:
         return envelope["data"]
 
     def _raise_for_http_status(self, response: httpx2.Response) -> None:
+        if response.status_code == 404:
+            # 与 NexusPHP 对齐：只有明确的资源不存在才能判为站侧删种。
+            raise SiteAdapterError("SITE_NOT_FOUND", "M-Team 该资源不存在")
         if response.status_code in {401, 403}:
             raise SiteAdapterError("SITE_AUTH_FAILED", "M-Team API Key 无效或权限不足")
         if response.status_code == 429:

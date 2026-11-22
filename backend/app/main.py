@@ -15,6 +15,7 @@ from backend.app.api.auth import router as auth_router
 from backend.app.api.cookiecloud import router as cookiecloud_router
 from backend.app.api.downloaders import router as downloader_router
 from backend.app.api.health import router as health_router
+from backend.app.api.monitoring import router as monitoring_router
 from backend.app.api.movie_dedup import router as movie_dedup_router
 from backend.app.api.notifications import router as notification_router
 from backend.app.api.sites import router as site_router
@@ -37,6 +38,11 @@ from backend.app.application.movie_dedup_driver import MovieDedupDriver
 from backend.app.application.notification_driver import NotificationDriver
 from backend.app.application.notifications import NotificationService
 from backend.app.application.secrets import SecretStore
+from backend.app.application.seeding_health import (
+    SeedingHealthService,
+    SeedingHealthSettings,
+)
+from backend.app.application.seeding_health_driver import SeedingHealthDriver
 from backend.app.application.site_statistics_driver import SiteStatisticsDriver
 from backend.app.application.sites import SiteService, sync_fixed_site_base_urls
 from backend.app.application.system_health import SystemResourceSampler
@@ -319,6 +325,31 @@ def create_app(
             timezone=resolved_settings.timezone,
         )
         app.state.site_statistics_driver = site_statistics_driver
+        seeding_health_settings = SeedingHealthSettings(
+            interval_hours=resolved_settings.seeding_health_interval_hours,
+            confirm_threshold=resolved_settings.seeding_health_confirm_threshold,
+            detail_ttl_hours=resolved_settings.seeding_health_detail_ttl_hours,
+            degrade_ratio=resolved_settings.seeding_health_degrade_ratio,
+            tracker_batch=resolved_settings.seeding_health_tracker_batch,
+            max_watches=resolved_settings.seeding_health_max_watches,
+            site_probe_budget=resolved_settings.seeding_health_site_probe_budget,
+            site_probe_enabled=resolved_settings.seeding_health_site_probe_enabled,
+            run_timeout_seconds=resolved_settings.seeding_health_run_timeout_seconds,
+        )
+        seeding_health_service = SeedingHealthService(
+            resolved_runtime.session_factory,
+            downloader_service,
+            site_service,
+            settings=seeding_health_settings,
+        )
+        app.state.seeding_health_service = seeding_health_service
+        seeding_health_driver = SeedingHealthDriver(
+            seeding_health_service,
+            interval_hours=resolved_settings.seeding_health_interval_hours,
+            enabled=resolved_settings.seeding_health_enabled,
+            startup_delay_seconds=resolved_settings.seeding_health_startup_delay_seconds,
+        )
+        app.state.seeding_health_driver = seeding_health_driver
         unpack_manual_candidate_service = UnpackManualCandidateService(
             resolved_runtime.session_factory,
             site_service,
@@ -516,6 +547,7 @@ def create_app(
         app.state.ai_telegram_driver = ai_telegram_driver
         cookiecloud_driver.start()
         site_statistics_driver.start()
+        seeding_health_driver.start()
         unpack_template_import_driver.start()
         backup_driver.start()
         ai_telegram_driver.start()
@@ -529,6 +561,7 @@ def create_app(
             await ai_telegram_driver.stop()
             await backup_driver.stop()
             await site_statistics_driver.stop()
+            await seeding_health_driver.stop()
             await unpack_template_import_driver.stop()
             await cookiecloud_driver.stop()
             await notification_driver.stop()
@@ -629,6 +662,7 @@ def create_app(
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(movie_dedup_router, prefix="/api/v1")
     app.include_router(notification_router, prefix="/api/v1")
+    app.include_router(monitoring_router, prefix="/api/v1")
     app.include_router(site_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
     app.include_router(unpack_router, prefix="/api/v1")

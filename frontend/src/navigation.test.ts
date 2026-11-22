@@ -13,10 +13,11 @@ import {
 
 describe('v1.1.4 navigation', () => {
   it('defines the approved four-level primary navigation', () => {
-    expect(PRIMARY_ROUTE_NAMES).toEqual(['总览', '任务中心', '配置中心', '系统管理']);
+    expect(PRIMARY_ROUTE_NAMES).toEqual(['总览', '任务中心', '监控中心', '配置中心', '系统管理']);
     expect(NAVIGATION_GROUPS).toEqual([
       { name: '总览', children: [] },
       { name: '任务中心', children: ['数据拆包', '数据去重'] },
+      { name: '监控中心', children: ['做种健康巡查'] },
       { name: '配置中心', children: ['CookieCloud配置', '站点配置', '下载器配置'] },
       { name: '系统管理', children: ['通知配置', '日志浏览', 'Agent配置', '备份恢复'] },
     ]);
@@ -30,6 +31,9 @@ describe('v1.1.4 navigation', () => {
     expect(getPrimaryRoute(SECONDARY_ROUTE_PATHS.数据拆包)).toBe('任务中心');
     expect(getPrimaryRoute(SECONDARY_ROUTE_PATHS.站点配置)).toBe('配置中心');
     expect(getPrimaryRoute(SECONDARY_ROUTE_PATHS.Agent配置)).toBe('系统管理');
+    expect(normalizeRoute('监控中心')).toBe(SECONDARY_ROUTE_PATHS.做种健康巡查);
+    expect(getPrimaryRoute(SECONDARY_ROUTE_PATHS.做种健康巡查)).toBe('监控中心');
+    expect(normalizeRoute('做种巡查')).toBe(SECONDARY_ROUTE_PATHS.做种健康巡查);
   });
 
   it('accepts every new child label and keeps About outside the primary groups', () => {

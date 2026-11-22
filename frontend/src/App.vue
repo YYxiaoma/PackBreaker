@@ -16,10 +16,13 @@ import {
   Cloud,
   HardDrive,
   Settings2,
+  Activity,
+  HeartPulse,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import TaskCenterV2 from './components/TaskCenterV2.vue';
 import OverviewDashboard from './components/OverviewDashboard.vue';
+import SeedingHealthPanel from './components/SeedingHealthPanel.vue';
 import WorkspaceManagement from './components/WorkspaceManagement.vue';
 import MovieDedupPanel from './components/MovieDedupPanel.vue';
 import AuthGate from './components/AuthGate.vue';
@@ -99,6 +102,7 @@ type NavGroup = {
 const primaryIconMap: Record<PrimaryRoute, IconComponent> = {
   总览: LayoutDashboard,
   任务中心: ListChecks,
+  监控中心: Activity,
   配置中心: Settings2,
   系统管理: Settings,
 };
@@ -106,6 +110,7 @@ const primaryIconMap: Record<PrimaryRoute, IconComponent> = {
 const childIconMap: Record<SecondaryRoute, IconComponent> = {
   数据拆包: FolderSearch,
   数据去重: Copy,
+  做种健康巡查: HeartPulse,
   CookieCloud配置: Cloud,
   站点配置: Globe,
   下载器配置: HardDrive,
@@ -142,6 +147,7 @@ const searchableNav: SearchEntry[] = [
           {
             数据拆包: '任务 手动 监控 执行 重试',
             数据去重: '任务 去重 影片 文件',
+            做种健康巡查: '做种 健康 巡查 异常 H&R tracker 删种',
             CookieCloud配置: 'cookie cloud 同步',
             站点配置: '站点 pt cookie api',
             下载器配置: '下载器 qb transmission',
@@ -417,6 +423,10 @@ function openVersionPopover(): void {
         <AboutPage v-else-if="route === '关于'" @open-version="openVersionPopover" />
         <TaskCenterV2 v-else-if="route === '任务中心/数据拆包'" />
         <MovieDedupPanel v-else-if="route === '任务中心/数据去重'" />
+        <SeedingHealthPanel
+          v-else-if="route === '监控中心/做种健康巡查'"
+          @navigate="selectRoute($event)"
+        />
         <WorkspaceManagement v-else :page="route" />
       </main>
     </div>
