@@ -31,6 +31,8 @@ interface DownloaderDraft {
 }
 
 const store = useDownloaderStore();
+let disposed = false;
+let refreshSequence = 0;
 const { items, loading, error, busy, metrics, metricErrors } = storeToRefs(store);
 const dialog = ref(false);
 const saving = ref(false);
@@ -60,6 +62,8 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  disposed = true;
+  refreshSequence += 1;
   if (metricsTimer) clearInterval(metricsTimer);
 });
 
@@ -93,11 +97,14 @@ function problemText(problem: ApiProblem): string {
 }
 
 async function refresh(notify = true) {
+  const current = ++refreshSequence;
   try {
     await store.refresh();
     await store.refreshMetrics();
+    if (disposed || current !== refreshSequence) return;
     if (notify) ElMessage.success('下载器配置与运行指标已刷新');
   } catch (caught) {
+    if (disposed || current !== refreshSequence) return;
     if (notify) ElMessage.error(problemText(toApiProblem(caught)));
   }
 }
@@ -685,11 +692,13 @@ async function remove(item: Downloader) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .mapping-editor-row {
+  .mapping-editor-row,
+  .mapping-editor-labels {
     grid-template-columns: 1fr auto;
   }
 
-  .mapping-editor-row > :nth-child(2) {
+  .mapping-editor-row > :nth-child(2),
+  .mapping-editor-labels > :nth-child(2) {
     display: none;
   }
 

@@ -30,6 +30,7 @@ from backend.app.domain.unpack_execution_plan import (
 )
 from backend.app.domain.verification import VerificationLevel
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     Site,
     UnpackDefinition,
@@ -50,7 +51,7 @@ MOVIE_FILE = "Tricky.Brains.1991.BluRay.mkv"
 
 def _factory() -> tuple[sessionmaker[Session], Path]:
     root = Path(__file__).resolve().parent / "_tmpl_tmp"
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine, expire_on_commit=False, autoflush=False

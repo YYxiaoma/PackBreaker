@@ -275,6 +275,16 @@ async def delete_movie_dedup_job(
     movie_dedup_service(request).delete(job_id)
 
 
+@router.post("/movie-dedup/jobs/{job_id}/reconcile", response_model=MovieDedupJobResponse)
+async def reconcile_movie_dedup_job(
+    job_id: str,
+    request: Request,
+    _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+) -> MovieDedupJobResponse:
+    """Manual recovery entry for jobs stuck in RECOVERY_REQUIRED."""
+    return _job_response(movie_dedup_service(request).reconcile(job_id))
+
+
 @router.post("/movie-dedup/jobs/{job_id}/start", response_model=MovieDedupJobResponse)
 async def start_movie_dedup_job(
     job_id: str,

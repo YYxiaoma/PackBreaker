@@ -26,6 +26,7 @@ from backend.app.domain.verification import VerificationLevel
 from backend.app.infrastructure.adapters.downloaders import QbittorrentTorrentState
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
     UnpackExecution,
@@ -129,7 +130,7 @@ def _fixture(
     )
     target = output / "Pack" / "Movie.mkv"
 
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine, expire_on_commit=False, autoflush=False

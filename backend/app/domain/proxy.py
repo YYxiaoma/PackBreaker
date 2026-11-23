@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from backend.app.domain.outbound_safety import assert_safe_outbound_host
+
 
 @dataclass(frozen=True, slots=True)
 class ProxyConfig:
@@ -23,6 +25,7 @@ class ProxyConfig:
                 raise ValueError("代理地址格式无效")
             if any(token in self.host for token in ("://", "@", "/", "?", "#", "\r", "\n", "\x00")):
                 raise ValueError("代理地址只能填写主机名或 IP")
+            assert_safe_outbound_host(self.host, label="代理")
         if self.username is not None and (
             len(self.username) > 255 or any(char in self.username for char in ("\r", "\n", "\x00"))
         ):

@@ -22,6 +22,7 @@ from backend.app.domain.unpack import (
 from backend.app.infrastructure.adapters.downloaders import DownloaderTorrent
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     Downloader,
     Site,
@@ -75,7 +76,7 @@ def _services(
     data_root = tmp_path / "data"
     output = data_root / "seeding"
     output.mkdir(parents=True)
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine,

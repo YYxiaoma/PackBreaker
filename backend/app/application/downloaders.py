@@ -286,7 +286,9 @@ class DownloaderService:
             capabilities = dict(record.capabilities)
             base_url = record.base_url
 
-        credential = self._decode_credential(self._secret_store.get(secret_id))
+        credential = self._decode_credential(
+            self._secret_store.get(secret_id, expected_kind=_CREDENTIAL_KIND)
+        )
         return QbittorrentWriteBinding(
             downloader_id=snapshot_id,
             downloader_version=snapshot_version,
@@ -352,7 +354,9 @@ class DownloaderService:
             base_url = record.base_url
 
         credential = (
-            self._decode_credential(self._secret_store.get(secret_id))
+            self._decode_credential(
+                self._secret_store.get(secret_id, expected_kind=_CREDENTIAL_KIND)
+            )
             if secret_id is not None
             else None
         )
@@ -446,6 +450,9 @@ class DownloaderService:
             async with asyncio.timeout(_CREATE_PROBE_TIMEOUT_SECONDS):
                 await self.test_connection(created.id)
         except (TimeoutError, ApplicationError):
+            # Keep the configuration enabled for editing: write operations are
+            # still gated on connection_status == OK, and an operator can test
+            # the connection again without having to recreate the downloader.
             pass
         return self.get(created.id)
 
@@ -594,7 +601,9 @@ class DownloaderService:
     async def test_connection(self, downloader_id: str) -> dict[str, object]:
         snapshot = self._connection_snapshot(downloader_id)
         credential = (
-            self._decode_credential(self._secret_store.get(snapshot.secret_id))
+            self._decode_credential(
+                self._secret_store.get(snapshot.secret_id, expected_kind=_CREDENTIAL_KIND)
+            )
             if snapshot.secret_id is not None
             else None
         )
@@ -658,7 +667,9 @@ class DownloaderService:
     async def runtime_metrics(self, downloader_id: str) -> DownloaderRuntimeMetrics:
         snapshot = self._connection_snapshot(downloader_id)
         credential = (
-            self._decode_credential(self._secret_store.get(snapshot.secret_id))
+            self._decode_credential(
+                self._secret_store.get(snapshot.secret_id, expected_kind=_CREDENTIAL_KIND)
+            )
             if snapshot.secret_id is not None
             else None
         )

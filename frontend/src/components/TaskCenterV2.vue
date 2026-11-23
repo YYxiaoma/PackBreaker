@@ -261,6 +261,10 @@ const detailTimeline = computed(() =>
 );
 
 const diagnosticsGuard = createUnpackDiagnosticsGuard();
+let disposed = false;
+let refreshRequestId = 0;
+let reviewRequestId = 0;
+let manualPreviewRequestId = 0;
 // Invalidate immediately on close, including requests that finish before the
 // next Vue render. Opening another movie generates a new independent ticket.
 watch(
@@ -271,6 +275,10 @@ watch(
   { flush: 'sync' },
 );
 onBeforeUnmount(() => {
+  disposed = true;
+  refreshRequestId += 1;
+  reviewRequestId += 1;
+  manualPreviewRequestId += 1;
   diagnosticsGuard.close();
   unpackTableResizeObserver?.disconnect();
 });
@@ -610,6 +618,7 @@ function formatBytes(value: number | null | undefined): string {
 }
 
 async function refresh(): Promise<void> {
+  const current = ++refreshRequestId;
   loading.value = true;
   try {
     const [nextDefinitions, nextExecutions, nextSites, nextDownloaders, nextTemplates] =
@@ -620,15 +629,17 @@ async function refresh(): Promise<void> {
         listDownloaders(),
         listUnpackTemplates(),
       ]);
+    if (disposed || current !== refreshRequestId) return;
     definitions.value = nextDefinitions;
     executions.value = nextExecutions;
     sites.value = nextSites;
     downloaders.value = nextDownloaders;
     templates.value = nextTemplates;
   } catch (caught) {
+    if (disposed || current !== refreshRequestId) return;
     ElMessage.error(toApiProblem(caught).message);
   } finally {
-    loading.value = false;
+    if (!disposed && current === refreshRequestId) loading.value = false;
   }
 }
 
@@ -2078,18 +2089,21 @@ async function deleteExecutionItem(item: UnpackExecutionItem): Promise<void> {
 }
 
 async function openReview(item: UnpackExecutionItem): Promise<void> {
+  const current = ++reviewRequestId;
   reviewLoading.value = true;
   reviewItem.value = item;
   reviewVisible.value = true;
   try {
     const result = await listUnpackItemCandidates(item.id);
+    if (disposed || current !== reviewRequestId || reviewItem.value?.id !== item.id) return;
     reviewCandidates.value = result;
     selectedCandidateId.value = result.default_candidate_id ?? '';
   } catch (caught) {
+    if (disposed || current !== reviewRequestId || reviewItem.value?.id !== item.id) return;
     ElMessage.error(toApiProblem(caught).message);
     reviewVisible.value = false;
   } finally {
-    reviewLoading.value = false;
+    if (current === reviewRequestId) reviewLoading.value = false;
   }
 }
 
@@ -2191,14 +2205,18 @@ async function previewManualCandidate(): Promise<void> {
     ElMessage.warning(caught instanceof Error ? caught.message : '请完善手动添加信息');
     return;
   }
+  const current = ++manualPreviewRequestId;
   manualCandidatePreviewLoading.value = true;
   manualCandidatePreview.value = null;
   try {
-    manualCandidatePreview.value = await previewManualUnpackCandidate(item.id, payload);
+    const preview = await previewManualUnpackCandidate(item.id, payload);
+    if (disposed || current !== manualPreviewRequestId || reviewItem.value?.id !== item.id) return;
+    manualCandidatePreview.value = preview;
   } catch (caught) {
+    if (disposed || current !== manualPreviewRequestId || reviewItem.value?.id !== item.id) return;
     ElMessage.error(toApiProblem(caught).message);
   } finally {
-    manualCandidatePreviewLoading.value = false;
+    if (current === manualPreviewRequestId) manualCandidatePreviewLoading.value = false;
   }
 }
 
@@ -5448,7 +5466,7 @@ onMounted(() => {
   color: #fff;
 }
 .wizard-step.is-complete {
-  color: var(--text);
+  color: var(--ink);
 }
 .wizard-step-label {
   overflow: hidden;
@@ -5505,7 +5523,7 @@ onMounted(() => {
 }
 .wizard-field-label {
   margin: 0 0 8px;
-  color: var(--text);
+  color: var(--ink);
   font-size: 13px;
   font-weight: 650;
 }
@@ -5530,7 +5548,7 @@ onMounted(() => {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
-  color: var(--text);
+  color: var(--ink);
   text-align: left;
   font: inherit;
   cursor: pointer;
@@ -5806,7 +5824,7 @@ onMounted(() => {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--canvas);
-  color: var(--text);
+  color: var(--ink);
   text-align: left;
   font: inherit;
   cursor: pointer;
@@ -5906,7 +5924,7 @@ onMounted(() => {
 .review-list dd {
   min-width: 0;
   margin: 0;
-  color: var(--text);
+  color: var(--ink);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -5923,7 +5941,7 @@ onMounted(() => {
   padding: 11px 12px;
   border-radius: 8px;
   background: var(--blue-soft);
-  color: var(--text);
+  color: var(--ink);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -5983,5 +6001,20 @@ onMounted(() => {
   .inline-field {
     grid-template-columns: 1fr;
   }
+}
+:global(.dark) .table-note {
+  background: rgba(240, 163, 92, 0.12);
+  color: #f0a35c;
+}
+:global(.dark) .pipeline-step.done {
+  border-color: rgba(79, 209, 161, 0.4);
+  background: rgba(79, 209, 161, 0.1);
+}
+:global(.dark) .pipeline-step.active,
+:global(.dark) .source-box {
+  border-color: rgba(125, 171, 247, 0.4);
+}
+:global(.dark) .candidate-card.selected {
+  border-color: rgba(125, 171, 247, 0.6);
 }
 </style>

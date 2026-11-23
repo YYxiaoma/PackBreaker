@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
@@ -6,11 +7,13 @@ from typing import Annotated, Any, Literal, cast
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import String, func, or_, select
+from sqlalchemy import cast as sql_cast
 
 from backend.app.api.dependencies import (
     AccessPrincipal,
     admin_notification_service,
+    notification_service,
     require_admin_csrf_principal,
     require_admin_principal,
 )
@@ -37,6 +40,7 @@ from backend.app.application.system_upgrades import (
 )
 from backend.app.application.unpack_driver import UnpackDriver
 from backend.app.config import AppSettings
+from backend.app.domain.notification import NotificationEventType
 from backend.app.domain.unpack import TERMINAL_EXECUTION_STATUSES
 from backend.app.infrastructure.app_logging import redact_fields, sanitize_message
 from backend.app.infrastructure.backups import BackupError
@@ -453,6 +457,33 @@ def _task_event_level(event_code: str) -> OperationalLogLevel:
     return "INFO"
 
 
+def _task_event_level_predicate(level: OperationalLogLevel) -> Any:
+    """把事件级别下推到 SQL，与 `_task_event_level` 严格等价。
+
+    级别只由 event_code 子串决定，因此可以在取窗口前过滤；否则先 LIMIT 再
+    在 Python 里筛级别，窗口内较早的 ERROR 会被整批截断扔掉。
+    """
+    failed = TaskExecutionEvent.event_code.like("%FAILED%")
+    rejected = TaskExecutionEvent.event_code.like("%REJECTED%")
+    if level == "ERROR":
+        return failed
+    if level == "WARNING":
+        return rejected & ~failed
+    return ~failed & ~rejected
+
+
+_LIKE_ESCAPE = chr(92)
+
+
+def _like_pattern(value: str) -> str:
+    escaped = (
+        value.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", _LIKE_ESCAPE + "%")
+        .replace("_", _LIKE_ESCAPE + "_")
+    )
+    return f"%{escaped}%"
+
+
 def _task_event_logs(
     request: Request,
     *,
@@ -476,8 +507,9 @@ def _task_event_logs(
             TaskExecutionEvent.created_at <= now + timedelta(minutes=1),
         )
         .order_by(TaskExecutionEvent.created_at.desc(), TaskExecutionEvent.id.desc())
-        .limit(MAX_LOG_EXPORT_LIMIT + 1)
     )
+    if level is not None:
+        statement = statement.where(_task_event_level_predicate(level))
     if event_code:
         statement = statement.where(TaskExecutionEvent.event_code == event_code)
     if task_id:
@@ -488,6 +520,20 @@ def _task_event_logs(
         statement = statement.where(TaskExecutionEvent.trace_id == trace_id)
 
     normalized_query = query.strip().casefold() if query else ""
+    if normalized_query:
+        pattern = _like_pattern(normalized_query)
+        statement = statement.where(
+            or_(
+                TaskExecutionEvent.event_code.ilike(pattern, escape=_LIKE_ESCAPE),
+                TaskExecutionEvent.message.ilike(pattern, escape=_LIKE_ESCAPE),
+                TaskExecutionEvent.trace_id.ilike(pattern, escape=_LIKE_ESCAPE),
+                TaskExecutionEvent.execution_id.ilike(pattern, escape=_LIKE_ESCAPE),
+                TaskExecution.task_name.ilike(pattern, escape=_LIKE_ESCAPE),
+                sql_cast(TaskExecutionEvent.context, String).ilike(pattern, escape=_LIKE_ESCAPE),
+            )
+        )
+    # 过滤条件都已下推，LIMIT 现在只裁剪真正匹配的行。
+    statement = statement.limit(MAX_LOG_EXPORT_LIMIT + 1)
     entries: list[OperationalLogEntryResponse] = []
     with runtime.session_factory() as session:
         rows = session.execute(statement)
@@ -612,16 +658,27 @@ def _query_logs(
 
 
 def _health_service(request: Request) -> SystemHealthService:
+    """复用应用级服务实例；备份完整性校验的 5 分钟缓存挂在实例上，
+    每次请求重建会让缓存永不命中，首页轮询就会反复做全量 SHA256。"""
     runtime = cast(RuntimeManager, request.app.state.runtime)
-    registry = cast(SiteReliabilityRegistry, request.app.state.site_reliability_registry)
-    sampler = cast(SystemResourceSampler, request.app.state.resource_sampler)
-    return SystemHealthService(
+    state = request.app.state
+    cached = getattr(state, "system_health_service", None)
+    if isinstance(cached, SystemHealthService) and (
+        getattr(state, "system_health_service_runtime", None) is runtime
+    ):
+        return cached
+    registry = cast(SiteReliabilityRegistry, state.site_reliability_registry)
+    sampler = cast(SystemResourceSampler, state.resource_sampler)
+    service = SystemHealthService(
         runtime.session_factory,
         settings=runtime.settings,
         runtime=runtime,
         site_reliability_registry=registry,
         resource_sampler=sampler,
     )
+    state.system_health_service = service
+    state.system_health_service_runtime = runtime
+    return service
 
 
 async def _health_report(request: Request) -> SystemHealthReport:
@@ -707,6 +764,11 @@ async def system_upgrade_status(
         admin_notification_service(request).record_version_update(
             current_version=status.current_version,
             latest_version=status.latest_version,
+        )
+        notification_service(request).record_product_event(
+            NotificationEventType.VERSION_UPDATE_AVAILABLE,
+            subject_id=status.current_version,
+            detail=f"latest={status.latest_version}",
         )
     response = _system_upgrade_status_response(status)
     return JSONResponse(response.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
@@ -875,7 +937,9 @@ async def list_system_logs(
 ) -> OperationalLogListResponse:
     """查询有界、持久、已脱敏的本地运行日志；不读取 Docker daemon 日志。"""
 
-    result, _, _ = _query_logs(
+    # 日志读取会做文件扫描（最坏数百 MB），必须离开事件循环。
+    result, _, _ = await asyncio.to_thread(
+        _query_logs,
         request,
         window_minutes=window_minutes,
         limit=limit,
@@ -908,7 +972,8 @@ async def export_system_logs(
 ) -> Response:
     """导出同一受控查询结果；硬上限 2000 条并再次经过读取端脱敏。"""
 
-    result, max_file_bytes, backup_count = _query_logs(
+    result, max_file_bytes, backup_count = await asyncio.to_thread(
+        _query_logs,
         request,
         window_minutes=window_minutes,
         limit=limit,

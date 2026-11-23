@@ -9,8 +9,13 @@ from sqlalchemy import func, select
 
 from backend.app.api.dependencies import CSRF_COOKIE
 from backend.app.config import AppSettings
+from backend.app.domain.notification import PRODUCT_NOTIFICATION_EVENT_TYPES
 from backend.app.infrastructure.adapters.notifications import NotificationProviderFactory
-from backend.app.infrastructure.persistence.models import NotificationChannel, SecretRecord
+from backend.app.infrastructure.persistence.models import (
+    NotificationChannel,
+    NotificationOutbox,
+    SecretRecord,
+)
 from backend.app.main import create_app
 
 _PASSWORD = "synthetic correct horse battery staple"
@@ -74,12 +79,9 @@ def test_notification_channel_secret_is_encrypted_and_never_returned(tmp_path: P
         assert created.status_code == 201
         payload = created.json()
         assert payload["credential_configured"] is True
+        # 默认订阅必须与真正有生产者的产品事件集合一致。
         assert set(payload["event_types"]) == {
-            "AUTH_LOGIN_SUCCESS",
-            "AUTH_PASSWORD_CHANGED",
-            "TASK_EXECUTION_RESULT",
-            "DOWNLOADER_CREATED",
-            "SITE_CREATED",
+            value.value for value in PRODUCT_NOTIFICATION_EVENT_TYPES
         }
         assert "task_link_base_url" not in payload
         assert "aggregation_window_seconds" not in payload
@@ -208,7 +210,7 @@ def test_notification_channel_test_and_enable_require_real_probe(tmp_path: Path)
             },
         )
         assert created.status_code == 201
-        channel_id = created.json()["id"]
+        channel_id = str(created.json()["id"])
 
         blocked = client.post(
             f"/api/v1/notification-channels/{channel_id}/actions",
@@ -236,5 +238,108 @@ def test_notification_channel_test_and_enable_require_real_probe(tmp_path: Path)
         )
         assert enabled.status_code == 200
         assert enabled.json()["enabled"] is True
+    finally:
+        client.__exit__(None, None, None)
+
+
+def _enable_serverchan_channel(
+    client: TestClient,
+    app: FastAPI,
+    *,
+    event_types: list[str],
+    name: str = "Server酱-事件",
+) -> str:
+    created = client.post(
+        "/api/v1/notification-channels",
+        headers=_csrf(client),
+        json={
+            "name": name,
+            "type": "SERVERCHAN",
+            "serverchan": {"send_key": "SCTsynthetic"},
+            "event_types": event_types,
+        },
+    )
+    assert created.status_code == 201
+    channel_id = str(created.json()["id"])
+
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json={"code": 0})
+
+    app.state.notification_service._provider_factory = NotificationProviderFactory(  # noqa: SLF001
+        transport=httpx2.MockTransport(handler)
+    )
+    assert (
+        client.post(
+            f"/api/v1/notification-channels/{channel_id}/test",
+            headers=_csrf(client),
+        ).status_code
+        == 200
+    )
+    enabled = client.post(
+        f"/api/v1/notification-channels/{channel_id}/actions",
+        headers={**_csrf(client), "If-Match": '"1"'},
+        json={"action": "enable"},
+    )
+    assert enabled.status_code == 200
+    return channel_id
+
+
+def _outbox_rows(app: FastAPI, channel_id: str) -> list[NotificationOutbox]:
+    with app.state.runtime.session_factory() as session:
+        return list(
+            session.scalars(
+                select(NotificationOutbox).where(NotificationOutbox.channel_id == channel_id)
+            ).all()
+        )
+
+
+def test_subscribed_login_event_reaches_the_outbox_and_unsubscribed_does_not(
+    tmp_path: Path,
+) -> None:
+    """UI 勾选的登录事件必须有真实生产者，否则订阅形同虚设。"""
+    client, app = _client(tmp_path)
+    try:
+        subscribed = _enable_serverchan_channel(
+            client, app, event_types=["AUTH_LOGIN_SUCCESS"], name="订阅登录"
+        )
+        unsubscribed = _enable_serverchan_channel(
+            client, app, event_types=["SITE_CREATED"], name="订阅站点"
+        )
+
+        assert (
+            client.post(
+                "/api/v1/auth/login",
+                json={"username": "admin", "password": _PASSWORD},
+            ).status_code
+            == 200
+        )
+
+        rows = _outbox_rows(app, subscribed)
+        assert [row.event_key for row in rows] == ["AUTH_LOGIN_SUCCESS"]
+        assert rows[0].subject_kind == "PRODUCT"
+        assert _outbox_rows(app, unsubscribed) == []
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_password_change_event_is_projected_for_subscribers(tmp_path: Path) -> None:
+    client, app = _client(tmp_path)
+    new_password = "another synthetic correct horse battery staple"
+    try:
+        channel_id = _enable_serverchan_channel(client, app, event_types=["AUTH_PASSWORD_CHANGED"])
+        changed = client.post(
+            "/api/v1/auth/password",
+            headers=_csrf(client),
+            json={
+                "current_password": _PASSWORD,
+                "new_password": new_password,
+                "confirm_password": new_password,
+            },
+        )
+        assert changed.status_code == 204
+
+        rows = _outbox_rows(app, channel_id)
+        assert [row.event_key for row in rows] == ["AUTH_PASSWORD_CHANGED"]
+        assert new_password not in str([row.title for row in rows])
     finally:
         client.__exit__(None, None, None)

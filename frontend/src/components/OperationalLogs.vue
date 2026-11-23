@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { Download, RefreshCw, Search, ShieldCheck, X } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 import { toApiProblem } from '../api/client';
@@ -84,16 +84,28 @@ function hasContextFilter(): boolean {
   return Boolean(filters.task_id || filters.execution_id || filters.trace_id);
 }
 
+let disposed = false;
+let refreshSequence = 0;
+
 async function refresh(): Promise<void> {
+  const sequence = ++refreshSequence;
   loading.value = true;
   try {
-    result.value = await listSystemLogs(query(200));
+    const next = await listSystemLogs(query(200));
+    if (disposed || sequence !== refreshSequence) return;
+    result.value = next;
   } catch (caught) {
+    if (disposed || sequence !== refreshSequence) return;
     ElMessage.error(toApiProblem(caught).message);
   } finally {
-    loading.value = false;
+    if (!disposed && sequence === refreshSequence) loading.value = false;
   }
 }
+
+onBeforeUnmount(() => {
+  disposed = true;
+  refreshSequence += 1;
+});
 
 function downloadArtifact(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -290,7 +302,7 @@ onMounted(() => {
   gap: 8px;
   flex-wrap: wrap;
   padding: 10px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
   font-size: 11px;
@@ -342,7 +354,7 @@ onMounted(() => {
   font-size: 11px !important;
 }
 .event-description {
-  color: var(--text) !important;
+  color: var(--ink) !important;
   font-size: 11px !important;
 }
 .event-meta,

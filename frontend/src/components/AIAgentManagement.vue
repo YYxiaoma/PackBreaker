@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { Bot, CheckCircle2, MessageCircle, RefreshCw, ShieldCheck } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 
@@ -141,7 +141,11 @@ function applyTelegram(value: AITelegramBinding): void {
   });
 }
 
+let disposed = false;
+let refreshSequence = 0;
+
 async function refresh(): Promise<void> {
+  const sequence = ++refreshSequence;
   loading.value = true;
   try {
     const [nextSettings, nextStatus, nextTelegram, channels] = await Promise.all([
@@ -150,16 +154,23 @@ async function refresh(): Promise<void> {
       getAITelegramBinding(),
       listNotificationChannels(),
     ]);
+    if (disposed || sequence !== refreshSequence) return;
     applySettings(nextSettings);
     status.value = nextStatus;
     applyTelegram(nextTelegram);
     telegramChannels.value = channels.filter((channel) => channel.type === 'TELEGRAM');
   } catch (caught) {
+    if (disposed || sequence !== refreshSequence) return;
     ElMessage.error(caught instanceof ApiProblem ? caught.message : 'AI 助手配置读取失败');
   } finally {
-    loading.value = false;
+    if (!disposed && sequence === refreshSequence) loading.value = false;
   }
 }
+
+onBeforeUnmount(() => {
+  disposed = true;
+  refreshSequence += 1;
+});
 
 function parseIds(value: string): string[] {
   return [
@@ -516,7 +527,7 @@ onMounted(() => void refresh());
 }
 .ai-page-heading h2 {
   margin: 0;
-  color: var(--text);
+  color: var(--ink);
   font-size: 20px;
   font-weight: 700;
 }

@@ -42,6 +42,8 @@ def _settings(tmp_path: Path) -> AppSettings:
     data = (tmp_path / "data").resolve()
     config.mkdir(mode=0o700)
     data.mkdir()
+    # 健康检查改为只读探测后，不再替测试创建种子暂存目录。
+    (config / "torrents").mkdir(mode=0o700)
     return AppSettings(config_dir=config, data_dir=data)
 
 
@@ -560,5 +562,88 @@ def test_system_logs_include_filterable_task_execution_events(tmp_path: Path) ->
         assert exported_body["items"][0]["event_code"] == "TASK_UNPACK_RUN_MATERIALIZED"
         assert exported_body["items"][0]["source"] == "TASK_EVENT"
         assert b"must-be-redacted" not in exported.content
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_system_health_reuses_one_service_so_backup_cache_can_hit(tmp_path: Path) -> None:
+    """健康服务必须跨请求复用，否则实例级备份校验缓存永不命中。"""
+    client, app = _authenticated_client(tmp_path)
+    try:
+        first = client.get("/api/v1/system/health")
+        assert first.status_code == 200
+        service = getattr(app.state, "system_health_service", None)
+        assert service is not None
+
+        second = client.get("/api/v1/system/health")
+        assert second.status_code == 200
+        assert app.state.system_health_service is service
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_task_event_level_filter_is_applied_before_the_row_limit(tmp_path: Path) -> None:
+    """级别过滤必须下推到 SQL：窗口内较早的 ERROR 不能被后到的 INFO 挤出结果。"""
+    client, app = _authenticated_client(tmp_path)
+    try:
+        now = datetime.now(UTC)
+        execution_id = new_uuid()
+        definition_id = new_uuid()
+        failure_id = new_uuid()
+        with app.state.runtime.session_factory() as session:
+            session.add(
+                TaskExecution(
+                    id=execution_id,
+                    task_definition_id=None,
+                    task_name="级别过滤任务",
+                    trigger="MANUAL",
+                    status="FAILED",
+                    phase="FAILED",
+                    trace_id=new_uuid(),
+                    config_snapshot={"task_definition_id": definition_id},
+                    started_at=now - timedelta(minutes=30),
+                    finished_at=now,
+                    created_at=now - timedelta(minutes=30),
+                )
+            )
+            session.add(
+                TaskExecutionEvent(
+                    id=failure_id,
+                    execution_id=execution_id,
+                    event_code="TASK_UNPACK_RUN_FAILED",
+                    message="early failure that must stay visible",
+                    trace_id=new_uuid(),
+                    context={},
+                    created_at=now - timedelta(minutes=29),
+                )
+            )
+            # 超过 MAX_LOG_EXPORT_LIMIT(2000) 条更新的 INFO 事件，旧实现会把
+            # 上面的失败事件挤出 LIMIT 窗口。
+            session.add_all(
+                [
+                    TaskExecutionEvent(
+                        id=new_uuid(),
+                        execution_id=execution_id,
+                        event_code="TASK_UNPACK_STEP_PROGRESS",
+                        message=f"progress {index}",
+                        trace_id=new_uuid(),
+                        context={},
+                        created_at=now - timedelta(minutes=28) + timedelta(seconds=index),
+                    )
+                    for index in range(2100)
+                ]
+            )
+            session.commit()
+
+        response = client.get(
+            "/api/v1/system/logs",
+            params={"window_minutes": 60, "limit": 20, "level": "ERROR", "source": "TASK_EVENT"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["count"] == 1
+        assert payload["items"][0]["event_code"] == "TASK_UNPACK_RUN_FAILED"
+        assert payload["items"][0]["level"] == "ERROR"
     finally:
         client.__exit__(None, None, None)

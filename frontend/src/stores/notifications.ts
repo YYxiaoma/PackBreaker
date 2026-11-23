@@ -46,18 +46,24 @@ export const useNotificationStore = defineStore('notifications', () => {
     }
   }
 
+  let refreshSequence = 0;
+
   async function refresh(): Promise<void> {
+    const sequence = ++refreshSequence;
     loading.value = true;
     try {
-      items.value = await listNotificationChannels();
+      const next = await listNotificationChannels();
+      if (sequence !== refreshSequence) return;
+      items.value = next;
       error.value = null;
     } catch (caught) {
+      if (sequence !== refreshSequence) return;
       const problem = toApiProblem(caught);
       error.value = problem;
       if (problem.status === 401) items.value = [];
       throw problem;
     } finally {
-      loading.value = false;
+      if (sequence === refreshSequence) loading.value = false;
     }
   }
 

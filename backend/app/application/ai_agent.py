@@ -7,7 +7,11 @@ from typing import Literal
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
-from backend.app.application.secrets import SecretNotFound, SecretStore
+from backend.app.application.secrets import (
+    SecretKindMismatch,
+    SecretNotFound,
+    SecretStore,
+)
 from backend.app.domain.ai_agent import (
     AIConnectionStatus,
     AIDataScope,
@@ -195,8 +199,15 @@ class AIAgentService:
             with self._session_factory() as session:
                 record = AIAgentSettingRepository(session).get()
                 secret_id = None if record is None else record.api_key_secret_id
+                saved_kind = None if record is None else AIProviderKind(record.provider_kind)
+                saved_base_url = None if record is None else record.base_url
             if secret_id is None:
                 raise self._invalid("测试 Provider 时必须提供 API Key 或先保存 API Key")
+            # 已保存凭证只能发往已保存端点，避免借测试把密钥外带到任意主机。
+            if saved_kind is not value.provider_kind or saved_base_url != base_url:
+                raise self._invalid(
+                    "使用已保存 API Key 测试时，Provider 与 Base URL 必须与已保存配置一致"
+                )
             api_key = self._load_api_key(secret_id)
         await self._probe(
             provider_kind=value.provider_kind,
@@ -318,8 +329,11 @@ class AIAgentService:
 
     def _load_api_key(self, secret_id: str) -> str:
         try:
-            return self._secret_store.get(secret_id).decode("utf-8")
-        except (SecretNotFound, UnicodeDecodeError) as exc:
+            # 绑定用途：引用了其它类型的密钥时直接拒绝，绝不能把它当 Bearer 发出去。
+            return self._secret_store.get(secret_id, expected_kind=_API_KEY_SECRET_KIND).decode(
+                "utf-8"
+            )
+        except (SecretNotFound, SecretKindMismatch, UnicodeDecodeError) as exc:
             raise ApplicationError(
                 code="AI_PROVIDER_SECRET_UNAVAILABLE",
                 status=500,

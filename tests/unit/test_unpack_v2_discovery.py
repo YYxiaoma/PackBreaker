@@ -18,6 +18,7 @@ from backend.app.domain.unpack import (
 )
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     Downloader,
     Site,
@@ -40,7 +41,7 @@ def _services(
     output = root / "seeding"
     source.mkdir(parents=True)
     output.mkdir()
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine,

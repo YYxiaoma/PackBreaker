@@ -426,9 +426,13 @@ class UnpackDefinitionService:
                     # Cleanup failure must not undo an already committed deletion.
                     continue
 
-    def run(self, definition_id: str) -> UnpackRunResult:
+    def run(self, definition_id: str, *, expected_version: int | None = None) -> UnpackRunResult:
         with self._session_factory() as session:
+            # 检查活跃 execution 后创建，必须在同一写临界区内，防止并发重复启动。
+            begin_immediate_write(session)
             definition = self._require_definition(session, definition_id)
+            if expected_version is not None and definition.version != expected_version:
+                raise self._conflict("任务已被其他操作修改，请刷新后重试")
             if definition.status not in {
                 UnpackDefinitionStatus.PENDING_EXECUTION.value,
                 UnpackDefinitionStatus.PAUSED.value,

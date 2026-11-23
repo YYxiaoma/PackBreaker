@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, SecretStr
 from backend.app.api.dependencies import (
     AccessPrincipal,
     downloader_service,
+    notification_service,
     require_admin_csrf_principal,
     require_admin_principal,
 )
@@ -18,6 +19,7 @@ from backend.app.domain.downloader import (
     DownloaderRuntimeMetrics,
     PathMappingRule,
 )
+from backend.app.domain.notification import NotificationEventType
 from backend.app.domain.verification import DownloaderKind
 
 router = APIRouter(tags=["downloaders"])
@@ -185,6 +187,10 @@ async def create_downloader(
         credential=_credential(payload.credential),
         monitor_rules=payload.monitor_rules,
         path_mappings=_mappings(payload.path_mappings),
+    )
+    notification_service(request).record_product_event(
+        NotificationEventType.DOWNLOADER_CREATED,
+        subject_id=created.name,
     )
     response = _json_with_etag(created)
     response.status_code = status.HTTP_201_CREATED

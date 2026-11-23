@@ -22,6 +22,8 @@ const emit = defineEmits<{ navigate: [page: string] }>();
 const health = ref<SystemHealth | null>(null);
 const busy = ref(false);
 const loadError = ref('');
+let disposed = false;
+let requestId = 0;
 const cpuHistory = computed<number[]>(() => {
   const rawCount = metric('resources', 'cpu_load_history_count');
   const count = rawCount === null ? 0 : Math.min(12, Math.max(0, Math.trunc(rawCount)));
@@ -74,13 +76,10 @@ function dotClass(checkName: string): string {
   return check(checkName)?.status ?? 'unavailable';
 }
 
+// 后端已聚合全部 check；首页直接采用，避免只看 4 项造成监控盲区。
 const systemStatus = computed<'ok' | 'warning' | 'blocked' | 'unavailable'>(() => {
   if (!health.value || loadError.value) return 'unavailable';
-  const statuses = ['workers', 'storage', 'runtime'].map((name) => check(name)?.status);
-  if (statuses.some((value) => value === undefined)) return 'warning';
-  if (statuses.includes('blocked')) return 'blocked';
-  if (statuses.includes('warning')) return 'warning';
-  return 'ok';
+  return health.value.status;
 });
 const systemStatusText = computed(() => {
   if (systemStatus.value === 'ok') return '运行正常';
@@ -130,18 +129,21 @@ const downloaderPercent = computed(() => ratio(downloaderConnected.value, downlo
 const sitePercent = computed(() => ratio(siteConnected.value, siteTotal.value));
 
 async function refresh(): Promise<void> {
-  if (busy.value) return;
+  if (busy.value || disposed) return;
+  const currentId = ++requestId;
   busy.value = true;
   try {
     const next = await getSystemHealth();
+    if (disposed || currentId !== requestId) return;
     health.value = next;
     loadError.value = '';
   } catch {
+    if (disposed || currentId !== requestId) return;
     loadError.value = health.value
       ? '本次刷新失败，以下为上次成功获取的数据'
       : '系统状态暂不可用，请检查网络或稍后重试';
   } finally {
-    busy.value = false;
+    if (!disposed && currentId === requestId) busy.value = false;
   }
 }
 onMounted(() => {
@@ -149,6 +151,7 @@ onMounted(() => {
   timer = setInterval(() => void refresh(), 30_000);
 });
 onUnmounted(() => {
+  disposed = true;
   if (timer) clearInterval(timer);
 });
 </script>
@@ -163,9 +166,12 @@ onUnmounted(() => {
       <div class="overview-mountain" aria-hidden="true">让获取更简单</div>
     </header>
 
-    <div v-if="loadError" class="overview-alert" role="status">
+    <div v-if="busy && !health" class="overview-loading" role="status">
+      <RefreshCw :size="18" class="spin" /> 正在读取系统状态…
+    </div>
+    <div v-if="loadError" class="overview-alert" role="alert">
       <CircleAlert :size="16" />{{ loadError }}
-      <button type="button" @click="refresh">重试</button>
+      <button type="button" :disabled="busy" @click="refresh">重试</button>
     </div>
     <div v-if="health && !loadError" class="overview-timestamp">
       数据更新于 {{ new Date(health.generated_at).toLocaleString('zh-CN') }}
@@ -574,7 +580,7 @@ onUnmounted(() => {
 article.kpi-card {
   cursor: default;
 }
-.kpi-card:hover {
+button.kpi-card:hover {
   border-color: #91b6f3;
   transform: translateY(-1px);
 }
@@ -841,12 +847,61 @@ article.kpi-card {
 :global(.dark) .progress {
   background: #334055;
 }
+.overview-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.spin {
+  animation: overview-spin 1s linear infinite;
+}
+@keyframes overview-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+:global(.dark) .metric-icon.orange {
+  color: #f0a35c;
+  background: rgba(240, 163, 92, 0.14);
+}
+:global(.dark) .metric-icon.blue {
+  color: #7dabf7;
+  background: rgba(125, 171, 247, 0.14);
+}
+:global(.dark) .metric-icon.green {
+  color: #4fd1a1;
+  background: rgba(79, 209, 161, 0.14);
+}
+:global(.dark) .metric-icon.purple {
+  color: #a68bf7;
+  background: rgba(166, 139, 247, 0.14);
+}
+:global(.dark) .overview-alert {
+  color: #f0a35c;
+}
+:global(.dark) .healthy {
+  color: #4fd1a1;
+}
+:global(.dark) .attention {
+  color: #f0a35c;
+}
 @media (max-width: 1180px) {
   .overview-kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .overview-monitor-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 460px) {
+  .overview-kpi-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .kpi-card strong {
+    overflow-wrap: anywhere;
   }
 }
 @media (max-width: 720px) {

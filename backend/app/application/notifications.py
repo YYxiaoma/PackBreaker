@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,7 @@ from backend.app.domain.notification import (
     NotificationSeverity,
     ServerChanCredential,
     TelegramCredential,
+    notification_message_for_product_event,
 )
 from backend.app.domain.proxy import ProxyConfig
 from backend.app.infrastructure.adapters.notifications import NotificationProviderFactory
@@ -36,6 +38,7 @@ from backend.app.infrastructure.persistence.notification_repositories import (
 )
 from backend.app.infrastructure.site_reliability import SiteReliabilityEvent
 
+_LOGGER = logging.getLogger("packbreaker.notifications")
 _SECRET_KIND = "notification-credential"
 _PROXY_SECRET_KIND = "notification-proxy-password"
 _SERVERCHAN_SC3_PATTERN = re.compile(r"^sctp\d+t")
@@ -379,6 +382,8 @@ class NotificationService:
                 values={"enabled": enabled},
             ):
                 raise _version_conflict()
+            if enabled:
+                NotificationOutboxRepository(session).revive_dead(channel_id, now=datetime.now(UTC))
             session.commit()
             refreshed = repository.get(channel_id)
             if refreshed is None:
@@ -423,7 +428,9 @@ class NotificationService:
                 title="通知渠道测试失败",
                 detail="通知服务拒绝、超时或返回无效响应；未记录远端响应正文",
             ) from exc
-        self._save_probe(snapshot_id, snapshot_version, "OK", tested_at)
+        if not self._save_probe(snapshot_id, snapshot_version, "OK", tested_at):
+            # 配置在测试期间被并发修改，测试结果不能冒充新配置的结论。
+            raise _version_conflict()
         return {"status": "ok", "type": result.provider.value, "tested_at": tested_at.isoformat()}
 
     async def test_temporary(
@@ -461,6 +468,37 @@ class NotificationService:
                 detail="通知服务拒绝、超时或返回无效响应；临时凭证不会持久化",
             ) from exc
         return {"status": "ok", "type": result.provider.value, "tested_at": tested_at.isoformat()}
+
+    def record_product_event(
+        self,
+        event_type: NotificationEventType,
+        *,
+        subject_id: str,
+        detail: str | None = None,
+        occurred_at: datetime | None = None,
+    ) -> int:
+        """把产品事件投影到外发队列；通知失败不影响主流程。"""
+        if (
+            notification_message_for_product_event(event_type=event_type, subject_id=subject_id)
+            is None
+        ):
+            return 0
+        try:
+            with self._session_factory() as session:
+                projected = NotificationOutboxRepository(session).project_product_event(
+                    event_type=event_type,
+                    subject_id=subject_id,
+                    detail=detail,
+                    occurred_at=occurred_at or datetime.now(UTC),
+                )
+                session.commit()
+                return projected
+        except Exception:  # noqa: BLE001 - 通知是可选的旁路能力
+            _LOGGER.warning(
+                "notification.product_event_projection_failed",
+                extra={"fields": {"event_type": event_type.value}},
+            )
+            return 0
 
     def record_site_reliability_event(self, event: SiteReliabilityEvent) -> None:
         with self._session_factory() as session:
@@ -618,15 +656,16 @@ class NotificationService:
         version: int,
         status: str,
         tested_at: datetime,
-    ) -> None:
+    ) -> bool:
         with self._session_factory() as session:
-            NotificationChannelRepository(session).update_probe(
+            updated = NotificationChannelRepository(session).update_probe(
                 channel_id,
                 expected_version=version,
                 status=status,
                 tested_at=tested_at,
             )
             session.commit()
+            return updated
 
     def _load_credential(
         self,

@@ -7,12 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from backend.app.api.dependencies import (
     AccessPrincipal,
+    notification_service,
     require_admin_csrf_principal,
     require_admin_principal,
     site_service,
 )
 from backend.app.application.errors import ApplicationError
 from backend.app.application.sites import SiteUpdate, SiteView
+from backend.app.domain.notification import NotificationEventType
 from backend.app.domain.site_config import (
     SiteCredentialKind,
     SiteKind,
@@ -623,6 +625,10 @@ async def create_site(
             if payload.proxy.password is not None
             else None
         ),
+    )
+    notification_service(request).record_product_event(
+        NotificationEventType.SITE_CREATED,
+        subject_id=created.name,
     )
     return _json_with_etag(created, status_code=status.HTTP_201_CREATED)
 

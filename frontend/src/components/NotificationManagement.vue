@@ -36,6 +36,8 @@ const EVENT_OPTIONS: Array<{ value: NotificationEventType; label: string }> = [
   { value: 'TASK_EXECUTION_RESULT', label: '任务执行结果' },
   { value: 'DOWNLOADER_CREATED', label: '添加下载器' },
   { value: 'SITE_CREATED', label: '添加站点' },
+  { value: 'VERSION_UPDATE_AVAILABLE', label: '版本更新' },
+  { value: 'SITE_RELIABILITY', label: '站点熔断/恢复' },
 ];
 
 const store = useNotificationStore();

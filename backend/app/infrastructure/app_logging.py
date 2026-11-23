@@ -25,10 +25,17 @@ _SENSITIVE_KEY_PARTS = (
     "secret",
     "csrf",
 )
+# 键名允许下划线/短横线前缀（bot_token、send_key、client_secret 等）。
+# 旧实现用 \b 锚定词首，`bot_token=` 因为 `_` 是词字符而永远匹配不上。
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)\b(password|passkey|api[_-]?key|token|authorization|cookie|secret|csrf)"
-    r"\s*([=:])\s*([^\s,;]+)"
+    r"(?i)"
+    r"(?P<key>[\w.-]*(?:password|passkey|api[_-]?key|token|authorization|cookie|secret|csrf|send[_-]?key)[\w.-]*)"
+    r"(?P<sep>\s*[=:]\s*)"
+    r"(?P<value>[^\s,;]+)"
 )
+# `Authorization: Bearer <jwt>` 的凭证在 Bearer 之后，必须先于赋值规则处理。
+_BEARER_CREDENTIAL = re.compile(r"(?i)\b(bearer)\s+([A-Za-z0-9\-._~+/]{8,}=*)")
+_ADJACENT_REDACTIONS = re.compile(r"\[REDACTED\](?:\s+\[REDACTED\])+")
 _URL = re.compile(r"https?://[^\s\"']+")
 _MAX_MESSAGE_CHARS = 4096
 _MAX_FIELDS_BYTES = 16 * 1024
@@ -49,6 +56,14 @@ def redact_fields(value: object, *, key: str | None = None) -> object:
             for item_key, item_value in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+        # ("token", secret) 形式在展开成列表后会丢失键上下文，单独处理。
+        if (
+            isinstance(value, (tuple, list))
+            and len(value) == 2
+            and isinstance(value[0], str)
+            and _is_sensitive_key(value[0])
+        ):
+            return [value[0], _REDACTED]
         return [redact_fields(item) for item in value]
     return f"<{type(value).__name__}>"
 
@@ -56,9 +71,13 @@ def redact_fields(value: object, *, key: str | None = None) -> object:
 def sanitize_message(message: str) -> str:
     """屏蔽常见 key=value 秘密，并移除日志 URL 的 query/fragment。"""
 
+    redacted = _BEARER_CREDENTIAL.sub(lambda match: f"{match.group(1)} {_REDACTED}", message)
     redacted = _SENSITIVE_ASSIGNMENT.sub(
-        lambda match: f"{match.group(1)}{match.group(2)}{_REDACTED}", message
+        lambda match: f"{match.group('key')}{match.group('sep')}{_REDACTED}", redacted
     )
+    # `Authorization: Bearer <jwt>` 会先被 Bearer 规则处理，赋值规则再命中
+    # "Bearer" 本体，留下相邻的两个占位符；合并成一个。
+    redacted = _ADJACENT_REDACTIONS.sub(_REDACTED, redacted)
     return _URL.sub(lambda match: _sanitize_url(match.group(0)), redacted)
 
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { Plus, RefreshCw, Search } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
@@ -55,6 +55,9 @@ const createVisible = ref(false);
 const precheckLoading = ref(false);
 const precheckResult = ref<MovieDedupPrecheck | null>(null);
 const pairDrawerVisible = ref(false);
+let disposed = false;
+let refreshRequestId = 0;
+let pairsRequestId = 0;
 const pairLoading = ref(false);
 const executing = ref(false);
 const activeJob = ref<MovieDedupJob | null>(null);
@@ -143,10 +146,12 @@ function publishStats(): void {
 }
 
 async function refresh(): Promise<void> {
-  if (loading.value) return;
+  const current = ++refreshRequestId;
   loading.value = true;
   try {
-    jobs.value = await listMovieDedupJobs();
+    const next = await listMovieDedupJobs();
+    if (disposed || current !== refreshRequestId) return;
+    jobs.value = next;
     publishStats();
     if (activeJob.value) {
       activeJob.value =
@@ -154,9 +159,10 @@ async function refresh(): Promise<void> {
       if (pairDrawerVisible.value) await loadPairs(activeJob.value.id, false);
     }
   } catch (caught) {
+    if (disposed || current !== refreshRequestId) return;
     ElMessage.error(toApiProblem(caught).message);
   } finally {
-    loading.value = false;
+    if (!disposed && current === refreshRequestId) loading.value = false;
   }
 }
 
@@ -302,16 +308,23 @@ async function openPairs(job: MovieDedupJob): Promise<void> {
 }
 
 async function loadPairs(jobId: string, showError = true): Promise<void> {
+  const current = ++pairsRequestId;
   pairLoading.value = true;
   try {
-    pairs.value = await listMovieDedupPairs(jobId);
+    const next = await listMovieDedupPairs(jobId);
+    if (disposed || current !== pairsRequestId || activeJob.value?.id !== jobId) return;
+    pairs.value = next;
     selectedPairIds.value = selectedPairIds.value.filter((id) =>
       pairs.value.some((item) => item.id === id),
     );
   } catch (caught) {
+    if (disposed || current !== pairsRequestId || activeJob.value?.id !== jobId) return;
+    // 失败时清空旧候选，避免基于过期数据执行破坏性操作。
+    pairs.value = [];
+    selectedPairIds.value = [];
     if (showError) ElMessage.error(toApiProblem(caught).message);
   } finally {
-    pairLoading.value = false;
+    if (current === pairsRequestId) pairLoading.value = false;
   }
 }
 
@@ -346,10 +359,12 @@ async function executeSelected(): Promise<void> {
   const lines = [
     `将处理 ${selected.length} 个 B 目录文件，预计释放 ${formatBytes(reclaim)}。`,
     '执行前会再次校验 A/B 文件身份，并通过 journal + 原子交换替换 B。',
+    '注意：B 路径的原文件将被永久移除，操作不可撤销；若原文件已有多重硬链接，则不会真正释放空间。',
   ];
   if (reviewCount) lines.push(`其中 ${reviewCount} 个为“内容完全一致但元数据需人工确认”的候选。`);
   if (symlinkCount)
     lines.push(`其中 ${symlinkCount} 个会使用软链接；A 路径移动或删除会导致 B 失效。`);
+  executing.value = true;
   try {
     await ElMessageBox.confirm(lines.join('\n\n'), '确认执行影片去重', {
       type: 'warning',
@@ -357,10 +372,12 @@ async function executeSelected(): Promise<void> {
       cancelButtonText: '取消',
     });
   } catch (caught) {
-    if (caught === 'cancel' || caught === 'close') return;
+    if (caught === 'cancel' || caught === 'close') {
+      executing.value = false;
+      return;
+    }
     throw caught;
   }
-  executing.value = true;
   try {
     const updated = await executeMovieDedupPairs(
       job.id,
@@ -581,6 +598,7 @@ function statusType(value: string): 'success' | 'warning' | 'danger' | 'info' | 
 function pairStatusLabel(value: string): string {
   const labels: Record<string, string> = {
     CANDIDATE: '待校验',
+    READY: '就绪待处理',
     VERIFIED_DUPLICATE: '已确认重复',
     REVIEW_REQUIRED: '需人工确认',
     ALREADY_DEDUPLICATED: '已共享 inode',
@@ -603,6 +621,11 @@ function metadataText(metadata: Record<string, string>): string {
   return values.length ? values.join(' · ') : '元数据不足';
 }
 
+onBeforeUnmount(() => {
+  disposed = true;
+  refreshRequestId += 1;
+  pairsRequestId += 1;
+});
 onMounted(() => {
   void refresh();
 });
@@ -1064,7 +1087,7 @@ defineExpose({ openCreate, refresh });
   gap: 16px;
 }
 .table-card {
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--surface);
   overflow: hidden;
@@ -1165,7 +1188,7 @@ defineExpose({ openCreate, refresh });
   padding-right: 6px;
 }
 .form-section {
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 16px;
 }
@@ -1293,7 +1316,7 @@ defineExpose({ openCreate, refresh });
   display: grid;
   gap: 4px;
   padding: 10px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 9px;
 }
 .pair-actions {

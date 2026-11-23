@@ -21,7 +21,11 @@ from backend.app.infrastructure.persistence.database import (
     create_session_factory,
     create_sqlite_engine,
 )
-from backend.app.infrastructure.persistence.models import MovieDedupOperationJournal, MovieDedupPair
+from backend.app.infrastructure.persistence.models import (
+    MovieDedupJob,
+    MovieDedupOperationJournal,
+    MovieDedupPair,
+)
 
 
 @pytest.mark.parametrize(
@@ -521,3 +525,39 @@ def test_precheck_reports_no_warning_for_single_link_targets(tmp_path: Path) -> 
     assert precheck.target_shared_link_files == 0
     assert precheck.target_shared_link_bytes == 0
     assert precheck.warnings == ()
+
+
+def test_recovery_required_job_is_runnable_again(tmp_path: Path) -> None:
+    """A failed recovery must not strand the job with no way forward."""
+    data_root = tmp_path / "data"
+    source_root = data_root / "movies-a"
+    target_root = data_root / "movies-b"
+    source_root.mkdir(parents=True)
+    target_root.mkdir()
+    engine = create_sqlite_engine(tmp_path / "movie-dedup.db")
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    service = MovieDedupService(factory, data_root=data_root)
+    created = service.create(
+        MovieDedupJobCreate(
+            name="stuck",
+            source_root="movies-a",
+            target_root="movies-b",
+            mode=MovieDedupMode.AUTO,
+            cross_filesystem_policy=MovieDedupCrossFilesystemPolicy.STOP,
+            include_subdirectories=True,
+            min_size_bytes=0,
+            video_extensions=(".mkv",),
+        ),
+        trace_id="test-trace",
+    )
+    with factory() as session:
+        job = session.get(MovieDedupJob, created.id)
+        assert job is not None
+        job.status = MovieDedupJobStatus.RECOVERY_REQUIRED.value
+        session.commit()
+
+    assert service.list_runnable_job_ids() == (created.id,)
+    # Manual recovery endpoint can re-enter the loop for a stuck job.
+    recovered = service.reconcile(created.id)
+    assert recovered.id == created.id

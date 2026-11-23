@@ -42,6 +42,7 @@ from backend.app.domain.unpack_matching import assess_unpack_candidate
 from backend.app.infrastructure.adapters.rousi_pro import RousiProCandidateAdapter
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     Site,
     UnpackDefinition,
@@ -112,7 +113,7 @@ def _factory(
     max_retries: int = 3,
     auto_match_enabled: bool = True,
 ) -> sessionmaker[Session]:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine,

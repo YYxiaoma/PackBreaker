@@ -4,8 +4,13 @@ from datetime import UTC, datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from backend.app.application.overview_statistics import overview_statistics
+from backend.app.application.overview_statistics import (
+    _ERROR_ITEMS,
+    _IDLE_ITEMS,
+    overview_statistics,
+)
 from backend.app.domain.task_definition import TaskConflictPolicy, TaskStorageMode
+from backend.app.domain.unpack import UnpackItemStatus
 from backend.app.domain.unpack_execution_plan import (
     UnpackExecutionAction,
     UnpackExecutionActionKind,
@@ -185,3 +190,44 @@ def test_dedup_multiple_sources_and_repeated_scans_do_not_multiply_savings() -> 
         # Exclude target 10 (already completed), completed job and cancelled job.
         assert result["dedup_pending_estimate_bytes"] == 8192
         assert result["dedup_actual_reclaimed_bytes"] is None
+
+
+def test_content_verify_error_counts_as_failure_not_running() -> None:
+    """内容校验失败与 MATCH_ERROR 等同属失败，不能被算作运行中。"""
+    with _session() as session:
+        for status in ("CONTENT_VERIFY_ERROR", "MATCHING"):
+            session.add(
+                UnpackExecutionItem(
+                    id=new_uuid(),
+                    execution_id="execution",
+                    source_object_key=new_uuid(),
+                    source_snapshot={},
+                    status=status,
+                    retry_count=0,
+                )
+            )
+        session.commit()
+        result = overview_statistics(session)
+        assert result["unpack_total"] == 2
+        assert result["unpack_failed"] == 1
+        assert result["unpack_running"] == 1
+
+
+def test_every_item_status_is_explicitly_classified() -> None:
+    """新增状态若未归类，会静默变成“运行中”；必须在测试里强制失败。"""
+    classified = set(_IDLE_ITEMS) | {
+        UnpackItemStatus.DISCOVERED,
+        UnpackItemStatus.MATCH_PENDING,
+        UnpackItemStatus.MATCHING,
+        UnpackItemStatus.MATCHED_AUTO,
+        UnpackItemStatus.MATCHED_MANUAL,
+        UnpackItemStatus.TORRENT_FETCHING,
+        UnpackItemStatus.AUXILIARY_FETCHING,
+        UnpackItemStatus.CONTENT_VERIFYING,
+        UnpackItemStatus.CONTENT_VERIFIED,
+        UnpackItemStatus.PLAN_PENDING,
+        UnpackItemStatus.EXECUTING,
+        UnpackItemStatus.CLIENT_VERIFYING,
+    }
+    assert set(UnpackItemStatus) <= classified
+    assert set(_ERROR_ITEMS) <= set(_IDLE_ITEMS)

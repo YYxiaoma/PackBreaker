@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 from collections import deque
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -157,6 +159,10 @@ class SystemHealthService:
         self._runtime = runtime
         self._site_reliability_registry = site_reliability_registry
         self._resource_sampler = resource_sampler
+        # 备份完整性校验要读全文件 SHA256 + integrity_check，不能在每次健康轮询里重做。
+        self._backup_check_cache: tuple[datetime, SystemHealthCheck] | None = None
+        self._backup_check_lock = asyncio.Lock()
+        self._logger = logging.getLogger("packbreaker.system_health")
 
     async def snapshot(
         self,
@@ -170,27 +176,62 @@ class SystemHealthService:
         with self._session_factory() as session:
             database = self._database_snapshot(session, now=timestamp)
             statistics = overview_statistics(session)
-        checks = [
-            self._runtime_check(),
-            self._storage_check(),
-            self._torrent_store_check(),
-            self._resources_check(),
-            self._backup_check(database, now=timestamp),
-            self._task_check(database),
-            SystemHealthCheck(
+
+        def statistics_check() -> SystemHealthCheck:
+            return SystemHealthCheck(
                 "statistics",
                 "ok",
                 "OVERVIEW_STATISTICS_READY",
                 "本地累计统计；空间回收为执行估算，非实时物理释放",
                 {key: value for key, value in statistics.items()},
+            )
+
+        checks = [
+            self._safe_check("runtime", lambda: self._runtime_check()),
+            self._safe_check("storage", lambda: self._storage_check()),
+            self._safe_check("torrent_store", lambda: self._torrent_store_check()),
+            self._safe_check("resources", lambda: self._resources_check()),
+            await self._safe_async_check(
+                "backups", lambda: self._cached_backup_check(database, now=timestamp)
             ),
-            self._operation_check(database),
-            await self._site_check(database),
-            self._downloader_check(database),
-            self._notification_check(database),
-            self._worker_check(unpack_driver, notification_driver, backup_driver),
+            self._safe_check("tasks", lambda: self._task_check(database)),
+            self._safe_check("statistics", statistics_check),
+            self._safe_check("operations", lambda: self._operation_check(database)),
+            await self._safe_async_check("sites", lambda: self._site_check(database)),
+            self._safe_check("downloaders", lambda: self._downloader_check(database)),
+            self._safe_check("notifications", lambda: self._notification_check(database)),
+            self._safe_check(
+                "workers",
+                lambda: self._worker_check(unpack_driver, notification_driver, backup_driver),
+            ),
         ]
         return SystemHealthReport(timestamp, app_version(), tuple(checks))
+
+    @staticmethod
+    def _unavailable_check(name: str) -> SystemHealthCheck:
+        return SystemHealthCheck(
+            name,
+            "warning",
+            "CHECK_UNAVAILABLE",
+            "该项健康数据暂时无法获取，其他项目不受影响",
+            {},
+        )
+
+    def _safe_check(self, name: str, factory: Callable[[], SystemHealthCheck]) -> SystemHealthCheck:
+        try:
+            return factory()
+        except Exception:
+            self._logger.warning("健康项 %s 检查失败，降级为不可用", name, exc_info=True)
+            return self._unavailable_check(name)
+
+    async def _safe_async_check(
+        self, name: str, factory: Callable[[], Awaitable[SystemHealthCheck]]
+    ) -> SystemHealthCheck:
+        try:
+            return await factory()
+        except Exception:
+            self._logger.warning("健康项 %s 检查失败，降级为不可用", name, exc_info=True)
+            return self._unavailable_check(name)
 
     def _database_snapshot(self, session: Session, *, now: datetime) -> dict[str, object]:
         execution_rows = session.execute(
@@ -312,8 +353,8 @@ class SystemHealthService:
 
         root = self._settings.resolved_torrent_store_dir
         try:
-            root.mkdir(parents=True, exist_ok=True, mode=0o700)
-            writable = os.access(root, os.W_OK | os.X_OK)
+            # 只读探测：健康检查不得创建目录或改动文件系统。
+            writable = root.is_dir() and os.access(root, os.W_OK | os.X_OK)
         except OSError:
             writable = False
         return SystemHealthCheck(
@@ -321,7 +362,7 @@ class SystemHealthService:
             "ok" if writable else "blocked",
             "TORRENT_STORAGE_OK" if writable else "TORRENT_STORAGE_UNAVAILABLE",
             "种子暂存目录可写" if writable else "种子暂存目录不可写，内容校验与执行计划会失败",
-            {"path": str(root), "writable": writable},
+            {"writable": writable},
         )
 
     def _resources_check(self) -> SystemHealthCheck:
@@ -353,6 +394,21 @@ class SystemHealthService:
             "本地系统资源只读快照" if available else "无法读取本地系统资源计数",
             metrics,
         )
+
+    async def _cached_backup_check(
+        self, database: dict[str, object], *, now: datetime
+    ) -> SystemHealthCheck:
+        """缓存 5 分钟并把重活移出事件循环；备份变化最迟 5 分钟反映到首页。"""
+        cached = self._backup_check_cache
+        if cached is not None and (now - cached[0]) < timedelta(minutes=5):
+            return cached[1]
+        async with self._backup_check_lock:
+            cached = self._backup_check_cache
+            if cached is not None and (now - cached[0]) < timedelta(minutes=5):
+                return cached[1]
+            check = await asyncio.to_thread(self._backup_check, database, now=now)
+            self._backup_check_cache = (now, check)
+            return check
 
     def _backup_check(self, database: dict[str, object], *, now: datetime) -> SystemHealthCheck:
         backup_dir = self._settings.config_dir / "backups"

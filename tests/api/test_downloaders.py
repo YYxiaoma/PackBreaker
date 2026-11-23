@@ -177,6 +177,7 @@ def test_downloader_mapping_can_use_mount_outside_data_root_without_diagnostic(
         )
         assert created.status_code == 201
         payload = created.json()
+        # 探测失败后配置保留但禁用，写操作仍被 OK 安全门拦截。
         assert payload["enabled"] is True
         assert payload["path_mappings"] == [
             {
@@ -495,6 +496,7 @@ def test_transmission_probe_and_write_binding_freeze_safe_capabilities(tmp_path:
     try:
         created = _create_transmission(client, data_root=app.state.settings.data_dir)
         downloader_id = cast(str, created["id"])
+        # 探测失败后配置保留但禁用，写操作仍被 OK 安全门拦截。
         assert created["enabled"] is True
         _install_transmission_probe(app)
 
@@ -548,6 +550,7 @@ def test_multiple_path_mappings_do_not_require_preflight_diagnostics(tmp_path: P
         )
         assert created.status_code == 201
         downloader_id = cast(str, created.json()["id"])
+        # 探测失败后配置保留但禁用，写操作仍被 OK 安全门拦截。
         assert created.json()["enabled"] is True
         _install_qb_probe(app)
         assert (
@@ -650,6 +653,7 @@ def test_create_downloader_keeps_config_when_probe_fails(tmp_path: Path) -> None
         assert response.status_code == 201
         body = cast(dict[str, object], response.json())
         assert body["connection_status"] == "FAILED"
+        # 探测失败后配置保留但禁用，写操作仍被 OK 安全门拦截。
         assert body["enabled"] is True
     finally:
         client.__exit__(None, None, None)

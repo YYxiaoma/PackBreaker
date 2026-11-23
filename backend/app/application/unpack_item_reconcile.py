@@ -413,7 +413,8 @@ class UnpackItemReconcileService:
             return self._manual(journal, "目录操作缺少目标路径")
         path = Path(raw_path)
         try:
-            snapshot = path.stat()
+            # lstat：绝不跟随符号链接判定目录，避免对账层 fail-open 与审计污染。
+            snapshot = path.lstat()
         except OSError:
             return _Resolved(
                 journal.id,
@@ -421,8 +422,10 @@ class UnpackItemReconcileService:
                 ReconcileResolution.NO_EFFECT,
                 "目标目录不存在，确认上次建目录未生效",
             )
-        if not path.is_dir():
-            return self._manual(journal, "目标路径已存在但不是目录")
+        import stat as _stat
+
+        if not _stat.S_ISDIR(snapshot.st_mode):
+            return self._manual(journal, "目标路径已存在但不是目录或为符号链接")
         return _Resolved(
             journal.id,
             journal.operation_type,

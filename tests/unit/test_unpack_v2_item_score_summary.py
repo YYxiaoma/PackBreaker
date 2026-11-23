@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.unpack_executions import UnpackExecutionQueryService
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
     UnpackExecution,
@@ -13,7 +14,7 @@ from backend.app.infrastructure.persistence.models import (
 
 
 def test_execution_item_page_uses_only_current_generation_best_score() -> None:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine, expire_on_commit=False, autoflush=False

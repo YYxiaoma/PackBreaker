@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from backend.app.domain.unpack import UnpackItemStatus
 from backend.app.domain.unpack_execution_plan import unpack_execution_plan_from_payload
 from backend.app.infrastructure.persistence.models import (
     MovieDedupFileInventory,
@@ -13,8 +14,26 @@ from backend.app.infrastructure.persistence.models import (
     UnpackExecutionItem,
 )
 
-_ERROR_ITEMS = frozenset({"MATCH_TIMEOUT", "MATCH_ERROR", "CONTENT_MISMATCH", "EXECUTION_ERROR"})
-_IDLE_ITEMS = frozenset({"COMPLETED", "CANCELLED", "NO_MATCH", "REVIEW_REQUIRED"}) | _ERROR_ITEMS
+_ERROR_ITEMS: frozenset[UnpackItemStatus] = frozenset(
+    {
+        UnpackItemStatus.MATCH_TIMEOUT,
+        UnpackItemStatus.MATCH_ERROR,
+        UnpackItemStatus.CONTENT_MISMATCH,
+        UnpackItemStatus.CONTENT_VERIFY_ERROR,
+        UnpackItemStatus.EXECUTION_ERROR,
+    }
+)
+_IDLE_ITEMS: frozenset[UnpackItemStatus] = (
+    frozenset(
+        {
+            UnpackItemStatus.COMPLETED,
+            UnpackItemStatus.CANCELLED,
+            UnpackItemStatus.NO_MATCH,
+            UnpackItemStatus.REVIEW_REQUIRED,
+        }
+    )
+    | _ERROR_ITEMS
+)
 _PENDING_JOBS = frozenset({"PENDING", "RUNNING", "REVIEW_REQUIRED", "RECOVERY_REQUIRED"})
 _PENDING_PAIRS = frozenset({"VERIFIED_DUPLICATE", "REVIEW_REQUIRED", "READY"})
 
@@ -35,10 +54,10 @@ def overview_statistics(session: Session) -> dict[str, int | None]:
     metrics: dict[str, int | None] = {
         "unpack_total": sum(counts.values()),
         "unpack_success": counts.get("COMPLETED", 0),
-        "unpack_failed": sum(counts.get(status, 0) for status in _ERROR_ITEMS),
+        "unpack_failed": sum(counts.get(status.value, 0) for status in _ERROR_ITEMS),
         "unpack_review": counts.get("REVIEW_REQUIRED", 0),
         "unpack_running": sum(
-            count for status, count in counts.items() if status not in _IDLE_ITEMS
+            count for status, count in counts.items() if UnpackItemStatus(status) not in _IDLE_ITEMS
         ),
         "unpack_no_match": counts.get("NO_MATCH", 0),
         "unpack_cancelled": counts.get("CANCELLED", 0),

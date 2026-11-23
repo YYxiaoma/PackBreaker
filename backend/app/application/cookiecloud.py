@@ -24,6 +24,7 @@ from backend.app.domain.cookiecloud import (
 from backend.app.domain.site_config import (
     SiteCredentialKind,
     SiteKind,
+    SiteProbeStatus,
     site_profiles,
 )
 from backend.app.domain.task_definition import normalize_cron_expression
@@ -126,6 +127,10 @@ class CookieCloudService:
         self._profile_sync_running: set[str] = set()
         self._profile_sync_rerun: dict[str, tuple[bool, bool]] = {}
         self._profile_sync_task: asyncio.Task[None] | None = None
+        # Manual and scheduled syncs must not interleave: both read config and
+        # site versions, and a losing optimistic-lock update rolls back the
+        # whole batch even though the other sync already wrote credentials.
+        self._sync_lock = asyncio.Lock()
 
     def _enqueue_site_profile_syncs(self, jobs: list[tuple[str, bool, bool]]) -> None:
         for site_id, needs_connection_test, sync_profile in jobs:
@@ -441,206 +446,195 @@ class CookieCloudService:
     async def sync_now(self) -> tuple[CookieCloudSettingView, CookieCloudSyncView]:
         if self._site_service is None:
             raise RuntimeError("CookieCloud 站点同步服务尚未初始化")
-        with self._session_factory() as session:
-            record = CookieCloudSettingRepository(session).get()
-            if record is None:
-                raise self._invalid("尚未保存 CookieCloud 配置")
-            snapshot = (
-                record.version,
-                record.server_url,
-                record.uuid,
-                record.password_secret_id,
-                record.request_timeout_seconds,
-            )
-        version, server_url, uuid, secret_id, timeout_seconds = snapshot
-        if not server_url or not uuid or secret_id is None:
-            raise self._invalid("同步 CookieCloud 前必须完整配置服务器地址、UUID 和密码")
-        password = self._load_password(secret_id)
-        synced_at = datetime.now(UTC)
-        try:
-            envelope = await self._client.fetch(
-                server_url=server_url,
-                uuid=uuid,
-                timeout_seconds=timeout_seconds,
-            )
-            payload = decrypt_cookiecloud_payload(
-                uuid=uuid,
-                password=password,
-                encrypted=envelope.encrypted,
-                crypto_type=envelope.crypto_type,
-            )
-            self._require_current_version(version)
-            sites = self._site_service.list_sites()
-            configured_kinds = {site.type for site in sites}
-            created_sites = 0
-            created_cookie_sites = 0
-            created_cookie_site_ids: set[str] = set()
-            skipped_api_key_sites: list[str] = []
-            # Match only the fixed, reviewed PackBreaker profile registry.
-            # Do not automatically create or overwrite API key credentials:
-            # CookieCloud contains cookies, not API keys.
-            discovered_site_kinds: set[SiteKind] = set()
-            for profile in site_profiles():
-                host = urlsplit(profile.base_url).hostname
-                if not host:
-                    continue
-                header = cookie_header_for_host(payload, host)
-                # M-TEAM's API host is kp.m-team.cc, while browser cookies
-                # may have been exported for a sibling *.m-team.cc domain.
-                # Detect that verified domain family for discovery and for a
-                # disabled placeholder only. Never reuse the browser Cookie as an API token.
-                mteam_cookie_present = profile.kind is SiteKind.MTEAM and any(
-                    cookie_domain_matches_host("m-team.cc", cookie.domain or domain)
-                    for domain, cookies in payload.cookie_data.items()
-                    for cookie in cookies
-                    if not cookie.expired
+        if self._sync_lock.locked():
+            raise self._conflict("已有 CookieCloud 同步正在进行，请稍后再试")
+        async with self._sync_lock:
+            with self._session_factory() as session:
+                record = CookieCloudSettingRepository(session).get()
+                if record is None:
+                    raise self._invalid("尚未保存 CookieCloud 配置")
+                snapshot = (
+                    record.version,
+                    record.server_url,
+                    record.uuid,
+                    record.password_secret_id,
+                    record.request_timeout_seconds,
                 )
-                if header is None and not mteam_cookie_present:
-                    continue
-                discovered_site_kinds.add(profile.kind)
-                if profile.kind in configured_kinds:
-                    continue
-                if profile.credential_kind is not SiteCredentialKind.COOKIE:
-                    skipped_api_key_sites.append(profile.display_name)
-                    if profile.kind is SiteKind.MTEAM:
-                        # Import a disabled, no-secret profile so it is visible
-                        # in 站点管理. The API adapter still requires a genuine
-                        # API Key before the site can be enabled or searched.
-                        self._site_service.create(
-                            name=profile.display_name,
-                            kind=profile.kind,
-                            credential_kind=None,
-                            credential=None,
-                        )
-                        created_sites += 1
-                    continue
-                created_site = self._site_service.create(
-                    name=profile.display_name,
-                    kind=profile.kind,
-                    credential_kind=SiteCredentialKind.COOKIE,
-                    credential=header,
-                    request_timeout_seconds=profile.request_timeout_seconds,
-                    search_interval_seconds=int(profile.search_interval_seconds),
+            version, server_url, uuid, secret_id, timeout_seconds = snapshot
+            if not server_url or not uuid or secret_id is None:
+                raise self._invalid("同步 CookieCloud 前必须完整配置服务器地址、UUID 和密码")
+            password = self._load_password(secret_id)
+            synced_at = datetime.now(UTC)
+            try:
+                envelope = await self._client.fetch(
+                    server_url=server_url,
+                    uuid=uuid,
+                    timeout_seconds=timeout_seconds,
                 )
-                created_sites += 1
-                created_cookie_sites += 1
-                created_cookie_site_ids.add(created_site.id)
-            sites = self._site_service.list_sites()
-            targets: dict[str, tuple[Literal["PRIMARY", "DOWNLOAD"], str]] = {}
-            target_hosts: list[str] = []
-            eligible_sites = 0
-            for site in sites:
-                host = urlsplit(site.base_url).hostname
-                if host is None:
-                    continue
-                if (
-                    site.credential_kind is not SiteCredentialKind.COOKIE
-                    and site.type is not SiteKind.ROUSI_PRO
-                ):
-                    continue
-                eligible_sites += 1
-                target_hosts.append(host)
-                header = cookie_header_for_host(payload, host)
-                if header is None:
-                    continue
-                target: Literal["PRIMARY", "DOWNLOAD"] = (
-                    "DOWNLOAD" if site.type is SiteKind.ROUSI_PRO else "PRIMARY"
+                payload = decrypt_cookiecloud_payload(
+                    uuid=uuid,
+                    password=password,
+                    encrypted=envelope.encrypted,
+                    crypto_type=envelope.crypto_type,
                 )
-                targets[site.id] = (target, header)
-
-            unmatched_domains = 0
-            for grouped_domain, cookies in payload.cookie_data.items():
-                matched = any(
-                    cookie_domain_matches_host(cookie.domain or grouped_domain, host)
-                    for cookie in cookies
-                    if not cookie.expired
-                    for host in target_hosts
-                )
-                if not matched:
-                    unmatched_domains += 1
-            source_domains = len(payload.cookie_data)
-            source_cookies = sum(len(items) for items in payload.cookie_data.values())
-            site_versions_before_sync = {site.id: site.version for site in sites}
-            updated_sites = self._site_service.sync_cookiecloud_credentials(targets)
-            unchanged_sites = max(0, len(targets) - updated_sites - created_cookie_sites)
-            profile_sync_jobs: list[tuple[str, bool, bool]] = []
-            site_by_id = {site.id: site for site in self._site_service.list_sites()}
-            successful_site_kinds = {
-                site_by_id[site_id].type for site_id in targets if site_id in site_by_id
-            }
-            discovered_sites = len(discovered_site_kinds)
-            sync_success_sites = len(discovered_site_kinds & successful_site_kinds)
-            sync_failed_sites = max(0, discovered_sites - sync_success_sites)
-            for site_id, (target, _raw_cookie) in targets.items():
-                target_site = site_by_id.get(site_id)
-                if target_site is None or not target_site.credential_configured:
-                    continue
-                connection_status = getattr(
-                    target_site.connection_status, "value", target_site.connection_status
-                )
-                needs_connection_test = (
-                    connection_status != "OK" or target_site.last_test_at is None
-                )
-                primary_credential_changed = (
-                    target == "PRIMARY"
-                    and target_site.version != site_versions_before_sync.get(site_id)
-                )
-                # Statistics are fetched on the first CookieCloud import only. Later
-                # CookieCloud runs may still test newly changed/untested credentials.
-                sync_profile = site_id in created_cookie_site_ids
-                if needs_connection_test or primary_credential_changed or sync_profile:
-                    profile_sync_jobs.append(
-                        (
-                            site_id,
-                            needs_connection_test or primary_credential_changed or sync_profile,
-                            sync_profile,
-                        )
+                self._require_current_version(version)
+                sites = self._site_service.list_sites()
+                configured_kinds = {site.type for site in sites}
+                created_sites = 0
+                created_cookie_sites = 0
+                created_cookie_site_ids: set[str] = set()
+                skipped_api_key_sites: list[str] = []
+                # Match only the fixed, reviewed PackBreaker profile registry.
+                # Do not automatically create or overwrite API key credentials:
+                # CookieCloud contains cookies, not API keys.
+                discovered_site_kinds: set[SiteKind] = set()
+                for profile in site_profiles():
+                    host = urlsplit(profile.base_url).hostname
+                    if not host:
+                        continue
+                    header = cookie_header_for_host(payload, host)
+                    # M-TEAM's API host is kp.m-team.cc, while browser cookies
+                    # may have been exported for a sibling *.m-team.cc domain.
+                    # Detect that verified domain family for discovery and for a
+                    # disabled placeholder only. Never reuse the browser Cookie as an API token.
+                    mteam_cookie_present = profile.kind is SiteKind.MTEAM and any(
+                        cookie_domain_matches_host("m-team.cc", cookie.domain or domain)
+                        for domain, cookies in payload.cookie_data.items()
+                        for cookie in cookies
+                        if not cookie.expired
                     )
-        except CookieCloudError as exc:
-            self._store_sync_failure(
-                expected_version=version,
-                synced_at=synced_at,
-                error_code=exc.code,
-            )
-            raise self._map_error(exc) from None
-        except ApplicationError as exc:
-            self._store_sync_failure(
-                expected_version=version,
-                synced_at=synced_at,
-                error_code=exc.code,
-            )
-            raise
+                    if header is None and not mteam_cookie_present:
+                        continue
+                    discovered_site_kinds.add(profile.kind)
+                    if profile.kind in configured_kinds:
+                        continue
+                    if profile.credential_kind is not SiteCredentialKind.COOKIE:
+                        skipped_api_key_sites.append(profile.display_name)
+                        if profile.kind is SiteKind.MTEAM:
+                            # Import a disabled, no-secret profile so it is visible
+                            # in 站点管理. The API adapter still requires a genuine
+                            # API Key before the site can be enabled or searched.
+                            self._site_service.create(
+                                name=profile.display_name,
+                                kind=profile.kind,
+                                credential_kind=None,
+                                credential=None,
+                            )
+                            created_sites += 1
+                        continue
+                    created_site = self._site_service.create(
+                        name=profile.display_name,
+                        kind=profile.kind,
+                        credential_kind=SiteCredentialKind.COOKIE,
+                        credential=header,
+                        request_timeout_seconds=profile.request_timeout_seconds,
+                        search_interval_seconds=int(profile.search_interval_seconds),
+                    )
+                    created_sites += 1
+                    created_cookie_sites += 1
+                    created_cookie_site_ids.add(created_site.id)
+                sites = self._site_service.list_sites()
+                targets: dict[str, tuple[Literal["PRIMARY", "DOWNLOAD"], str]] = {}
+                target_hosts: list[str] = []
+                eligible_sites = 0
+                for site in sites:
+                    host = urlsplit(site.base_url).hostname
+                    if host is None:
+                        continue
+                    if (
+                        site.credential_kind is not SiteCredentialKind.COOKIE
+                        and site.type is not SiteKind.ROUSI_PRO
+                    ):
+                        continue
+                    eligible_sites += 1
+                    target_hosts.append(host)
+                    header = cookie_header_for_host(payload, host)
+                    if header is None:
+                        continue
+                    target: Literal["PRIMARY", "DOWNLOAD"] = (
+                        "DOWNLOAD" if site.type is SiteKind.ROUSI_PRO else "PRIMARY"
+                    )
+                    targets[site.id] = (target, header)
 
-        view = self._store_sync_success(
-            expected_version=version,
-            synced_at=synced_at,
-            source_domains=source_domains,
-            source_cookies=source_cookies,
-            eligible_sites=eligible_sites,
-            matched_sites=len(targets),
-            updated_sites=updated_sites + created_cookie_sites,
-            unchanged_sites=unchanged_sites,
-            unmatched_domains=unmatched_domains,
-        )
-        self._enqueue_site_profile_syncs(profile_sync_jobs)
-        _logger.info(
-            "CookieCloud 同步诊断：源域名=%d，Cookie数量=%d，候选站点=%d，匹配站点=%d，"
-            "新增=%d，更新=%d，未变化=%d，需独立API Key=%d，未匹配域名=%d",
-            source_domains,
-            source_cookies,
-            eligible_sites,
-            len(targets),
-            created_sites,
-            updated_sites,
-            unchanged_sites,
-            len(skipped_api_key_sites),
-            unmatched_domains,
-        )
-        return (
-            view,
-            CookieCloudSyncView(
+                unmatched_domains = 0
+                for grouped_domain, cookies in payload.cookie_data.items():
+                    matched = any(
+                        cookie_domain_matches_host(cookie.domain or grouped_domain, host)
+                        for cookie in cookies
+                        if not cookie.expired
+                        for host in target_hosts
+                    )
+                    if not matched:
+                        unmatched_domains += 1
+                source_domains = len(payload.cookie_data)
+                source_cookies = sum(len(items) for items in payload.cookie_data.values())
+                site_versions_before_sync = {site.id: site.version for site in sites}
+                # Sites that previously received cookies but no longer match must
+                # not keep a stale OK probe state. Credentials are preserved.
+                missing_cookie_ids = tuple(
+                    site.id
+                    for site in sites
+                    if site.id not in targets
+                    and (
+                        site.credential_kind is SiteCredentialKind.COOKIE
+                        or site.type is SiteKind.ROUSI_PRO
+                    )
+                    and site.connection_status != SiteProbeStatus.UNTESTED.value
+                )
+                self._site_service.mark_cookiecloud_cookies_missing(missing_cookie_ids)
+                updated_sites = self._site_service.sync_cookiecloud_credentials(targets)
+                unchanged_sites = max(0, len(targets) - updated_sites - created_cookie_sites)
+                profile_sync_jobs: list[tuple[str, bool, bool]] = []
+                site_by_id = {site.id: site for site in self._site_service.list_sites()}
+                successful_site_kinds = {
+                    site_by_id[site_id].type for site_id in targets if site_id in site_by_id
+                }
+                discovered_sites = len(discovered_site_kinds)
+                sync_success_sites = len(discovered_site_kinds & successful_site_kinds)
+                sync_failed_sites = max(0, discovered_sites - sync_success_sites)
+                for site_id, (target, _raw_cookie) in targets.items():
+                    target_site = site_by_id.get(site_id)
+                    if target_site is None or not target_site.credential_configured:
+                        continue
+                    connection_status = getattr(
+                        target_site.connection_status, "value", target_site.connection_status
+                    )
+                    needs_connection_test = (
+                        connection_status != "OK" or target_site.last_test_at is None
+                    )
+                    primary_credential_changed = (
+                        target == "PRIMARY"
+                        and target_site.version != site_versions_before_sync.get(site_id)
+                    )
+                    # Statistics are fetched on the first CookieCloud import only. Later
+                    # CookieCloud runs may still test newly changed/untested credentials.
+                    sync_profile = site_id in created_cookie_site_ids
+                    if needs_connection_test or primary_credential_changed or sync_profile:
+                        profile_sync_jobs.append(
+                            (
+                                site_id,
+                                needs_connection_test or primary_credential_changed or sync_profile,
+                                sync_profile,
+                            )
+                        )
+            except CookieCloudError as exc:
+                self._store_sync_failure(
+                    expected_version=version,
+                    synced_at=synced_at,
+                    error_code=exc.code,
+                )
+                raise self._map_error(exc) from None
+            except ApplicationError as exc:
+                self._store_sync_failure(
+                    expected_version=version,
+                    synced_at=synced_at,
+                    error_code=exc.code,
+                )
+                raise
+
+            view = self._store_sync_success(
+                expected_version=version,
                 synced_at=synced_at,
-                crypto_type=envelope.crypto_type,
                 source_domains=source_domains,
                 source_cookies=source_cookies,
                 eligible_sites=eligible_sites,
@@ -648,14 +642,41 @@ class CookieCloudService:
                 updated_sites=updated_sites + created_cookie_sites,
                 unchanged_sites=unchanged_sites,
                 unmatched_domains=unmatched_domains,
-                discovered_sites=discovered_sites,
-                sync_success_sites=sync_success_sites,
-                sync_failed_sites=sync_failed_sites,
-                update_time=payload.update_time,
-                created_sites=created_sites,
-                skipped_api_key_sites=tuple(skipped_api_key_sites),
-            ),
-        )
+            )
+            self._enqueue_site_profile_syncs(profile_sync_jobs)
+            _logger.info(
+                "CookieCloud 同步诊断：源域名=%d，Cookie数量=%d，候选站点=%d，匹配站点=%d，"
+                "新增=%d，更新=%d，未变化=%d，需独立API Key=%d，未匹配域名=%d",
+                source_domains,
+                source_cookies,
+                eligible_sites,
+                len(targets),
+                created_sites,
+                updated_sites,
+                unchanged_sites,
+                len(skipped_api_key_sites),
+                unmatched_domains,
+            )
+            return (
+                view,
+                CookieCloudSyncView(
+                    synced_at=synced_at,
+                    crypto_type=envelope.crypto_type,
+                    source_domains=source_domains,
+                    source_cookies=source_cookies,
+                    eligible_sites=eligible_sites,
+                    matched_sites=len(targets),
+                    updated_sites=updated_sites + created_cookie_sites,
+                    unchanged_sites=unchanged_sites,
+                    unmatched_domains=unmatched_domains,
+                    discovered_sites=discovered_sites,
+                    sync_success_sites=sync_success_sites,
+                    sync_failed_sites=sync_failed_sites,
+                    update_time=payload.update_time,
+                    created_sites=created_sites,
+                    skipped_api_key_sites=tuple(skipped_api_key_sites),
+                ),
+            )
 
     def _store_probe(
         self,
@@ -838,6 +859,15 @@ class CookieCloudService:
             status=502 if error.retryable else 422,
             title="CookieCloud 测试失败",
             detail=messages.get(error.code, "CookieCloud 请求失败"),
+        )
+
+    @staticmethod
+    def _conflict(detail: str) -> ApplicationError:
+        return ApplicationError(
+            code="COOKIECLOUD_SYNC_IN_PROGRESS",
+            status=409,
+            title="CookieCloud 同步冲突",
+            detail=detail,
         )
 
     @staticmethod

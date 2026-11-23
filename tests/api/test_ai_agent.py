@@ -362,3 +362,75 @@ def test_telegram_legacy_approval_is_retired(
         current = client.get("/api/v1/ai-agent/telegram")
         assert current.status_code == 200
         assert current.json()["approval_enabled"] is False
+
+
+def test_ai_agent_rejects_metadata_endpoint_as_base_url(tmp_path: Path) -> None:
+    """云元数据地址不能成为 AI Provider 出站目标。"""
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        response = client.post(
+            "/api/v1/ai-agent/test",
+            headers=headers,
+            json={
+                "provider_kind": "OPENAI_COMPATIBLE",
+                "base_url": "http://169.254.169.254/latest/meta-data",
+                "model": "probe-model",
+                "request_timeout_seconds": 8,
+                "api_key": _API_KEY,
+            },
+        )
+        assert response.status_code == 422
+        assert _API_KEY not in response.text
+
+
+def test_ai_agent_saved_key_cannot_be_sent_to_a_new_endpoint(tmp_path: Path) -> None:
+    """未提供 API Key 时不得把已保存密钥发往请求里新填的 Base URL。"""
+    sent: list[httpx2.Request] = []
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, json={"id": "probe-model", "object": "model"})
+
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app, base_url="https://testserver") as client:
+        headers = _login(client)
+        app.state.ai_agent_service = AIAgentService(
+            app.state.runtime.session_factory,
+            app.state.secret_store,
+            provider_factory=AIProviderFactory(transport=httpx2.MockTransport(handler)),
+        )
+        # 先保存一次凭证，使后续探测存在可回退的已存 API Key。
+        current = client.get("/api/v1/ai-agent/settings")
+        assert current.status_code == 200
+        saved = client.put(
+            "/api/v1/ai-agent/settings",
+            headers={**headers, "If-Match": current.headers["etag"]},
+            json={
+                "enabled": False,
+                "provider_kind": "OPENAI_COMPATIBLE",
+                "base_url": "https://configured.example/v1",
+                "model": "configured-model",
+                "request_timeout_seconds": 8,
+                "max_context_messages": 20,
+                "data_scopes": ["SYSTEM_HEALTH"],
+                "api_key_action": "SET",
+                "api_key": _API_KEY,
+            },
+        )
+        assert saved.status_code == 200
+
+        response = client.post(
+            "/api/v1/ai-agent/test",
+            headers=headers,
+            json={
+                "provider_kind": "OPENAI_COMPATIBLE",
+                "base_url": "https://attacker.example/v1",
+                "model": "configured-model",
+                "request_timeout_seconds": 8,
+            },
+        )
+
+        assert response.status_code == 422
+        assert sent == []
+        assert _API_KEY not in response.text

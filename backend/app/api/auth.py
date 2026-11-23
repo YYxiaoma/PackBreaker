@@ -10,7 +10,9 @@ from backend.app.api.dependencies import (
     auth_service,
     client_source,
     effective_scheme,
+    notification_service,
 )
+from backend.app.domain.notification import NotificationEventType
 
 router = APIRouter(tags=["auth"])
 
@@ -62,6 +64,10 @@ async def login(request: Request, response: Response, payload: LoginRequest) -> 
         username=payload.username,
         password=payload.password.get_secret_value(),
         source=client_source(request),
+    )
+    notification_service(request).record_product_event(
+        NotificationEventType.AUTH_LOGIN_SUCCESS,
+        subject_id=result.username,
     )
     secure = effective_scheme(request) == "https"
     max_age = max(1, int(result.expires_at.timestamp() - time()))
@@ -115,6 +121,8 @@ async def change_password(
     csrf_cookie: str | None = Cookie(default=None, alias=CSRF_COOKIE),
     csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
 ) -> Response:
+    # 改密会立刻作废旧会话，用户名必须在调用前取。
+    principal_name = auth_service(request).me(session_token).username
     auth_service(request).change_password(
         token=session_token,
         csrf_cookie=csrf_cookie,
@@ -123,6 +131,11 @@ async def change_password(
         new_password=payload.new_password.get_secret_value(),
         confirmation=payload.confirm_password.get_secret_value(),
     )
+    if principal_name:
+        notification_service(request).record_product_event(
+            NotificationEventType.AUTH_PASSWORD_CHANGED,
+            subject_id=principal_name,
+        )
     secure = effective_scheme(request) == "https"
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     response.delete_cookie(SESSION_COOKIE, path="/", secure=secure, samesite="strict")

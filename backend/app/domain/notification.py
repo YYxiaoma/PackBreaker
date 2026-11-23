@@ -20,12 +20,16 @@ class NotificationEventType(StrEnum):
     SITE_RELIABILITY = "SITE_RELIABILITY"
 
 
+# 默认订阅集合必须与真正有生产者的产品事件一致，否则 UI 上的勾选
+# 永远不会产生通知（历史缺陷：7 种事件里只有 2 种真的发送过）。
 PRODUCT_NOTIFICATION_EVENT_TYPES: tuple[NotificationEventType, ...] = (
     NotificationEventType.AUTH_LOGIN_SUCCESS,
     NotificationEventType.AUTH_PASSWORD_CHANGED,
     NotificationEventType.TASK_EXECUTION_RESULT,
     NotificationEventType.DOWNLOADER_CREATED,
     NotificationEventType.SITE_CREATED,
+    NotificationEventType.VERSION_UPDATE_AVAILABLE,
+    NotificationEventType.SITE_RELIABILITY,
 )
 
 DEFAULT_NOTIFICATION_AGGREGATION_SECONDS = 300
@@ -114,6 +118,55 @@ _UNPACK_TERMINAL_MESSAGES: dict[str, tuple[str, NotificationSeverity]] = {
     "COMPLETED": ("数据拆包任务已完成", NotificationSeverity.INFO),
     "COMPLETED_WITH_ERRORS": ("数据拆包任务完成但存在异常", NotificationSeverity.WARNING),
 }
+
+
+_PRODUCT_EVENT_TEMPLATES: dict[NotificationEventType, tuple[str, NotificationSeverity, str]] = {
+    NotificationEventType.AUTH_LOGIN_SUCCESS: (
+        "管理员登录成功",
+        NotificationSeverity.INFO,
+        "管理员账号 {subject} 登录成功。",
+    ),
+    NotificationEventType.AUTH_PASSWORD_CHANGED: (
+        "管理员密码已修改",
+        NotificationSeverity.WARNING,
+        "管理员账号 {subject} 的登录密码已修改；如非本人操作请立即检查。",
+    ),
+    NotificationEventType.DOWNLOADER_CREATED: (
+        "已添加下载器",
+        NotificationSeverity.INFO,
+        "新增下载器 {subject}。",
+    ),
+    NotificationEventType.SITE_CREATED: (
+        "已添加站点",
+        NotificationSeverity.INFO,
+        "新增站点 {subject}。",
+    ),
+    NotificationEventType.VERSION_UPDATE_AVAILABLE: (
+        "发现新版本",
+        NotificationSeverity.INFO,
+        "当前版本 {subject}，检测到可用更新。",
+    ),
+}
+
+
+def notification_message_for_product_event(
+    *,
+    event_type: NotificationEventType,
+    subject_id: str,
+    detail: str | None = None,
+) -> NotificationMessage | None:
+    template = _PRODUCT_EVENT_TEMPLATES.get(event_type)
+    if template is None:
+        return None
+    title, severity, body_template = template
+    safe_subject = subject_id[:128]
+    return NotificationMessage(
+        title=title,
+        body=body_template.format(subject=safe_subject)[:2048],
+        severity=severity,
+        event_key=event_type.value,
+        link=detail,
+    )
 
 
 def notification_message_for_site_reliability_event(

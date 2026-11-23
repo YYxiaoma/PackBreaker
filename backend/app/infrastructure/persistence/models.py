@@ -1607,7 +1607,9 @@ class NotificationOutbox(Base):
         CheckConstraint(f"severity IN ({_NOTIFICATION_SEVERITY_SQL})", name="severity"),
         CheckConstraint("pending_count >= 0", name="pending_count"),
         CheckConstraint("attempt_count >= 0", name="attempt_count"),
-        CheckConstraint("subject_kind IN ('TASK', 'SITE', 'UNPACK')", name="subject_kind"),
+        CheckConstraint(
+            "subject_kind IN ('TASK', 'SITE', 'UNPACK', 'PRODUCT')", name="subject_kind"
+        ),
         UniqueConstraint(
             "channel_id",
             "subject_kind",

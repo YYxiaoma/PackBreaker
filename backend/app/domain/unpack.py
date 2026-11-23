@@ -184,6 +184,7 @@ _EXECUTION_TRANSITIONS: dict[UnpackExecutionStatus, frozenset[UnpackExecutionSta
         {
             UnpackExecutionStatus.REVIEW_REQUIRED,
             UnpackExecutionStatus.EXECUTING,
+            UnpackExecutionStatus.COMPLETED,
             UnpackExecutionStatus.COMPLETED_WITH_ERRORS,
             UnpackExecutionStatus.PAUSED,
             UnpackExecutionStatus.FAILED,
@@ -192,6 +193,8 @@ _EXECUTION_TRANSITIONS: dict[UnpackExecutionStatus, frozenset[UnpackExecutionSta
     ),
     UnpackExecutionStatus.EXECUTING: frozenset(
         {
+            UnpackExecutionStatus.MATCHING,
+            UnpackExecutionStatus.CONTENT_VERIFYING,
             UnpackExecutionStatus.CLIENT_VERIFYING,
             UnpackExecutionStatus.REVIEW_REQUIRED,
             UnpackExecutionStatus.COMPLETED,
@@ -351,11 +354,26 @@ _ITEM_TRANSITIONS: dict[UnpackItemStatus, frozenset[UnpackItemStatus]] = {
 def execution_transition_allowed(
     current: UnpackExecutionStatus,
     target: UnpackExecutionStatus,
+    *,
+    allow_restart: bool = False,
 ) -> bool:
+    """Natural lifecycle transitions; terminal states are final unless reopened.
+
+    ``allow_restart`` models the explicit human action of retrying items in a
+    finished execution. Without it, a terminal execution must never resume.
+    """
     if current == target:
         return True
     if current in TERMINAL_EXECUTION_STATUSES:
-        return False
+        # Recounting between completion states is a normal recalculation.
+        if target in TERMINAL_EXECUTION_STATUSES and target != UnpackExecutionStatus.CANCELLED:
+            return True
+        # A reopened execution may only go back to an active (non-terminal) stage.
+        return bool(
+            allow_restart
+            and target not in TERMINAL_EXECUTION_STATUSES
+            and target != UnpackExecutionStatus.CANCELLED
+        )
     return target in _EXECUTION_TRANSITIONS.get(current, frozenset())
 
 

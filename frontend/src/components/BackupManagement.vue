@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { DatabaseBackup, RefreshCw, ShieldCheck } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
@@ -39,18 +39,29 @@ function formatTime(value: string | null | undefined): string {
   return new Date(value).toLocaleString();
 }
 
+let disposed = false;
+let loadSequence = 0;
+
 async function load(): Promise<void> {
+  const sequence = ++loadSequence;
   loading.value = true;
   try {
     const value = await getBackupPolicy();
+    if (disposed || sequence !== loadSequence) return;
     policy.value = value;
     syncDraft(value);
   } catch (caught) {
+    if (disposed || sequence !== loadSequence) return;
     ElMessage.error(toApiProblem(caught).message);
   } finally {
-    loading.value = false;
+    if (!disposed && sequence === loadSequence) loading.value = false;
   }
 }
+
+onBeforeUnmount(() => {
+  disposed = true;
+  loadSequence += 1;
+});
 
 async function save(): Promise<void> {
   if (!policy.value) return;

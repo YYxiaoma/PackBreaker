@@ -293,6 +293,37 @@ class SiteService:
             "proxy": site_profile(site.type).supports_proxy,
         }
 
+    def mark_cookiecloud_cookies_missing(self, site_ids: tuple[str, ...]) -> int:
+        """Flag sites whose cookie disappeared from CookieCloud as UNTESTED.
+
+        Credentials are deliberately kept: an operator may have set them by
+        hand, and deleting them here would be destructive. Clearing the probe
+        status forces a fresh connection test before the site is trusted.
+        """
+        if not site_ids:
+            return 0
+        changed = 0
+        with self._session_factory() as session:
+            repository = SiteRepository(session)
+            for site_id in site_ids:
+                current = repository.get(site_id)
+                if current is None:
+                    continue
+                if not repository.update_config(
+                    site_id,
+                    expected_version=current.version,
+                    values={
+                        "connection_status": SiteProbeStatus.UNTESTED.value,
+                        "capabilities": {},
+                        "last_test_at": None,
+                    },
+                ):
+                    continue
+                changed += 1
+                self._reliability_registry.discard(site_id)
+            session.commit()
+        return changed
+
     def sync_cookiecloud_credentials(
         self,
         updates: Mapping[str, tuple[Literal["PRIMARY", "DOWNLOAD"], str]],

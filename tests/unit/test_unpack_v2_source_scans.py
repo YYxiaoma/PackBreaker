@@ -8,12 +8,13 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.unpack_source_scans import UnpackSourceScanService
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 
 
 def _service(tmp_path: Path) -> tuple[UnpackSourceScanService, Path]:
     root = tmp_path / "data"
     root.mkdir()
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
     return (

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.application.unpack_lifecycle import refresh_unpack_execution_state
 from backend.app.domain.unpack import UnpackExecutionStatus, UnpackItemStatus
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
     UnpackExecution,
@@ -15,7 +16,7 @@ from backend.app.infrastructure.persistence.models import (
 
 
 def _factory() -> tuple[sessionmaker[Session], UnpackExecution]:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine, expire_on_commit=False, autoflush=False

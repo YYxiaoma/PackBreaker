@@ -757,6 +757,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/movie-dedup/jobs/{job_id}/reconcile': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Reconcile Movie Dedup Job
+     * @description Manual recovery entry for jobs stuck in RECOVERY_REQUIRED.
+     */
+    post: operations['reconcile_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__reconcile_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/movie-dedup/jobs/{job_id}/start': {
     parameters: {
       query?: never;
@@ -6645,6 +6665,42 @@ export interface operations {
       };
     };
   };
+  reconcile_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__reconcile_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path: {
+        job_id: string;
+      };
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['MovieDedupJobResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   start_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__start_post: {
     parameters: {
       query?: never;
@@ -8228,6 +8284,7 @@ export interface operations {
     parameters: {
       query?: never;
       header?: {
+        'If-Match'?: string | null;
         'X-CSRF-Token'?: string | null;
       };
       path: {

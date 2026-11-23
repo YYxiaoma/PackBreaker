@@ -679,6 +679,14 @@ def _candidate_list_response(view: UnpackMatchCandidateList) -> UnpackMatchCandi
     )
 
 
+def _optional_definition_version(value: str | None) -> int | None:
+    """Optional If-Match for actions the frontend does not yet version."""
+    if value is None:
+        return None
+    raw = value.strip().strip('"')
+    return int(raw) if raw.isdigit() and int(raw) > 0 else None
+
+
 def _required_definition_version(value: str | None) -> int:
     if value is None:
         raise ApplicationError(
@@ -1200,10 +1208,13 @@ async def act_on_unpack_definition(
     payload: UnpackDefinitionActionRequest,
     request: Request,
     _principal: Annotated[AccessPrincipal, Depends(WRITE_ACCESS)],
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
 ) -> UnpackDefinitionActionResponse:
     if payload.action != "run":
         raise AssertionError("Pydantic 已限制 action")
-    result = unpack_definition_service(request).run(definition_id)
+    result = unpack_definition_service(request).run(
+        definition_id, expected_version=_optional_definition_version(if_match)
+    )
     return UnpackDefinitionActionResponse(
         definition=_definition_response(result.definition),
         execution_id=result.execution_id,

@@ -3,7 +3,12 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.app.domain.unpack import UnpackExecutionStatus, UnpackItemStatus
+from backend.app.domain.unpack import (
+    TERMINAL_EXECUTION_STATUSES,
+    UnpackExecutionStatus,
+    UnpackItemStatus,
+    execution_transition_allowed,
+)
 from backend.app.infrastructure.persistence.database import begin_immediate_write
 from backend.app.infrastructure.persistence.models import (
     UnpackExecution,
@@ -140,6 +145,12 @@ def refresh_unpack_execution_state(session: Session, execution: UnpackExecution)
     else:
         next_status = UnpackExecutionStatus(execution.status)
 
+    # 让领域状态机成为唯一权威：终态默认不复活，除非显式重开。
+    current_status = UnpackExecutionStatus(execution.status)
+    if not execution_transition_allowed(
+        current_status, next_status, allow_restart=current_status in TERMINAL_EXECUTION_STATUSES
+    ):
+        raise ValueError(f"非法的执行状态跃迁：{current_status.value} -> {next_status.value}")
     now = utc_now()
     execution.status = next_status.value
     execution.finished_at = (

@@ -3,6 +3,8 @@ from __future__ import annotations
 from enum import StrEnum
 from urllib.parse import urlsplit, urlunsplit
 
+from backend.app.domain.outbound_safety import assert_safe_outbound_host
+
 OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 
@@ -71,6 +73,10 @@ def normalize_ai_base_url(kind: AIProviderKind, value: str | None) -> str:
     if parsed.query or parsed.fragment:
         raise ValueError("AI Provider Base URL 不能包含 query 或 fragment")
     hostname = parsed.hostname.lower()
+    try:
+        assert_safe_outbound_host(hostname, label="AI Provider Base URL ")
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
     host = f"[{hostname}]" if ":" in hostname else hostname
     if port is not None:
         host = f"{host}:{port}"

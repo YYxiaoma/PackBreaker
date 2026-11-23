@@ -23,6 +23,7 @@ from backend.app.domain.unpack_execution_plan import (
 from backend.app.domain.verification import VerificationLevel
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
     UnpackExecution,
@@ -80,7 +81,7 @@ def _fixture(
         created_at=now,
     )
 
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine,

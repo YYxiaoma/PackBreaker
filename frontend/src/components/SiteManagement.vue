@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Activity, LayoutGrid, List, Plus, RefreshCw, Search, Settings2 } from '@lucide/vue';
@@ -119,10 +119,16 @@ const draft = reactive<SiteDraft>({
 });
 
 const editing = computed(() => draft.id !== null);
+let disposed = false;
+let refreshSequence = 0;
 const selectedProfile = computed<SiteProfile | undefined>(() => profileFor(draft.type));
 
 onMounted(() => {
   void refresh(false);
+});
+onBeforeUnmount(() => {
+  disposed = true;
+  refreshSequence += 1;
 });
 
 function profileFor(kind: SiteKind): SiteProfile | undefined {
@@ -211,10 +217,13 @@ function problemText(problem: ApiProblem): string {
 }
 
 async function refresh(notify = true) {
+  const current = ++refreshSequence;
   try {
     await store.refresh();
+    if (disposed || current !== refreshSequence) return;
     if (notify) ElMessage.success('站点配置已刷新');
   } catch (caught) {
+    if (disposed || current !== refreshSequence) return;
     if (notify) ElMessage.error(problemText(toApiProblem(caught)));
   }
 }
@@ -1367,18 +1376,18 @@ async function remove(item: Site) {
   height: 9px;
   border-radius: 50%;
   flex: 0 0 9px;
-  background: #909399;
+  background: var(--el-text-color-placeholder);
 }
 
 .site-status-dot--ok {
-  background: #67c23a;
+  background: var(--el-color-success);
 }
 
 .site-status-dot--degraded {
-  background: #e6a23c;
+  background: var(--el-color-warning);
 }
 
 .site-status-dot--failed {
-  background: #f56c6c;
+  background: var(--el-color-danger);
 }
 </style>

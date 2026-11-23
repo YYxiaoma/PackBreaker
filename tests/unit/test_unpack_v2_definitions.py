@@ -37,6 +37,7 @@ from backend.app.domain.unpack import (
     UnpackTriggerKind,
 )
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     Downloader,
     Site,
@@ -58,7 +59,7 @@ def _service(tmp_path: Path) -> tuple[UnpackDefinitionService, sessionmaker[Sess
     source.mkdir(parents=True)
     output.mkdir(parents=True)
 
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine,

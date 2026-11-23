@@ -1,6 +1,8 @@
 import logging
 import sys
 
+import pytest
+
 from backend.app.infrastructure.app_logging import JsonLogFormatter, redact_fields, sanitize_message
 
 
@@ -60,3 +62,36 @@ def test_json_formatter_never_serializes_exception_message_or_sensitive_fields()
     assert canary not in rendered
     assert '"exception":"RuntimeError"' in rendered
     assert '"authorization":"[REDACTED]"' in rendered
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+        "bot_token=123456:ABCDEFGHIJKLMNOP",
+        "client_secret=synthetic-client-secret",
+        "send_key=SCT123456789",
+        "refresh_token=rt-synthetic-value",
+        "webhook_secret=whsec-synthetic",
+    ],
+)
+def test_log_message_redacts_underscore_and_bearer_credentials(message: str) -> None:
+    """下划线前缀键名与 Bearer 后置凭证都必须整体脱敏。"""
+    rendered = sanitize_message(message)
+    assert "[REDACTED]" in rendered
+    for fragment in (
+        "eyJhbGciOiJIUzI1NiJ9",
+        "ABCDEFGHIJKLMNOP",
+        "synthetic-client-secret",
+        "SCT123456789",
+        "rt-synthetic-value",
+        "whsec-synthetic",
+    ):
+        assert fragment not in rendered
+
+
+def test_redact_fields_keeps_key_context_for_key_value_pairs() -> None:
+    canary = "PACKBREAKER-LOG-CANARY-pair9"
+    assert redact_fields(("token", canary)) == ["token", "[REDACTED]"]
+    assert redact_fields({"pairs": [("api_key", canary)]}) == {"pairs": [["api_key", "[REDACTED]"]]}
+    assert canary not in str(redact_fields({"pairs": [("api_key", canary)]}))

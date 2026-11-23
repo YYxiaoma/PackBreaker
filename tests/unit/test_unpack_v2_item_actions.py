@@ -12,6 +12,7 @@ from backend.app.domain.unpack import (
     UnpackReviewDecision,
 )
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
     UnpackDeletedItemAudit,
@@ -33,7 +34,7 @@ def _fixture(
     generation: int = 2,
     selected_candidate_id: str | None = None,
 ) -> tuple[UnpackItemActionService, sessionmaker[Session]]:
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine,

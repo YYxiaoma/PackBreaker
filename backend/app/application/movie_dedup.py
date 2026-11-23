@@ -26,6 +26,7 @@ from backend.app.domain.movie_dedup import (
 )
 from backend.app.domain.task_definition import DEFAULT_VIDEO_EXTENSIONS
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
+from backend.app.infrastructure.persistence.database import begin_immediate_write
 from backend.app.infrastructure.persistence.models import (
     MovieDedupFileInventory,
     MovieDedupJob,
@@ -365,6 +366,29 @@ class MovieDedupService:
             session.refresh(record)
             return self._view(record)
 
+    def reconcile(self, job_id: str) -> MovieDedupJobView:
+        """Manual recovery: re-enter the reconcile loop for a stuck job.
+
+        Only RECOVERY_REQUIRED is accepted; the driver automatically retries
+        these jobs as well, so this is an operator-triggered fast path.
+        """
+        with self._session_factory() as session:
+            record = self._require_job(session, job_id)
+            if record.status != MovieDedupJobStatus.RECOVERY_REQUIRED.value:
+                raise ApplicationError(
+                    code="MOVIE_DEDUP_STATE_INVALID",
+                    status=409,
+                    title="影片去重任务不需要恢复",
+                    detail=f"当前状态 {record.status} 不允许手动恢复",
+                )
+            record.status = MovieDedupJobStatus.RUNNING.value
+            record.updated_at = utc_now()
+            record.version += 1
+            session.commit()
+        self.reconcile_job_operations(job_id, limit=8)
+        with self._session_factory() as session:
+            return self._view(self._require_job(session, job_id))
+
     def advance(
         self,
         job_id: str,
@@ -412,7 +436,14 @@ class MovieDedupService:
             return tuple(
                 session.scalars(
                     select(MovieDedupJob.id)
-                    .where(MovieDedupJob.status == MovieDedupJobStatus.RUNNING.value)
+                    .where(
+                        MovieDedupJob.status.in_(
+                            (
+                                MovieDedupJobStatus.RUNNING.value,
+                                MovieDedupJobStatus.RECOVERY_REQUIRED.value,
+                            )
+                        )
+                    )
                     .order_by(MovieDedupJob.updated_at, MovieDedupJob.id)
                     .limit(limit)
                 )
@@ -518,6 +549,16 @@ class MovieDedupService:
         if not idempotency_key or len(idempotency_key) > 200:
             raise self._invalid("影片去重执行需要有效的 Idempotency-Key")
         with self._session_factory() as session:
+            # 写临界区必须在任何读取前取得，防止两个入口并发交换同一 B 文件。
+            begin_immediate_write(session)
+            job = self._require_job(session, job_id)
+            if job.status != MovieDedupJobStatus.REVIEW_REQUIRED.value:
+                raise ApplicationError(
+                    code="MOVIE_DEDUP_STATE_INVALID",
+                    status=409,
+                    title="当前任务不能执行去重",
+                    detail="仅待审核状态可执行；请先等待校验完成并人工确认候选",
+                )
             selected_pairs = tuple(
                 session.scalars(
                     select(MovieDedupPair).where(
@@ -541,14 +582,25 @@ class MovieDedupService:
                     title="同一 B 文件被重复选择",
                     detail="同一次执行中每个 B 文件只能选择一个 A 候选",
                 )
+        first_error: Exception | None = None
+        succeeded = 0
         for pair_id in normalized_ids:
-            self._execute_pair(job_id, pair_id, request_idempotency_key=idempotency_key)
+            try:
+                self._execute_pair(job_id, pair_id, request_idempotency_key=idempotency_key)
+                succeeded += 1
+            except Exception as exc:
+                # 记录失败并继续处理其余候选；异常本身在循环后上抛，
+                # 以保留 reconcile 依赖的崩溃语义（journal 停在可恢复状态）。
+                if first_error is None:
+                    first_error = exc
         with self._session_factory() as session:
             job = self._require_job(session, job_id)
             self._refresh_execution_summary(session, job)
             session.commit()
-            session.refresh(job)
-            return self._view(job)
+        if first_error is not None:
+            raise first_error
+        with self._session_factory() as session:
+            return self._view(self._require_job(session, job_id))
 
     def _execute_pair(
         self,
@@ -937,11 +989,17 @@ class MovieDedupService:
         for target in targets:
             sources = list(
                 session.scalars(
-                    select(MovieDedupFileInventory).where(
+                    select(MovieDedupFileInventory)
+                    .where(
                         MovieDedupFileInventory.job_id == job.id,
                         MovieDedupFileInventory.side == MovieDedupInventorySide.SOURCE.value,
                         MovieDedupFileInventory.size_bytes == target.size_bytes,
                     )
+                    .order_by(
+                        MovieDedupFileInventory.relative_path,
+                        MovieDedupFileInventory.id,
+                    )
+                    .limit(64)
                 )
             )
             sources.sort(
@@ -1389,6 +1447,9 @@ def _metadata_matches(left: dict[str, object], right: dict[str, object]) -> bool
 
 
 def _pair_requires_execution(pair: MovieDedupPair) -> bool:
+    if pair.status == MovieDedupPairStatus.CANDIDATE.value:
+        # 尚未完成内容校验的候选仍需执行，不能当作“无需处理”。
+        return True
     return pair.status in {
         MovieDedupPairStatus.VERIFIED_DUPLICATE.value,
         MovieDedupPairStatus.REVIEW_REQUIRED.value,

@@ -50,6 +50,7 @@ from backend.app.infrastructure.adapters.downloaders import (
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.authorized_paths import AuthorizedPathScope
 from backend.app.infrastructure.persistence.base import Base
+from backend.app.infrastructure.persistence.database import configure_sqlite_engine
 from backend.app.infrastructure.persistence.models import (
     UnpackDefinition,
     UnpackExecution,
@@ -317,7 +318,7 @@ def _fixture(
     assert meta.v1_info_hash is not None
     cached_torrent_key = ManualTorrentStore(data_root).store(torrent) if cache_torrent else None
 
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = configure_sqlite_engine(create_engine("sqlite+pysqlite:///:memory:"))
     Base.metadata.create_all(engine)
     factory: sessionmaker[Session] = sessionmaker(
         bind=engine,

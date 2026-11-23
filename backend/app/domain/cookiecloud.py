@@ -57,6 +57,9 @@ def normalize_cookiecloud_server_url(value: str) -> str:
         _ = parsed.port
     except ValueError as exc:
         raise ValueError("CookieCloud 服务器地址无效") from exc
+    from backend.app.domain.outbound_safety import assert_safe_outbound_host
+
+    assert_safe_outbound_host(parsed.hostname or "", label="CookieCloud 服务器")
     if (
         parsed.scheme not in {"http", "https"}
         or parsed.hostname is None

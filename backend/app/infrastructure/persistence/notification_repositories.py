@@ -11,6 +11,7 @@ from backend.app.domain.notification import (
     NotificationDeliveryState,
     NotificationEventType,
     NotificationMessage,
+    notification_message_for_product_event,
     notification_message_for_site_reliability_event,
     notification_message_for_task_event,
     notification_message_for_unpack_execution_result,
@@ -251,6 +252,37 @@ class NotificationOutboxRepository:
         self._session.flush()
         return projected
 
+    def project_product_event(
+        self,
+        *,
+        event_type: NotificationEventType,
+        subject_id: str,
+        detail: str | None,
+        occurred_at: datetime,
+    ) -> int:
+        message = notification_message_for_product_event(
+            event_type=event_type,
+            subject_id=subject_id,
+            detail=detail,
+        )
+        if message is None:
+            return 0
+        channels = NotificationChannelRepository(self._session).list_enabled()
+        projected = 0
+        for channel in channels:
+            if not _accepts_event(channel, event_type):
+                continue
+            self._upsert_message(
+                channel=channel,
+                subject_kind="PRODUCT",
+                subject_id=f"{event_type.value}:{subject_id}",
+                message=message,
+                occurred_at=occurred_at,
+            )
+            projected += 1
+        self._session.flush()
+        return projected
+
     def project_site_reliability_event(
         self,
         *,
@@ -435,6 +467,30 @@ class NotificationOutboxRepository:
         record.last_error_code = None
         record.updated_at = delivered_at
         self._session.flush()
+
+    def revive_dead(self, channel_id: str, *, now: datetime) -> int:
+        """把该渠道已判死的待发消息重新排入队列。
+
+        改凭证会让旧凭证期间的重试耗尽为 DEAD；重新启用后这些消息若永不
+        补投，用户会以为通知恢复了却收不到。
+        """
+        rows = list(
+            self._session.scalars(
+                select(NotificationOutbox).where(
+                    NotificationOutbox.channel_id == channel_id,
+                    NotificationOutbox.state == NotificationDeliveryState.DEAD.value,
+                )
+            ).all()
+        )
+        for row in rows:
+            row.state = NotificationDeliveryState.PENDING.value
+            row.attempt_count = 0
+            row.pending_count = max(1, row.pending_count)
+            row.next_attempt_at = now
+            row.last_error_code = None
+            row.updated_at = now
+        self._session.flush()
+        return len(rows)
 
     def mark_failure(
         self,

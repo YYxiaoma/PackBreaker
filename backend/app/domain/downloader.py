@@ -115,7 +115,10 @@ def validate_credential(kind: DownloaderKind, credential: DownloaderCredential |
 def normalize_base_url(kind: DownloaderKind, value: str) -> str:
     from urllib.parse import urlsplit, urlunsplit
 
+    from backend.app.domain.outbound_safety import assert_safe_outbound_host
+
     parsed = urlsplit(value.strip())
+    assert_safe_outbound_host(parsed.hostname or "", label="下载器")
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("下载器管理地址必须是 http/https URL")
     if parsed.username is not None or parsed.password is not None:
@@ -126,6 +129,23 @@ def normalize_base_url(kind: DownloaderKind, value: str) -> str:
     if kind is DownloaderKind.TRANSMISSION and not path:
         path = "/transmission/rpc"
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _reject_symlink_components(path: Path, *, label: str) -> None:
+    """A mapping root or its ancestors must never be a symlink.
+
+    ``Path.resolve`` follows links, so a directory replaced by a symlink after
+    configuration could otherwise redirect every mapped read outside its root.
+    """
+    current = path if path.is_absolute() else Path("/") / path
+    for part in (current, *current.parents):
+        try:
+            if part.is_symlink():
+                raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, f"{label}不得是符号链接")
+        except OSError as exc:
+            raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, f"{label}无法校验") from exc
+        if part == part.parent:
+            break
 
 
 def normalize_path_mappings(
@@ -141,6 +161,7 @@ def normalize_path_mappings(
         container = Path(rule.container_prefix)
         if not container.is_absolute():
             raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器路径必须是绝对路径")
+        _reject_symlink_components(container, label="容器路径")
         resolved = container.resolve(strict=False)
         if resolved == Path("/"):
             raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器路径不能直接使用根目录 /")
@@ -173,6 +194,7 @@ def map_remote_path(
     if len(winners) != 1:
         raise DomainViolation(ErrorCode.MAPPING_AMBIGUOUS, "下载器路径同时命中多条等长映射")
     _, index, rule, suffix = winners[0]
+    _reject_symlink_components(Path(rule.container_prefix), label="容器映射根")
     prefix = Path(rule.container_prefix).resolve(strict=False)
     if prefix == Path("/"):
         raise DomainViolation(ErrorCode.PATH_MAPPING_INVALID, "容器映射根不能直接使用 /")

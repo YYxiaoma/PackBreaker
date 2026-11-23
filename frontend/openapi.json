@@ -8662,7 +8662,7 @@
   },
   "info": {
     "title": "PackBreaker",
-    "version": "1.1.16"
+    "version": "1.1.17"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -12686,6 +12686,97 @@
         ]
       }
     },
+    "/api/v1/movie-dedup/jobs/{job_id}/reconcile": {
+      "post": {
+        "description": "Manual recovery entry for jobs stuck in RECOVERY_REQUIRED.",
+        "operationId": "reconcile_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__reconcile_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Csrf-Token"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "packbreaker_csrf",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Packbreaker Csrf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovieDedupJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reconcile Movie Dedup Job",
+        "tags": [
+          "movie-dedup"
+        ]
+      }
+    },
     "/api/v1/movie-dedup/jobs/{job_id}/start": {
       "post": {
         "operationId": "start_movie_dedup_job_api_v1_movie_dedup_jobs__job_id__start_post",
@@ -16375,6 +16466,22 @@
             "schema": {
               "title": "Definition Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
             }
           },
           {

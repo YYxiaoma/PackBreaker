@@ -612,7 +612,7 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 .ghost-button {
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   background: var(--surface);
   color: var(--ink);
 }
@@ -621,7 +621,7 @@ onUnmounted(() => {
   padding: 10px 14px;
   border-radius: 10px;
   font-size: 13px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
 }
 .banner.warning {
   background: #fff8e6;
@@ -642,7 +642,7 @@ onUnmounted(() => {
   display: grid;
   gap: 4px;
   padding: 14px 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface);
 }
@@ -704,7 +704,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   padding: 6px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface);
   color: var(--ink);
@@ -743,7 +743,7 @@ onUnmounted(() => {
   gap: 6px;
   padding: 0 10px;
   height: 32px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   color: var(--muted);
@@ -764,7 +764,7 @@ onUnmounted(() => {
   color: var(--muted);
 }
 .table-card {
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--surface);
   overflow: hidden;
@@ -800,7 +800,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 10px 16px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--line);
   font-size: 12px;
   color: var(--muted);
 }
