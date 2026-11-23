@@ -902,8 +902,14 @@ const path = require('node:path');
     await page.locator('nav').getByRole('button',{name:'总览',exact:true}).click();
     await page.getByRole('heading',{name:'PackBreaker 总览',exact:true,level:1}).waitFor();
     const systemCard=page.locator('.overview-monitor-grid > .monitor-card').filter({hasText:'系统状态'}).first();
-    await systemCard.getByText('运行正常',{exact:true}).waitFor();
-    assert.equal(await systemCard.getByText('需要关注',{exact:true}).count(),0,'全局 health warning 不应覆盖四个可见子服务均正常的系统状态卡');
+    // v1.1.16 起总览状态卡直接采用后端聚合结论（避免只看 4 项造成监控盲区）：
+    // mock 中 backups/operations 两项 warning → 卡片显示「需要关注」，
+    // 但四个子服务行仍须各自展示正常，不被全局结论覆盖。
+    await systemCard.getByText('需要关注',{exact:true}).waitFor();
+    for (const service of ['Web 服务','调度服务','存储服务','数据库']) {
+      assert.equal(await systemCard.locator('.service-list > div').filter({hasText:service}).getByText('正常',{exact:true}).count(),1,'全局 warning 下 '+service+' 仍应显示正常');
+    }
+    assert.equal(await systemCard.getByText('运行异常',{exact:true}).count(),0,'无 blocked 检查时不应显示运行异常');
     const runningMetric=page.locator('.overview-business-grid > .business-card').filter({hasText:'拆包辅种'}).locator('.business-numbers > div').filter({hasText:'处理中'}).first();
     assert.equal((await runningMetric.locator('dd').textContent())?.trim(),'26','总览处理中影片应使用拆包执行项统计，而非任务定义数量');
     assert.equal(await page.locator('.cpu-bars span:not(.is-pending)').count(),3,'CPU 图应直接加载后端已积累的历史采样');
@@ -978,6 +984,9 @@ const path = require('node:path');
     }));
     await page.reload({waitUntil:'domcontentloaded'});
     await page.getByRole('heading',{name:'PackBreaker 总览',exact:true,level:1}).waitFor();
+    // 健康路径：status ok 的后端聚合结论应让状态卡回到「运行正常」。
+    const healthyCard=page.locator('.overview-monitor-grid > .monitor-card').filter({hasText:'系统状态'}).first();
+    await healthyCard.getByText('运行正常',{exact:true}).waitFor({timeout:15000});
     const missingStatistics=await page.locator('.overview-kpi-grid').innerText();
     assert.ok(missingStatistics.includes('—'),'缺失统计显示未知，不能伪造零值或演示数据');
     assert.ok(!missingStatistics.includes('1,158'),'缺失统计不得沿用示例成果');
