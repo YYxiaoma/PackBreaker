@@ -166,7 +166,9 @@ const appliedKeyword = ref('');
 const createVisible = ref(false);
 const unpackTableContainer = ref<HTMLElement | null>(null);
 const unpackTableContainerWidth = ref(0);
-const showInlineDefinitionActions = computed(() => unpackTableContainerWidth.value >= 1150);
+// 1440 视口（侧栏 246 + main clamp padding 后）实测容器约 1134px；
+// 阈值取 1120 保证 1440 宽屏走 inline，1280 及以下保持 overflow。
+const showInlineDefinitionActions = computed(() => unpackTableContainerWidth.value >= 1120);
 // 操作列固定宽度：内联时按「执行/查看/重试/导出模板/编辑/删除」实测需要留足，
 // 否则右侧按钮会被 fixed 列遮盖。
 const definitionActionColumnWidth = computed(() => (showInlineDefinitionActions.value ? 400 : 156));

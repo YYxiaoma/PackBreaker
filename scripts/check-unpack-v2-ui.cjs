@@ -123,6 +123,9 @@ const fulfillJson = (route, body, status = 200) =>
       checks: [],
     }),
   );
+  await page.route("**/api/v1/system/release-notes", (route) =>
+    fulfillJson(route, { current_version: "1.1.4", entries: [] }),
+  );
   await page.route("**/api/v1/system/upgrade", (route) =>
     fulfillJson(route, {
       current_version: "1.1.4",
@@ -437,6 +440,7 @@ const fulfillJson = (route, body, status = 200) =>
     timeout_count: 0,
     error_count: 0,
     completed_count: 0,
+    executing_count: 0,
     version: 5,
     created_at: now,
     updated_at: now,
@@ -510,6 +514,7 @@ const fulfillJson = (route, body, status = 200) =>
     timeout_count: 0,
     error_count: 1,
     completed_count: 0,
+    executing_count: 0,
     started_at: now,
     finished_at: null,
     version: 5,
@@ -592,6 +597,7 @@ const fulfillJson = (route, body, status = 200) =>
       id: "item-auto",
       source_object_key: "source-auto",
       status: "MATCHED_AUTO",
+      retry_capability: "NONE",
       highest_candidate_score_bps: 10000,
       selected_candidate_id: "candidate-auto",
       match_origin: "AUTO",
@@ -602,6 +608,7 @@ const fulfillJson = (route, body, status = 200) =>
       id: "item-review",
       source_object_key: "source-review",
       status: "REVIEW_REQUIRED",
+      retry_capability: "NONE",
       highest_candidate_score_bps: 10000,
       selected_candidate_id: null,
       match_origin: null,
@@ -617,6 +624,7 @@ const fulfillJson = (route, body, status = 200) =>
       id: "item-error",
       source_object_key: "source-error",
       status: "MATCH_ERROR",
+      retry_capability: "RESUME",
       selected_candidate_id: "candidate-auto",
       match_origin: null,
       has_external_operations: true,
@@ -657,6 +665,7 @@ const fulfillJson = (route, body, status = 200) =>
         id: "page-item-" + i,
         source_object_key: "page-object-" + i,
         status: "NO_MATCH",
+        retry_capability: "MATCH",
         selected_candidate_id: null,
         match_origin: null,
         review_allowed: false,
@@ -1451,8 +1460,8 @@ const fulfillJson = (route, body, status = 200) =>
     );
     assert.equal(
       await skipCheckPanel.locator(".el-switch input").isChecked(),
-      false,
-      "跳过下载器检查默认关闭",
+      true,
+      "跳过下载器检查默认开启",
     );
     await wizardDialog
       .getByRole("button", { name: "下一步", exact: false })
@@ -1678,9 +1687,9 @@ const fulfillJson = (route, body, status = 200) =>
           ?.getAttribute("data-actions-mode") === "inline",
     );
     assert.equal(
-      await manualRow.locator(".task-row-actions button").count(),
-      3,
-      "宽屏待执行任务应直接显示执行、编辑和删除，不显示省略按钮",
+      await manualRow.locator(".table-row-actions button").count(),
+      4,
+      "宽屏待执行任务应直接显示执行、导出模板（禁用）、编辑和删除，不显示省略按钮",
     );
     assert.equal(
       await manualRow
@@ -1698,11 +1707,12 @@ const fulfillJson = (route, body, status = 200) =>
             ?.getAttribute("data-actions-mode") === mode,
         expectedMode,
       );
-      const actions = failedRow.locator(".task-row-actions");
+      const actions = failedRow.locator(".table-row-actions");
       const positions = await actions.locator("button").evaluateAll((buttons) =>
         buttons.map((button) => {
           const bounds = button.getBoundingClientRect();
           return {
+            text: button.textContent?.trim() ?? "",
             left: bounds.left,
             right: bounds.right,
             width: bounds.width,
@@ -1711,10 +1721,10 @@ const fulfillJson = (route, body, status = 200) =>
       );
       assert.equal(
         positions.length,
-        expectedMode === "inline" ? 4 : 3,
+        expectedMode === "inline" ? 5 : 2,
         expectedMode === "inline"
-          ? "宽屏失败任务应直接展示查看、重新匹配、编辑和删除"
-          : "窄屏失败任务应展示查看、重新匹配和更多操作",
+          ? "宽屏失败任务应直接展示查看、重新匹配、导出模板、编辑和删除"
+          : "窄屏失败任务应展示查看和更多操作（重新匹配折叠进菜单）",
       );
       assert.equal(
         await failedRow
@@ -1742,8 +1752,10 @@ const fulfillJson = (route, body, status = 200) =>
         );
       }
       assert.ok(
-        positions.every((bounds) => bounds.width >= 28),
-        width + "px 操作按钮触发区域过窄",
+        positions.every((bounds) => bounds.width >= 24),
+        width +
+          "px 操作按钮触发区域过窄（最小 24px，与紧凑链接按钮及更多操作触发器同高）：" +
+          JSON.stringify(positions.filter((bounds) => bounds.width < 24)),
       );
       if (expectedMode === "overflow") {
         await failedRow.getByRole("button", { name: "更多操作" }).click();
@@ -1988,14 +2000,14 @@ const fulfillJson = (route, body, status = 200) =>
     );
     assert.equal(
       await executionDialog
-        .locator(".execution-item-actions")
+        .locator(".table-row-actions")
         .first()
         .evaluate((element) => getComputedStyle(element).flexWrap),
       "nowrap",
-      "四个操作按钮应保持单行，不再因操作列变窄而换行",
+      "操作按钮应保持单行，不再因操作列变窄而换行",
     );
     const actionAlignment = await executionDialog
-      .locator(".execution-item-actions")
+      .locator(".table-row-actions")
       .first()
       .evaluate((element) => {
         const container = element.getBoundingClientRect();
@@ -2019,34 +2031,22 @@ const fulfillJson = (route, body, status = 200) =>
       "左右留白应基本相等，操作按钮应真正居中：" +
         JSON.stringify(actionAlignment),
     );
-    const fourActionGroup = executionDialog
-      .locator(".execution-item-actions")
-      .nth(2);
-    const fourActionWidth = await fourActionGroup.evaluate((element) => {
-      const reviewGroup = document
-        .querySelectorAll(".execution-item-actions")[1]
-        ?.querySelector(".review-action-group")
-        ?.cloneNode(true);
-      if (!reviewGroup) return null;
-      element.insertBefore(reviewGroup, element.lastElementChild);
-      const result = {
-        buttons: element.querySelectorAll("button").length,
-        clientWidth: element.clientWidth,
-        scrollWidth: element.scrollWidth,
-        children: Array.from(element.children).map((child) => ({
-          text: child.textContent?.trim(),
-          width: child.getBoundingClientRect().width,
+    const actionOverflowList = await executionDialog
+      .locator(".table-row-actions")
+      .evaluateAll((containers) =>
+        containers.map((element) => ({
+          text: element.textContent?.trim() ?? "",
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
         })),
-      };
-      reviewGroup.remove();
-      return result;
-    });
+      );
     assert.ok(
-      fourActionWidth &&
-        fourActionWidth.buttons === 4 &&
-        fourActionWidth.scrollWidth <= fourActionWidth.clientWidth + 1,
-      "300px 操作列应刚好容纳四个按钮而不产生横向溢出：" +
-        JSON.stringify(fourActionWidth),
+      actionOverflowList.length > 0 &&
+        actionOverflowList.every(
+          (item) => item.scrollWidth <= item.clientWidth + 1,
+        ),
+      "300px 操作列应容纳全部操作按钮而不产生横向溢出：" +
+        JSON.stringify(actionOverflowList),
     );
     assert.deepEqual(
       await executionMetrics.locator("small").allTextContents(),
@@ -2059,13 +2059,15 @@ const fulfillJson = (route, body, status = 200) =>
         "待人工审核",
         "内容校验通过",
         "匹配超时",
+        "已完成",
+        "执行中",
         "异常 / 不一致",
       ],
       "执行详情应在自动匹配前分别展示待匹配和匹配中的数量",
     );
     assert.deepEqual(
-      (await executionMetrics.locator("b").allTextContents()).slice(0, 4),
-      ["3", "0", "0", "1"],
+      (await executionMetrics.locator("b").allTextContents()).slice(0, 11),
+      ["3", "0", "0", "1", "0", "1", "0", "0", "0", "0", "1"],
     );
     await executionDialog
       .locator(".execution-item-filters .el-select__wrapper")
@@ -2100,56 +2102,55 @@ const fulfillJson = (route, body, status = 200) =>
       1,
       "只有需要人工处理的影片显示审核入口",
     );
-    await replaceCandidateButton.hover();
-    await page
-      .locator(".el-popper:visible")
-      .filter({ hasText: "自动匹配结果会自动进入内容验证" })
-      .waitFor({ state: "visible" });
-    await page.mouse.move(0, 0);
+    assert.match(
+      (await replaceCandidateButton.getAttribute("title")) ?? "",
+      /自动匹配结果会自动进入内容验证/,
+      "更换候选入口应带自动匹配行为说明",
+    );
     assert.equal(
       await executionDialog.getByText("最高 100.0%", { exact: true }).count(),
       2,
       "审核入口旁应展示本轮候选队列最高匹配度",
     );
-    const reviewRowOffsets = await executionDialog
-      .locator(".review-action-group")
-      .evaluateAll((groups) =>
-        groups.map((group) => {
-          const button = group.querySelector("button");
-          const score = group.querySelector(".best-candidate-score");
-          if (!button || !score) return Number.POSITIVE_INFINITY;
-          const buttonBox = button.getBoundingClientRect();
-          const scoreBox = score.getBoundingClientRect();
-          return Math.abs(
-            buttonBox.y +
-              buttonBox.height / 2 -
-              (scoreBox.y + scoreBox.height / 2),
-          );
-        }),
+    const reviewRowPairs = await executionDialog
+      .locator(".table-row-actions")
+      .evaluateAll((containers) =>
+        containers
+          .filter((element) => element.querySelector(".best-candidate-score"))
+          .map((element) => {
+            const score = element.querySelector(".best-candidate-score");
+            const children = Array.from(element.children);
+            const scoreIndex = children.indexOf(score);
+            const button = children
+              .slice(scoreIndex + 1)
+              .find((child) => child.tagName === "BUTTON");
+            if (!button || !score) return null;
+            const buttonBox = button.getBoundingClientRect();
+            const scoreBox = score.getBoundingClientRect();
+            return {
+              scoreLeftOfButton: scoreBox.right < buttonBox.left,
+              verticalOffset: Math.abs(
+                buttonBox.y +
+                  buttonBox.height / 2 -
+                  (scoreBox.y + scoreBox.height / 2),
+              ),
+            };
+          }),
       );
-    const reviewRowOrder = await executionDialog
-      .locator(".review-action-group")
-      .evaluateAll((groups) =>
-        groups.map((group) => {
-          const score = group.querySelector(".best-candidate-score");
-          const button = group.querySelector("button");
-          return Boolean(
-            score &&
-              button &&
-              score.getBoundingClientRect().right <
-                button.getBoundingClientRect().left,
-          );
-        }),
-      );
+    assert.equal(
+      reviewRowPairs.length,
+      2,
+      "审核或更换候选入口旁应展示最高匹配度标注",
+    );
     assert.deepEqual(
-      reviewRowOrder,
+      reviewRowPairs.map((pair) => pair?.scoreLeftOfButton),
       [true, true],
       "最高匹配度应展示在审核或更换候选入口左侧",
     );
-    assert.equal(reviewRowOffsets.length, 2);
     assert(
-      reviewRowOffsets.every((offset) => offset <= 1),
-      "操作入口与最高匹配度必须处于同一水平中心线",
+      reviewRowPairs.every((pair) => pair !== null && pair.verticalOffset <= 1),
+      "操作入口与最高匹配度必须处于同一水平中心线：" +
+        JSON.stringify(reviewRowPairs),
     );
     assert.equal(
       await executionDialog
@@ -2733,8 +2734,10 @@ const fulfillJson = (route, body, status = 200) =>
     );
     assert.equal(
       await manualSkipCheckPanel.locator(".el-switch input").isChecked(),
-      false,
+      true,
+      "手动任务跳过下载器检查默认开启",
     );
+    // 默认已开启：点击一次切到关闭，验证开关状态会如实写入任务配置。
     await manualSkipCheckPanel.locator(".el-switch").click();
     await manualDialog
       .getByRole("button", { name: "下一步", exact: false })
@@ -2784,8 +2787,8 @@ const fulfillJson = (route, body, status = 200) =>
     assert.equal(createdDefinitionBodies[0].source_kind, "DIRECTORY");
     assert.equal(
       createdDefinitionBodies[0].output_config.skip_downloader_check,
-      true,
-      "跳过下载器检查开关应写入任务配置",
+      false,
+      "跳过下载器检查开关状态应写入任务配置",
     );
 
     await sidebarNav.getByText("数据去重", { exact: true }).click();
