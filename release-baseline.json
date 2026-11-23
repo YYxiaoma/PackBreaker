@@ -1,16 +1,16 @@
 {
   "format_version": 2,
-  "version": "1.1.16",
-  "tag": "v1.1.16",
-  "commit": "52b7a811365bb578fc2f4c2e18aaa6652f01d6a1",
+  "version": "1.1.17",
+  "tag": "v1.1.17",
+  "commit": "c047567278cc9d88c977e90c4d6df949d9fd0a19",
   "platform": "multi",
   "platforms": [
     "linux/amd64",
     "linux/arm64"
   ],
   "image": "ghcr.io/yyxiaoma/packbreaker",
-  "image_digest": "sha256:2edb0d4bf4586045b37e49f1036b65545d59792987a85060c3b17b2cd874f7bf",
-  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:2edb0d4bf4586045b37e49f1036b65545d59792987a85060c3b17b2cd874f7bf",
-  "alembic_revision": "0060_seeding_repair_journal",
-  "release_workflow_run_id": 44971566547
+  "image_digest": "sha256:8363f2609d5f1e971332638464cee33120e422e7633985bc4e2e51f003c23ed4",
+  "immutable_image": "ghcr.io/yyxiaoma/packbreaker@sha256:8363f2609d5f1e971332638464cee33120e422e7633985bc4e2e51f003c23ed4",
+  "alembic_revision": "0061_notification_product_events",
+  "release_workflow_run_id": 45132725747
 }
