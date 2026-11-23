@@ -969,6 +969,13 @@ const path = require('node:path');
     await page.route('**/api/v1/system/health',route=>fulfillJson(route,{
       status:'ok',generated_at:now(),version:'0.1.4',checks:[],
     }));
+    await page.route('**/api/v1/system/release-notes',route=>fulfillJson(route,{
+      current_version:'1.1.16',
+      entries:[
+        {version:'1.1.16',tag:'v1.1.16',released_on:'2026-11-22',summary:'E2E 升级日志摘要',sections:[{title:'新增',items:['E2E 变更条目']}],is_current:true},
+        {version:'1.1.15',tag:'v1.1.15',released_on:'2026-11-19',summary:'E2E 历史版本摘要',sections:[{title:'改进',items:['E2E 历史条目']}],is_current:false},
+      ],
+    }));
     await page.reload({waitUntil:'domcontentloaded'});
     await page.getByRole('heading',{name:'PackBreaker 总览',exact:true,level:1}).waitFor();
     const missingStatistics=await page.locator('.overview-kpi-grid').innerText();

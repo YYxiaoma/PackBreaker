@@ -198,7 +198,13 @@ watch(
 </script>
 
 <template>
-  <el-drawer v-model="visible" size="520px" :with-header="false" destroy-on-close>
+  <el-drawer
+    v-model="visible"
+    size="min(760px, calc(100vw - 24px))"
+    :with-header="false"
+    class="seeding-detail-drawer"
+    destroy-on-close
+  >
     <div v-if="detail" class="detail">
       <header class="detail-head">
         <div>
@@ -350,17 +356,25 @@ watch(
   gap: 18px;
   padding: 4px 4px 24px;
 }
+/* 抽屉正文只做纵向滚动：长种子名/路径一律在容器内换行，不出现横向滚动条。 */
+.seeding-detail-drawer :deep(.el-drawer__body) {
+  overflow-x: hidden;
+}
 .detail-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
+.detail-head > div {
+  min-width: 0;
+}
 .detail-head h2 {
   margin: 0 0 8px;
   font-size: 17px;
   font-weight: 500;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 .tag-row {
   display: flex;
@@ -384,11 +398,11 @@ watch(
 }
 .meta-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 20px;
   margin: 0;
   padding: 14px 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 12px;
 }
 .meta-grid dt {
@@ -398,6 +412,7 @@ watch(
 .meta-grid dd {
   margin: 2px 0 0;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 .evidence-block h3,
 .suggestion-block h3 {
@@ -415,15 +430,22 @@ watch(
 }
 .evidence-block li {
   padding: 10px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 10px;
 }
 .evidence-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   font-size: 13px;
+}
+.evidence-head > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.evidence-head :deep(.el-tag) {
+  flex: none;
 }
 .evidence-block p {
   margin: 6px 0 0;
@@ -434,7 +456,7 @@ watch(
 }
 .suggestion-block {
   padding: 14px 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--blue-soft);
 }
@@ -464,5 +486,14 @@ watch(
   text-align: center;
   color: var(--muted);
   font-size: 13px;
+}
+@media (max-width: 640px) {
+  .meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .detail-foot {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
 }
 </style>
