@@ -5,6 +5,8 @@
 The site icon assets in `public/icons/site/` were copied from
 [pt-plugins/PT-depiler](https://github.com/pt-plugins/PT-depiler/tree/master/public/icons/site)
 to provide the site-specific icons used by the site configuration cards and detail view.
+The directory currently covers 115 of the 117 registered site kinds; the remaining two
+（LeMonHD、PTChina）上游未提供图标资源，界面回退到站点 favicon 或首字母占位。
 
 PT-Depiler is distributed under the MIT License. Copyright (c) 2020 pt-plugins.
 

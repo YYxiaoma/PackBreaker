@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Activity, BarChart3, Clock3, Link2, RefreshCw, UserRound } from '@lucide/vue';
 
@@ -17,8 +17,10 @@ import {
   formatSiteBytes as formatBytes,
   formatSiteDate,
   formatSiteRatio as formatRatio,
+  formatSiteRelativeTime,
 } from '../utils/siteStats';
-import { siteFaviconUrl, siteIconUrl } from '../utils/siteIcon';
+import { siteSyncButtonLabel, siteSyncNeedsReset } from '../utils/siteSync';
+import SiteIcon from './SiteIcon.vue';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -52,6 +54,27 @@ function setSiteSyncing(siteId: string, active: boolean): void {
 const historyLoading = ref(false);
 const seedingLoading = ref(false);
 const error = ref('');
+
+// 相对时间只在点击「立即同步」或抽屉打开时刷新，另外每分钟走一次，避免长期停留后文案过时。
+const now = ref(Date.now());
+let relativeClock: ReturnType<typeof setInterval> | undefined;
+
+onMounted(() => {
+  relativeClock = setInterval(() => {
+    now.value = Date.now();
+  }, 60_000);
+});
+
+onUnmounted(() => {
+  if (relativeClock !== undefined) clearInterval(relativeClock);
+  relativeClock = undefined;
+});
+
+const lastSyncLabel = computed(() => {
+  const lastSyncAt = detail.value?.connection.last_sync_at ?? null;
+  if (!lastSyncAt) return '尚未同步';
+  return `上次同步 ${formatSiteRelativeTime(lastSyncAt, now.value)}`;
+});
 
 watch(
   () => [props.modelValue, props.siteId] as const,
@@ -106,10 +129,7 @@ async function loadDetail() {
     }
     detailCache.set(siteId, loaded);
     detail.value = loaded;
-    if (loaded.connection.last_sync_at) {
-      const age = Date.now() - new Date(loaded.connection.last_sync_at).getTime();
-      if (age > 10 * 60 * 1000) void syncNow(true, siteId);
-    }
+    now.value = Date.now();
   } catch (caught) {
     if (requestSequence !== detailRequestSequence || props.siteId !== siteId) return;
     const latestSuccessful = detailCache.get(siteId);
@@ -121,7 +141,12 @@ async function loadDetail() {
   }
 }
 
-async function syncNow(silent = false, siteId = props.siteId) {
+const syncNeedsReset = computed(() => siteSyncNeedsReset(detail.value, props.siteId));
+const syncButtonLabel = computed(() =>
+  siteSyncButtonLabel(syncNeedsReset.value, detail.value?.connection.circuit_state),
+);
+
+async function syncNow(siteId = props.siteId) {
   // 只拦「同一站点重复点击」，不同站点允许并行同步。
   if (!siteId || syncingSiteIds.value.has(siteId)) return;
   setSiteSyncing(siteId, true);
@@ -133,13 +158,17 @@ async function syncNow(silent = false, siteId = props.siteId) {
     // Allow six configured request budgets plus a response margin so the global 60s API timeout
     // cannot abort a legitimate slow-site sync before its own request timeout expires.
     const syncTimeoutMs = Math.max(60_000, (configuredTimeoutSeconds * 6 + 30) * 1000);
-    const synced = await syncSiteDetail(siteId, !silent, syncTimeoutMs);
+    // 正常站点走普通同步（不额外探测）；熔断或连接异常时才强制重试，
+    // 先重置熔断并验证连接，才能拿到真实失败原因而不是一句「熔断保护中」。
+    const forceRetry = siteSyncNeedsReset(detail.value, siteId);
+    const synced = await syncSiteDetail(siteId, forceRetry, syncTimeoutMs);
     detailCache.set(siteId, synced);
     emit('profile-synced', siteId);
     if (props.siteId === siteId) {
       detail.value = synced;
+      now.value = Date.now();
       await loadHistory();
-      if (!silent) ElMessage.success('站点用户信息同步完成');
+      ElMessage.success('站点用户信息同步完成');
     }
   } catch (caught) {
     if (props.siteId !== siteId) return;
@@ -147,7 +176,7 @@ async function syncNow(silent = false, siteId = props.siteId) {
     error.value = problem.traceId
       ? problem.message + ' · trace_id ' + problem.traceId
       : problem.message;
-    if (!silent) ElMessage.error(error.value);
+    ElMessage.error(error.value);
   } finally {
     setSiteSyncing(siteId, false);
   }
@@ -264,18 +293,6 @@ function credentialKindLabel(kind: string): string {
 function siteTypeLabel(type: string): string {
   return type === 'MTEAM' ? '综合类' : type === 'HDTIME' || type === 'HDFANS' ? '高清影视' : type;
 }
-
-function handleSiteIconError(event: Event, baseUrl: string): void {
-  const image = event.currentTarget as HTMLImageElement | null;
-  if (!image) return;
-  const fallback = siteFaviconUrl(baseUrl);
-  if (fallback && image.dataset.fallback !== 'true' && image.getAttribute('src') !== fallback) {
-    image.dataset.fallback = 'true';
-    image.src = fallback;
-    return;
-  }
-  image.style.display = 'none';
-}
 </script>
 
 <template>
@@ -292,11 +309,11 @@ function handleSiteIconError(event: Event, baseUrl: string): void {
       <header class="site-detail-header">
         <div class="site-detail-heading">
           <span class="site-detail-logo">
-            <img
+            <SiteIcon
               v-if="detail"
-              :src="siteIconUrl(detail.site.type, detail.site.base_url)"
-              :alt="detail.site.name"
-              @error="handleSiteIconError($event, detail.site.base_url)"
+              :kind="detail.site.type"
+              :base-url="detail.site.base_url"
+              :name="detail.site.name"
             />
           </span>
           <div class="site-detail-title">
@@ -313,18 +330,24 @@ function handleSiteIconError(event: Event, baseUrl: string): void {
           </div>
         </div>
         <div class="site-detail-header-actions">
-          <el-button
-            type="primary"
-            :disabled="!detail || syncing"
-            :aria-busy="syncing"
-            @click="syncNow"
-          >
-            <RefreshCw
-              :size="15"
-              class="sync-button-icon"
-              :class="{ 'sync-button-icon--spinning': syncing }"
-            />立即同步
-          </el-button>
+          <div class="site-detail-sync">
+            <el-button
+              type="primary"
+              :disabled="!detail || syncing"
+              :aria-busy="syncing"
+              :title="
+                syncNeedsReset ? '站点处于熔断或连接异常状态，重试会先重置熔断并验证连接' : ''
+              "
+              @click="syncNow()"
+            >
+              <RefreshCw
+                :size="15"
+                class="sync-button-icon"
+                :class="{ 'sync-button-icon--spinning': syncing }"
+              />{{ syncButtonLabel }}
+            </el-button>
+            <span v-if="detail" class="site-detail-sync-hint">{{ lastSyncLabel }}</span>
+          </div>
           <el-button text aria-label="关闭详情" @click="close">×</el-button>
         </div>
       </header>
@@ -741,6 +764,20 @@ function handleSiteIconError(event: Event, baseUrl: string): void {
   gap: 4px;
   flex: 0 0 auto;
   margin-left: auto;
+  white-space: nowrap;
+}
+
+.site-detail-sync {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.site-detail-sync-hint {
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--el-text-color-secondary);
   white-space: nowrap;
 }
 

@@ -21,8 +21,8 @@ import {
   formatSiteRatio as formatRatio,
 } from '../utils/siteStats';
 import { siteProfileOptionLabel } from '../api/sites';
-import { siteFaviconUrl, siteIconUrl } from '../utils/siteIcon';
 import SiteDetailDrawer from './SiteDetailDrawer.vue';
+import SiteIcon from './SiteIcon.vue';
 
 interface SiteDraft {
   id: string | null;
@@ -196,18 +196,6 @@ function typeLabel(kind: SiteKind): string {
   return kindLabel(kind);
 }
 
-function handleSiteIconError(event: Event, baseUrl: string): void {
-  const image = event.currentTarget as HTMLImageElement | null;
-  if (!image) return;
-  const fallback = siteFaviconUrl(baseUrl);
-  if (fallback && image.dataset.fallback !== 'true' && image.getAttribute('src') !== fallback) {
-    image.dataset.fallback = 'true';
-    image.src = fallback;
-    return;
-  }
-  image.style.display = 'none';
-}
-
 function isBusy(item: Site, operation: string): boolean {
   return busy.value[`${operation}:${item.id}`] === true;
 }
@@ -274,7 +262,7 @@ function applyProfileDefaults() {
   draft.browserEmulationEnabled = false;
   draft.downloadCookie = '';
   draft.clearDownloadCookie = false;
-  draft.enableAfterSave = profile.support_status === 'SUPPORTED';
+  draft.enableAfterSave = profileConfigurable(profile);
   if (!profile.supports_proxy) draft.proxyEnabled = false;
 }
 
@@ -701,12 +689,7 @@ async function remove(item: Site) {
       <article v-for="item in visibleItems" :key="item.id" class="panel site-card">
         <div class="site-card-header">
           <span class="site-card-icon">
-            <img
-              :src="siteIconUrl(item.type, item.base_url)"
-              :alt="item.name"
-              loading="lazy"
-              @error="handleSiteIconError($event, item.base_url)"
-            />
+            <SiteIcon :kind="item.type" :base-url="item.base_url" :name="item.name" />
           </span>
           <div class="site-card-title">
             <div class="site-name-line">
@@ -721,11 +704,11 @@ async function remove(item: Site) {
           </div>
           <el-switch
             :model-value="item.enabled"
-            :disabled="profileFor(item.type)?.support_status !== 'SUPPORTED'"
+            :disabled="!profileConfigurable(profileFor(item.type))"
             :title="
-              profileFor(item.type)?.support_status === 'PENDING_REAL_VALIDATION'
-                ? '该站点可配置与测试连接，真实辅种验收完成后才能启用'
-                : undefined
+              profileConfigurable(profileFor(item.type))
+                ? undefined
+                : '该站点类型尚未实现适配器，无法启用'
             "
             :loading="isBusy(item, 'enable')"
             :aria-label="'启用' + item.name"
@@ -850,12 +833,7 @@ async function remove(item: Site) {
         <template #default="{ row }">
           <div class="site-list-name">
             <span class="site-card-icon site-card-icon--small">
-              <img
-                :src="siteIconUrl(row.type, row.base_url)"
-                :alt="row.name"
-                loading="lazy"
-                @error="handleSiteIconError($event, row.base_url)"
-              />
+              <SiteIcon :kind="row.type" :base-url="row.base_url" :name="row.name" />
             </span>
             <div>
               <strong>{{ row.name }}</strong>

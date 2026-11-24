@@ -23,6 +23,24 @@ export function formatSiteDate(value: string | null | undefined): string {
   }).format(date);
 }
 
+export function formatSiteRelativeTime(
+  value: string | null | undefined,
+  now: number = Date.now(),
+): string {
+  if (!value) return '从未同步';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '—';
+  const diffMs = now - date.getTime();
+  if (diffMs < 60_000) return '刚刚';
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} 天前`;
+  return formatSiteDate(value);
+}
+
 export function formatSiteRatio(
   value: number | null | undefined,
   uploadedBytes?: number | null,
