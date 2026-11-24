@@ -156,6 +156,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # 本迁移只放宽 site.type 的取值集合；回滚必须先清理候选类型的站点数据，
-    # 否则重建旧 CHECK 约束会失败。这里显式报错，避免误以为已经回滚。
-    raise RuntimeError("0062_candidate_site_capacity 不可自动回滚：需先清理候选站点数据")
+    # Do not rebuild the site parent or delete candidate-site rows to restore the
+    # previous CHECK: a routine downgrade must not destroy user data. Older
+    # application code still refuses unsupported kinds at its own service gates,
+    # so keeping the widened constraint is the safe and reversible outcome.
+    pass
