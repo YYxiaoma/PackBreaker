@@ -16,7 +16,12 @@ from backend.app.application.errors import ApplicationError
 from backend.app.application.secrets import SecretStore
 from backend.app.config import AppSettings
 from backend.app.domain.site_adapter import SiteConnectionResult, SiteUserProfile
-from backend.app.domain.site_config import SiteKind, site_kind_is_persistable, site_profile
+from backend.app.domain.site_config import (
+    PERSISTED_SITE_KINDS,
+    SiteKind,
+    site_kind_is_persistable,
+    site_profile,
+)
 from backend.app.domain.site_search import SiteSearchCapabilities
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError
 from backend.app.infrastructure.adapters.sites import SiteAdapterFactory
@@ -588,26 +593,7 @@ def test_site_profiles_expose_fixed_trusted_origins(tmp_path: Path) -> None:
         response = client.get("/api/v1/sites/profiles")
         assert response.status_code == 200
         items = {item["kind"]: item for item in response.json()["items"]}
-        assert set(items) == {
-            "MTEAM",
-            "HDTIME",
-            "HHCLUB",
-            "KEEPFRDS",
-            "HDHOME",
-            "UBITS",
-            "HDFANS",
-            "BTSCHOOL",
-            "PTTIME",
-            "ROUSI_PRO",
-            "LINGYIN_CLUB",
-            "PTERCLUB",
-            "AUDIENCES",
-            "SPRING_SUNDAY",
-            "HDDOLBY",
-            "U2",
-            "TANGPT",
-            "CARPT",
-        }
+        assert set(items) == {kind.value for kind in SiteKind}
         assert items["MTEAM"]["base_url"] == "https://kp.m-team.cc"
         assert items["HDTIME"]["base_url"] == "https://hdtime.org"
         assert items["HHCLUB"]["base_url"] == "https://hhanclub.net"
@@ -719,7 +705,7 @@ def test_supported_site_profiles_can_enable_without_connection_probe(tmp_path: P
     client, app = _authenticated_client(tmp_path)
     try:
         supported = [kind for kind in SiteKind if site_kind_is_persistable(kind)]
-        assert len(supported) == 18
+        assert len(supported) == len(PERSISTED_SITE_KINDS)
         for kind in supported:
             profile = site_profile(kind)
             secret = f"synthetic-secret-for-{kind.value}"

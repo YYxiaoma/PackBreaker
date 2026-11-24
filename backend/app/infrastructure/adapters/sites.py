@@ -33,11 +33,18 @@ from backend.app.domain.site_search import (
     SiteSearchCapabilities,
     normalize_candidate_meta,
 )
+from backend.app.infrastructure.adapters.candidate_specialized import (
+    CandidateNexusPhpAdapter,
+    CSPTAdapter,
+    HaidanAdapter,
+    HDAreaAdapter,
+    HDCityAdapter,
+    RetroFlixAdapter,
+)
 from backend.app.infrastructure.adapters.nexusphp import (
     HDTimeAdapter,
     HHClubAdapter,
     NexusPhpProfile,
-    NexusPhpWebAdapter,
 )
 from backend.app.infrastructure.adapters.rousi_pro import RousiProCandidateAdapter
 from backend.app.infrastructure.adapters.site_errors import SiteAdapterError as SiteAdapterError
@@ -82,6 +89,100 @@ _CANDIDATE_NEXUS_KINDS = frozenset(
         SiteKind.U2,
         SiteKind.TANGPT,
         SiteKind.CARPT,
+        SiteKind.N13CITY,
+        SiteKind.N1PTBA,
+        SiteKind.N52MOVIE,
+        SiteKind.N52PT,
+        SiteKind.AGSVPT,
+        SiteKind.ALINGPT,
+        SiteKind.BAOZI,
+        SiteKind.BEITAI,
+        SiteKind.BYRBT,
+        SiteKind.CBG,
+        SiteKind.CDY,
+        SiteKind.CHDBITS,
+        SiteKind.CNSCG,
+        SiteKind.CYANBUG,
+        SiteKind.DABAOJIAN,
+        SiteKind.DAJIAO,
+        SiteKind.DHTCLUB,
+        SiteKind.DISCFAN,
+        SiteKind.DRAGONHD,
+        SiteKind.DSTUDIO,
+        SiteKind.DUBHE,
+        SiteKind.ECUSTPT,
+        SiteKind.FHPT,
+        SiteKind.FILEPT,
+        SiteKind.FREEFARM,
+        SiteKind.GAINBOUND,
+        SiteKind.HARES,
+        SiteKind.HD4FANS,
+        SiteKind.HDAI,
+        SiteKind.HDATMOS,
+        SiteKind.HDDISK,
+        SiteKind.HDKYLIN,
+        SiteKind.HDPT,
+        SiteKind.HDSKY,
+        SiteKind.HDSTREET,
+        SiteKind.HDUPT,
+        SiteKind.HDVIDEO,
+        SiteKind.HDZONE,
+        SiteKind.HITPT,
+        SiteKind.HSPT,
+        SiteKind.HUDBT,
+        SiteKind.ICC2022,
+        SiteKind.ITZMX,
+        SiteKind.JOYHD,
+        SiteKind.KUFEI,
+        SiteKind.KUNLUN,
+        SiteKind.LAJIDUI,
+        SiteKind.LEMONHD,
+        SiteKind.LEMONHDNET,
+        SiteKind.LEMONHDORG,
+        SiteKind.MARCH,
+        SiteKind.MOECAT,
+        SiteKind.MUXUEGE,
+        SiteKind.MYPT,
+        SiteKind.NANYANGPT,
+        SiteKind.NOVAHD,
+        SiteKind.NPUPT,
+        SiteKind.NWSUAF6,
+        SiteKind.OURBITS,
+        SiteKind.PT99,
+        SiteKind.PTCHINA,
+        SiteKind.PTDREAM,
+        SiteKind.PTGTK,
+        SiteKind.PTHOME,
+        SiteKind.PTLGS,
+        SiteKind.PTMSG,
+        SiteKind.PTSBAO,
+        SiteKind.PTVICOMO,
+        SiteKind.PTZONE,
+        SiteKind.QINGYINGPT,
+        SiteKind.RAILGUNPT,
+        SiteKind.RAINGFH,
+        SiteKind.RS,
+        SiteKind.SBPT,
+        SiteKind.SEWERPT,
+        SiteKind.SHARKPT,
+        SiteKind.SJTU,
+        SiteKind.STSPT,
+        SiteKind.TCCF,
+        SiteKind.TEY,
+        SiteKind.TJUPT,
+        SiteKind.TLFBITS,
+        SiteKind.TMPT,
+        SiteKind.TOKYOPT,
+        SiteKind.TOSKY,
+        SiteKind.ULTRAHD,
+        SiteKind.WHUPT,
+        SiteKind.WINTERSAKURA,
+        SiteKind.XDYPT,
+        SiteKind.XINGWAN,
+        SiteKind.XINGYUNGE,
+        SiteKind.YINGK,
+        SiteKind.YINGUSKG,
+        SiteKind.ZRPT,
     }
 )
 
@@ -173,6 +274,86 @@ class SiteAdapterFactory:
                 proxy_url=proxy_url,
                 download_cookie=download_cookie,
             )
+        if kind is SiteKind.HDAREA:
+            return HDAreaAdapter(
+                credential,
+                base_url=normalize_site_base_url(kind, base_url),
+                transport=self._transport,
+                timeout_seconds=timeout_seconds,
+                proxy_url=proxy_url,
+            )
+        if kind is SiteKind.HDCITY:
+            origin = normalize_site_base_url(kind, base_url)
+            return HDCityAdapter(
+                credential,
+                profile=NexusPhpProfile(
+                    site_id="hdcity",
+                    default_base_url=trusted_site_base_url(SiteKind.HDCITY),
+                    timezone_offset_minutes=480,
+                    min_request_interval_seconds=2.0,
+                    require_valid_torrent_metainfo=True,
+                ),
+                base_url=origin,
+                transport=self._transport,
+                timeout_seconds=timeout_seconds,
+                user_agent=user_agent,
+                browser_emulation_enabled=browser_emulation_enabled,
+                proxy_url=proxy_url,
+            )
+        if kind is SiteKind.RETROFLIX:
+            origin = normalize_site_base_url(kind, base_url)
+            return RetroFlixAdapter(
+                credential,
+                profile=NexusPhpProfile(
+                    site_id="retroflix",
+                    default_base_url=trusted_site_base_url(SiteKind.RETROFLIX),
+                    timezone_offset_minutes=0,
+                    min_request_interval_seconds=2.0,
+                    require_valid_torrent_metainfo=True,
+                ),
+                base_url=origin,
+                transport=self._transport,
+                timeout_seconds=timeout_seconds,
+                user_agent=user_agent,
+                browser_emulation_enabled=browser_emulation_enabled,
+                proxy_url=proxy_url,
+            )
+        if kind is SiteKind.CSPT:
+            origin = normalize_site_base_url(kind, base_url)
+            return CSPTAdapter(
+                credential,
+                profile=NexusPhpProfile(
+                    site_id="cspt",
+                    default_base_url=trusted_site_base_url(SiteKind.CSPT),
+                    timezone_offset_minutes=480,
+                    min_request_interval_seconds=2.0,
+                    require_valid_torrent_metainfo=True,
+                ),
+                base_url=origin,
+                transport=self._transport,
+                timeout_seconds=timeout_seconds,
+                user_agent=user_agent,
+                browser_emulation_enabled=browser_emulation_enabled,
+                proxy_url=proxy_url,
+            )
+        if kind is SiteKind.HAIDAN:
+            origin = normalize_site_base_url(kind, base_url)
+            return HaidanAdapter(
+                credential,
+                profile=NexusPhpProfile(
+                    site_id="haidan",
+                    default_base_url=trusted_site_base_url(SiteKind.HAIDAN),
+                    timezone_offset_minutes=480,
+                    min_request_interval_seconds=2.0,
+                    require_valid_torrent_metainfo=True,
+                ),
+                base_url=origin,
+                transport=self._transport,
+                timeout_seconds=timeout_seconds,
+                user_agent=user_agent,
+                browser_emulation_enabled=browser_emulation_enabled,
+                proxy_url=proxy_url,
+            )
         if kind in _CANDIDATE_NEXUS_KINDS:
             # Fail closed for direct factory callers too: never send a Cookie
             # to a host supplied outside the reviewed SiteProfileRegistry.
@@ -180,7 +361,7 @@ class SiteAdapterFactory:
             date_offset, size_offset, seeders_offset, leechers_offset = (
                 _CANDIDATE_NEXUS_COLUMNS.get(kind, (6, 5, 4, 3))
             )
-            return NexusPhpWebAdapter(
+            return CandidateNexusPhpAdapter(
                 credential,
                 profile=NexusPhpProfile(
                     site_id=kind.value.lower(),
@@ -196,6 +377,9 @@ class SiteAdapterFactory:
                     # busy periods. Keep search, auth and torrent fetch capped
                     # by their existing per-request timeout.
                     detail_timeout_seconds=90.0 if kind is SiteKind.HDDOLBY else None,
+                    douban_search_area=(
+                        "5" if kind in {SiteKind.OURBITS, SiteKind.TJUPT} else None
+                    ),
                 ),
                 base_url=origin,
                 transport=self._transport,

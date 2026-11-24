@@ -20,6 +20,7 @@ from backend.app.domain.site_adapter import (
 )
 from backend.app.domain.site_config import SiteCredentialKind, SiteKind, site_profile
 from backend.app.domain.site_search import (
+    SearchMediaType,
     SearchPage,
     SearchQuery,
     SiteSearchCapabilities,
@@ -646,3 +647,20 @@ def _bencode(value: object) -> bytes:
         items = sorted(value.items(), key=lambda item: item[0])
         return b"d" + b"".join(_bencode(key) + _bencode(item) for key, item in items) + b"e"
     raise TypeError(type(value).__name__)
+
+
+def test_search_query_is_filtered_by_site_capabilities() -> None:
+    from backend.app.application.analysis import _search_query_for_capabilities
+    from backend.app.domain.media_matching import ExternalMediaId
+
+    imdb = ExternalMediaId("imdb", "tt1234567")
+    douban = ExternalMediaId("douban", "1234567")
+    query = SearchQuery((), SearchMediaType.MOVIE, external_ids=(imdb, douban))
+    capabilities = SiteSearchCapabilities(supports_imdb_id=True, supports_douban_id=False)
+
+    filtered = _search_query_for_capabilities(query, capabilities)
+    assert filtered is not None
+    assert filtered.external_ids == (imdb,)
+
+    unsupported = SearchQuery((), SearchMediaType.MOVIE, external_ids=(douban,))
+    assert _search_query_for_capabilities(unsupported, capabilities) is None

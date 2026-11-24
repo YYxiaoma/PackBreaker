@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -83,6 +83,22 @@ class AnalysisLifecycle(Protocol):
     def enter_verifying(self) -> int: ...
 
     def enter_preflight(self) -> int: ...
+
+
+def _search_query_for_capabilities(
+    query: SearchQuery, capabilities: SiteSearchCapabilities
+) -> SearchQuery | None:
+    external_ids = tuple(
+        item
+        for item in query.external_ids
+        if (item.namespace == "imdb" and capabilities.supports_imdb_id)
+        or (item.namespace == "douban" and capabilities.supports_douban_id)
+    )
+    if external_ids == query.external_ids:
+        return query
+    if not external_ids and not query.keywords:
+        return None
+    return replace(query, external_ids=external_ids)
 
 
 class AnalysisService:
@@ -309,10 +325,13 @@ class AnalysisService:
             for query in queries[:query_limit]:
                 if lifecycle is not None:
                     lifecycle.check_cancel_requested()
-                signature = search_query_signature(query)
+                site_query = _search_query_for_capabilities(query, capabilities)
+                if site_query is None:
+                    continue
+                signature = search_query_signature(site_query)
                 executed.append(signature)
                 try:
-                    page = await binding.adapter.search(query)
+                    page = await binding.adapter.search(site_query)
                 except SiteAdapterError as exc:
                     errors.append(exc.code)
                     continue

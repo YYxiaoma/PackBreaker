@@ -1820,32 +1820,7 @@ class SiteService:
 
     @staticmethod
     def _expected_site_id(kind: SiteKind) -> str:
-        if kind is SiteKind.MTEAM:
-            return "mteam"
-        if kind is SiteKind.HDTIME:
-            return "hdtime"
-        if kind is SiteKind.HHCLUB:
-            return "hhclub"
-        if kind is SiteKind.ROUSI_PRO:
-            return "rousi_pro"
-        if kind in {
-            SiteKind.KEEPFRDS,
-            SiteKind.HDHOME,
-            SiteKind.UBITS,
-            SiteKind.HDFANS,
-            SiteKind.BTSCHOOL,
-            SiteKind.PTTIME,
-            SiteKind.LINGYIN_CLUB,
-            SiteKind.PTERCLUB,
-            SiteKind.AUDIENCES,
-            SiteKind.SPRING_SUNDAY,
-            SiteKind.HDDOLBY,
-            SiteKind.U2,
-            SiteKind.TANGPT,
-            SiteKind.CARPT,
-        }:
-            return kind.value.lower()
-        raise ValueError("暂不支持该站点类型")
+        return kind.value.lower()
 
     @staticmethod
     def _name_conflict() -> ApplicationError:

@@ -2,23 +2,39 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import cast
 
 import httpx2
 import pytest
 
 from backend.app.domain.site_adapter import (
     SiteConnectionResult,
+    SiteSeedingLister,
     SiteUserProfile,
     TorrentDetails,
     TorrentPayload,
 )
-from backend.app.domain.site_config import SiteCredentialKind, SiteKind, site_profile
+from backend.app.domain.site_config import (
+    SiteCredentialKind,
+    SiteKind,
+    SiteSupportStatus,
+    required_site_credential_kind,
+    site_profile,
+)
 from backend.app.domain.site_search import (
     SearchMediaType,
     SearchPage,
     SearchQuery,
     SiteSearchCapabilities,
     normalize_candidate_meta,
+)
+from backend.app.infrastructure.adapters.candidate_specialized import (
+    CandidateNexusPhpAdapter,
+    CSPTAdapter,
+    HaidanAdapter,
+    HDAreaAdapter,
+    HDCityAdapter,
+    RetroFlixAdapter,
 )
 from backend.app.infrastructure.adapters.sites import (
     MTeamAdapter,
@@ -1234,3 +1250,134 @@ async def test_u2_search_uses_absolute_date_title_in_current_torrent_cell(
     assert item.seeders == 8
     assert item.leechers == 2
     assert (item.published_at.isoformat() if item.published_at else None) == expected_iso
+
+
+@pytest.mark.parametrize("kind", (SiteKind.CHDBITS, SiteKind.PT99, SiteKind.BYRBT))
+def test_candidate_nexusphp_profiles_use_reviewed_adapter(kind: SiteKind) -> None:
+    profile = site_profile(kind)
+    assert profile.support_status is SiteSupportStatus.SUPPORTED
+    adapter = SiteAdapterFactory().create(
+        kind=kind,
+        base_url=profile.base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+        timeout_seconds=15,
+    )
+    # 工厂必须分发到候选专用适配器；断言基类会漏掉分发回归。
+    assert type(adapter) is CandidateNexusPhpAdapter
+
+
+@pytest.mark.asyncio
+async def test_hdcity_seeding_list_skips_request_when_user_id_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 拿不到 uid 时发空 userid 可能返回他人或全站列表，巡查会误判 SITE_ONLY。
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise AssertionError(f"缺少 uid 时不应访问站点：{request.url}")
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=SiteKind.HDCITY,
+        base_url=site_profile(SiteKind.HDCITY).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+        timeout_seconds=15,
+    )
+
+    async def fake_profile() -> SiteUserProfile:
+        return SiteUserProfile(site_id="hdcity")
+
+    monkeypatch.setattr(adapter, "fetch_user_profile", fake_profile)
+    page = await cast("SiteSeedingLister", adapter).list_seeding()
+    assert page.supported is False
+    assert page.items == ()
+
+
+@pytest.mark.asyncio
+async def test_hdcity_seeding_list_resolves_user_id_once_across_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        paths.append(request.url.path)
+        return httpx2.Response(
+            200,
+            text='<table><tr><td><a href="details.php?id=1">Synthetic</a></td></tr></table>',
+        )
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=SiteKind.HDCITY,
+        base_url=site_profile(SiteKind.HDCITY).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+        timeout_seconds=15,
+    )
+    profile_calls = 0
+
+    async def fake_profile() -> SiteUserProfile:
+        nonlocal profile_calls
+        profile_calls += 1
+        return SiteUserProfile(site_id="hdcity", uid="12345")
+
+    monkeypatch.setattr(adapter, "fetch_user_profile", fake_profile)
+    list_seeding = cast("SiteSeedingLister", adapter).list_seeding
+    await list_seeding()
+    await list_seeding("1")
+    # 一次巡查最多 40 页，uid 必须每实例只解析一次。
+    assert profile_calls == 1
+    assert paths == ["/getusertorrentlistajax", "/getusertorrentlistajax"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    (
+        (SiteKind.HDAREA, HDAreaAdapter),
+        (SiteKind.HDCITY, HDCityAdapter),
+        (SiteKind.RETROFLIX, RetroFlixAdapter),
+        (SiteKind.CSPT, CSPTAdapter),
+        (SiteKind.HAIDAN, HaidanAdapter),
+    ),
+)
+def test_specialized_adapters_are_dispatched(kind: SiteKind, expected: type) -> None:
+    profile = site_profile(kind)
+    credential_kind = required_site_credential_kind(kind)
+    credential = (
+        "synthetic-api-key" if credential_kind is SiteCredentialKind.API_KEY else "synthetic-cookie"
+    )
+    adapter = SiteAdapterFactory().create(
+        kind=kind,
+        base_url=profile.base_url,
+        credential_kind=credential_kind,
+        credential=credential,
+        timeout_seconds=15,
+    )
+    assert type(adapter) is expected
+
+
+@pytest.mark.asyncio
+async def test_search_prefers_table_headers_over_fixed_offsets() -> None:
+    html = """
+        <html><table><tr><th>标题</th><th>大小</th><th>发布时间</th><th>做种</th><th>下载</th></tr>
+        <tr><td><a href="details.php?id=123">Synthetic Title</a></td>
+        <td>1.5 GiB</td><td>2026-01-02 03:04:05</td><td>7</td><td>2</td></tr></table></html>
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/torrents.php"
+        return httpx2.Response(200, text=html)
+
+    adapter = SiteAdapterFactory(transport=httpx2.MockTransport(handler)).create(
+        kind=SiteKind.KEEPFRDS,
+        base_url=site_profile(SiteKind.KEEPFRDS).base_url,
+        credential_kind=SiteCredentialKind.COOKIE,
+        credential="synthetic-cookie",
+        timeout_seconds=15,
+    )
+    page = await adapter.search(SearchQuery(("Synthetic",), SearchMediaType.UNKNOWN))
+    assert len(page.items) == 1
+    item = page.items[0]
+    assert item.total_size == int(1.5 * 1024**3)
+    assert item.seeders == 7
+    assert item.leechers == 2
+    assert item.published_at is not None
+    assert item.published_at.isoformat() == "2026-01-01T19:04:05+00:00"

@@ -16,8 +16,13 @@ from backend.app.domain.site_config import (
 
 def test_site_profile_registry_lists_supported_and_planned_origins() -> None:
     assert set(SITE_PROFILE_REGISTRY) == set(SiteKind)
-    assert len(PERSISTED_SITE_KINDS) == 18
-    assert len(set(SiteKind) - PERSISTED_SITE_KINDS) == 0
+    supported = {
+        kind
+        for kind in SiteKind
+        if SITE_PROFILE_REGISTRY[kind].support_status is SiteSupportStatus.SUPPORTED
+    }
+    assert supported == PERSISTED_SITE_KINDS
+    assert len(set(SiteKind) - PERSISTED_SITE_KINDS) == len(SiteKind) - len(PERSISTED_SITE_KINDS)
     assert frozenset(SiteKind) == CONFIGURABLE_SITE_KINDS
     assert trusted_site_base_url(SiteKind.MTEAM) == "https://kp.m-team.cc"
     assert trusted_site_base_url(SiteKind.HDTIME) == "https://hdtime.org"
@@ -33,13 +38,25 @@ def test_site_profile_registry_lists_supported_and_planned_origins() -> None:
     assert required_site_credential_kind(SiteKind.MTEAM) is SiteCredentialKind.API_KEY
     assert required_site_credential_kind(SiteKind.HHCLUB) is SiteCredentialKind.COOKIE
     assert required_site_credential_kind(SiteKind.ROUSI_PRO) is SiteCredentialKind.API_KEY
-    for kind in SiteKind:
-        expected = (
-            SiteSupportStatus.SUPPORTED
-            if kind in PERSISTED_SITE_KINDS
-            else SiteSupportStatus.PENDING_REAL_VALIDATION
-        )
-        assert SITE_PROFILE_REGISTRY[kind].support_status is expected
+    # v1.1.18 起新增站点全部开放，注册表内所有类型都是 SUPPORTED 且可执行。
+    assert frozenset(SiteKind) == PERSISTED_SITE_KINDS
+    assert all(
+        profile.support_status is SiteSupportStatus.SUPPORTED
+        for profile in SITE_PROFILE_REGISTRY.values()
+    )
+    assert SITE_PROFILE_REGISTRY[SiteKind.CHDBITS].base_url == "https://ptchdbits.co"
+    assert SITE_PROFILE_REGISTRY[SiteKind.OURBITS].base_url == "https://ourbits.club"
+    assert SiteKind.OURBITS in PERSISTED_SITE_KINDS
+    assert SITE_PROFILE_REGISTRY[SiteKind.OURBITS].support_status is SiteSupportStatus.SUPPORTED
+    assert SiteKind.BYRBT in PERSISTED_SITE_KINDS
+    assert SITE_PROFILE_REGISTRY[SiteKind.BYRBT].support_status is SiteSupportStatus.SUPPORTED
+
+
+def test_site_display_names_are_unique() -> None:
+    # 站点名称参与唯一约束；CookieCloud 等批量导入会按 display_name 建站，
+    # 重名会让整批同步以 SITE_NAME_CONFLICT 失败。
+    names = [profile.display_name for profile in SITE_PROFILE_REGISTRY.values()]
+    assert len(names) == len(set(names))
 
 
 def test_cookie_profiles_support_controlled_request_headers() -> None:

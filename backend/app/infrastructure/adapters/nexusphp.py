@@ -103,6 +103,10 @@ class NexusPhpProfile:
     min_request_interval_seconds: float = 2.0
     require_valid_torrent_metainfo: bool = False
     detail_timeout_seconds: float | None = None
+    imdb_search_param: str = "search_area"
+    imdb_search_area: str | None = "4"
+    douban_search_param: str = "search_area"
+    douban_search_area: str | None = None
 
     def __post_init__(self) -> None:
         if not self.site_id.strip():
@@ -135,6 +139,11 @@ class NexusPhpProfile:
             raise ValueError("NexusPHP profile 请求间隔不能为负数")
         if self.detail_timeout_seconds is not None and not 1 <= self.detail_timeout_seconds <= 120:
             raise ValueError("NexusPHP 详情请求超时必须在 1～120 秒之间")
+        for area in (self.imdb_search_area, self.douban_search_area):
+            if area is not None and (
+                not area.isascii() or not area.isdigit() or not 1 <= len(area) <= 3
+            ):
+                raise ValueError("NexusPHP 外部 ID 搜索区间必须是 1～3 位数字")
 
 
 HDTIME_PROFILE = NexusPhpProfile(
@@ -164,6 +173,7 @@ class _Row:
     cell_text_parts: list[list[str]] = field(default_factory=list)
     cell_titles: list[list[str]] = field(default_factory=list)
     cell_attributes: list[list[tuple[str, str, str]]] = field(default_factory=list)
+    cell_classes: list[set[str]] = field(default_factory=list)
     links: list[tuple[str, str | None, str]] = field(default_factory=list)
     active_cell: int | None = None
 
@@ -272,6 +282,9 @@ class _NexusHtmlParser(HTMLParser):
         self._meta_title_text: list[str] = []
         self.text_parts: list[str] = []
         self.all_links: list[tuple[str, str | None, str]] = []
+        self.header_cells: list[str] = []
+        self.header_titles: list[str] = []
+        self._header_stack: list[int] = []
 
     @property
     def rows(self) -> tuple[_Row, ...]:
@@ -345,6 +358,10 @@ class _NexusHtmlParser(HTMLParser):
                 for class_name in classes
                 if class_name.endswith("_Name") and len(class_name) > len("_Name")
             )
+        if tag == "th" and self._row_stack:
+            self.header_cells.append("")
+            self.header_titles.append(attributes.get("title") or "")
+            self._header_stack.append(len(self.header_cells) - 1)
         if tag == "table":
             self._next_table_index += 1
             self._table_stack.append(self._next_table_index)
@@ -363,6 +380,7 @@ class _NexusHtmlParser(HTMLParser):
             row.cell_text_parts.append([])
             row.cell_titles.append([])
             row.cell_attributes.append([])
+            row.cell_classes.append(set(classes))
             row.active_cell = len(row.cells) - 1
         elif tag in {"span", "time"} and self._row_stack:
             # NexusPHP derivatives may place the absolute publish timestamp
@@ -411,6 +429,8 @@ class _NexusHtmlParser(HTMLParser):
                         )
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "th" and self._header_stack:
+            self._header_stack.clear()
         if tag == "tr" and self._row_stack:
             self._rows.append(self._row_stack.pop())
         elif tag == "td" and self._row_stack:
@@ -479,6 +499,8 @@ class _NexusHtmlParser(HTMLParser):
                 row.cells[row.active_cell] += data
                 if cleaned:
                     row.cell_text_parts[row.active_cell].append(cleaned)
+        for index in self._header_stack:
+            self.header_cells[index] += data
         if self._link_stack:
             self._link_stack[-1][3].append(data)
         for capture in self._class_text_captures:
@@ -534,10 +556,8 @@ class NexusPhpWebAdapter:
 
     async def capabilities(self) -> SiteSearchCapabilities:
         return SiteSearchCapabilities(
-            supports_imdb_id=True,
-            # HDTime's current search form exposes IMDb-link search, but no
-            # Douban-link search mode. Do not issue a misleading Douban-ID query.
-            supports_douban_id=self._profile.site_id != "hdtime",
+            supports_imdb_id=self._profile.imdb_search_area is not None,
+            supports_douban_id=self._profile.douban_search_area is not None,
             supports_category=True,
             supports_pagination=True,
             supports_detail_file_list=False,
@@ -782,16 +802,27 @@ class NexusPhpWebAdapter:
                 profile = replace(profile, bonus_per_hour=hourly_bonus)
 
         if site_key in {"ubits", "audiences", "pterclub"} and profile.bonus_per_hour is None:
+            bonus_path = "/mybonus.php"
             # PT-Depiler's default user-info flow reads hourly bonus from
             # /mybonus.php. Audiences has a dedicated compact-rate selector;
             # UBits uses the generic "currently getting" sentence.
             try:
-                bonus_page = _parse_html(await get_profile_html("/mybonus.php"))
+                bonus_page = _parse_html(await get_profile_html(bonus_path))
                 self._reject_login_page(bonus_page)
                 hourly_bonus = _parse_nexus_bonus_per_hour(
                     bonus_page,
                     class_name="mybonus-side__rate" if site_key == "audiences" else None,
                 )
+                if hourly_bonus is not None:
+                    profile = replace(profile, bonus_per_hour=hourly_bonus)
+            except SiteAdapterError as exc:
+                _logger.warning("%s 每小时收益读取失败 error_code=%s", site_key, exc.code)
+
+        if site_key in {"hdcity", "lemonhd"} and profile.bonus_per_hour is None:
+            try:
+                bonus_page = _parse_html(await get_profile_html("/mybonus"))
+                self._reject_login_page(bonus_page)
+                hourly_bonus = _parse_nexus_bonus_per_hour(bonus_page)
                 if hourly_bonus is not None:
                     profile = replace(profile, bonus_per_hour=hourly_bonus)
             except SiteAdapterError as exc:
@@ -1102,26 +1133,27 @@ class NexusPhpWebAdapter:
         return profile
 
     async def search(self, query: SearchQuery) -> SearchPage:
-        # HDTime's live form maps area 4 to IMDb links; area 0 is title search.
-        # Sending an IMDb ID as a title returns an empty-looking page without an
-        # error, which previously turned a valid search into a false no-match.
-        search_area = (
-            "4"
-            if self._profile.site_id == "hdtime"
-            and any(item.namespace == "imdb" for item in query.external_ids)
-            else "0"
-        )
-        params = {
-            "search": _search_value(query),
+        params: dict[str, str] = {
+            "search": query.query_text,
             "incldead": "1",
             "spstate": "0",
-            "search_area": search_area,
             "search_mode": "0",
             "sort": _sort_value(query.sort),
             "type": "desc",
             "notnewword": "1",
             "page": str(query.page - 1),
         }
+        for namespace in ("imdb", "douban"):
+            external_id = _first_external_id(query.external_ids, namespace)
+            area = getattr(self._profile, namespace + "_search_area")
+            param = getattr(self._profile, namespace + "_search_param")
+            if external_id is None or area is None:
+                continue
+            params[param] = area
+            params["search"] = external_id.value
+            break
+        else:
+            params["search_area"] = "0"
         parser = _parse_html(await self._get_html(self._profile.search_path, params=params))
         self._reject_rate_limit_page(parser)
         self._reject_login_page(parser)
@@ -1571,6 +1603,9 @@ def _parse_row_size(row: _Row, profile: NexusPhpProfile) -> int | None:
     layout, fixed offsets shift to seeders/status and silently drop size evidence.
     The fallback is deliberately row-local and accepts only one unambiguous size.
     """
+    class_value = _parse_size_text(_field_cell_text(row, "size"))
+    if class_value is not None:
+        return class_value
     configured = _parse_size(_cell(row, profile.size_cell_from_end))
     if configured is not None:
         return configured
@@ -1594,30 +1629,86 @@ def _parse_row_size(row: _Row, profile: NexusPhpProfile) -> int | None:
     return values[0] if len(values) == 1 else None
 
 
+_HEADER_LABELS: dict[str, tuple[str, ...]] = {
+    "size": ("大小", "文件大小", "体积", "size", "torrent size"),
+    "date": ("发布时间", "时间", "添加时间", "添加日期", "日期", "added", "date"),
+    "seeders": ("做种", "做种数", "seeders", "seeds"),
+    "leechers": ("下载", "下载中", "leechers", "peers"),
+}
+
+
+def _header_column_index(parser: _NexusHtmlParser, row: _Row, field_name: str) -> int | None:
+    if not parser.header_cells:
+        return None
+    headers = list(parser.header_cells)
+    if len(headers) == len(row.cells) - 1:
+        headers.append("优惠")
+    if len(headers) != len(row.cells):
+        return None
+    normalized = [
+        " ".join(
+            (
+                _clean_text(value),
+                _clean_text(
+                    parser.header_titles[index] if index < len(parser.header_titles) else ""
+                ),
+            )
+        ).casefold()
+        for index, value in enumerate(headers)
+    ]
+    for index, value in enumerate(normalized):
+        if any(label in value for label in _HEADER_LABELS[field_name]):
+            return index
+    return None
+
+
 def _parse_search_rows(
     parser: _NexusHtmlParser, profile: NexusPhpProfile
 ) -> tuple[CandidateMeta, ...]:
     best_by_id: dict[str, tuple[int, CandidateMeta]] = {}
-    required_offset = max(
-        profile.date_cell_from_end,
-        profile.size_cell_from_end,
-        profile.seeders_cell_from_end,
-        profile.leechers_cell_from_end,
+    required_offset = (
+        1
+        if parser.header_cells
+        else max(
+            profile.date_cell_from_end,
+            profile.size_cell_from_end,
+            profile.seeders_cell_from_end,
+            profile.leechers_cell_from_end,
+        )
     )
     for row in parser.rows:
         details = _details_link(row.links)
         if details is None or len(row.cells) < required_offset:
             continue
         torrent_id, title = details
+        header_size = _header_column_index(parser, row, "size")
+        header_date = _header_column_index(parser, row, "date")
+        header_seeders = _header_column_index(parser, row, "seeders")
+        header_leechers = _header_column_index(parser, row, "leechers")
+        size_text = row.cells[header_size] if header_size is not None else ""
+        seeders_text = row.cells[header_seeders] if header_seeders is not None else ""
+        leechers_text = row.cells[header_leechers] if header_leechers is not None else ""
         candidate = normalize_candidate_meta(
             site_id=profile.site_id,
             torrent_id=torrent_id,
             display_name=title,
-            total_size=_parse_row_size(row, profile),
-            published_at=_parse_date(row, profile),
+            total_size=_parse_size_text(size_text) or _parse_row_size(row, profile),
+            published_at=(
+                _parse_date_from_index(row, header_date, profile.timezone_offset_minutes)
+                if header_date is not None
+                else _parse_date(row, profile)
+            ),
             category=_category(row.links),
-            seeders=_parse_nonnegative_int(_cell(row, profile.seeders_cell_from_end)),
-            leechers=_parse_nonnegative_int(_cell(row, profile.leechers_cell_from_end)),
+            seeders=_parse_nonnegative_int(
+                seeders_text
+                or _field_cell_text(row, "seeders")
+                or _cell_safe(row, profile.seeders_cell_from_end)
+            ),
+            leechers=_parse_nonnegative_int(
+                leechers_text
+                or _field_cell_text(row, "leechers")
+                or _cell_safe(row, profile.leechers_cell_from_end)
+            ),
             external_ids=_external_ids(row.links),
         )
         _keep_richer_candidate(best_by_id, torrent_id, len(row.cells), candidate)
@@ -1760,6 +1851,28 @@ def _parse_nexus_user_profile(
         bonus_labels = ("U币", "UBits Coin", "魔力值", "Bonus")
     elif site_key == "hhclub":
         bonus_labels = ("憨豆", "魔力值", "Bonus")
+    elif site_key == "13city":
+        bonus_labels = ("啤酒瓶", "Karma Points", "Bonus")
+    elif site_key == "agsvpt":
+        bonus_labels = ("冰晶", "Karma Points", "Bonus")
+    elif site_key == "cspt":
+        bonus_labels = ("金元宝", "Bonus")
+    elif site_key == "joyhd":
+        bonus_labels = ("银元", "Bonus")
+    elif site_key == "hdvideo":
+        bonus_labels = ("电影票", "Bonus")
+    elif site_key == "ptlgs":
+        bonus_labels = ("工分", "Karma", "Points", "Bonus")
+    elif site_key == "ptvicomo":
+        bonus_labels = ("象草", "Karma Points", "Bonus")
+    elif site_key == "raingfh":
+        bonus_labels = ("雨滴", "Bonus")
+    elif site_key == "zrpt":
+        bonus_labels = ("积分", "Bonus")
+    elif site_key == "sewerpt":
+        bonus_labels = ("金币", "Bonus")
+    elif site_key in {"52movie", "baozi", "cdy", "dstudio", "march", "muxuege", "xdypt"}:
+        bonus_labels = ("魔力值", "Karma Points", "Karma", "Points", "Bonus")
     else:
         bonus_labels = ("魔力值", "Bonus")
 
@@ -1776,6 +1889,7 @@ def _parse_nexus_user_profile(
         "保種積分",
         "Seed points",
         "Seeding Points",
+        "等级积分",
     )
     bonus_per_hour = _profile_float_from_parser(
         parser,
@@ -1784,6 +1898,9 @@ def _parse_nexus_user_profile(
         "每小时魔力",
         "每小时憨豆",
         "Bonus per hour",
+        "你当前每小时能获取",
+        "你當前每小時能獲取",
+        "You are currently getting",
     )
     if site_key == "audiences":
         uploaded_metric = _profile_class_size(parser, "site-userbar__compact-metric--uploaded")
@@ -1895,7 +2012,7 @@ def _parse_nexus_user_profile(
 def _profile_hnr(parser: _NexusHtmlParser) -> tuple[int | None, str | None]:
     for href, title, label in reversed(parser.all_links):
         parsed = urlsplit(href)
-        if parsed.path.lstrip("/") != "myhr.php":
+        if parsed.path.lstrip("/") not in {"myhr.php", "hnr_details.php", "hr.php"}:
             continue
         value = _clean_text(f"{title or ''} {label}")
         numbers = [int(item) for item in re.findall(r"\d+", value)]
@@ -1916,8 +2033,16 @@ def _profile_message_count(parser: _NexusHtmlParser, text: str, site_key: str) -
         "消息数",
         "Message Count",
     )
-    if count is not None or site_key not in {"pterclub", "springsunday"}:
+    if count is not None:
         return count
+    if site_key not in {"pterclub", "springsunday"}:
+        for href, _title, label in parser.all_links:
+            if urlsplit(href).path.lstrip("/") != "messages.php":
+                continue
+            match = re.search(r"[0-9][0-9,]*", label)
+            if match is not None:
+                return _parse_nonnegative_int(match.group(0))
+        return None
 
     # PT-depiler uses site-specific unread-message badges for these two sites.
     # The HTML parser retains the badge text in its enclosing messages.php link.
@@ -2870,12 +2995,8 @@ def _download_href(links: list[tuple[str, str | None, str]], torrent_id: str) ->
     return None
 
 
-def _search_value(query: SearchQuery) -> str:
-    for namespace in ("imdb", "douban"):
-        for external_id in query.external_ids:
-            if external_id.namespace == namespace:
-                return external_id.value
-    return query.query_text
+def _first_external_id(ids: tuple[ExternalMediaId, ...], namespace: str) -> ExternalMediaId | None:
+    return next((item for item in ids if item.namespace == namespace), None)
 
 
 def _sort_value(sort: SearchSortHint) -> str:
@@ -2912,8 +3033,49 @@ def _has_next_page(
     return False
 
 
+_FIELD_CELL_CLASSES: dict[str, frozenset[str]] = {
+    "date": frozenset({"time_col", "torrent-info-text-added"}),
+    "size": frozenset({"video_size", "torrent-info-text-size", "torrent_size"}),
+    "seeders": frozenset({"seeder_col", "torrent-info-text-seeders"}),
+    "leechers": frozenset({"leecher_col", "torrent-info-text-leechers"}),
+}
+
+
+def _cell_index_for_field(row: _Row, field_name: str) -> int | None:
+    names = _FIELD_CELL_CLASSES.get(field_name)
+    if not names:
+        return None
+    for index, classes in enumerate(row.cell_classes):
+        if classes & names:
+            return index
+    return None
+
+
+def _field_cell_text(row: _Row, field_name: str) -> str:
+    index = _cell_index_for_field(row, field_name)
+    if index is None:
+        return ""
+    return _clean_text(row.cells[index] or " ".join(row.cell_titles[index]))
+
+
+def _parse_date_from_index(row: _Row, index: int, tz_minutes: int) -> datetime | None:
+    tz = timezone(timedelta(minutes=tz_minutes))
+    candidates = [*row.cell_titles[index], row.cells[index]]
+    for raw in candidates:
+        value = _clean_text(raw)
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d%H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                return datetime.strptime(value, fmt).replace(tzinfo=tz)
+            except ValueError:
+                pass
+    return None
+
+
 def _parse_date(row: _Row, profile: NexusPhpProfile) -> datetime | None:
-    index = len(row.cells) - profile.date_cell_from_end
+    class_index = _cell_index_for_field(row, "date")
+    index = class_index if class_index is not None else len(row.cells) - profile.date_cell_from_end
+    if index < 0:
+        return None
     candidates = [*row.cell_titles[index], row.cells[index]]
     tz = timezone(timedelta(minutes=profile.timezone_offset_minutes))
     for raw in candidates:
@@ -2928,6 +3090,11 @@ def _parse_date(row: _Row, profile: NexusPhpProfile) -> datetime | None:
 
 def _cell(row: _Row, from_end: int) -> str:
     return row.cells[len(row.cells) - from_end]
+
+
+def _cell_safe(row: _Row, from_end: int) -> str:
+    index = len(row.cells) - from_end
+    return row.cells[index] if index >= 0 else ""
 
 
 def _card_field(classes: set[str]) -> str | None:

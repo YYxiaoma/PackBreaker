@@ -25,6 +25,7 @@ from backend.app.domain.site_config import (
     SiteCredentialKind,
     SiteKind,
     SiteProbeStatus,
+    site_kind_is_persistable,
     site_profiles,
 )
 from backend.app.domain.task_definition import normalize_cron_expression
@@ -489,6 +490,10 @@ class CookieCloudService:
                 # CookieCloud contains cookies, not API keys.
                 discovered_site_kinds: set[SiteKind] = set()
                 for profile in site_profiles():
+                    # Pending profiles may be probed manually, but CookieCloud
+                    # must never auto-create site rows that cannot be enabled.
+                    if not site_kind_is_persistable(profile.kind):
+                        continue
                     host = urlsplit(profile.base_url).hostname
                     if not host:
                         continue

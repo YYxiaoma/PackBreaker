@@ -162,7 +162,7 @@ def test_cookie_header_filters_expired_and_unrelated_domains() -> None:
     assert cookie_header_for_host(payload, "pt.example.com") == "session=ok"
 
 
-def test_cookiecloud_bulk_payload_recognizes_18_packbreaker_sites_from_25_domains() -> None:
+def test_cookiecloud_bulk_payload_recognizes_every_cookie_site_from_payload_domains() -> None:
     all_profiles = list(site_profiles())
     eligible_profiles = [
         profile
@@ -170,8 +170,14 @@ def test_cookiecloud_bulk_payload_recognizes_18_packbreaker_sites_from_25_domain
         if profile.credential_kind is SiteCredentialKind.COOKIE
         or profile.kind is SiteKind.ROUSI_PRO
     ]
-    assert len(all_profiles) == 18
-    assert len(eligible_profiles) == 17
+    assert len(all_profiles) == len(SiteKind)
+    api_key_only = sum(
+        1
+        for profile in all_profiles
+        if profile.credential_kind is SiteCredentialKind.API_KEY
+        and profile.kind is not SiteKind.ROUSI_PRO
+    )
+    assert len(eligible_profiles) == len(all_profiles) - api_key_only
 
     cookie_data: dict[str, list[dict[str, object]]] = {}
     for index, profile in enumerate(all_profiles):
@@ -210,7 +216,8 @@ def test_cookiecloud_bulk_payload_recognizes_18_packbreaker_sites_from_25_domain
         crypto_type=CookieCloudCryptoType.AES_128_CBC_FIXED,
     )
 
-    assert len(payload.cookie_data) == 25
+    unique_hosts = {urlsplit(profile.base_url).hostname for profile in all_profiles}
+    assert len(payload.cookie_data) == len(unique_hosts) + 7
 
     recognized_hosts = 0
     for profile in all_profiles:
@@ -220,7 +227,7 @@ def test_cookiecloud_bulk_payload_recognizes_18_packbreaker_sites_from_25_domain
         assert header is not None
         assert "foreign_" not in header
         recognized_hosts += 1
-    assert recognized_hosts == 18
+    assert recognized_hosts == len(all_profiles)
 
     eligible_headers = 0
     for profile in eligible_profiles:
@@ -228,7 +235,7 @@ def test_cookiecloud_bulk_payload_recognizes_18_packbreaker_sites_from_25_domain
         assert host is not None
         assert cookie_header_for_host(payload, host) is not None
         eligible_headers += 1
-    assert eligible_headers == 17
+    assert eligible_headers == len(eligible_profiles)
 
 
 def test_server_url_preserves_easychen_api_root() -> None:

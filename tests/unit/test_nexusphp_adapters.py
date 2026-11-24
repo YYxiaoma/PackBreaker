@@ -2729,3 +2729,74 @@ async def test_springsunday_optional_stat_timeout_does_not_retry_whole_profile()
     assert requests.count("/userdetails.php") == 1
     assert requests.count("/mybonus.php") == 1
     assert requests.count("/getusertorrentlistajax.php") == 2
+
+
+@pytest.mark.asyncio
+async def test_generic_nexusphp_capabilities_follow_profile_config() -> None:
+    generic = NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="generic",
+            default_base_url="https://example.invalid",
+        ),
+    )
+    capabilities = await generic.capabilities()
+    assert capabilities.supports_imdb_id is True
+    assert capabilities.supports_douban_id is False
+
+
+@pytest.mark.asyncio
+async def test_factory_enables_douban_only_for_upstream_proven_sites() -> None:
+    from backend.app.domain.site_config import SiteCredentialKind, SiteKind, site_profile
+    from backend.app.infrastructure.adapters.sites import SiteAdapterFactory
+
+    for kind in (SiteKind.OURBITS, SiteKind.TJUPT):
+        profile = site_profile(kind)
+        adapter = SiteAdapterFactory().create(
+            kind=kind,
+            base_url=profile.base_url,
+            credential_kind=SiteCredentialKind.COOKIE,
+            credential="synthetic-cookie",
+            timeout_seconds=15,
+        )
+        capabilities = await adapter.capabilities()
+        assert capabilities.supports_imdb_id is True
+        assert capabilities.supports_douban_id is True
+
+
+@pytest.mark.asyncio
+async def test_generic_search_uses_profile_external_id_area() -> None:
+    seen_query: dict[str, list[str]] = {}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen_query.clear()
+        seen_query.update({key: [value] for key, value in request.url.params.items()})
+        return httpx2.Response(200, text="<html></html>")
+
+    adapter = NexusPhpWebAdapter(
+        _COOKIE,
+        profile=NexusPhpProfile(
+            site_id="generic",
+            default_base_url="https://example.invalid",
+        ),
+        base_url="https://example.invalid",
+        transport=httpx2.MockTransport(handler),
+    )
+    imdb = SearchQuery(
+        ("Title",),
+        SearchMediaType.MOVIE,
+        external_ids=(ExternalMediaId("imdb", "tt1234567"),),
+    )
+    await adapter.search(imdb)
+    assert seen_query["search"] == ["tt1234567"]
+    assert seen_query["search_area"] == ["4"]
+
+    seen_query.clear()
+    douban = SearchQuery(
+        ("Title",),
+        SearchMediaType.MOVIE,
+        external_ids=(ExternalMediaId("douban", "1234567"),),
+    )
+    await adapter.search(douban)
+    assert seen_query["search"] == ["title"]
+    assert seen_query["search_area"] == ["0"]

@@ -459,7 +459,7 @@ def test_cookiecloud_sync_updates_cookie_sites_and_preserves_rousi_api_key(tmp_p
         )
 
         synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
-        assert synced.status_code == 200
+        assert synced.status_code == 200, synced.text
         report = synced.json()
         assert report["source_domains"] == 3
         assert report["source_cookies"] == 3
@@ -525,9 +525,15 @@ def test_cookiecloud_sync_imports_missing_supported_cookie_sites_without_api_key
 ) -> None:
     from urllib.parse import urlsplit
 
-    from backend.app.domain.site_config import SiteCredentialKind, site_profiles
+    from backend.app.domain.site_config import (
+        SiteCredentialKind,
+        site_kind_is_persistable,
+        site_profiles,
+    )
 
-    profiles = site_profiles()
+    profiles = tuple(
+        profile for profile in site_profiles() if site_kind_is_persistable(profile.kind)
+    )
     payload = {
         "cookie_data": {
             urlsplit(profile.base_url).hostname: [
@@ -577,7 +583,7 @@ def test_cookiecloud_sync_imports_missing_supported_cookie_sites_without_api_key
         )
         app.state.site_service.sync_user_profile = AsyncMock(return_value=None)
         synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
-        assert synced.status_code == 200
+        assert synced.status_code == 200, synced.text
         _wait_for_cookiecloud_profile_syncs(client)
         report = synced.json()
         expected_cookies = sum(
@@ -585,7 +591,12 @@ def test_cookiecloud_sync_imports_missing_supported_cookie_sites_without_api_key
         )
         assert report["created_sites"] == expected_cookies + 1
         assert report["updated_sites"] == expected_cookies
-        assert sorted(report["skipped_api_key_sites"]) == ["M-TEAM", "Rousi Pro"]
+        expected_api_key_names = sorted(
+            profile.display_name
+            for profile in profiles
+            if profile.credential_kind is SiteCredentialKind.API_KEY
+        )
+        assert sorted(report["skipped_api_key_sites"]) == expected_api_key_names
         assert report["matched_sites"] == expected_cookies
         assert report["discovered_sites"] == len(profiles)
         assert report["sync_success_sites"] == expected_cookies
@@ -691,7 +702,7 @@ def test_cookiecloud_sync_seven_supported_sites_are_encrypted_and_manual_enable(
         )
         app.state.site_service.sync_user_profile = AsyncMock(return_value=None)
         synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
-        assert synced.status_code == 200
+        assert synced.status_code == 200, synced.text
         _wait_for_cookiecloud_profile_syncs(client)
         summary = synced.json()
         assert summary["created_sites"] == len(kinds)
@@ -797,7 +808,7 @@ def test_cookiecloud_mteam_sibling_domain_imports_disabled_placeholder_only(tmp_
             site_service=app.state.site_service,
         )
         synced = client.post("/api/v1/cookiecloud/sync", headers=headers)
-        assert synced.status_code == 200
+        assert synced.status_code == 200, synced.text
         assert synced.json()["created_sites"] == 1
         assert synced.json()["updated_sites"] == 0
         assert synced.json()["matched_sites"] == 0

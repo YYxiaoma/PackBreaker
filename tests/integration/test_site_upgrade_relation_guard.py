@@ -10,7 +10,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-from backend.app.domain.site_config import DATABASE_SITE_KINDS, PERSISTED_SITE_KINDS
+from backend.app.domain.site_config import DATABASE_SITE_KINDS
 from backend.app.infrastructure import runtime as runtime_module
 from backend.app.infrastructure.backups import BackupError
 from backend.app.infrastructure.persistence.database import sqlite_database_url
@@ -207,27 +207,8 @@ def test_expanded_site_constraint_keeps_indexes_and_all_original_foreign_keys(
         # The head migration expands the allowed kinds without modifying the
         # historic v1.0.1 revision or disturbing existing relationships.
         declared_types = re.findall(r"'([^']+)'", type_check.group(1))
-        assert len(declared_types) == 18
-        assert set(declared_types) == {
-            "MTEAM",
-            "HDTIME",
-            "HHCLUB",
-            "KEEPFRDS",
-            "HDHOME",
-            "UBITS",
-            "HDFANS",
-            "BTSCHOOL",
-            "PTTIME",
-            "ROUSI_PRO",
-            "LINGYIN_CLUB",
-            "PTERCLUB",
-            "AUDIENCES",
-            "SPRING_SUNDAY",
-            "HDDOLBY",
-            "U2",
-            "TANGPT",
-            "CARPT",
-        }
+        assert len(declared_types) == len(DATABASE_SITE_KINDS)
+        assert set(declared_types) == {kind.value for kind in DATABASE_SITE_KINDS}
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 "INSERT INTO site (id, name, type, base_url, credential_kind, "
@@ -236,9 +217,10 @@ def test_expanded_site_constraint_keeps_indexes_and_all_original_foreign_keys(
                 "'https://candidate.invalid', 'COOKIE', '{}', "
                 "'UNTESTED', 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
             )
-        # The schema accepts new types without modifying the service's
-        # separate production allowlist; every inserted candidate is disabled.
-        for kind in sorted(DATABASE_SITE_KINDS - PERSISTED_SITE_KINDS):
+        # 服务端允许清单现已覆盖全部类型；这里逐一插入，验证 schema 对每种已声明
+        # 类型都可写入。HHCLUB 已作为 old-site 存在，跳过以免主键冲突。
+        candidate_kinds = [kind for kind in sorted(DATABASE_SITE_KINDS) if kind.value != "HHCLUB"]
+        for kind in candidate_kinds:
             connection.execute(
                 "INSERT INTO site (id, name, type, base_url, credential_kind, "
                 "capabilities, connection_status, enabled, version, created_at, updated_at) "
@@ -256,7 +238,7 @@ def test_expanded_site_constraint_keeps_indexes_and_all_original_foreign_keys(
             )
         assert connection.execute(
             "SELECT COUNT(*) FROM site WHERE type != 'HHCLUB' AND enabled=0"
-        ).fetchone() == (len(DATABASE_SITE_KINDS - PERSISTED_SITE_KINDS),)
+        ).fetchone() == (len(candidate_kinds),)
         assert connection.execute(
             "SELECT site_id FROM task_definition WHERE id='old-task'"
         ).fetchone() == ("old-site",)
