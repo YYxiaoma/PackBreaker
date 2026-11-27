@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -7,6 +7,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     Float,
     ForeignKey,
     Index,
@@ -566,6 +567,157 @@ class SiteUserProfileSync(Base):
     field_count: Mapped[int] = mapped_column(nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class SiteStatisticsHistory(Base):
+    """One row per site per application-timezone calendar day."""
+
+    __tablename__ = "site_statistics_history"
+    __table_args__ = (
+        UniqueConstraint("site_id", "stat_date", name="uq_site_statistics_history_site_date"),
+        Index("ix_site_statistics_history_stat_date", "stat_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    site_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("site.id", ondelete="CASCADE"), nullable=False
+    )
+    stat_date: Mapped[date] = mapped_column(Date, nullable=False)
+    ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bonus: Mapped[float | None] = mapped_column(Float, nullable=True)
+    seeding_points: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bonus_per_hour: Mapped[float | None] = mapped_column(Float, nullable=True)
+    seeding_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    uploaded_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    downloaded_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    seeding_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class TorrentYieldDaily(Base):
+    """Real per-torrent observations for one downloader torrent per calendar day."""
+
+    __tablename__ = "torrent_yield_daily"
+    __table_args__ = (
+        UniqueConstraint(
+            "downloader_id", "torrent_hash", "stat_date", name="uq_torrent_yield_daily_observation"
+        ),
+        Index("ix_torrent_yield_daily_stat_date", "stat_date"),
+        Index("ix_torrent_yield_daily_site_key", "site_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    downloader_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("downloader.id", ondelete="CASCADE"), nullable=False
+    )
+    torrent_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    stat_date: Mapped[date] = mapped_column(Date, nullable=False)
+    seeding_watch_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("seeding_watch.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(1024), nullable=False)
+    site_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    remote_torrent_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    first_uploaded_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_uploaded_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    upload_delta_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    first_seeding_seconds: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_seeding_seconds: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    seeding_seconds_delta: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bonus_contribution: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bonus_per_hour_contribution: Mapped[float | None] = mapped_column(Float, nullable=True)
+    contribution_source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="NOT_AVAILABLE"
+    )
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="INCOMPLETE")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class MediaCoverageRun(Base):
+    """One read-only coverage scan of an authorized local library root."""
+
+    __tablename__ = "media_coverage_run"
+    __table_args__ = (Index("ix_media_coverage_run_started", "started_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    scope_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="RUNNING")
+    phase: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    movie_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    site_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    watched_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    identity_resolved_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    degraded_sites: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+
+
+class MediaCoverageScope(Base):
+    """Persisted local-library scan scope chosen by the admin."""
+
+    __tablename__ = "media_coverage_scope"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    selection_token: Mapped[str] = mapped_column(Text, nullable=False)
+    scope_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class MediaCoverageMovie(Base):
+    """Coverage result for one normalized movie in one run."""
+
+    __tablename__ = "media_coverage_movie"
+    __table_args__ = (
+        UniqueConstraint("run_id", "movie_key", name="uq_media_coverage_movie_key"),
+        Index("ix_media_coverage_movie_bucket", "run_id", "bucket"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("media_coverage_run.id", ondelete="CASCADE"), nullable=False
+    )
+    movie_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_title: Mapped[str] = mapped_column(String(512), nullable=False)
+    year: Mapped[int | None] = mapped_column(nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    external_ids: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False, default=list)
+    relative_path_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    coverage_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    site_keys: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    bucket: Mapped[str] = mapped_column(String(16), nullable=False)
+    match_level: Mapped[str] = mapped_column(String(24), nullable=False)
+    confidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    suggestion: Mapped[str] = mapped_column(String(24), nullable=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class MediaCoverageTorrent(Base):
+    """Evidence row linking a torrent observation to a coverage movie."""
+
+    __tablename__ = "media_coverage_torrent"
+    __table_args__ = (
+        UniqueConstraint("run_id", "movie_key", "torrent_hash", name="uq_media_coverage_torrent"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("media_coverage_run.id", ondelete="CASCADE"), nullable=False
+    )
+    movie_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    downloader_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    torrent_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    site_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    remote_torrent_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    match_level: Mapped[str] = mapped_column(String(24), nullable=False)
+    confidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
 
 
 class TaskDefinition(Base):

@@ -298,6 +298,11 @@ button svg,
 }
 .main-shell {
   margin-left: 224px;
+  min-width: 0;
+  /* 不要再写 max-width: calc(100vw - 224px)：100vw 含滚动条宽度，且侧栏在
+     1600px / 小屏断点会变成 250px、195px、0，硬编码 224 每个断点都算错，
+     多出来的十几像素正是页面反复出现横向扩展的根因。块级元素按 margin 自动
+     收窄到可用宽度，交给浏览器算即可。 */
 }
 .topbar {
   height: 66px;
@@ -366,9 +371,12 @@ button svg,
   display: none;
 }
 main {
+  width: 100%;
+  min-width: 0;
   max-width: 1840px;
   margin: auto;
   padding: 26px 32px 10px;
+  box-sizing: border-box;
 }
 .page-heading {
   display: flex;

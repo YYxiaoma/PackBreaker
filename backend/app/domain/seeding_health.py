@@ -75,6 +75,7 @@ class SeedingIdentitySource(StrEnum):
     """种子身份来源，按可信度排序。"""
 
     COMMENT = "COMMENT"
+    TRACKER = "TRACKER"
     PLAN = "PLAN"
     NAME_SIZE = "NAME_SIZE"
     MANUAL = "MANUAL"

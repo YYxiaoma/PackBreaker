@@ -36,6 +36,16 @@ class AppSettings(BaseSettings):
     log_file_max_bytes: int = Field(default=2 * 1024 * 1024, ge=64 * 1024, le=64 * 1024 * 1024)
     log_file_backup_count: int = Field(default=4, ge=1, le=20)
     timezone: str = "Asia/Shanghai"
+    # 站点资产趋势保留天数；曲线无法回填启用前的数据，只保留窗口内日快照。
+    site_statistics_history_days: int = Field(default=90, ge=30, le=365)
+    # 种子收益归因保留天数与手动刷新最小间隔。
+    torrent_yield_history_days: int = Field(default=60, ge=30, le=180)
+    torrent_yield_refresh_min_interval_seconds: int = Field(default=300, ge=30, le=3600)
+    # 辅种覆盖率扫描：默认只做本地巡查，站点侧列表需要显式开启以控制外站请求。
+    media_coverage_site_probe_enabled: bool = False
+    media_coverage_site_probe_budget: int = Field(default=20, ge=1, le=200)
+    media_coverage_max_site_items: int = Field(default=5000, ge=100, le=100000)
+    media_coverage_max_movies: int = Field(default=100000, ge=100, le=200000)
     trusted_proxies: str = ""
     admin_username: str = "admin"
     admin_password: SecretStr | None = None

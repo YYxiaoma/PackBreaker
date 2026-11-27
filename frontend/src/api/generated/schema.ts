@@ -492,6 +492,93 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/monitor/coverage/export': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Export Movies */
+    get: operations['export_movies_api_v1_monitor_coverage_export_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/coverage/movies': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Movies */
+    get: operations['list_movies_api_v1_monitor_coverage_movies_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/coverage/runs': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Runs */
+    get: operations['list_runs_api_v1_monitor_coverage_runs_get'];
+    put?: never;
+    /** Create Run */
+    post: operations['create_run_api_v1_monitor_coverage_runs_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/coverage/scope': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Scope */
+    get: operations['get_scope_api_v1_monitor_coverage_scope_get'];
+    /** Save Scope */
+    put: operations['save_scope_api_v1_monitor_coverage_scope_put'];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/coverage/summary': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Summary */
+    get: operations['get_summary_api_v1_monitor_coverage_summary_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/monitor/seeding-health/issues': {
     parameters: {
       query?: never;
@@ -679,6 +766,159 @@ export interface paths {
     };
     /** Get Summary */
     get: operations['get_summary_api_v1_monitor_seeding_health_summary_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/site-assets/export': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Export Sites */
+    get: operations['export_sites_api_v1_monitor_site_assets_export_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/site-assets/sites': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Sites */
+    get: operations['list_sites_api_v1_monitor_site_assets_sites_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/site-assets/summary': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Summary */
+    get: operations['get_summary_api_v1_monitor_site_assets_summary_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/site-assets/trend': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Trend */
+    get: operations['get_trend_api_v1_monitor_site_assets_trend_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/yield/cleanup-export': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Cleanup Export */
+    post: operations['cleanup_export_api_v1_monitor_yield_cleanup_export_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/yield/cleanup-preview': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Cleanup Preview */
+    post: operations['cleanup_preview_api_v1_monitor_yield_cleanup_preview_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/yield/refresh': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Refresh */
+    post: operations['refresh_api_v1_monitor_yield_refresh_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/yield/summary': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Summary */
+    get: operations['get_summary_api_v1_monitor_yield_summary_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/monitor/yield/torrents': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Torrents */
+    get: operations['list_torrents_api_v1_monitor_yield_torrents_get'];
     put?: never;
     post?: never;
     delete?: never;
@@ -2148,6 +2388,26 @@ export interface components {
        */
       new_password: string;
     };
+    /** CleanupPreviewRequest */
+    CleanupPreviewRequest: {
+      /** Keys */
+      keys?: string[];
+    };
+    /** CleanupPreviewResponse */
+    CleanupPreviewResponse: {
+      /** Bonus Loss */
+      bonus_loss: number | null;
+      /** Bonus Loss Available */
+      bonus_loss_available: boolean;
+      /** Matched Files */
+      matched_files: number;
+      /** Reclaimable Bytes */
+      reclaimable_bytes: number;
+      /** Unmatched Torrents */
+      unmatched_torrents: string[];
+      /** Warnings */
+      warnings: string[];
+    };
     /**
      * CookieCloudConnectionStatus
      * @enum {string}
@@ -2385,6 +2645,127 @@ export interface components {
      * @enum {string}
      */
     CookieCloudSyncStatus: 'NEVER' | 'SUCCESS' | 'FAILED';
+    /** CoverageMovieListResponse */
+    CoverageMovieListResponse: {
+      /** Items */
+      items: components['schemas']['CoverageMovieResponse'][];
+      /** Page */
+      page: number;
+      /** Page Size */
+      page_size: number;
+      /** Total */
+      total: number;
+    };
+    /** CoverageMovieResponse */
+    CoverageMovieResponse: {
+      /** Bucket */
+      bucket: string;
+      /** Confidence */
+      confidence: string;
+      /** Coverage Count */
+      coverage_count: number;
+      /** Display Title */
+      display_title: string;
+      /** Match Level */
+      match_level: string;
+      /** Movie Key */
+      movie_key: string;
+      /** Relative Path Hint */
+      relative_path_hint: string | null;
+      /** Resolution */
+      resolution: string | null;
+      /** Site Keys */
+      site_keys: string[];
+      /** Suggestion */
+      suggestion: string;
+      /** Year */
+      year: number | null;
+    };
+    /** CoverageRunAcceptedResponse */
+    CoverageRunAcceptedResponse: {
+      /** Accepted */
+      accepted: boolean;
+      /** Run Id */
+      run_id: string;
+    };
+    /** CoverageRunRequest */
+    CoverageRunRequest: {
+      /** Selection Token */
+      selection_token: string;
+    };
+    /** CoverageRunResponse */
+    CoverageRunResponse: {
+      /** Degraded Sites */
+      degraded_sites: string[];
+      /** Error Code */
+      error_code: string | null;
+      /** Finished At */
+      finished_at: string | null;
+      /** Id */
+      id: string;
+      /** Identity Resolved Count */
+      identity_resolved_count: number;
+      /** Movie Count */
+      movie_count: number;
+      /** Phase */
+      phase: string;
+      /** Scope Label */
+      scope_label: string;
+      /** Site Count */
+      site_count: number;
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string;
+      /** Status */
+      status: string;
+      /** Watched Count */
+      watched_count: number;
+    };
+    /** CoverageScopeRequest */
+    CoverageScopeRequest: {
+      /**
+       * Scope Label
+       * @default
+       */
+      scope_label: string;
+      /** Selection Token */
+      selection_token: string;
+    };
+    /** CoverageScopeResponse */
+    CoverageScopeResponse: {
+      /** Scope Label */
+      scope_label: string;
+      /** Selection Token */
+      selection_token: string;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
+    /** CoverageSummaryResponse */
+    CoverageSummaryResponse: {
+      /** Buckets */
+      buckets: {
+        [key: string]: number;
+      };
+      /**
+       * Generated At
+       * Format: date-time
+       */
+      generated_at: string;
+      /** Known Site Count */
+      known_site_count: number;
+      last_run: components['schemas']['CoverageRunResponse'] | null;
+      /** Low Confidence Count */
+      low_confidence_count: number;
+      /** Total Movies */
+      total_movies: number;
+      /** Watched Torrent Count */
+      watched_torrent_count: number;
+    };
     /** DownloaderActionRequest */
     DownloaderActionRequest: {
       /**
@@ -3290,6 +3671,102 @@ export interface components {
        * @enum {string}
        */
       action: 'enable' | 'disable' | 'refresh_capabilities';
+    };
+    /** SiteAssetPointResponse */
+    SiteAssetPointResponse: {
+      /** Bonus */
+      bonus: number | null;
+      /** Bonus Per Hour */
+      bonus_per_hour: number | null;
+      /** Ratio */
+      ratio: number | null;
+      /** Seeding Count */
+      seeding_count: number | null;
+      /** Seeding Points */
+      seeding_points: number | null;
+      /** Site Count */
+      site_count: number;
+      /**
+       * Stat Date
+       * Format: date
+       */
+      stat_date: string;
+    };
+    /** SiteAssetRatioResponse */
+    SiteAssetRatioResponse: {
+      /** Ratio */
+      ratio: number;
+      /** Site Id */
+      site_id: string;
+      /** Site Name */
+      site_name: string;
+      /** Site Type */
+      site_type: string;
+    };
+    /** SiteAssetSiteListResponse */
+    SiteAssetSiteListResponse: {
+      /** Items */
+      items: components['schemas']['SiteAssetSiteResponse'][];
+      /** Page */
+      page: number;
+      /** Page Size */
+      page_size: number;
+      /** Total */
+      total: number;
+    };
+    /** SiteAssetSiteResponse */
+    SiteAssetSiteResponse: {
+      /** Bonus */
+      bonus: number | null;
+      /** Bonus Per Hour */
+      bonus_per_hour: number | null;
+      /**
+       * Fetched At
+       * Format: date-time
+       */
+      fetched_at: string;
+      /** Ratio */
+      ratio: number | null;
+      /** Ratio Change */
+      ratio_change: number | null;
+      /** Seeding Count */
+      seeding_count: number | null;
+      /** Seeding Points */
+      seeding_points: number | null;
+      /** Site Id */
+      site_id: string;
+      /** Site Name */
+      site_name: string;
+      /** Site Type */
+      site_type: string;
+    };
+    /** SiteAssetSummaryResponse */
+    SiteAssetSummaryResponse: {
+      /** Bonus Per Hour Total */
+      bonus_per_hour_total: number | null;
+      /** Bonus Total */
+      bonus_total: number | null;
+      /** Changes */
+      changes: {
+        [key: string]: number | null;
+      };
+      /**
+       * Generated At
+       * Format: date-time
+       */
+      generated_at: string;
+      /** Incomplete Sites */
+      incomplete_sites: string[];
+      /** Ratio Distribution */
+      ratio_distribution: components['schemas']['SiteAssetRatioResponse'][];
+      /** Seeding Count Total */
+      seeding_count_total: number | null;
+      /** Seeding Points Total */
+      seeding_points_total: number | null;
+      /** Site Count */
+      site_count: number;
+      /** Window Days */
+      window_days: number;
     };
     /** SiteCreateRequest */
     SiteCreateRequest: {
@@ -4904,6 +5381,89 @@ export interface components {
       /** Error Type */
       type: string;
     };
+    /** YieldRefreshResponse */
+    YieldRefreshResponse: {
+      /** Accepted */
+      accepted: boolean;
+      /** Errors */
+      errors: string[];
+      /** Reason */
+      reason: string | null;
+      /** Recorded */
+      recorded: number;
+      /** Scanned */
+      scanned: number;
+      /** Skipped */
+      skipped: number;
+    };
+    /** YieldSummaryResponse */
+    YieldSummaryResponse: {
+      /** Contribution Available */
+      contribution_available: boolean;
+      /**
+       * Generated At
+       * Format: date-time
+       */
+      generated_at: string;
+      /** Observed Torrents */
+      observed_torrents: number;
+      /** Retention Days */
+      retention_days: number;
+      /** Total Bonus Contribution */
+      total_bonus_contribution: number | null;
+      /** Total Bonus Per Hour Contribution */
+      total_bonus_per_hour_contribution: number | null;
+      /** Total Upload Bytes */
+      total_upload_bytes: number;
+      /** Window Days */
+      window_days: number;
+      /** Zero Upload Count */
+      zero_upload_count: number;
+    };
+    /** YieldTorrentListResponse */
+    YieldTorrentListResponse: {
+      /** Items */
+      items: components['schemas']['YieldTorrentResponse'][];
+      /** Page */
+      page: number;
+      /** Page Size */
+      page_size: number;
+      /** Total */
+      total: number;
+    };
+    /** YieldTorrentResponse */
+    YieldTorrentResponse: {
+      /** Bonus Contribution */
+      bonus_contribution: number | null;
+      /** Bonus Per Hour Contribution */
+      bonus_per_hour_contribution: number | null;
+      /** Contribution Available */
+      contribution_available: boolean;
+      /** Downloader Id */
+      downloader_id: string;
+      /** Key */
+      key: string;
+      /** Reclaimable Bytes */
+      reclaimable_bytes: number;
+      /** Remote Torrent Id */
+      remote_torrent_id: string | null;
+      /** Seeding Seconds */
+      seeding_seconds: number;
+      /** Site Key */
+      site_key: string | null;
+      /** Size Bytes */
+      size_bytes: number | null;
+      /** Status */
+      status: string;
+      /** Title */
+      title: string;
+      /** Torrent Hash */
+      torrent_hash: string;
+      /** Upload Bytes */
+      upload_bytes: number;
+      /** Zero Upload */
+      zero_upload: boolean;
+    };
   };
   responses: never;
   parameters: never;
@@ -6086,6 +6646,247 @@ export interface operations {
       };
     };
   };
+  export_movies_api_v1_monitor_coverage_export_get: {
+    parameters: {
+      query?: {
+        bucket?: ('ZERO' | 'ONE' | 'TWO' | 'THREE_PLUS' | 'UNKNOWN') | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_movies_api_v1_monitor_coverage_movies_get: {
+    parameters: {
+      query?: {
+        bucket?: ('ZERO' | 'ONE' | 'TWO' | 'THREE_PLUS' | 'UNKNOWN') | null;
+        q?: string | null;
+        resolution?: string | null;
+        page?: number;
+        page_size?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CoverageMovieListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_runs_api_v1_monitor_coverage_runs_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CoverageRunResponse'][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  create_run_api_v1_monitor_coverage_runs_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CoverageRunRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CoverageRunAcceptedResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_scope_api_v1_monitor_coverage_scope_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CoverageScopeResponse'] | null;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  save_scope_api_v1_monitor_coverage_scope_put: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CoverageScopeRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CoverageScopeResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_summary_api_v1_monitor_coverage_summary_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CoverageSummaryResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   list_issues_api_v1_monitor_seeding_health_issues_get: {
     parameters: {
       query?: {
@@ -6536,6 +7337,318 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['SeedingHealthSummaryResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  export_sites_api_v1_monitor_site_assets_export_get: {
+    parameters: {
+      query?: {
+        days?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_sites_api_v1_monitor_site_assets_sites_get: {
+    parameters: {
+      query?: {
+        days?: number;
+        q?: string | null;
+        page?: number;
+        page_size?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteAssetSiteListResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_summary_api_v1_monitor_site_assets_summary_get: {
+    parameters: {
+      query?: {
+        days?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteAssetSummaryResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_trend_api_v1_monitor_site_assets_trend_get: {
+    parameters: {
+      query?: {
+        days?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SiteAssetPointResponse'][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  cleanup_export_api_v1_monitor_yield_cleanup_export_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CleanupPreviewRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  cleanup_preview_api_v1_monitor_yield_cleanup_preview_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CleanupPreviewRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['CleanupPreviewResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  refresh_api_v1_monitor_yield_refresh_post: {
+    parameters: {
+      query?: never;
+      header?: {
+        'X-CSRF-Token'?: string | null;
+      };
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+        packbreaker_csrf?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['YieldRefreshResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  get_summary_api_v1_monitor_yield_summary_get: {
+    parameters: {
+      query?: {
+        days?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['YieldSummaryResponse'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  list_torrents_api_v1_monitor_yield_torrents_get: {
+    parameters: {
+      query?: {
+        days?: number;
+        sort?: 'upload' | 'bonus' | 'hourly';
+        order?: 'asc' | 'desc';
+        zero_only?: boolean;
+        q?: string | null;
+        site?: string | null;
+        page?: number;
+        page_size?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: {
+        packbreaker_session?: string | null;
+      };
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['YieldTorrentListResponse'];
         };
       };
       /** @description Validation Error */

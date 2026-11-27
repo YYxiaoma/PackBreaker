@@ -74,8 +74,12 @@ class DownloaderTorrent:
     tracker_state: str | None = None
     tracker_message: str | None = None
     tracker_last_announce_at: datetime | None = None
+    # 同一任务常配置多个 tracker；站点归属要逐个尝试，不能只看第一个。
+    tracker_urls: tuple[str, ...] = ()
     # 种子自带 comment，身份解析（站点详情页链接）直接读它，无需导出 .torrent。
     comment: str | None = None
+    # 累计上传量是收益归因的唯一实测指标；客户端未提供时保持 None。
+    uploaded_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if not self.name or len(self.name) > 4096:
@@ -104,6 +108,8 @@ class DownloaderTorrent:
             raise ValueError("torrent tracker 最后通告时间必须是 datetime")
         if self.comment is not None and not isinstance(self.comment, str):
             raise ValueError("torrent comment 必须是字符串")
+        if any(not isinstance(item, str) or not item for item in self.tracker_urls):
+            raise ValueError("torrent tracker 列表必须是非空字符串")
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,6 +611,7 @@ class QbittorrentAdapter:
                 seeding_time = raw.get("seeding_time")
                 added_on = raw.get("added_on")
                 comment = raw.get("comment")
+                uploaded = raw.get("uploaded")
                 if (
                     not isinstance(torrent_hash, str)
                     or not isinstance(name, str)
@@ -633,6 +640,7 @@ class QbittorrentAdapter:
                             category=category.strip() or None,
                             tags=tuple(tag.strip() for tag in tags.split(",") if tag.strip()),
                             tracker=tracker.strip() or None,
+                            tracker_urls=(tracker.strip(),) if tracker.strip() else (),
                             save_path=normalize_remote_path(save_path),
                             content_path=(
                                 normalize_remote_path(content_path) if content_path else None
@@ -640,6 +648,7 @@ class QbittorrentAdapter:
                             seeding_time_seconds=_optional_seeding_seconds(seeding_time),
                             added_at=_optional_unix_datetime(added_on),
                             comment=comment if isinstance(comment, str) else None,
+                            uploaded_bytes=_optional_nonnegative_int(uploaded, "uploaded"),
                         )
                     )
                 except (ValueError, TypeError) as exc:
@@ -1131,7 +1140,11 @@ class TransmissionAdapter:
                     "secondsSeeding",
                     "addedDate",
                     "trackerStats",
+                    "trackers",
                     "comment",
+                    # Transmission 4.1.3 实际返回 snake_case；旧版本/第三方实现可能用 camelCase。
+                    "uploaded_ever",
+                    "uploadedEver",
                 ]
             },
         )
@@ -1156,7 +1169,20 @@ class TransmissionAdapter:
             seconds_seeding = raw.get("secondsSeeding")
             added_date = raw.get("addedDate")
             tracker_stats = raw.get("trackerStats")
+            trackers = raw.get("trackers")
+            tracker_urls: list[str] = []
+            if isinstance(trackers, list):
+                for tracker in trackers:
+                    if not isinstance(tracker, dict):
+                        continue
+                    announce = tracker.get("announce")
+                    if isinstance(announce, str) and announce.strip():
+                        url = announce.strip()
+                        if url not in tracker_urls:
+                            tracker_urls.append(url)
+            tracker_url: str | None = tracker_urls[0] if tracker_urls else None
             comment = raw.get("comment")
+            uploaded_ever = raw.get("uploaded_ever", raw.get("uploadedEver"))
             if (
                 not isinstance(torrent_hash, str)
                 or not isinstance(name, str)
@@ -1187,7 +1213,8 @@ class TransmissionAdapter:
                         size_bytes=total_size,
                         category=None,
                         tags=tuple(item.strip() for item in labels if item.strip()),
-                        tracker=None,
+                        tracker=tracker_url,
+                        tracker_urls=tuple(tracker_urls),
                         save_path=normalized_dir,
                         content_path=_remote_child(normalized_dir, name),
                         seeding_time_seconds=_optional_seeding_seconds(seconds_seeding),
@@ -1196,6 +1223,7 @@ class TransmissionAdapter:
                         tracker_message=tracker_message,
                         tracker_last_announce_at=last_announce_at,
                         comment=comment if isinstance(comment, str) else None,
+                        uploaded_bytes=_optional_nonnegative_int(uploaded_ever, "uploadedEver"),
                     )
                 )
             except (ValueError, TypeError) as exc:

@@ -19,6 +19,7 @@ from backend.app.application.secrets import SecretKindMismatch, SecretNotFound, 
 from backend.app.application.unpack_acceptance import UnpackAcceptanceScope
 from backend.app.domain.proxy import ProxyConfig
 from backend.app.domain.site_adapter import SiteAdapter, SiteUserProfile
+from backend.app.domain.site_assets import site_asset_stat_date
 from backend.app.domain.site_config import (
     DEFAULT_COOKIE_USER_AGENT,
     SiteCredentialKind,
@@ -38,6 +39,7 @@ from backend.app.infrastructure.persistence.database import begin_immediate_writ
 from backend.app.infrastructure.persistence.models import (
     Site,
     SiteRiskEvent,
+    SiteStatisticsHistory,
     SiteUserProfileSnapshot,
     SiteUserProfileSync,
     UnpackExecution,
@@ -249,12 +251,16 @@ class SiteService:
         adapter_factory: SiteAdapterFactory | None = None,
         reliability_registry: SiteReliabilityRegistry | None = None,
         acceptance_scope: UnpackAcceptanceScope | None = None,
+        statistics_timezone: str = "Asia/Shanghai",
+        statistics_history_days: int = 90,
     ) -> None:
         self._acceptance_scope = acceptance_scope
         self._session_factory = session_factory
         self._secret_store = secret_store
         self._adapter_factory = adapter_factory or SiteAdapterFactory()
         self._reliability_registry = reliability_registry or SiteReliabilityRegistry()
+        self._statistics_timezone = statistics_timezone
+        self._statistics_history_days = max(30, min(statistics_history_days, 365))
         self._profile_sync_locks: dict[str, asyncio.Lock] = {}
 
     def list_sites(self) -> list[SiteView]:
@@ -1210,6 +1216,7 @@ class SiteService:
                 for field_name, value in values.items():
                     setattr(record, field_name, value)
                 record.updated_at = finished_at
+            self._record_statistics_history(session, site_id, profile, finished_at)
             session.add(
                 SiteUserProfileSync(
                     site_id=site_id,
@@ -1225,6 +1232,50 @@ class SiteService:
             self._prune_user_profile_sync_history(session, site_id)
             session.commit()
         return profile
+
+    def _record_statistics_history(
+        self,
+        session: Session,
+        site_id: str,
+        profile: SiteUserProfile,
+        observed_at: datetime,
+    ) -> None:
+        """Keep the latest successful profile values for one application calendar day."""
+        stat_date = site_asset_stat_date(observed_at, self._statistics_timezone)
+        values: dict[str, object] = {
+            "ratio": profile.ratio,
+            "bonus": profile.bonus,
+            "seeding_points": profile.seeding_points,
+            "bonus_per_hour": profile.bonus_per_hour,
+            "seeding_count": profile.seeding_count,
+            "uploaded_bytes": profile.uploaded_bytes,
+            "downloaded_bytes": profile.downloaded_bytes,
+            "seeding_size_bytes": profile.seeding_size_bytes,
+            "fetched_at": profile.fetched_at,
+            "updated_at": observed_at,
+        }
+        record = session.scalar(
+            select(SiteStatisticsHistory).where(
+                SiteStatisticsHistory.site_id == site_id,
+                SiteStatisticsHistory.stat_date == stat_date,
+            )
+        )
+        if record is None:
+            session.add(SiteStatisticsHistory(site_id=site_id, stat_date=stat_date, **values))
+        else:
+            for field_name, value in values.items():
+                setattr(record, field_name, value)
+
+        cutoff = site_asset_stat_date(observed_at, self._statistics_timezone) - timedelta(
+            days=self._statistics_history_days
+        )
+        stale_rows = list(
+            session.scalars(
+                select(SiteStatisticsHistory).where(SiteStatisticsHistory.stat_date < cutoff)
+            )
+        )
+        for stale in stale_rows:
+            session.delete(stale)
 
     def _record_user_profile_sync(
         self,

@@ -15,11 +15,14 @@ from backend.app.api.auth import router as auth_router
 from backend.app.api.cookiecloud import router as cookiecloud_router
 from backend.app.api.downloaders import router as downloader_router
 from backend.app.api.health import router as health_router
+from backend.app.api.media_coverage import router as media_coverage_router
 from backend.app.api.monitoring import router as monitoring_router
 from backend.app.api.movie_dedup import router as movie_dedup_router
 from backend.app.api.notifications import router as notification_router
+from backend.app.api.site_assets import router as site_assets_router
 from backend.app.api.sites import router as site_router
 from backend.app.api.system import router as system_router
+from backend.app.api.torrent_yield import router as torrent_yield_router
 from backend.app.api.unpack import router as unpack_router
 from backend.app.application.admin_notifications import AdminNotificationService
 from backend.app.application.ai_agent import AIAgentService
@@ -33,6 +36,8 @@ from backend.app.application.cookiecloud import CookieCloudService
 from backend.app.application.cookiecloud_driver import CookieCloudDriver
 from backend.app.application.downloaders import DownloaderService
 from backend.app.application.errors import ApplicationError
+from backend.app.application.media_coverage import MediaCoverageService
+from backend.app.application.media_coverage_driver import MediaCoverageDriver
 from backend.app.application.movie_dedup import MovieDedupService
 from backend.app.application.movie_dedup_driver import MovieDedupDriver
 from backend.app.application.notification_driver import NotificationDriver
@@ -43,10 +48,12 @@ from backend.app.application.seeding_health import (
     SeedingHealthSettings,
 )
 from backend.app.application.seeding_health_driver import SeedingHealthDriver
+from backend.app.application.site_assets import SiteAssetsService
 from backend.app.application.site_statistics_driver import SiteStatisticsDriver
 from backend.app.application.sites import SiteService, sync_fixed_site_base_urls
 from backend.app.application.system_health import SystemResourceSampler
 from backend.app.application.system_upgrades import SystemUpgradeService
+from backend.app.application.torrent_yield import TorrentYieldService
 from backend.app.application.unpack_acceptance import UnpackAcceptanceScope
 from backend.app.application.unpack_auxiliary import UnpackAuxiliaryStagingService
 from backend.app.application.unpack_content_verification import (
@@ -293,6 +300,16 @@ def create_app(
             data_root=resolved_settings.data_dir,
         )
         app.state.downloader_service = downloader_service
+        torrent_yield_service = TorrentYieldService(
+            resolved_runtime.session_factory,
+            downloader_service,
+            timezone=resolved_settings.timezone,
+            history_days=resolved_settings.torrent_yield_history_days,
+            refresh_min_interval_seconds=(
+                resolved_settings.torrent_yield_refresh_min_interval_seconds
+            ),
+        )
+        app.state.torrent_yield_service = torrent_yield_service
         unpack_monitor_service = UnpackMonitorService(
             resolved_runtime.session_factory,
             downloader_service,
@@ -307,8 +324,30 @@ def create_app(
             secret_store,
             reliability_registry=site_reliability_registry,
             acceptance_scope=acceptance_scope,
+            statistics_timezone=resolved_settings.timezone,
+            statistics_history_days=resolved_settings.site_statistics_history_days,
         )
         app.state.site_service = site_service
+        site_assets_service = SiteAssetsService(
+            resolved_runtime.session_factory,
+            timezone=resolved_settings.timezone,
+        )
+        app.state.site_assets_service = site_assets_service
+        media_coverage_service = MediaCoverageService(
+            resolved_runtime.session_factory,
+            path_scope=path_scope,
+            site_service=site_service,
+            site_probe_enabled=resolved_settings.media_coverage_site_probe_enabled,
+            site_probe_budget=resolved_settings.media_coverage_site_probe_budget,
+            max_site_items=resolved_settings.media_coverage_max_site_items,
+            max_movies=resolved_settings.media_coverage_max_movies,
+        )
+        app.state.media_coverage_service = media_coverage_service
+        media_coverage_service.reconcile_stale_runs()
+        media_coverage_driver = MediaCoverageDriver(
+            media_coverage_service, timezone=resolved_settings.timezone
+        )
+        app.state.media_coverage_driver = media_coverage_driver
         unpack_template_service = UnpackTemplateService(
             resolved_runtime.session_factory,
             data_dir=resolved_settings.data_dir,
@@ -341,6 +380,7 @@ def create_app(
             downloader_service,
             site_service,
             settings=seeding_health_settings,
+            torrent_yield_service=torrent_yield_service,
         )
         app.state.seeding_health_service = seeding_health_service
         seeding_health_driver = SeedingHealthDriver(
@@ -547,6 +587,7 @@ def create_app(
         app.state.ai_telegram_driver = ai_telegram_driver
         cookiecloud_driver.start()
         site_statistics_driver.start()
+        media_coverage_driver.start()
         seeding_health_driver.start()
         unpack_template_import_driver.start()
         backup_driver.start()
@@ -557,6 +598,10 @@ def create_app(
         try:
             yield
         finally:
+            # 先停驱动再关服务：反过来的话关机窗口里驱动还能触发一次扫描，
+            # 撞上已经在关闭的服务。
+            await media_coverage_driver.stop()
+            await media_coverage_service.shutdown()
             await resource_sampler.stop()
             await ai_telegram_driver.stop()
             await backup_driver.stop()
@@ -661,10 +706,13 @@ def create_app(
     app.include_router(downloader_router, prefix="/api/v1")
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(movie_dedup_router, prefix="/api/v1")
+    app.include_router(media_coverage_router, prefix="/api/v1")
+    app.include_router(site_assets_router, prefix="/api/v1")
     app.include_router(notification_router, prefix="/api/v1")
     app.include_router(monitoring_router, prefix="/api/v1")
     app.include_router(site_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
+    app.include_router(torrent_yield_router, prefix="/api/v1")
     app.include_router(unpack_router, prefix="/api/v1")
     _attach_frontend(app, resolved_settings)
     return app

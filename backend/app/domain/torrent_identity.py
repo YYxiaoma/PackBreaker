@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -114,6 +115,33 @@ def site_kind_of_url(url: str) -> SiteKind | None:
     for kind, tokens in SITE_DOMAIN_TOKENS.items():
         if any(token in host for token in tokens):
             return kind
+    return None
+
+
+def identity_from_tracker(tracker: str | None) -> TorrentIdentity | None:
+    """从 tracker announce URL 反推站点；tracker 不提供站点侧种子 ID。"""
+    if not tracker:
+        return None
+    kind = site_kind_of_url(tracker)
+    if kind is None:
+        return None
+    return TorrentIdentity(
+        site_key=kind.value.lower(),
+        torrent_id="",
+        source=SeedingIdentitySource.TRACKER,
+    )
+
+
+def identity_from_trackers(trackers: Iterable[str | None]) -> TorrentIdentity | None:
+    """按顺序尝试全部 tracker，返回第一个能识别站点的身份。
+
+    一个任务常同时配置多个 tracker（PT 站、备用站、公共 tracker），
+    只看第一个会把「首个条目不是 PT 站」的种子误判为站点未知。
+    """
+    for tracker in trackers:
+        identity = identity_from_tracker(tracker)
+        if identity is not None:
+            return identity
     return None
 
 

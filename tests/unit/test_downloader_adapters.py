@@ -922,3 +922,98 @@ async def test_transmission_40_legacy_write_primitives_use_legacy_argument_names
         "files-unwanted": [0, 1],
     }
     assert seen["torrent-remove"] == {"ids": [torrent_hash], "delete-local-data": False}
+
+
+@pytest.mark.asyncio
+async def test_qbittorrent_list_torrents_reads_real_uploaded_bytes() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path.endswith("/auth/login"):
+            return httpx2.Response(200, text="Ok.", headers={"Set-Cookie": "SID=fake; path=/"})
+        if request.url.path.endswith("/torrents/info"):
+            return httpx2.Response(
+                200,
+                json=[
+                    {
+                        "hash": "a" * 40,
+                        "name": "movie.mkv",
+                        "state": "seeding",
+                        "progress": 1.0,
+                        "size": 1024,
+                        "category": "",
+                        "tags": "",
+                        "tracker": "",
+                        "save_path": "/downloads",
+                        "content_path": "/downloads/movie.mkv",
+                        "seeding_time": 3600,
+                        "uploaded": 4096,
+                    }
+                ],
+            )
+        return httpx2.Response(404)
+
+    adapter = QbittorrentAdapter(
+        "http://qb.invalid:8080",
+        DownloaderCredential(username="admin", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    torrents = await adapter.list_torrents()
+
+    assert torrents[0].uploaded_bytes == 4096
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["uploaded_ever", "uploadedEver"])
+async def test_transmission_list_torrents_reads_uploaded_bytes(field: str) -> None:
+    seen_fields: list[list[str]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.headers.get("X-Transmission-Session-Id") != "synthetic-session":
+            return httpx2.Response(409, headers={"X-Transmission-Session-Id": "synthetic-session"})
+        body = json.loads(request.content.decode())
+        assert body["method"] == "torrent_get"
+        seen_fields.append(body["params"]["fields"])
+        return httpx2.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "torrents": [
+                        {
+                            "hash_string": "a" * 40,
+                            "name": "movie.mkv",
+                            "download_dir": "/downloads",
+                            "status": 4,
+                            "labels": [],
+                            "percent_done": 1.0,
+                            "total_size": 1024,
+                            "trackers": [
+                                {"announce": "https://public.example.invalid/announce"},
+                                {"announce": "https://tracker.hdtime.org/announce"},
+                                {"announce": "https://tracker.hdtime.org/announce"},
+                            ],
+                            field: 8192,
+                        }
+                    ]
+                },
+            },
+        )
+
+    adapter = TransmissionAdapter(
+        "http://tr.invalid:9091/transmission/rpc",
+        DownloaderCredential(username="rpc", password="synthetic-password"),
+        transport=httpx2.MockTransport(handler),
+    )
+
+    torrents = await adapter.list_torrents()
+
+    assert "uploaded_ever" in seen_fields[0]
+    assert "uploadedEver" in seen_fields[0]
+    assert "trackers" in seen_fields[0]
+    assert torrents[0].uploaded_bytes == 8192
+    assert torrents[0].tracker == "https://public.example.invalid/announce"
+    assert torrents[0].tracker_urls == (
+        "https://public.example.invalid/announce",
+        "https://tracker.hdtime.org/announce",
+    )

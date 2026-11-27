@@ -12,6 +12,9 @@ export const SECONDARY_ROUTE_NAMES = [
   '数据拆包',
   '数据去重',
   '做种健康巡查',
+  '站点资产趋势',
+  '种子收益分析',
+  '辅种覆盖情况',
   'CookieCloud配置',
   '站点配置',
   '下载器配置',
@@ -27,6 +30,9 @@ export const SECONDARY_ROUTE_PATHS = {
   数据拆包: '任务中心/数据拆包',
   数据去重: '任务中心/数据去重',
   做种健康巡查: '监控中心/做种健康巡查',
+  站点资产趋势: '监控中心/站点资产趋势',
+  种子收益分析: '监控中心/种子收益分析',
+  辅种覆盖情况: '监控中心/辅种覆盖情况',
   CookieCloud配置: '配置中心/CookieCloud配置',
   站点配置: '配置中心/站点配置',
   下载器配置: '配置中心/下载器配置',
@@ -50,7 +56,7 @@ export const DEFAULT_ROUTE_BY_PRIMARY: Record<Exclude<PrimaryRoute, '总览'>, S
 export const NAVIGATION_GROUPS = [
   { name: '总览', children: [] },
   { name: '任务中心', children: ['数据拆包', '数据去重'] },
-  { name: '监控中心', children: ['做种健康巡查'] },
+  { name: '监控中心', children: ['做种健康巡查', '站点资产趋势', '种子收益分析', '辅种覆盖情况'] },
   { name: '配置中心', children: ['CookieCloud配置', '站点配置', '下载器配置'] },
   { name: '系统管理', children: ['通知配置', '日志浏览', 'Agent配置', '备份恢复'] },
 ] as const;
@@ -59,6 +65,9 @@ const ROUTE_PARENT: Record<SecondaryRoutePath, PrimaryRoute> = {
   [SECONDARY_ROUTE_PATHS.数据拆包]: '任务中心',
   [SECONDARY_ROUTE_PATHS.数据去重]: '任务中心',
   [SECONDARY_ROUTE_PATHS.做种健康巡查]: '监控中心',
+  [SECONDARY_ROUTE_PATHS.站点资产趋势]: '监控中心',
+  [SECONDARY_ROUTE_PATHS.种子收益分析]: '监控中心',
+  [SECONDARY_ROUTE_PATHS.辅种覆盖情况]: '监控中心',
   [SECONDARY_ROUTE_PATHS.CookieCloud配置]: '配置中心',
   [SECONDARY_ROUTE_PATHS.站点配置]: '配置中心',
   [SECONDARY_ROUTE_PATHS.下载器配置]: '配置中心',
@@ -85,6 +94,14 @@ const LEGACY_ROUTE_ALIASES: Record<string, Route> = {
   监控中心: SECONDARY_ROUTE_PATHS.做种健康巡查,
   做种巡查: SECONDARY_ROUTE_PATHS.做种健康巡查,
   监控: SECONDARY_ROUTE_PATHS.做种健康巡查,
+  资产趋势: SECONDARY_ROUTE_PATHS.站点资产趋势,
+  PT资产总览: SECONDARY_ROUTE_PATHS.站点资产趋势,
+  收益归因: SECONDARY_ROUTE_PATHS.种子收益分析,
+  种子收益: SECONDARY_ROUTE_PATHS.种子收益分析,
+  '监控中心/种子收益': SECONDARY_ROUTE_PATHS.种子收益分析,
+  覆盖率: SECONDARY_ROUTE_PATHS.辅种覆盖情况,
+  辅种覆盖率: SECONDARY_ROUTE_PATHS.辅种覆盖情况,
+  '监控中心/辅种覆盖率': SECONDARY_ROUTE_PATHS.辅种覆盖情况,
 };
 
 function isSecondaryRoutePath(value: string): value is SecondaryRoutePath {

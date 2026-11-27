@@ -18,11 +18,17 @@ import {
   Settings2,
   Activity,
   HeartPulse,
+  TrendingUp,
+  Coins,
+  Layers3,
 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import TaskCenterV2 from './components/TaskCenterV2.vue';
 import OverviewDashboard from './components/OverviewDashboard.vue';
 import SeedingHealthPanel from './components/SeedingHealthPanel.vue';
+import SiteAssetsPanel from './components/SiteAssetsPanel.vue';
+import TorrentYieldPanel from './components/TorrentYieldPanel.vue';
+import MediaCoveragePanel from './components/MediaCoveragePanel.vue';
 import WorkspaceManagement from './components/WorkspaceManagement.vue';
 import MovieDedupPanel from './components/MovieDedupPanel.vue';
 import AuthGate from './components/AuthGate.vue';
@@ -111,6 +117,9 @@ const childIconMap: Record<SecondaryRoute, IconComponent> = {
   数据拆包: FolderSearch,
   数据去重: Copy,
   做种健康巡查: HeartPulse,
+  站点资产趋势: TrendingUp,
+  种子收益分析: Coins,
+  辅种覆盖情况: Layers3,
   CookieCloud配置: Cloud,
   站点配置: Globe,
   下载器配置: HardDrive,
@@ -148,6 +157,9 @@ const searchableNav: SearchEntry[] = [
             数据拆包: '任务 手动 监控 执行 重试',
             数据去重: '任务 去重 影片 文件',
             做种健康巡查: '做种 健康 巡查 异常 H&R tracker 删种',
+            站点资产趋势: '资产 趋势 ratio bonus 时魔 做种 PT 总览',
+            种子收益分析: '收益 上传 零上传 清理 归因',
+            辅种覆盖情况: '辅种 覆盖 覆盖率 补种 去重',
             CookieCloud配置: 'cookie cloud 同步',
             站点配置: '站点 pt cookie api',
             下载器配置: '下载器 qb transmission',
@@ -425,6 +437,12 @@ function openVersionPopover(): void {
         <MovieDedupPanel v-else-if="route === '任务中心/数据去重'" />
         <SeedingHealthPanel
           v-else-if="route === '监控中心/做种健康巡查'"
+          @navigate="selectRoute($event)"
+        />
+        <SiteAssetsPanel v-else-if="route === '监控中心/站点资产趋势'" :dark="dark" />
+        <TorrentYieldPanel v-else-if="route === '监控中心/种子收益分析'" />
+        <MediaCoveragePanel
+          v-else-if="route === '监控中心/辅种覆盖情况'"
           @navigate="selectRoute($event)"
         />
         <WorkspaceManagement v-else :page="route" />

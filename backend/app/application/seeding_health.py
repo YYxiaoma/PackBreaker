@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import func, select
@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.application.errors import ApplicationError
 from backend.app.domain.downloader import PathMappingRule, map_remote_path
+from backend.app.domain.media_matching import media_file_token_signature
 from backend.app.domain.operation import OperationStatus
 from backend.app.domain.seeding_health import (
     ACTIVE_ISSUE_STATUSES,
@@ -48,7 +49,7 @@ from backend.app.domain.seeding_health import (
     status_on_redetect,
     suggestion_for,
 )
-from backend.app.domain.torrent_identity import identity_from_comment
+from backend.app.domain.torrent_identity import identity_from_comment, identity_from_trackers
 from backend.app.domain.verification import DownloaderKind, VerificationLevel
 from backend.app.infrastructure.adapters.downloaders import (
     QbittorrentAddRequest,
@@ -66,6 +67,9 @@ from backend.app.infrastructure.persistence.models import (
     utc_now,
 )
 from backend.app.infrastructure.torrent_parser import parse_torrent
+
+if TYPE_CHECKING:
+    from backend.app.application.torrent_yield import TorrentYieldService
 
 _SITE_CONCURRENCY = 4
 # 首次铺开时每个种子要导出一次 .torrent；实测 7251 个种子需要分多轮完成，
@@ -145,10 +149,12 @@ class SeedingHealthService:
         *,
         settings: SeedingHealthSettings | None = None,
         logger: logging.Logger | None = None,
+        torrent_yield_service: TorrentYieldService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._downloaders = downloader_service
         self._sites = site_service
+        self._torrent_yield_service = torrent_yield_service
         self._settings = settings or SeedingHealthSettings()
         self._logger = logger or logging.getLogger("packbreaker.seeding_health")
 
@@ -938,6 +944,10 @@ class SeedingHealthService:
 
         gone_watch_ids = await asyncio.to_thread(self._sync_watches, collected)
         counters["resolved"] += await asyncio.to_thread(self._resolve_gone, gone_watch_ids)
+        if self._torrent_yield_service is not None:
+            await asyncio.to_thread(
+                self._torrent_yield_service.record_samples_from_patrol, collected
+            )
 
         targets = await asyncio.to_thread(self._load_targets)
         counters["watches"] = len(targets)
@@ -974,8 +984,30 @@ class SeedingHealthService:
                         continue
                     present.add(torrent.torrent_hash)
                     watch = existing.get(torrent.torrent_hash)
-                    identity = identity_from_comment(
+                    tracker_identity = identity_from_trackers(
+                        torrent.tracker_urls or (torrent.tracker,)
+                    )
+                    comment_identity = identity_from_comment(
                         torrent.comment if isinstance(torrent.comment, str) else None
+                    )
+                    # Tracker 优先：comment 可能是转种时写入的旧站点，站点归属以 tracker 为准。
+                    site_key = (
+                        tracker_identity.site_key
+                        if tracker_identity is not None
+                        else (comment_identity.site_key if comment_identity else None)
+                    )
+                    # 站点侧种子 ID 只能从 comment 取得，且只对 comment 所属站点有效。
+                    # 站点与 comment 不一致说明是转种，这个 ID 属于另一个站；宁可留空：
+                    # 空 ID 的巡查返回 UNKNOWN，比拿错站点的 ID 请求出 404 误报缺种安全。
+                    remote_torrent_id = (
+                        comment_identity.torrent_id
+                        if comment_identity is not None and comment_identity.site_key == site_key
+                        else None
+                    )
+                    identity_source = (
+                        tracker_identity.source.value
+                        if tracker_identity is not None
+                        else (comment_identity.source.value if comment_identity else None)
                     )
                     if watch is None:
                         watch = SeedingWatch(
@@ -986,9 +1018,9 @@ class SeedingHealthService:
                             size_bytes=int(torrent.size_bytes),
                             save_path=torrent.save_path[:2048],
                             content_path=torrent.content_path or None,
-                            site_key=identity.site_key if identity else None,
-                            remote_torrent_id=identity.torrent_id if identity else None,
-                            identity_source=identity.source.value if identity else None,
+                            site_key=site_key,
+                            remote_torrent_id=remote_torrent_id,
+                            identity_source=identity_source,
                             presence=SeedingWatchPresence.ACTIVE.value,
                             first_seen_at=now,
                             last_seen_at=now,
@@ -1004,10 +1036,18 @@ class SeedingHealthService:
                         watch.save_path = torrent.save_path[:2048]
                         watch.content_path = torrent.content_path or None
                         watch.updated_at = now
-                        if not watch.identity_locked and identity is not None:
-                            watch.site_key = identity.site_key
-                            watch.remote_torrent_id = identity.torrent_id
-                            watch.identity_source = identity.source.value
+                        if not watch.identity_locked:
+                            previous_site = watch.site_key
+                            if site_key:
+                                watch.site_key = site_key
+                                if site_key != previous_site:
+                                    # 站点变了，旧 ID 一定属于原来的站，必须清掉，
+                                    # 否则会拿它去新站点探测。
+                                    watch.remote_torrent_id = None
+                            if identity_source:
+                                watch.identity_source = identity_source
+                            if remote_torrent_id:
+                                watch.remote_torrent_id = remote_torrent_id
                     watch.seeding_time_seconds = torrent.seeding_time_seconds
                     watch.tracker_state = torrent.tracker_state
                     watch.tracker_message = (torrent.tracker_message or "")[:512] or None
@@ -1130,14 +1170,26 @@ class SeedingHealthService:
         """
         with self._session_factory() as session:
             rows = session.execute(
-                select(SeedingWatch.site_key, SeedingWatch.remote_torrent_id).where(
+                select(
+                    SeedingWatch.site_key,
+                    SeedingWatch.remote_torrent_id,
+                    SeedingWatch.torrent_name,
+                ).where(
                     SeedingWatch.presence == SeedingWatchPresence.ACTIVE.value,
                     SeedingWatch.site_key.is_not(None),
-                    SeedingWatch.remote_torrent_id.is_not(None),
                 )
             ).all()
         local_by_site: dict[str, set[str]] = {}
-        for site_key, remote_id in rows:
+        # 转种种子的 comment 指向别的站，站点侧 ID 取不到；它们仍然真实做种，
+        # 不算进 local_ids 就会让站侧对应条目落进差集被误报「站侧独有」。
+        # 这里用名称签名把它们排除掉——同名才排除，不会掩盖真正的站侧独有。
+        unnamed_by_site: dict[str, set[frozenset[str]]] = {}
+        for site_key, remote_id, name in rows:
+            if not remote_id:
+                unnamed_by_site.setdefault(site_key, set()).add(
+                    frozenset(media_file_token_signature(name or ""))
+                )
+                continue
             local_by_site.setdefault(site_key, set()).add(remote_id)
 
         now = utc_now()
@@ -1189,6 +1241,14 @@ class SeedingHealthService:
                 )
                 continue
             missing = seen - local_ids
+            unnamed = unnamed_by_site.get(site_key)
+            if missing and unnamed:
+                missing = {
+                    torrent_id
+                    for torrent_id in missing
+                    if frozenset(media_file_token_signature(titles.get(torrent_id, "")))
+                    not in unnamed
+                }
             self._logger.info(
                 "站点独有种子 site=%s count=%s total=%s", site_key, len(missing), len(seen)
             )

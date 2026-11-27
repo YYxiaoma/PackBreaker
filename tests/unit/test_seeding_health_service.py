@@ -16,6 +16,7 @@ from backend.app.application.seeding_health import (
 )
 from backend.app.domain.downloader import PathMappingRule
 from backend.app.domain.seeding_health import (
+    SeedingIdentitySource,
     SeedingIssueKind,
     SeedingIssueStatus,
     SeedingRunTrigger,
@@ -66,6 +67,8 @@ def _torrent(
     progress: float = 1.0,
     tracker_state: str | None = None,
     comment: str | None = "https://hdtime.org/details.php?id=123456",
+    tracker: str | None = "https://tracker.example/announce",
+    tracker_urls: tuple[str, ...] = (),
 ) -> DownloaderTorrent:
     return DownloaderTorrent(
         torrent_hash=torrent_hash,
@@ -75,7 +78,8 @@ def _torrent(
         size_bytes=50_000_000_000,
         category=None,
         tags=(),
-        tracker="https://tracker.example/announce",
+        tracker=tracker,
+        tracker_urls=tracker_urls,
         save_path="/downloads",
         content_path=content_path,
         seeding_time_seconds=3600,
@@ -285,6 +289,53 @@ def test_identity_from_comment_and_payload() -> None:
     assert identity_from_payload(_torrent_bytes("https://hdtime.org/details.php?id=1")) is not None
 
 
+def test_multi_tracker_uses_first_recognized_announce(tmp_path: Path) -> None:
+    """首个 tracker 不是 PT 站时，要接着往后找，而不是直接回退 comment。"""
+
+    torrents = (
+        _torrent(
+            "f" * 40,
+            tracker="https://public.example.invalid/announce",
+            tracker_urls=(
+                "https://public.example.invalid/announce",
+                "https://tracker.hdtime.org/announce?passkey=abc",
+            ),
+            comment="https://kp.m-team.cc/detail/123456",
+        ),
+    )
+    service, factory, _ = _setup(tmp_path, site_error=None, torrents=torrents)
+
+    _run(service)
+
+    with factory() as session:
+        watch = session.scalars(select(SeedingWatch)).one()
+        assert watch.site_key == "hdtime"
+        assert watch.identity_source == SeedingIdentitySource.TRACKER.value
+        # comment 指向 m-team，ID 属于 m-team；站点是 hdtime，绝不能拿它去 hdtime 探测。
+        assert watch.remote_torrent_id is None
+
+
+def test_comment_torrent_id_kept_when_site_matches(tmp_path: Path) -> None:
+    """comment 与 tracker 同站时，站点侧种子 ID 仍然有效。"""
+
+    torrents = (
+        _torrent(
+            "e" * 40,
+            tracker="https://tracker.hdtime.org/announce?passkey=abc",
+            comment="https://hdtime.org/details.php?id=998877",
+        ),
+    )
+    service, factory, _ = _setup(tmp_path, site_error=None, torrents=torrents)
+
+    _run(service)
+
+    with factory() as session:
+        watch = session.scalars(select(SeedingWatch)).one()
+        assert watch.site_key == "hdtime"
+        assert watch.identity_source == SeedingIdentitySource.TRACKER.value
+        assert watch.remote_torrent_id == "998877"
+
+
 def test_missing_site_creates_issue(tmp_path: Path) -> None:
     service, factory, _ = _setup(tmp_path, site_error="missing")
     _run(service)
@@ -438,6 +489,48 @@ def test_site_only_detects_torrent_absent_from_downloader(tmp_path: Path) -> Non
         assert watch.presence == SeedingWatchPresence.SITE_ONLY.value
         assert watch.site_key == "hdtime"
         assert watch.remote_torrent_id == "999999"
+
+
+def test_site_only_ignores_transseeded_torrent_without_site_id(tmp_path: Path) -> None:
+    """转种种子没有站点侧 ID，不能因此把站侧对应条目误报成「站侧独有」。"""
+
+    local_ids = ("100001", "100002", "100003", "100004", "100005")
+    torrents = tuple(
+        _torrent(
+            chr(ord("a") + index) * 40,
+            comment=f"https://hdtime.org/details.php?id={torrent_id}",
+        )
+        for index, torrent_id in enumerate(local_ids)
+    ) + (
+        _torrent(
+            "t" * 40,
+            tracker="https://tracker.hdtime.org/announce?passkey=abc",
+            comment="https://kp.m-team.cc/detail/777777",
+        ),
+    )
+    service, factory, site_adapter = _setup(tmp_path, site_error=None, torrents=torrents)
+
+    class _TitledAdapter(_FakeSiteAdapter):
+        async def list_seeding(self, cursor: str | None = None) -> SiteSeedingList:
+            return SiteSeedingList(
+                supported=True,
+                items=(
+                    SiteSeedingItem(torrent_id="777777", title="Dune Part Two 2024 2160p"),
+                    SiteSeedingItem(torrent_id="999999", title="Other Movie 2023 1080p"),
+                ),
+                next_cursor=None,
+                total_hint=2,
+            )
+
+    site_adapter.__class__ = _TitledAdapter
+
+    _run(service)
+
+    with factory() as session:
+        issues = _issues_of(session, SeedingIssueKind.SITE_ONLY)
+        assert [issue.watch_id for issue in issues]
+        assert all("999999" in issue.evidence for issue in issues)
+        assert len(issues) == 1
 
 
 def test_site_only_skips_when_site_list_is_incomplete(tmp_path: Path) -> None:

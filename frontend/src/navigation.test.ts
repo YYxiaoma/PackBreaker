@@ -17,7 +17,10 @@ describe('v1.1.4 navigation', () => {
     expect(NAVIGATION_GROUPS).toEqual([
       { name: '总览', children: [] },
       { name: '任务中心', children: ['数据拆包', '数据去重'] },
-      { name: '监控中心', children: ['做种健康巡查'] },
+      {
+        name: '监控中心',
+        children: ['做种健康巡查', '站点资产趋势', '种子收益分析', '辅种覆盖情况'],
+      },
       { name: '配置中心', children: ['CookieCloud配置', '站点配置', '下载器配置'] },
       { name: '系统管理', children: ['通知配置', '日志浏览', 'Agent配置', '备份恢复'] },
     ]);
@@ -34,6 +37,19 @@ describe('v1.1.4 navigation', () => {
     expect(normalizeRoute('监控中心')).toBe(SECONDARY_ROUTE_PATHS.做种健康巡查);
     expect(getPrimaryRoute(SECONDARY_ROUTE_PATHS.做种健康巡查)).toBe('监控中心');
     expect(normalizeRoute('做种巡查')).toBe(SECONDARY_ROUTE_PATHS.做种健康巡查);
+    expect(getPrimaryRoute(SECONDARY_ROUTE_PATHS.站点资产趋势)).toBe('监控中心');
+    expect(normalizeRoute('资产趋势')).toBe(SECONDARY_ROUTE_PATHS.站点资产趋势);
+    expect(getPrimaryRoute(SECONDARY_ROUTE_PATHS.种子收益分析)).toBe('监控中心');
+    expect(normalizeRoute('收益归因')).toBe(SECONDARY_ROUTE_PATHS.种子收益分析);
+    expect(getPrimaryRoute(SECONDARY_ROUTE_PATHS.辅种覆盖情况)).toBe('监控中心');
+    expect(normalizeRoute('覆盖率')).toBe(SECONDARY_ROUTE_PATHS.辅种覆盖情况);
+  });
+
+  it('redirects the previous menu names to the renamed routes', () => {
+    expect(normalizeRoute('种子收益')).toBe(SECONDARY_ROUTE_PATHS.种子收益分析);
+    expect(normalizeRoute('监控中心/种子收益')).toBe(SECONDARY_ROUTE_PATHS.种子收益分析);
+    expect(normalizeRoute('辅种覆盖率')).toBe(SECONDARY_ROUTE_PATHS.辅种覆盖情况);
+    expect(normalizeRoute('监控中心/辅种覆盖率')).toBe(SECONDARY_ROUTE_PATHS.辅种覆盖情况);
   });
 
   it('accepts every new child label and keeps About outside the primary groups', () => {
