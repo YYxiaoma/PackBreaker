@@ -5,7 +5,8 @@
 <p align="center">从媒体目录或 qBittorrent / Transmission 任务出发，自动完成影片发现、跨站匹配、内容验证、文件复用与做种管理。</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/release-v1.3.0-2563EB" alt="release v1.2.0">
+  <img src="https://img.shields.io/badge/release-v1.3.0-2563EB" alt="release v1.3.0">
+  <a href="https://github.com/YYxiaoma/PackBreaker/actions/workflows/ci.yml"><img src="https://github.com/YYxiaoma/PackBreaker/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <img src="https://img.shields.io/badge/platform-linux%2Famd64%20%7C%20linux%2Farm64-2496ED" alt="linux/amd64 | linux/arm64">
   <img src="https://img.shields.io/badge/license-MIT-16A34A" alt="MIT">
 </p>
