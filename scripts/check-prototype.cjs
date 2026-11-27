@@ -895,7 +895,9 @@ const path = require('node:path');
     await globalSearch.fill('日志');
     await page.getByRole('listbox',{name:'可前往的功能'}).getByRole('option',{name:'日志浏览',exact:true}).click();
     await page.getByRole('heading',{name:'运行日志',exact:true,level:2}).waitFor();
-    await globalSearch.fill('站点');
+    // 「站点」自 v1.3.0 起同时命中「站点资产趋势」与「站点配置」，回车取首条会落到
+    // 前者；这里改用完整名称，仍然验证回车跳转与清空搜索框。
+    await globalSearch.fill('站点配置');
     await globalSearch.press('Enter');
     await page.locator('.site-toolbar').waitFor();
     assert.equal(await globalSearch.inputValue(),'','快捷跳转后应清空搜索框');
